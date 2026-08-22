@@ -65,7 +65,7 @@ export default defineConfig({
       // Icons / favicon (and any other static public asset) need precaching
       // too. Globs cover present + future drops into src/remote/public so a new
       // icon/media file is auto-included without editing this list. The flag
-      // subset stays excluded (see globIgnores below) to keep it on-demand.
+      // fonts are retained for non-terminal UI assets.
       includeAssets: [
         'favicon.png',
         'apple-touch-icon.png',
@@ -75,10 +75,6 @@ export default defineConfig({
         '**/*.{png,jpg,jpeg,gif,svg,webp,ico}',
         '**/*.{woff2,woff,ttf}',
         '**/*.{mp3,mp4,wav,ogg,webm}',
-        // Negation: keep the flag subset out of precache (mirrors workbox
-        // globIgnores) so it stays on-demand — includeAssets is NOT filtered by
-        // globIgnores, so without this it would be force-precached.
-        '!**/fonts/flags.woff2',
       ],
       manifest: {
         // Stable `id` so the browser treats reinstalls as the same app (and
@@ -105,16 +101,8 @@ export default defineConfig({
         // Precache the complete emitted shell rather than a list of optional
         // extensions. Workbox warns (and exits non-zero) when an optional glob
         // matches no files; a new build commonly has no media/font assets. A
-        // single catch-all keeps future asset types offline-capable while the
-        // flag font remains explicitly on-demand below.
+        // single catch-all keeps future asset types offline-capable.
         globPatterns: ['**/*'],
-        // Keep the flag-only emoji subset OUT of the precache so it stays truly
-        // on-demand: the unicode-range @font-face (injected only on flag-less
-        // OSes — see flagEmojiSupport.ts) makes the browser fetch flags.woff2
-        // exactly once, when a flag codepoint first appears. mac/iOS render
-        // flags natively and never download it; first paint stays font-request
-        // free (design §8).
-        globIgnores: ['**/fonts/flags.woff2'],
         // The term-wasm bundle is large and bundled media (mp4/webm/ogg) can be
         // larger still; raise the precache size ceiling so big assets are not
         // silently skipped (the default 2 MiB would drop wasm + any video).
@@ -170,14 +158,6 @@ export default defineConfig({
       },
     },
   },
-  // §P4 — the mobile SPA now imports the shared @ridge/remote TerminalManager,
-  // which pulls in `workerRendererSingleton.ts`. That render worker is created via
-  // `new Worker(url, { type: 'module' })` and itself imports other modules
-  // (renderWorker.ts → deps), so Vite's default `worker.format: 'iife'` fails the
-  // production build with `Invalid value "iife" for option "worker.format" - UMD and
-  // IIFE output formats are not supported for code-splitting builds`. Mirror the main
-  // `vite.config.js` fix: emit the worker chunk as ESM (matches its `type: 'module'`;
-  // the mobile target is esnext and modern browsers support module workers).
   worker: {
     format: 'es',
   },

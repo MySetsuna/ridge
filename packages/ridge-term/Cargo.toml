@@ -2,7 +2,7 @@
 name = "ridge-term"
 version = "0.1.0"
 edition = "2021"
-description = "A Rust terminal kernel (VT parser + grid + render backends) compiled to WebAssembly"
+description = "A Rust terminal kernel and WebGPU renderer compiled to WebAssembly"
 license = "MIT"
 
 # wasm-pack 只认 `profile.<dev|release>.wasm-opt` 这个嵌套键；裸 `[package.metadata.wasm-pack]
@@ -39,9 +39,9 @@ crate-type = ["cdylib", "rlib"]
 [features]
 # Default: ship the WebGpuBackend module so wasm bundles include the
 # GPU path out of the box. The JS-side `RenderHandle.newWithWebgpuFirst`
-# tries WebGPU at attach time and falls back to Canvas2D when the
+# requires WebGPU at attach time; unsupported initialization is explicit and
 # browser / GPU adapter is unavailable, so this is safe to enable for
-# every target — Canvas2D remains the no-WebGPU fallback.
+# every target — there is no software presentation fallback.
 # (User feedback 2026-05-05: don't require a build flag or localStorage
 # opt-in to use the GPU; runtime adapter detection should drive it.)
 default = ["webgpu"]
@@ -52,16 +52,13 @@ default = ["webgpu"]
 # minimal. wasm-bindgen-futures bridges JS Promises to Rust .await
 # inside the WebGpuBackend::new constructor.
 #
-# The web-sys subfeatures (OffscreenCanvas + 2d ctx + ImageData) are
-# only pulled when this feature is on — the §4.1.b glyph rasterizer
-# uses an OffscreenCanvas to leverage the browser's font fallback
-# chain instead of bundling a fontdue/cosmic-text crate (which would
-# add 500 KB-5 MB to the wasm bundle plus require shipping a font).
+# The host supplies selected system-font SFNT bytes before WebGPU starts;
+# cosmic-text/swash shapes and rasterizes atlas misses synchronously in Wasm.
 webgpu = [
     "dep:wgpu",
     "dep:wasm-bindgen-futures",
     "dep:bytemuck",
-    "web-sys/ImageData",
+    "dep:cosmic-text",
 ]
 
 [dependencies]
@@ -88,8 +85,9 @@ serde-wasm-bindgen = "0.6"
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 
 console_error_panic_hook = "0.1"
+cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash", "wasm-web", "monospace_fallback"], optional = true }
 
-# Render backends use web-sys for Canvas2D / WebGPU types. The render
+# The WebGPU renderer uses web-sys. The render
 # module itself is gated on `target_arch = "wasm32"`, so native `cargo
 # test --lib` skips compiling it — VT kernel tests still run on the host.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -99,10 +97,6 @@ web-sys = { version = "0.3", features = [
     "Element",
     "HtmlElement",
     "HtmlCanvasElement",
-    "CanvasRenderingContext2d",
-    "OffscreenCanvas",
-    "OffscreenCanvasRenderingContext2d",
-    "TextMetrics",
     "CssStyleDeclaration",
     "Storage",
     "console",

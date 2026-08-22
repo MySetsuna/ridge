@@ -12,6 +12,7 @@ pub mod ridge_file;
 pub mod settings;
 pub mod teammate;
 pub mod terminal;
+pub mod terminal_font;
 pub mod theme;
 pub mod watch;
 pub mod workspace;

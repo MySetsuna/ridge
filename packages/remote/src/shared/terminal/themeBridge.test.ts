@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { manager, ports, ensureFlagFont, withEmojiFallback } = vi.hoisted(() => ({
-	manager: { setTheme: vi.fn(), setFont: vi.fn() },
+const { manager, ports, withEmojiFallback } = vi.hoisted(() => ({
+	manager: { setTheme: vi.fn(), setFont: vi.fn(async () => undefined) },
 	ports: {
 		settings: {
 			subscribe: (cb: (value: { terminalFontFamily: string }) => void) => { cb({ terminalFontFamily: 'Mono' }); return vi.fn(); },
@@ -16,7 +16,6 @@ const { manager, ports, ensureFlagFont, withEmojiFallback } = vi.hoisted(() => (
 			activeBgImageUrl: () => null,
 		},
 	},
-	ensureFlagFont: vi.fn(() => false),
 	withEmojiFallback: vi.fn((family: string) => `normalized:${family}`),
 }));
 
@@ -26,7 +25,6 @@ vi.mock('./manager', () => ({
 		hostPorts: () => ports,
 	},
 }));
-vi.mock('./flagEmojiSupport', () => ({ ensureFlagFont }));
 vi.mock('./fontStack', () => ({ withEmojiFallback }));
 
 import { pushTerminalThemeNow, setupTerminalThemeBridge } from './themeBridge';
@@ -35,12 +33,9 @@ let cssValues: Record<string, string> = {};
 let frames: FrameRequestCallback[] = [];
 
 function installDom() {
-	const canvasContext = {
-		fillStyle: '#000000',
-	};
 	vi.stubGlobal('document', {
 		documentElement: {},
-		createElement: vi.fn(() => ({ getContext: () => canvasContext })),
+		createElement: vi.fn(() => ({ style: {} })),
 	});
 	vi.stubGlobal('getComputedStyle', () => ({ getPropertyValue: (name: string) => cssValues[name] ?? '' }));
 	vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.push(cb); return frames.length; });
@@ -89,8 +84,7 @@ describe('terminal theme bridge', () => {
 		installDom();
 		cssValues = { '--rg-term-bg': '#111111', '--rg-fg': '#eeeeee' };
 		const stop = setupTerminalThemeBridge();
-		expect(ensureFlagFont).toHaveBeenCalled();
-		expect(withEmojiFallback).toHaveBeenCalledWith('Mono', false);
+		expect(withEmojiFallback).toHaveBeenCalledWith('Mono');
 		expect(manager.setFont).toHaveBeenCalledWith('normalized:Mono', 15);
 		expect(frames).toHaveLength(1);
 		frames.shift()?.(0);

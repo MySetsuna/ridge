@@ -19,10 +19,13 @@ const expectedDevOrigin = (() => {
     return null;
   }
 })();
+const requestedDpr = Number.parseFloat(process.env.RIDGE_TERM_E2E_DPR || '');
+const emulatedDpr = Number.isFinite(requestedDpr) && requestedDpr > 0 ? requestedDpr : null;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const timeoutMs = Number.parseInt(process.env.RIDGE_TERM_E2E_TIMEOUT_MS || '240000', 10);
 const artifactDir = path.resolve(process.env.RIDGE_TERM_E2E_ARTIFACT_DIR || '.iteration/artifacts/term-render');
 const fixtureOnly = process.env.RIDGE_TERM_E2E_FIXTURE_ONLY === '1';
+const expectWebgpuFailure = process.env.RIDGE_TERM_E2E_EXPECT_WEBGPU_FAILURE === '1';
 const requestedBurstLines = Number.parseInt(process.env.RIDGE_TERM_E2E_BURST_LINES || '120', 10);
 const burstLines = Number.isFinite(requestedBurstLines)
   ? Math.min(Math.max(requestedBurstLines, 0), 10_000)
@@ -332,6 +335,63 @@ async function writePty(cdp, workspaceId, paneId, data) {
   await invoke(cdp, 'write_to_pty', { workspaceId, paneId, data });
 }
 
+async function testRoundedBoxDecstbmFixture(cdp, workspaceId, paneId) {
+  const command = '$e=[char]27;$nw=[char]0x256D;$ne=[char]0x256E;$sw=[char]0x2570;$se=[char]0x256F;$v=[char]0x2502;[Console]::Write($e+"[2J"+$e+"[H"+$e+"[2;1H"+"RIDGE_DECSTBM_OUTSIDE"+$e+"[9;1H"+"RIDGE_DECSTBM_BELOW"+$e+"[3;8r"+$e+"[3;1H"+"RIDGE_SCROLL_A`r`n"+"RIDGE_SCROLL_B`r`n"+"RIDGE_SCROLL_C`r`n"+"RIDGE_SCROLL_D`r`n"+"RIDGE_SCROLL_E`r`n"+"RIDGE_SCROLL_F`r`n"+"RIDGE_SCROLL_G`r`n"+$e+"[r"+$e+"[10;1H"+"RIDGE_DECSTBM_RESET`r`n"+$e+"[12;1H"+$nw+"──────────────"+$ne+"`r`n"+$v+" RIDGE FONT "+$v+"`r`n"+$sw+"──────────────"+$se+"`r`n"+"RIDGE_BOX_FINAL`r`n")';
+  await writePty(cdp, workspaceId, paneId, `${command}\r`);
+  const markers = [
+    'RIDGE_DECSTBM_OUTSIDE',
+    'RIDGE_DECSTBM_BELOW',
+    'RIDGE_DECSTBM_RESET',
+    'RIDGE_SCROLL_G',
+    'RIDGE_BOX_FINAL',
+  ];
+  const hasMarkers = (rows) => {
+    const text = (rows ?? []).join('\n');
+    const trimmed = (rows ?? []).map((line) => line.trim());
+    return markers.every((marker) => text.includes(marker))
+      && ['╭', '╮', '╯', '╰'].every((glyph) => text.includes(glyph))
+      && trimmed.some((line) => /^╭──────────────╮$/.test(line))
+      && trimmed.some((line) => /^│ RIDGE FONT │$/.test(line))
+      && trimmed.some((line) => /^╰──────────────╯$/.test(line));
+  };
+  await waitUntil(async () => {
+    const rows = await visibleRows(cdp, paneId);
+    return hasMarkers(rows) ? rows : null;
+  }, 'rounded box DECSTBM fixture', 10_000);
+  const rows = await waitUntil(async () => {
+    const nextRows = await visibleRows(cdp, paneId);
+    if (!hasMarkers(nextRows)) return null;
+    await cdp.evaluate('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    const presentedRows = await visibleRows(cdp, paneId);
+    return hasMarkers(presentedRows) ? presentedRows : null;
+  }, 'stable rounded box DECSTBM markers', 5_000);
+  const text = rows.join('\n');
+  for (const glyph of ['╭', '╮', '╯', '╰']) {
+    if (!text.includes(glyph)) throw new Error(`rounded glyph missing from fixture: ${glyph}`);
+  }
+  const outsideRow = rows.findIndex((line) => line.includes('RIDGE_DECSTBM_OUTSIDE'));
+  const belowRow = rows.findIndex((line) => line.includes('RIDGE_DECSTBM_BELOW'));
+  const trimmed = rows.map((line) => line.trim());
+  const frameRows = {
+    top: trimmed.findIndex((line) => /^╭──────────────╮$/.test(line)),
+    middle: trimmed.findIndex((line) => /^│ RIDGE FONT │$/.test(line)),
+    bottom: trimmed.findIndex((line) => /^╰──────────────╯$/.test(line)),
+  };
+  if (outsideRow !== 1 || belowRow !== 8 || frameRows.top < 11
+    || frameRows.middle !== frameRows.top + 1 || frameRows.bottom !== frameRows.top + 2) {
+    throw new Error(`DECSTBM sentinels or final box moved: ${JSON.stringify({ outsideRow, belowRow, frameRows })}`);
+  }
+  if (text.includes('RIDGE_SCROLL_A')) throw new Error('DECSTBM region did not scroll its first marker');
+  return {
+    markers,
+    glyphs: ['╭', '╮', '╯', '╰'],
+    outsideRow,
+    belowRow,
+    frameRows,
+    resetMargins: true,
+  };
+}
+
 async function foreground(cdp, workspaceId, paneId) {
   return invoke(cdp, 'get_pane_foreground_process', { workspaceId, paneId });
 }
@@ -411,12 +471,194 @@ async function paneProbe(cdp, wantedPaneId) {
   })()`);
 }
 
-async function capture(cdp, name) {
-  const response = await cdp.send('Page.captureScreenshot', { format: 'png' });
+async function visiblePaneIds(cdp) {
+  return cdp.evaluate(`([...document.querySelectorAll('.rg-pane-container')]
+    .filter((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.width > 20 && rect.height > 20;
+    })
+    .map((element) => element.dataset.rgPaneId || '')
+    .filter(Boolean))`);
+}
+
+async function testPaneLastRowWrapIsolation(cdp, workspaceId, sourcePaneId) {
+  const beforePaneIds = await visiblePaneIds(cdp);
+  let testPaneId = null;
+  try {
+    const split = await invoke(cdp, 'split_pane', { paneId: sourcePaneId, direction: 'horizontal' });
+    testPaneId = split?.pane_id ?? split?.paneId ?? null;
+    if (!testPaneId) throw new Error(`split_pane returned no pane id: ${JSON.stringify(split)}`);
+    const paneIds = await waitUntil(async () => {
+      const ids = await visiblePaneIds(cdp);
+      return ids.includes(testPaneId) && ids.length > beforePaneIds.length ? ids : null;
+    }, 'wrap-isolation split pane mount', 15_000);
+    await waitUntil(async () => {
+      const rows = await visibleRows(cdp, testPaneId);
+      return shellPromptVisible(rows, await hookCall(cdp, 'kernelCursor', testPaneId));
+    }, 'wrap-isolation PowerShell prompt', 30_000);
+    const geometry = await paneProbe(cdp, testPaneId);
+    if (!geometry || geometry.rows < 3 || geometry.cols < 8) {
+      throw new Error(`wrap-isolation pane geometry unavailable: ${JSON.stringify(geometry)}`);
+    }
+    await dispatchClick(cdp, geometry);
+    await waitUntil(() => cdp.evaluate(
+      `document.querySelector(${JSON.stringify(`.rg-pane-container[data-rg-pane-id="${testPaneId}"]`)})?.dataset.rgPaneActive === 'true'`,
+    ), 'wrap-isolation active pane', 5_000);
+    // Let the focus transition remove the old pane cursor before render counts
+    // start; the measured window then contains only the bottom-row wrap.
+    await sleep(600);
+    const readyMarker = `RIDGE_WRAP_READY_${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    await writePty(cdp, workspaceId, testPaneId, `Write-Output '${readyMarker}'\r`);
+    await waitUntil(async () => {
+      const visible = await visibleRows(cdp, testPaneId);
+      return visible.some((line) => line.trim() === readyMarker) ? true : null;
+    }, 'wrap-isolation PTY readiness', 10_000);
+
+    const marker = `RIDGE_WRAP_LATEST_${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
+    const scrollbackBefore = await hookCall(cdp, 'scrollbackLen', testPaneId);
+    await cdp.evaluate(`(() => {
+      performance.clearMeasures();
+      window.__ridgeTermProbe.reset();
+      window.__RIDGE_PERF_TRACE = true;
+    })()`);
+    const startedAt = performance.now();
+    const command = `$e=[char]27;[Console]::Out.Write($e+"[?1049h"+$e+"[2J"+$e+"[H"+$e+"[${geometry.rows};${geometry.cols}H"+"A"+"${marker}");Start-Sleep -Milliseconds 3000`;
+    await writePty(cdp, workspaceId, testPaneId, `${command}\r`);
+    let observedRows = [];
+    let rows;
+    try {
+      rows = await waitUntil(async () => {
+        const visible = await visibleRows(cdp, testPaneId);
+        observedRows = visible;
+        const tail = visible.slice(-4).join('').replace(/\s+/g, '');
+        return tail.includes(`A${marker}`) ? visible : null;
+      }, 'latest text after bottom-row wrap', 10_000);
+    } catch (error) {
+      const diagnostic = {
+        geometry,
+        cursor: await hookCall(cdp, 'kernelCursor', testPaneId),
+        dec: await hookCall(cdp, 'kernelDecState', testPaneId),
+        tailRows: observedRows.slice(-4),
+        screenshot: await capture(cdp, '10-pane-last-row-wrap-failure.png'),
+      };
+      throw new Error(`${error.message}; diagnostic=${JSON.stringify(diagnostic)}`);
+    }
+    const elapsedMs = Math.round((performance.now() - startedAt) * 10) / 10;
+    const measurements = await cdp.evaluate(`(() => {
+      const prefix = 'rg.terminal.render.pane.';
+      const counts = {};
+      for (const entry of performance.getEntriesByType('measure')) {
+        if (!entry.name.startsWith(prefix)) continue;
+        const paneId = entry.name.slice(prefix.length);
+        counts[paneId] = (counts[paneId] || 0) + 1;
+      }
+      return { counts, eventLoop: window.__ridgeTermProbe.read() };
+    })()`);
+    const siblingPaneIds = paneIds.filter((paneId) => paneId !== testPaneId);
+    const siblingRenderCounts = Object.fromEntries(
+      siblingPaneIds.map((paneId) => [paneId, measurements.counts[paneId] ?? 0]),
+    );
+    const targetRenderCount = measurements.counts[testPaneId] ?? 0;
+    if (targetRenderCount < 1 || Object.values(siblingRenderCounts).some((count) => count !== 0)) {
+      throw new Error(`bottom-row wrap repainted the wrong pane set: ${JSON.stringify({
+        testPaneId, targetRenderCount, siblingRenderCounts,
+      })}`);
+    }
+    if (measurements.eventLoop.longtask50msCount !== 0 || measurements.eventLoop.p95 > 25) {
+      throw new Error(`bottom-row wrap stalled the event loop: ${JSON.stringify(measurements.eventLoop)}`);
+    }
+    const screenshot = await capture(cdp, '10-pane-last-row-wrap.png');
+    return {
+      testPaneId,
+      siblingPaneIds,
+      targetRenderCount,
+      siblingRenderCounts,
+      latestVisibleWithoutScroll: true,
+      elapsedMs,
+      eventLoop: measurements.eventLoop,
+      scrollbackBefore,
+      scrollbackAfter: await hookCall(cdp, 'scrollbackLen', testPaneId),
+      tailRows: rows.slice(-2),
+      screenshot,
+    };
+  } finally {
+    await cdp.evaluate(`(() => {
+      window.__RIDGE_PERF_TRACE = false;
+      performance.clearMeasures();
+    })()`).catch(() => {});
+    if (testPaneId) {
+      await invoke(cdp, 'close_pane', { paneId: testPaneId });
+      await waitUntil(async () => !(await visiblePaneIds(cdp)).includes(testPaneId), 'wrap-isolation pane cleanup', 10_000);
+    }
+    await sleep(300);
+    await hookCall(cdp, 'installPtyWriteSpy', sourcePaneId).catch(() => {});
+    await cdp.evaluate('window.__ridgeTermProbe.reset()').catch(() => {});
+  }
+}
+
+async function capture(cdp, name, clip = null) {
+  const response = await cdp.send('Page.captureScreenshot', {
+    format: 'png',
+    ...(clip ? { clip } : {}),
+  });
   if (!response.result?.data) throw new Error(`no screenshot data for ${name}`);
   const target = path.join(artifactDir, name);
   fs.writeFileSync(target, Buffer.from(response.result.data, 'base64'));
   return target;
+}
+
+async function testWebgpuUnavailable(cdp) {
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+    Object.defineProperty(Navigator.prototype, 'gpu', {
+      configurable: true,
+      get: () => undefined,
+    });
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    window.__ridge2dContextCalls = [];
+    HTMLCanvasElement.prototype.getContext = function(type, ...args) {
+      if (String(type).toLowerCase() === '2d') {
+        window.__ridge2dContextCalls.push({
+          width: this.width,
+          height: this.height,
+          stack: new Error('Canvas2D context requested').stack ?? '',
+        });
+      }
+      return originalGetContext.call(this, type, ...args);
+    };
+  })();` });
+  cdp.events.length = 0;
+  await cdp.send('Page.reload', { ignoreCache: true });
+  const state = await waitUntil(async () => cdp.evaluate(`(() => {
+    const alert = [...document.querySelectorAll('[role="alert"]')]
+      .find((element) => element.textContent?.includes('WEBGPU_INIT_FAILED'));
+    if (!alert || alert.getBoundingClientRect().width <= 0 || alert.getBoundingClientRect().height <= 0) return null;
+    const paneIds = [...document.querySelectorAll('[data-rg-pane-id]')]
+      .map((element) => element.dataset.rgPaneId)
+      .filter(Boolean);
+    return {
+      alert: alert.textContent?.trim() ?? '',
+      navigatorGpuAvailable: Boolean(navigator.gpu),
+      canvas2dCalls: window.__ridge2dContextCalls ?? [],
+      backendNames: paneIds.map((paneId) => window.__windE2E?.backendName?.(paneId) ?? null),
+      backendAttributes: [...document.querySelectorAll('[data-rg-backend]')]
+        .map((element) => element.dataset.rgBackend ?? null),
+      canvasCount: document.querySelectorAll('canvas').length,
+    };
+  })()`), 'visible WebGPU initialization failure', 60_000);
+  await sleep(250);
+  const runtimeExceptions = cdp.events
+    .filter((event) => event.method === 'Runtime.exceptionThrown')
+    .map((event) => event.params?.exceptionDetails?.exception?.description
+      || event.params?.exceptionDetails?.text
+      || 'unknown runtime exception');
+  if (state.navigatorGpuAvailable
+    || state.canvas2dCalls.length > 0
+    || state.backendNames.some(Boolean)
+    || state.backendAttributes.some((backend) => backend?.toLowerCase() === 'canvas2d')
+    || runtimeExceptions.length > 0) {
+    throw new Error(`WebGPU failure fixture violated fail-closed contract: ${JSON.stringify({ state, runtimeExceptions })}`);
+  }
+  return { ...state, runtimeExceptions };
 }
 
 async function dispatchClick(cdp, probe) {
@@ -690,23 +932,27 @@ async function exitCodex(cdp, workspaceId, paneId, promptSummary = null) {
 async function testMouse(cdp, workspaceId, paneId) {
   // ConPTY consumes DEC mouse mode output before Ridge sees it. Drive the
   // mirror mode directly, then prove the resulting click crosses the real PTY.
-  await hookCall(cdp, 'feedPty', paneId, '\x1b[?1000h\x1b[?1006h');
-  await waitUntil(async () => {
-    const state = await hookCall(cdp, 'kernelDecState', paneId);
-    return state?.mouseReportingModes ? state : null;
-  }, 'direct WASM SGR mouse mode', 1_000);
-  await hookCall(cdp, 'clearPtyWriteLog', paneId);
-  await dispatchClick(cdp, await paneProbe(cdp, paneId));
-  const writes = await waitUntil(async () => {
-    const entries = await hookCall(cdp, 'ptyWriteLog', paneId);
-    const data = entries.map((entry) => entry.data).join('');
-    return /\x1b\[<0;\d+;\d+[Mm]/.test(data) ? entries : null;
-  }, 'mouse forwarding bytes', 10_000);
-  await hookCall(cdp, 'feedPty', paneId, '\x1b[?1000l\x1b[?1006l');
-  await waitUntil(async () => {
-    const state = await hookCall(cdp, 'kernelDecState', paneId);
-    return state?.mouseReportingModes === 0 ? state : null;
-  }, 'direct WASM mouse mode reset', 1_000);
+  let writes;
+  try {
+    await hookCall(cdp, 'feedPty', paneId, '\x1b[?1000h\x1b[?1006h');
+    await waitUntil(async () => {
+      const state = await hookCall(cdp, 'kernelDecState', paneId);
+      return state?.mouseReportingModes ? state : null;
+    }, 'direct WASM SGR mouse mode', 1_000);
+    await hookCall(cdp, 'clearPtyWriteLog', paneId);
+    await dispatchClick(cdp, await paneProbe(cdp, paneId));
+    writes = await waitUntil(async () => {
+      const entries = await hookCall(cdp, 'ptyWriteLog', paneId);
+      const data = entries.map((entry) => entry.data).join('');
+      return /\x1b\[<0;\d+;\d+[Mm]/.test(data) ? entries : null;
+    }, 'mouse forwarding bytes', 10_000);
+  } finally {
+    await hookCall(cdp, 'feedPty', paneId, '\x1b[?1000l\x1b[?1006l');
+    await waitUntil(async () => {
+      const state = await hookCall(cdp, 'kernelDecState', paneId);
+      return state?.mouseReportingModes === 0 ? state : null;
+    }, 'direct WASM mouse mode reset', 1_000);
+  }
 
   await writePty(cdp, workspaceId, paneId, `Write-Output '${selectionMarker}'\r`);
   const row = await waitUntil(async () => {
@@ -796,8 +1042,12 @@ async function testOutputBurst(cdp, workspaceId, paneId, lineCount, mode, interv
       ? `ridge_tui_burst_ready_${crypto.randomBytes(8).toString('hex')}`
       : null;
     const readyMarker = readySource?.toUpperCase() ?? null;
+    const terminalRows = mode === 'tui'
+      ? await cdp.evaluate(`window.__windE2E.rows(${JSON.stringify(paneId)})`)
+      : 0;
+    const scrollRegionBottom = Math.max(3, terminalRows - 1);
     const command = mode === 'tui'
-      ? `$e=[char]27; [Console]::Out.Write($e+'[H'+$e+'[2K'+('${readySource}'.ToUpperInvariant())); Start-Sleep -Milliseconds 300; 1..${lineCount} | ForEach-Object { [Console]::Out.Write($e+'[H'+$e+'[2K'+'RIDGE_TUI_FRAME_'+$_)${delay} }; [Console]::Out.Write($e+'[H'+$e+'[2K'+('${markerSource}'.ToUpperInvariant()))\r`
+      ? `$e=[char]27; [Console]::Out.Write($e+'[?1049h'+$e+'[2J'+$e+'[H'+('${readySource}'.ToUpperInvariant())+$e+'[2;${scrollRegionBottom}r'+$e+'[${scrollRegionBottom};1H'); Start-Sleep -Milliseconds 300; 1..${lineCount} | ForEach-Object { [Console]::Out.Write('RIDGE_TUI_FRAME_'+$_+[char]13+[char]10)${delay} }; [Console]::Out.Write(('${markerSource}'.ToUpperInvariant())); Start-Sleep -Milliseconds 1000; [Console]::Out.Write($e+'[r'+$e+'[?1049l')\r`
       : `1..${lineCount} | ForEach-Object { [Console]::Out.WriteLine('RIDGE_BURST_LINE_' + $_)${delay} }; [Console]::Out.WriteLine('${markerSource}'.ToUpperInvariant())\r`;
     await writePty(cdp, workspaceId, paneId, command);
     const scrollbackStart = readyMarker
@@ -810,8 +1060,14 @@ async function testOutputBurst(cdp, workspaceId, paneId, lineCount, mode, interv
       : null;
     const scrollbackBefore = scrollbackStart?.value ?? null;
     await waitUntil(async () => compact(await visibleRows(cdp, paneId)).includes(marker), 'native delta output burst', 30_000);
+    const rowsDuringBurst = mode === 'tui' ? await visibleRows(cdp, paneId) : null;
+    const decDuringBurst = mode === 'tui' ? await hookCall(cdp, 'kernelDecState', paneId) : null;
+    if (mode === 'tui' && (!decDuringBurst?.isAltScreen || !compact(rowsDuringBurst).includes(readyMarker))) {
+      throw new Error(`alternate-screen scroll region was not preserved: ${JSON.stringify({ decDuringBurst, rowsDuringBurst })}`);
+    }
+    const screenshot = mode === 'tui' ? await capture(cdp, '08-alt-scroll-burst.png') : null;
     await sleep(250);
-    return cdp.evaluate(`(() => {
+    const metrics = await cdp.evaluate(`(() => {
       const summarizeValues = (input) => {
         const values = [...input].sort((a, b) => a - b);
         const quantile = (p) => values.length ? Math.round(values[Math.floor((values.length - 1) * p)] * 100) / 100 : 0;
@@ -828,6 +1084,10 @@ async function testOutputBurst(cdp, workspaceId, paneId, lineCount, mode, interv
       return {
         lines: ${lineCount},
         mode: ${JSON.stringify(mode)},
+        alternateScreen: ${mode === 'tui'},
+        scrollRegion: ${mode === 'tui' ? JSON.stringify({ top: 2, bottom: scrollRegionBottom }) : 'null'},
+        decDuringBurst: ${JSON.stringify(decDuringBurst)},
+        screenshot: ${JSON.stringify(screenshot)},
         intervalMs: ${intervalMs},
         scrollbackBefore: ${scrollbackBefore ?? 'null'},
         scrollbackAfter: window.__windE2E.scrollbackLen(${JSON.stringify(paneId)}),
@@ -839,6 +1099,17 @@ async function testOutputBurst(cdp, workspaceId, paneId, lineCount, mode, interv
         frame: window.__ridgeBurstFrameProbe.read(),
       };
     })()`);
+    if (mode === 'tui') {
+      await cdp.evaluate('window.__ridgeTermProbe.reset()');
+      await waitUntil(async () => {
+        const rows = await visibleRows(cdp, paneId);
+        const dec = await hookCall(cdp, 'kernelDecState', paneId);
+        return dec?.isAltScreen === false && shellPromptVisible(rows, await hookCall(cdp, 'kernelCursor', paneId));
+      }, 'alternate-screen burst restoration', 5_000);
+      await sleep(250);
+      metrics.restorationEventLoop = await cdp.evaluate('window.__ridgeTermProbe.read()');
+    }
+    return metrics;
   } finally {
     await cdp.evaluate(`(() => {
       window.__RIDGE_PERF_TRACE = false;
@@ -1112,14 +1383,19 @@ async function testCodexSoak(cdp, workspaceId, paneId, soakSummary) {
 const summary = {
   ok: false,
   port,
+  requestedDpr: emulatedDpr,
   paneId: null,
   workspaceId: null,
   foregroundProcess: null,
+  expectedWebgpuFailure: expectWebgpuFailure,
+  webgpuFailure: null,
   modelOutputProven: false,
   fixtureOutputProven: false,
   commandEchoExcluded: true,
   updatePrompt: { detected: false, handled: false, choice: null },
   backend: null,
+  font: null,
+  rasterFixture: null,
   gray: null,
   theme: null,
   resize: null,
@@ -1127,6 +1403,7 @@ const summary = {
   stability: null,
   mouse: null,
   burst: null,
+  paneWrapIsolation: null,
   performance: null,
   performanceBudgets: {
     globalEventLoopP95MaxMs,
@@ -1173,6 +1450,8 @@ let cdp;
 let paneId;
 let workspaceId;
 let retainedExpected = expected;
+let originalDpr = null;
+let deviceMetricsOverridden = false;
 try {
   const target = await findTarget();
   cdp = new Cdp(target.webSocketDebuggerUrl);
@@ -1181,7 +1460,29 @@ try {
   await cdp.send('Page.enable');
   await cdp.send('Log.enable');
   await cdp.send('Performance.enable');
-  await waitUntil(() => cdp.evaluate('Boolean(window.__ridgeAppReady && window.__TAURI__?.core?.invoke && window.__windE2E)'), 'Ridge DEV hooks', 180_000);
+  if (emulatedDpr !== null) {
+    const viewport = await cdp.evaluate('({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio })');
+    originalDpr = viewport.dpr;
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: Math.max(1, Math.round(viewport.width)),
+      height: Math.max(1, Math.round(viewport.height)),
+      deviceScaleFactor: emulatedDpr,
+      mobile: false,
+    });
+    deviceMetricsOverridden = true;
+    await cdp.send('Page.reload');
+    await sleep(500);
+  }
+  if (expectWebgpuFailure) {
+    summary.webgpuFailure = await testWebgpuUnavailable(cdp);
+    summary.screenshots.push(await capture(cdp, '09-webgpu-unavailable.png'));
+    summary.runtimeErrors = summary.webgpuFailure.runtimeExceptions;
+    summary.ok = true;
+  } else {
+  await waitUntil(() => cdp.evaluate(`Boolean(
+    window.__ridgeAppReady && window.__TAURI__?.core?.invoke && window.__windE2E
+    && ${emulatedDpr === null ? 'true' : `Math.abs(devicePixelRatio - ${emulatedDpr}) < 0.001`}
+  )`), 'Ridge DEV hooks', 180_000);
   await installPerformanceProbe(cdp);
   await cdp.evaluate('window.__ridgeTermProbe.reset()');
 
@@ -1191,6 +1492,11 @@ try {
   summary.workspaceId = workspaceId;
   summary.paneId = paneId;
   summary.backend = await hookCall(cdp, 'backendName', paneId);
+  summary.font = await cdp.evaluate(`({
+    configuredFamily: getComputedStyle(document.documentElement).getPropertyValue('--rg-term-font-family').trim(),
+    configuredSize: getComputedStyle(document.documentElement).getPropertyValue('--rg-term-font-size').trim(),
+    dpr: window.devicePixelRatio,
+  })`);
   await waitUntil(async () => {
     await writePty(cdp, workspaceId, paneId, '');
     return true;
@@ -1263,6 +1569,17 @@ try {
   summary.workspaceRoundTrip = await switchWorkspaceRoundTrip(cdp, workspaceId, paneId);
   if (!compact(await visibleRows(cdp, paneId)).includes(retainedExpected)) throw new Error('Codex output lost after workspace round trip');
 
+  let settleSignature = '';
+  let consecutiveStableSamples = 0;
+  await waitUntil(async () => {
+    const rows = await visibleRows(cdp, paneId);
+    const cursor = await hookCall(cdp, 'kernelCursor', paneId);
+    const signature = `${hashRows(rows)}:${JSON.stringify(cursor)}`;
+    consecutiveStableSamples = signature === settleSignature ? consecutiveStableSamples + 1 : 1;
+    settleSignature = signature;
+    return consecutiveStableSamples >= 4 ? true : null;
+  }, 'post-transition terminal settle', 5_000);
+
   // Post-settle kernel cursor, not the frozen presentation cursor.
   // Freeze-during-rewind is the renderer contract (`--cursor-freeze-unit`).
   const hashes = [];
@@ -1293,6 +1610,37 @@ try {
   } else {
     await exitCodex(cdp, workspaceId, paneId);
   }
+  summary.rasterFixture = await testRoundedBoxDecstbmFixture(cdp, workspaceId, paneId);
+  const screenshotRows = await visibleRows(cdp, paneId);
+  const screenshotText = screenshotRows.join('\n');
+  const screenshotTrimmed = screenshotRows.map((line) => line.trim());
+  const screenshotFrameRows = {
+    top: screenshotTrimmed.findIndex((line) => /^╭──────────────╮$/.test(line)),
+    middle: screenshotTrimmed.findIndex((line) => /^│ RIDGE FONT │$/.test(line)),
+    bottom: screenshotTrimmed.findIndex((line) => /^╰──────────────╯$/.test(line)),
+  };
+  if (screenshotFrameRows.top < 11 || screenshotFrameRows.middle !== screenshotFrameRows.top + 1
+    || screenshotFrameRows.bottom !== screenshotFrameRows.top + 2
+    || !['╭', '╮', '╯', '╰'].every((glyph) => screenshotText.includes(glyph))) {
+    throw new Error(`fixture screenshot rows lack the final rounded box: ${JSON.stringify({ screenshotFrameRows })}`);
+  }
+  summary.rasterFixture.screenshotVisible = true;
+  summary.rasterFixture.screenshotFrameRows = screenshotFrameRows;
+  summary.screenshots.push(await capture(cdp, '07-box-decstbm.png'));
+  const rasterGeometry = await paneProbe(cdp, paneId);
+  if (rasterGeometry) {
+    const gridLeft = rasterGeometry.rect.left + rasterGeometry.anchor.x
+      - rasterGeometry.anchor.col * rasterGeometry.anchor.cellW;
+    const gridTop = rasterGeometry.rect.top + rasterGeometry.anchor.y
+      - rasterGeometry.anchor.row * rasterGeometry.anchor.cellH;
+    summary.screenshots.push(await capture(cdp, '07-box-decstbm-join-4x.png', {
+      x: gridLeft,
+      y: gridTop + screenshotFrameRows.top * rasterGeometry.anchor.cellH,
+      width: Math.min(rasterGeometry.rect.width, 20 * rasterGeometry.anchor.cellW),
+      height: 3 * rasterGeometry.anchor.cellH,
+      scale: 4,
+    }));
+  }
   // Exclude Codex/network startup noise; global gate covers settled terminal workload.
   await cdp.evaluate('window.__ridgeTermProbe.reset()');
   summary.gray = await testIndexedGrayForeground(cdp, workspaceId, paneId);
@@ -1300,11 +1648,14 @@ try {
     throw new Error(`indexed gray foreground was not preserved: ${JSON.stringify(summary.gray)}`);
   }
   summary.screenshots.push(await capture(cdp, '06-indexed-gray.png'));
+  summary.paneWrapIsolation = await testPaneLastRowWrapIsolation(cdp, workspaceId, paneId);
+  summary.screenshots.push(summary.paneWrapIsolation.screenshot);
   summary.mouse = await testMouse(cdp, workspaceId, paneId);
   summary.screenshots.push(await capture(cdp, '05-mouse-selection.png'));
 
   if (burstLines > 0) {
     summary.burst = await testOutputBurst(cdp, workspaceId, paneId, burstLines, burstMode, burstIntervalMs);
+    if (summary.burst.screenshot) summary.screenshots.push(summary.burst.screenshot);
     if (summary.burst.delta.count === 0 || summary.burst.text.count !== 0) {
       throw new Error(`desktop burst used an unexpected transport: ${JSON.stringify(summary.burst)}`);
     }
@@ -1350,6 +1701,7 @@ try {
   }
   if (summary.runtimeErrors.length) throw new Error(`runtime errors: ${summary.runtimeErrors.join(' | ')}`);
   summary.ok = true;
+  }
 } catch (error) {
   summary.error = error.stack || error.message || String(error);
   process.exitCode = 1;
@@ -1365,6 +1717,16 @@ try {
 } finally {
   if (cdp) {
     try { await cdp.evaluate('window.__ridgeTermProbe?.stop?.()'); } catch { /* page closed */ }
+    if (deviceMetricsOverridden) {
+      try {
+        await cdp.send('Emulation.clearDeviceMetricsOverride');
+        await waitUntil(
+          () => cdp.evaluate(`Math.abs(devicePixelRatio - ${originalDpr ?? 1}) < 0.001`),
+          'restore original DPR',
+          5_000,
+        );
+      } catch { /* connection may already be gone; CDP also clears override on detach */ }
+    }
     summary.cdpError = cdp.connectionError?.message || null;
     cdp.close();
   }

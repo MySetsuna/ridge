@@ -35,21 +35,10 @@ import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/te
 import type { HostPorts } from './ports';
 import { invoke } from '@tauri-apps/api/core';
 import type { ActiveWallpaperGpu, InputBufferState } from './types';
-import {
-	workerRendererBridge,
-	workerLifecycleOnFit,
-	reconcileWorkerRendererIdentity,
-} from './workerRendererBridge';
-import {
-	failWorkerRenderer,
-	getWorkerRenderer,
-	isWorkerRenderingEnabled,
-	onWorkerRendererFailure,
-} from './workerRendererSingleton';
 import { perfMark } from './perfTrace';
-import type { RenderWorkerResponse } from './renderWorker.protocol';
 import { unknownText } from '../transport/unknownText';
 import { DEFAULT_TERM_FONT } from './fontStack';
+import { loadTerminalFonts, type FontDataInstaller } from './fontDataService';
 import { imeHelperCssPosition, type ImeAnchorInput } from './imeAnchor';
 import {
 	cellFromVisualClientPoint,
@@ -229,18 +218,6 @@ export interface ManagerOptions {
 	 *  inward so glyphs aren't flush against the pane border. Default 0
 	 *  preserves the original look; per-pane overrides via `setPadding`. */
 	paddingPx?: number;
-	/** Try the WebGPU render backend first, fall back to Canvas2D on
-	 *  adapter miss / device-creation failure (TASKS §4.5.e).
-	 *
-	 *  When the wasm bundle was built without `--features webgpu`, the
-	 *  `RenderHandle.newWithWebgpuFirst` static method does not exist;
-	 *  `_makeHandle` detects this via `typeof` and falls back to the
-	 *  synchronous `new RenderHandle(canvas)` constructor. Setting this
-	 *  flag in a Canvas2D-only build is therefore a no-op, not an error.
-	 *
-	 *  Default: true. WebGPU may fall back only when the browser/adapter or
-	 *  wasm feature is genuinely unavailable. */
-	preferWebgpu?: boolean;
 }
 
 /** Tagged kernel event shape that mirrors `KernelEvent` in Rust. The
@@ -349,9 +326,6 @@ interface PaneEntry {
 	 *  `syncStart` when sync mode clears (TASKS §1.4). */
 	syncTimeoutRendered: boolean;
 	/** Monotonic delta generation mirrored into the worker renderer. */
-	deltaFrameId: number;
-	/** Shared monotonic generation for every worker-visible feed or delta frame. */
-	renderFrameId: number;
 	/** Native delta frames wait here until the next compositor turn. Keeping
 	 * their parse/apply work out of the Tauri Channel callback prevents a burst
 	 * from monopolising the input event loop. Head indexing avoids O(n) shifts. */
@@ -476,8 +450,8 @@ interface PaneEntry {
 	 *  kernel is in inline-TUI mode (Ink/log-update emitting walk + new
 	 *  frame across multiple ConPTY reads). Without coalescing, a rAF
 	 *  tick can sample the kernel between an EL-walk event and the new-
-	 *  frame write event, painting a partial state Canvas2D doesn't fully
-	 *  overwrite next frame → "wrong word" jitter on the spinner row.
+	 *  frame write event, painting a partial state that the next frame does
+	 *  not fully overwrite → "wrong word" jitter on the spinner row.
 	 *  Null when no buffer is pending. */
 	feedBuffer: Uint8Array | null;
 	/** FIFO fragments accumulated during the short inline-TUI window. */
@@ -494,8 +468,7 @@ interface PaneEntry {
 	 *  `entry.handle.resize(wCss, hCss, dpr)`) into the WebGPU pane
 	 *  backend's `viewport: ScissorRect`.
 	 *
-	 *  Undefined for Canvas2D-backed panes (and for WebGPU panes before
-	 *  the first `_recomputeViewport` runs). Host pane lookups treat
+	 *  Undefined before the first `_recomputeViewport` runs. Host pane lookups treat
 	 *  `undefined` the same as a zero-size rect — the pane is parked-by-
 	 *  clip until JS computes a real viewport. */
 	viewport?: { x: number; y: number; w: number; h: number };
@@ -603,11 +576,11 @@ interface FitGeometry {
 
 interface AttachCanvas {
 	canvas: HTMLCanvasElement;
-	hostHandle: SurfaceHostHandle | undefined;
+	hostHandle: SurfaceHostHandle;
 }
 
 interface AttachRenderState {
-	handle: RenderHandle | null;
+	handle: RenderHandle;
 	dpr: number;
 	cellW: number;
 	cellH: number;
@@ -657,24 +630,14 @@ export class TerminalManager {
 
 	private wasmReady = false;
 	private wasmReadyPromise: Promise<void> | null = null;
+	private fontInstaller: FontDataInstaller | null = null;
+	private readonly loadedFontStacks = new Set<string>();
+	private readonly fontLoadPromises = new Map<string, Promise<void>>();
 
 	private readonly opts: ManagerOptions;
 	private readonly panes = new Map<string, PaneEntry>();
 	/** P4.6 Part B (2026-05-22) — paneIds that have been mirrored into
-	 *  the render worker via `workerRendererBridge.attach(...)`. Only
-	 *  populated when `window.__RIDGE_USE_WORKER` was on at the first
-	 *  successful `fitPane` for the pane. Used to decide attach-vs-resize
-	 *  on subsequent fits and to gate the per-frame delta mirror so we
-	 *  don't spam `pane_not_initialized` errors after a mid-session
-	 *  flag toggle. Cleared on `detach`. */
-	private readonly workerAttached = new Set<string>();
-	/** Pane ids between worker `init`/`bindCanvas` acknowledgements. A fit
-	 *  must not send `resize` until this handshake completes. */
-	private readonly workerInitializing = new Set<string>();
-	/** Worker instance that owns `workerAttached`. A replacement renderer starts
-	 * with no pane state, so stale entries must not send resize/bindCanvas before
-	 * the new worker receives its init. */
-	private workerRendererRef: ReturnType<typeof getWorkerRenderer> = null;
+	*/
 	private rafHandle: number | null = null;
 	/** P2.2 (2026-05-20): focus/cursor owner per workspace. Keeping this
 	 *  keyed by workspace prevents a focus claim in one split tree from
@@ -757,9 +720,8 @@ export class TerminalManager {
 	private readonly _lastPreeditCall: Map<string, { row: number; col: number; text: string }> = new Map();
 	/** In-flight `attachHost` init promise. Concurrent pane `attach()` /
 	 *  `unpark()` calls await this so they don't race ahead of WebGPU
-	 *  initialisation. Resolves (never rejects) — `attachHost` swallows
-	 *  init errors internally and leaves `globalHost` null when WebGPU
-	 *  isn't usable, falling back to per-pane Canvas2D for every pane. */
+	 *  initialisation. Initialization failures reject and remain visible to
+	 *  the attach caller; there is no alternate presentation path. */
 	private attachHostPromise: Promise<void> | null = null;
 	/** Document `visibilitychange` listener installed once on first pane
 	 *  attach; removed on last detach. Hidden tabs throttle RAF anyway,
@@ -798,7 +760,6 @@ export class TerminalManager {
 
 	private constructor(opts: ManagerOptions) {
 		this.opts = opts;
-		onWorkerRendererFailure((error) => this._fallbackWorkerRendering(error));
 
 		if (typeof window !== 'undefined') {
 			try {
@@ -813,28 +774,6 @@ export class TerminalManager {
 			}
 		}
 
-		// Defensive `loadingdone` debounce. §4.6 used to bundle Noto
-		// Color Emoji which fired ~10 `loadingdone` events as its
-		// unicode-range subsets landed; without coalescing each event
-		// invalidated the atlas, leaving WebGPU mid-frame with a mix
-		// of pre-/post-invalidate glyphs and visibly "thick + ghost
-		// echo" text. §A.7 dropped that webfont (system emoji fonts
-		// are reliable; the bundled Noto failed to render via canvas
-		// fillText on WebView2). The debounce stays — it now also drives
-		// the on-demand 'Flag Emoji' subset: when a flag codepoint first
-		// appears, the browser fetches flags.woff2 and fires `loadingdone`,
-		// so this single invalidate re-rasterizes the boxed-letter flags
-		// into colored ones (and guards against any future webfont storm).
-		if (typeof document !== 'undefined' && 'fonts' in document) {
-			let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-			document.fonts.addEventListener('loadingdone', () => {
-				if (debounceTimer !== null) clearTimeout(debounceTimer);
-				debounceTimer = setTimeout(() => {
-					debounceTimer = null;
-					this.invalidateAllPanes();
-				}, 250);
-			});
-		}
 	}
 
 	/** Return the existing singleton without creating one. Used by
@@ -922,48 +861,17 @@ export class TerminalManager {
 
 	static instance(opts?: ManagerOptions): TerminalManager {
 		if (!TerminalManager._instance) {
-			// WebGPU is the default backend (user feedback 2026-05-05).
-			// `_makeHandle` runtime-detects whether the wasm bundle exposes
-			// `newWithWebgpuFirst`; if it does, that path internally calls
-			// `navigator.gpu.requestAdapter()` and falls back to Canvas2D
-			// in Rust on adapter miss. If the wasm bundle was built without
-			// the webgpu feature (a future Canvas-only profile), the `typeof
-			// === 'function'` check skips the upgrade and goes straight to
-			// Canvas2D. Either way, no opt-in build flag or storage gate.
+			// WebGPU is the only terminal presentation backend. The wasm
+			// constructor and shared host both surface initialization failures;
+			// no browser capability is silently downgraded.
 			//
-			const preferWebgpu = true;
 			TerminalManager._instance = new TerminalManager(
 				opts ?? {
-					// Font-stack ordering: named monospace fonts first
-					// (terminal text), then SYSTEM color-emoji fonts
-					// (Apple / Segoe / system Noto), finally generic
-					// `monospace` as the absolute fallback. The generic
-					// family MUST stay last — per CSS, generic families
-					// always match any codepoint (rendering .notdef
-					// when the chosen font lacks the glyph), which
-					// short-circuits the fallback chain. Putting
-					// `monospace` earlier (e.g. between Consolas and
-					// the emoji fonts) prevents the browser from ever
-					// consulting the emoji fonts.
-					//
-					// §A.7 (2026-05-08): the @fontsource/noto-color-emoji
-					// webfont was removed. WebView2 / Chromium failed to
-					// render Noto's COLRv1 outlines via canvas fillText
-					// (RIDGE_DIAG showed `non_zero_px=0` for every emoji
-					// after the FontFace finished loading, even though
-					// rendering with system Segoe UI Emoji worked before
-					// Noto's unicode-range gate kicked in). System emoji
-					// fonts (Segoe UI Emoji on Windows, Apple Color
-					// Emoji on macOS). Country flags (which Windows' Segoe
-					// can't draw) come from an on-demand 'Flag Emoji' subset
-					// face that themeBridge injects when the OS lacks them
-					// (see ./flagEmojiSupport + ./fontStack). This pre-bridge
-					// default carries no flag face yet; themeBridge's first
-					// `pushFont` re-derives the stack with 'Flag Emoji' first.
+					// Named mono/CJK faces precede installed system emoji;
+					// the raw SFNT data is loaded before WebGPU attaches.
 					fontFamily: DEFAULT_TERM_FONT,
 					fontSizePx: 15,
 					scrollbackLines: 2000,
-					preferWebgpu,
 				},
 			);
 			// Dev convenience: expose the singleton so `window.__rt` works in
@@ -987,11 +895,51 @@ export class TerminalManager {
 	 * `?url` import (above) is vite's official asset-URL syntax and
 	 * resolves to whatever path actually serves the file.
 	 */
+	private _ensureFontStack(stack: string): Promise<void> {
+		const key = stack.trim();
+		if (this.loadedFontStacks.has(key)) return Promise.resolve();
+		const active = this.fontLoadPromises.get(key);
+		if (active) return active;
+		if (!this.fontInstaller) {
+			return Promise.reject(new Error('FONT_DATA_MISSING: wasm font installer is unavailable'));
+		}
+		const pending = loadTerminalFonts(key, this.fontInstaller).then(
+			() => {
+				this.loadedFontStacks.add(key);
+				this.fontLoadPromises.delete(key);
+			},
+			(error) => {
+				this.fontLoadPromises.delete(key);
+				throw error;
+			},
+		);
+		this.fontLoadPromises.set(key, pending);
+		return pending;
+	}
+
+	/** Retry browser Local Font Access directly from a user click. */
+	async authorizeFonts(): Promise<void> {
+		if (!this.fontInstaller) {
+			await this.ready();
+			return;
+		}
+		await this._ensureFontStack(this.opts.fontFamily);
+		await this.ready();
+	}
+
 	ready(): Promise<void> {
 		if (this.wasmReady) return Promise.resolve();
 		if (this.wasmReadyPromise !== null) return this.wasmReadyPromise;
-		this.wasmReadyPromise = (async () => {
+		const pending = (async () => {
 			await init(wasmUrl);
+			const fontModule = (await import('@ridge/term-wasm')) as unknown as {
+				installFontData?: (data: Uint8Array) => boolean;
+			};
+			if (typeof fontModule.installFontData !== 'function') {
+				throw new Error('FONT_DATA_MISSING: wasm bundle has no system-font installer');
+			}
+			this.fontInstaller = fontModule.installFontData;
+			await this._ensureFontStack(this.opts.fontFamily);
 			this.wasmReady = true;
 			// §atlas-race forensics (2026-06-22): expose detector counters on
 			// window.__ridgeAtlasRace() for release console / CDP polling. A value
@@ -1036,62 +984,54 @@ export class TerminalManager {
 				/* old wasm bundle without the export → skip */
 			}
 		})();
-		return this.wasmReadyPromise;
+		this.wasmReadyPromise = pending;
+		void pending.catch(() => {
+			if (this.wasmReadyPromise === pending) this.wasmReadyPromise = null;
+		});
+		return pending;
 	}
 
-	/**
-	 * Construct a `RenderHandle` for `canvas`. When `opts.preferWebgpu`
-	 * is true AND the wasm bundle exposes the async `newWithWebgpuFirst`
-	 * static (i.e. it was built with `--features webgpu`), use that —
-	 * it tries WebGPU first and falls back to Canvas2D on adapter miss
-	 * inside Rust. Otherwise build a Canvas2D handle synchronously.
-	 *
-	 * Returns a Promise either way so `attach` / `unpark` can `await`
-	 * uniformly. The Canvas2D-only path resolves on the same tick.
-	 */
+	/** Construct a WebGPU handle. Missing host/constructor and adapter errors
+	 *  are surfaced to the caller; there is no presentation fallback. */
 	private async _makeHandle(
 		canvas: HTMLCanvasElement,
 		surfaceHost?: SurfaceHostHandle,
 	): Promise<RenderHandle> {
+		if (!surfaceHost) {
+			const error = new Error('WEBGPU_INIT_FAILED: SurfaceHostHandle is required');
+			console.error('[ridge-term] terminal WebGPU initialization failed', error);
+			throw error;
+		}
 		const HandleCtor = RenderHandle as unknown as {
 			newWithWebgpuFirst?: (
 				c: HTMLCanvasElement,
-				host?: SurfaceHostHandle,
+				host: SurfaceHostHandle,
 			) => Promise<RenderHandle>;
 		};
-		if (this.opts.preferWebgpu && typeof HandleCtor.newWithWebgpuFirst === 'function') {
-			try {
-				// `newWithWebgpuFirst` consumes its `host` argument
-				// (wasm-bindgen `Option<T>` moves the JS wrapper into
-				// Rust and frees it on return). We need to keep the
-				// manager's stored handle alive across multiple pane
-				// attaches in the same workspace, so clone the JS
-				// wrapper per call. The clone bumps the inner Rc
-				// refcount; both wrappers share the same SurfaceHost.
-				const hostArg =
-					surfaceHost &&
-					typeof (surfaceHost as unknown as { clone?: () => SurfaceHostHandle }).clone ===
-						'function'
-						? (surfaceHost as unknown as { clone: () => SurfaceHostHandle }).clone()
-						: surfaceHost;
-				const handle = await HandleCtor.newWithWebgpuFirst(canvas, hostArg);
-				// iter-60 G4: surface the OUTCOME always (Rust falls back to
-				// Canvas2D internally on adapter miss without throwing — that
-				// silent path is exactly what made "退回 canvas2d" undiagnosable).
-				try {
-					const name = (handle as unknown as { backendName?: () => string }).backendName?.();
-					if (name && name.toLowerCase() !== 'webgpu') {
-						console.warn(
-							`[ridge-term] WebGPU requested but backend is ${name} — adapter/device probe failed (check chrome://gpu, HTTPS/secure context, and browser WebGPU support)`,
-						);
-					}
-				} catch { /* older wasm without backendName */ }
-				return handle;
-			} catch (err) {
-				console.warn('[ridge-term] newWithWebgpuFirst threw; falling back to Canvas2D', err);
-			}
+		if (typeof HandleCtor.newWithWebgpuFirst !== 'function') {
+			const error = new Error('WEBGPU_INIT_FAILED: wasm bundle lacks newWithWebgpuFirst');
+			console.error('[ridge-term] terminal WebGPU initialization failed', error);
+			throw error;
 		}
-		return new RenderHandle(canvas);
+		try {
+			const hostArg =
+				typeof (surfaceHost as unknown as { clone?: () => SurfaceHostHandle }).clone ===
+					'function'
+					? (surfaceHost as unknown as { clone: () => SurfaceHostHandle }).clone()
+					: surfaceHost;
+			const handle = await HandleCtor.newWithWebgpuFirst(canvas, hostArg);
+			const name = (handle as unknown as { backendName?: () => string }).backendName?.();
+			if (name && name.toLowerCase() !== 'webgpu') {
+				throw new Error(`WEBGPU_INIT_FAILED: unexpected backend ${name}`);
+			}
+			return handle;
+		} catch (error) {
+			const failure = error instanceof Error
+				? error
+				: new Error(`WEBGPU_INIT_FAILED: ${unknownText(error)}`);
+			console.error('[ridge-term] terminal WebGPU initialization failed', failure);
+			throw failure;
+		}
 	}
 
 	private async _makeHandleSerialized(
@@ -1121,11 +1061,9 @@ export class TerminalManager {
 	 * Idempotent per workspace: a second call for the same `workspaceId`
 	 * is a no-op (so a SvelteKit HMR re-running mount can't double-init).
 	 *
-	 * Bails silently when the wasm bundle has no `SurfaceHostHandle`
-	 * (Canvas2D-only build) or when WebGPU adapter / device acquisition
-	 * fails. In those cases per-pane Canvas2D continues to work for the
-	 * affected workspace — `attach()` falls back to creating a per-pane
-	 * `<canvas>` inside each pane container.
+	 * Missing WebGPU exports or adapter/device acquisition failures reject
+	 * with a structured `WEBGPU_INIT_FAILED` error. The pane remains
+	 * unrendered until the host can be initialized.
 	 */
 	public attachHost(canvas: HTMLCanvasElement): Promise<void> {
 		if (this.attachHostPromise !== null) return this.attachHostPromise;
@@ -1146,22 +1084,17 @@ export class TerminalManager {
 				| { init: (c: HTMLCanvasElement) => Promise<SurfaceHostHandle> }
 				| undefined;
 			if (!SHHCtor || typeof SHHCtor.init !== 'function') {
-				if (import.meta.env?.DEV) {
-					console.warn(
-						'[ridge-term] SurfaceHostHandle missing; bundle was built --no-webgpu',
-					);
-				}
-				return;
+				throw new Error('WEBGPU_INIT_FAILED: SurfaceHostHandle missing from wasm bundle');
 			}
 			let host: SurfaceHostHandle;
 			try {
 				host = await SHHCtor.init(canvas);
-			} catch (err) {
-				console.warn(
-					'[ridge-term] SurfaceHost.init failed; per-pane Canvas2D will be used',
-					err,
-				);
-				return;
+			} catch (error) {
+				const failure = error instanceof Error
+					? error
+					: new Error(`WEBGPU_INIT_FAILED: ${unknownText(error)}`);
+				console.error('[ridge-term] terminal WebGPU host initialization failed', failure);
+				throw failure;
 			}
 			this.globalHost = { canvas, host };
 			this.resizeHost(); // initial swap-chain configure
@@ -1204,20 +1137,17 @@ export class TerminalManager {
 	 * shared host canvas after the workspace tree for stacking, so the first
 	 * RidgePane can attach before the canvas action has called attachHost().
 	 * If the canvas is already in the DOM, claim it here; the action's later
-	 * call is idempotent.  Without this bridge the pane receives no host and
-	 * `newWithWebgpuFirst(canvas, null)` intentionally falls back to Canvas2D.
+	 * call is idempotent. Without this bridge the pane receives no host and
+	 * attach reports the structured WebGPU initialization error.
 	 */
 	private async _ensureDomHostStarted(): Promise<void> {
-		if (!this.opts.preferWebgpu || this.globalHost !== null || this.attachHostPromise !== null) return;
+		if (this.globalHost !== null || this.attachHostPromise !== null) return;
 		if (typeof document === 'undefined') return;
-		const hostCanvas = document.querySelector('canvas[data-rg-host]');
+		const hostCanvas = (document as Document & {
+			querySelector?: (selectors: string) => Element | null;
+		}).querySelector?.('canvas[data-rg-host]');
 		if (!(hostCanvas instanceof HTMLCanvasElement)) return;
-		try {
-			await this.attachHost(hostCanvas);
-		} catch {
-			// attachHost owns the fallback policy; pane attach continues with
-			// per-pane Canvas2D when adapter/device acquisition is unavailable.
-		}
+		await this.attachHost(hostCanvas);
 	}
 
 	/** Call `surfaceHost.invalidate()` AND mark `_hostInvalidatePending`
@@ -1263,7 +1193,7 @@ export class TerminalManager {
 	 * Cheap on no-op (manager.ts + Rust side both short-circuit on
 	 * unchanged dims), so spurious ResizeObserver fires are harmless.
 	 *
-	 * No-op when `surfaceHost` is null (Canvas2D-only deployment).
+	 * No-op when the shared WebGPU host is not attached.
 	 */
 	public resizeHost(dims?: { wCss: number; hCss: number }): void {
 		const entry = this.globalHost;
@@ -1323,8 +1253,7 @@ export class TerminalManager {
 	 * Inactive workspaces' panes naturally fall out via `_isContainerHidden`
 	 * (their SplitContainer is `display:none`, container measures 0×0).
 	 *
-	 * No-op when WebGPU host isn't initialised (Canvas2D fallback path
-	 * has no shared surface).
+	 * No-op when the shared WebGPU host isn't initialized.
 	 */
 	public onActiveWorkspaceChanged(workspaceId: string): void {
 		this._activeWorkspaceId = workspaceId;
@@ -1466,15 +1395,13 @@ export class TerminalManager {
 
 	/**
 	 * §4.3 Phase B: predicate. True when this entry is rendering through
-	 * the shared SurfaceHost (WebGPU host mode); false when it owns its
-	 * per-pane DOM `<canvas>` (Canvas2D fallback). Callers branch on
-	 * this to know whether to read `entry.canvas` or `entry.container`
-	 * for layout, and whether to call `setViewportOffset` /
-	 * `surfaceHost.invalidate()`.
+	 * the shared SurfaceHost; false before the host viewport is ready.
+	 * Callers use this to decide whether host scissor geometry is available.
 	 */
 	private _isHostMode(entry: PaneEntry): boolean {
 		const gh = this.globalHost;
-		return gh !== null && entry.canvas === gh.canvas;
+		return gh !== null && entry.canvas === gh.canvas &&
+			typeof (gh.host as unknown as { beginFrame?: unknown }).beginFrame === 'function';
 	}
 
 	private _clearLinkUnderline(entry: PaneEntry): void {
@@ -1666,10 +1593,8 @@ export class TerminalManager {
 	 * or off-canvas resolves to `{ w: 0, h: 0 }` and the host's
 	 * `record_pane` skips it entirely (parked-by-clip).
 	 *
-	 * Canvas2D fallback still uses this path in shared-grid mode: the
-	 * per-pane canvas must letterbox to the shared kernel grid too, otherwise
-	 * a browser whose WebGPU probe fails renders a different geometry than
-	 * the host. Normal Canvas2D mode keeps its legacy full-container path.
+	 * Every attached pane uses this host-relative geometry; the shared
+	 * WebGPU surface is the sole presentation target.
 	 */
 	private _recomputeViewport(entry: PaneEntry): void {
 		const gh = this.globalHost;
@@ -1681,10 +1606,8 @@ export class TerminalManager {
 		if (cr.width <= 0 || cr.height <= 0) return;
 		const hostCanvas = gh?.canvas;
 		const hostMode = gh !== null && this._isHostMode(entry);
-		if (!hostMode && !this._sharedRemoteMode) return;
-		const hr = hostMode && hostCanvas
-			? hostCanvas.getBoundingClientRect()
-			: cr;
+		if (!hostMode || !hostCanvas) return;
+		const hr = hostCanvas.getBoundingClientRect();
 		const cs = window.getComputedStyle(entry.container);
 		const padL = Number.parseFloat(cs.paddingLeft) || 0;
 		const padT = Number.parseFloat(cs.paddingTop) || 0;
@@ -1720,28 +1643,6 @@ export class TerminalManager {
 		// kernel grid resize + force redraw, so we only call it when
 		// dims actually changed (it short-circuits internally).
 		const handle = entry.handle;
-		if (!hostMode) {
-			// Canvas2D has no host scissor; make the DOM canvas itself the
-			// centered shared-grid viewport and keep pointer math on geometry.
-			const left = geometry.gridClientXCss - cr.left;
-			const top = geometry.gridClientYCss - cr.top;
-			// resize() also writes the canvas CSS dimensions; apply the
-			// letterbox style after it or its `100%` reset wins.
-			handle?.resize(Math.round(geometry.gridWidthCss), Math.round(geometry.gridHeightCss), dpr);
-			const projectCanvas = () => {
-				// Canvas2D/WASM resize may restore its CSS box on the following
-				// render tick; apply the projection once more after that tick.
-				if (!this._sharedRemoteMode || entry.geometry !== geometry) return;
-				entry.canvas.style.position = 'absolute';
-				entry.canvas.style.left = `${left}px`;
-				entry.canvas.style.top = `${top}px`;
-				entry.canvas.style.width = `${geometry.gridWidthCss}px`;
-				entry.canvas.style.height = `${geometry.gridHeightCss}px`;
-			};
-			projectCanvas();
-			if (typeof requestAnimationFrame === 'function') requestAnimationFrame(projectCanvas);
-			return;
-		}
 		const handleVp = handle as unknown as {
 			setViewportOffset?: (x: number, y: number) => void;
 		} | null;
@@ -1756,16 +1657,14 @@ export class TerminalManager {
 	}
 
 	/**
-	 * Bind a pane to the manager. Creates a `<canvas>` child of `container`,
-	 * spins up the wasm kernel/renderer, starts observing the container
+	 * Bind a pane to the manager. Binds the shared host canvas, spins up the
+	 * wasm kernel/renderer, and starts observing the container
 	 * for resize events.
 	 *
 	 * Throws if the manager isn't ready (caller must `await ready()` first)
 	 * or if `paneId` is already attached.
 	 *
-	 * Async because the optional WebGPU upgrade path (`opts.preferWebgpu`)
-	 * needs to await the Rust adapter request. Canvas2D-only builds resolve
-	 * on the same tick — call sites should still `await` to stay consistent.
+	 * Async because the WebGPU adapter/device request is asynchronous.
 	 */
 	private _forwardPointerMotion(
 		entry: PaneEntry,
@@ -1934,41 +1833,6 @@ export class TerminalManager {
 		this.wake();
 	}
 
-	private _attachWorkerCanvas(paneId: string, canvas: HTMLCanvasElement, dpr: number, scrollbackLines: number): void {
-		try {
-			canvas.style.pointerEvents = 'none';
-			const offscreen = canvas.transferControlToOffscreen();
-			const worker = this.syncWorkerRendererIdentity();
-			if (!worker) return;
-			this.workerInitializing.add(paneId);
-			worker.init({ paneId, dims: { rows: 24, cols: 80, dpr }, backend: 'canvas2d', scrollbackLines })
-				.then(() => {
-					const entry = this.panes.get(paneId);
-					if (!entry || entry.parked || !this.workerInitializing.has(paneId) || !this.isCurrentWorkerRenderer(worker)) return null;
-					return worker.bindCanvas(paneId, offscreen, { font: this.opts.fontFamily, fontSizePx: this.opts.fontSizePx, dpr });
-				})
-				.then((response) => {
-					this.workerInitializing.delete(paneId);
-					if (!response || !this.isCurrentWorkerRenderer(worker)) return;
-					this.workerAttached.add(paneId);
-					if (response.type !== 'ready' || typeof response.cellW !== 'number' || typeof response.cellH !== 'number' || response.cellW <= 0 || response.cellH <= 0) return;
-					const entry = this.panes.get(paneId);
-					if (!entry) return;
-					entry.cellW = quantizeCellSize(response.cellW, dpr);
-					entry.cellH = quantizeCellSize(response.cellH, dpr);
-					entry.lastConfiguredDpr = dpr;
-					this.fitPaneNow(paneId);
-				})
-				.catch((error) => {
-					this.workerInitializing.delete(paneId);
-					if (!isExpectedWorkerLifecycleCancellation(error) && this.isCurrentWorkerRenderer(worker)) failWorkerRenderer(error);
-				});
-		} catch (error) {
-			this.workerInitializing.delete(paneId);
-			failWorkerRenderer(error);
-		}
-	}
-
 	private _stopAttachAutoScroll(entry: PaneEntry): void {
 		if (entry.autoScrollTimer !== null) clearInterval(entry.autoScrollTimer);
 		entry.autoScrollTimer = null;
@@ -2135,10 +1999,6 @@ export class TerminalManager {
 						| { error: string }
 						| null;
 					setTheme: (theme: Record<string, string>) => void;
-					sampleHostPixel: (
-						relX?: number,
-						relY?: number,
-					) => { r: number; g: number; b: number; a: number } | null;
 					inputAnchorResolved: (paneId: string) =>
 						| { row: number; col: number; x: number; y: number; cellW: number; cellH: number; fontSizePx: number }
 						| null;
@@ -2179,13 +2039,7 @@ export class TerminalManager {
 					ptyWriteLog: (paneId: string) => Array<{ data: string; at: number }>;
 					clearPtyWriteLog: (paneId: string) => void;
 					/** P4.6 Part B (Iter 17, 2026-05-22) — diagnostic
-					 *  surface for the render-worker mirror. Lets e2e
-					 *  specs verify the worker actually spun up and is
-					 *  keeping up with messages. `active` reflects
-					 *  whether `getWorkerRenderer()` returned non-null at
-					 *  call time. `pending` is the in-flight request
-					 *  count (0 when not active). */
-					workerBridge: () => { active: boolean; pending: number };
+				*/
 				};
 			}).__windE2E = {
 				feedPty: (paneId, data) => this.feed(paneId, data),
@@ -2270,16 +2124,8 @@ export class TerminalManager {
 					};
 				},
 				// Theme-rotation regression probe: drive `setTheme` from a
-				// spec without needing dev-server module imports (release
-				// bundle hides /src/* URLs). Pairs with `sampleHostPixel`
-				// to verify GPU output, not just the kernel Theme struct.
+				// spec without needing dev-server module imports.
 				setTheme: (theme) => this.setTheme(theme),
-				// Read one device pixel from the global host canvas via
-				// drawImage + getImageData. `relX / relY` are 0..1
-				// fractions of the canvas backing size (default 0.5,0.85
-				// = bottom-mid, almost always empty bg below the PS
-				// prompt). Returns null if no host canvas or the
-				// drawImage path can't sample the WebGPU swap chain.
 				// IME alignment regression probes (P5.IME): expose the unified
 				// anchor resolver + the JS-side mirror of the last setPreedit
 				// call so specs can verify textarea cell == overlay cell ==
@@ -2303,25 +2149,6 @@ export class TerminalManager {
 						isInlineTuiMode: k.isInlineTuiMode(),
 						mouseReportingModes: k.mouseReportingModes(),
 					};
-				},
-	
-				sampleHostPixel: (relX = 0.5, relY = 0.85) => {
-					const host = this.globalHost?.canvas ?? null;
-					if (!host) return null;
-					const x = Math.max(0, Math.min(host.width - 1, Math.floor(host.width * relX)));
-					const y = Math.max(0, Math.min(host.height - 1, Math.floor(host.height * relY)));
-					const tmp = document.createElement('canvas');
-					tmp.width = 1;
-					tmp.height = 1;
-					const ctx = tmp.getContext('2d', { willReadFrequently: true });
-					if (!ctx) return null;
-					try {
-						ctx.drawImage(host, x, y, 1, 1, 0, 0, 1, 1);
-					} catch {
-						return null;
-					}
-					const d = ctx.getImageData(0, 0, 1, 1).data;
-					return { r: d[0], g: d[1], b: d[2], a: d[3] };
 				},
 				// Selection regression hooks. These are thin pass-throughs to
 				// the wasm kernel; the active spec is
@@ -2366,13 +2193,16 @@ export class TerminalManager {
 				installPtyWriteSpy: (paneId) => {
 					const e = this.panes.get(paneId);
 					if (!e?.dataHandler) return;
-					const ent = e as unknown as { _e2ePtyWriteLog?: Array<{ data: string; at: number }> };
-					if (ent._e2ePtyWriteLog) return;
-					const log: Array<{ data: string; at: number }> = [];
+					const ent = e as unknown as {
+						_e2ePtyWriteLog?: Array<{ data: string; at: number }>;
+						_e2ePtyWriteWrappedHandler?: (bytes: Uint8Array) => void;
+					};
+					if (ent._e2ePtyWriteWrappedHandler === e.dataHandler) return;
+					const log = ent._e2ePtyWriteLog ?? [];
 					ent._e2ePtyWriteLog = log;
 					const original = e.dataHandler;
 					const decoder = new TextDecoder();
-					e.dataHandler = (bytes: Uint8Array) => {
+					const wrapped = (bytes: Uint8Array) => {
 						try {
 							log.push({ data: decoder.decode(bytes), at: performance.now() });
 						} catch {
@@ -2380,6 +2210,8 @@ export class TerminalManager {
 						}
 						original(bytes);
 					};
+					ent._e2ePtyWriteWrappedHandler = wrapped;
+					e.dataHandler = wrapped;
 				},
 				ptyWriteLog: (paneId) => {
 					const e = this.panes.get(paneId);
@@ -2393,10 +2225,6 @@ export class TerminalManager {
 					const ent = e as unknown as { _e2ePtyWriteLog?: Array<{ data: string; at: number }> };
 					if (ent._e2ePtyWriteLog) ent._e2ePtyWriteLog.length = 0;
 				},
-				workerBridge: () => ({
-					active: workerRendererBridge.isActive(),
-					pending: workerRendererBridge.pendingCount(),
-				}),
 			};
 			}
 		}
@@ -2405,30 +2233,20 @@ export class TerminalManager {
 	private async _awaitAttachHost(): Promise<void> {
 		await this._ensureDomHostStarted();
 		if (this.attachHostPromise === null) return;
-		try { await this.attachHostPromise; } catch { /* attachHost handles errors internally */ }
+		await this.attachHostPromise;
 	}
 
-	private _createAttachCanvas(container: HTMLElement, usingWorker: boolean): AttachCanvas {
+	private _createAttachCanvas(container: HTMLElement): AttachCanvas {
 		const gh = this.globalHost;
-		const useHost = gh !== null && this.opts.preferWebgpu && !usingWorker;
-		if (useHost && gh) {
-			container.style.background = 'transparent';
-			return { canvas: gh.canvas, hostHandle: gh.host };
-		}
-		const canvas = document.createElement('canvas');
-		canvas.style.cssText = 'display:block; width:100%; height:100%; position:relative; z-index:0;';
-		canvas.style.background = 'var(--rg-term-bg, var(--rg-bg))';
-		canvas.setAttribute('aria-hidden', 'true');
-		container.appendChild(canvas);
-		return { canvas, hostHandle: undefined };
+		if (!gh) throw new Error('WEBGPU_INIT_FAILED: SurfaceHost is not attached');
+		container.style.background = 'transparent';
+		return { canvas: gh.canvas, hostHandle: gh.host };
 	}
 
-	private async _createAttachRenderState(canvas: HTMLCanvasElement, hostHandle: SurfaceHostHandle | undefined, usingWorker: boolean): Promise<AttachRenderState> {
-		const handle: RenderHandle | null = usingWorker ? null : await this._makeHandleSerialized(canvas, hostHandle);
+	private async _createAttachRenderState(canvas: HTMLCanvasElement, hostHandle: SurfaceHostHandle): Promise<AttachRenderState> {
+		const handle = await this._makeHandleSerialized(canvas, hostHandle);
 		const dpr = window.devicePixelRatio || 1;
-		const [cellW, cellH] = handle
-			? (handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as [number, number] | Float32Array)
-			: [8, 16];
+		const [cellW, cellH] = handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as [number, number] | Float32Array;
 		return { handle, dpr, cellW: quantizeCellSize(Number(cellW), dpr), cellH: quantizeCellSize(Number(cellH), dpr) };
 	}
 
@@ -2462,13 +2280,12 @@ export class TerminalManager {
 		}
 		await this._awaitAttachHost();
 
-		const usingWorker = this.usingWorkerRenderer();
-		const { canvas, hostHandle } = this._createAttachCanvas(container, usingWorker);
+		const { canvas, hostHandle } = this._createAttachCanvas(container);
 		if (this.opts.paddingPx && this.opts.paddingPx > 0) {
 			container.style.padding = `${this.opts.paddingPx}px`;
 		}
 		const { handle, dpr, cellW: cellWnum, cellH: cellHnum } =
-			await this._createAttachRenderState(canvas, hostHandle, usingWorker);
+			await this._createAttachRenderState(canvas, hostHandle);
 
 		const scrollbackLines = this._attachScrollbackLines();
 		const kernel = new TerminalKernel(24, 80, scrollbackLines);
@@ -2498,8 +2315,6 @@ export class TerminalManager {
 			initialFitAttempt: 0,
 			syncStart: null,
 			syncTimeoutRendered: false,
-			deltaFrameId: 0,
-			renderFrameId: 0,
 			deltaQueue: [],
 			deltaQueueHead: 0,
 			deltaQueuedBytes: 0,
@@ -2553,24 +2368,8 @@ export class TerminalManager {
 
 		this.panes.set(paneId, entry);
 
-		// §p4 ITER 1b/1d (2026-05-22) — worker-renderer hand-off.
-		// When the worker-renderer flag is on AND the worker singleton
-		// is alive, transfer the canvas to the worker via
-		// `transferControlToOffscreen()` and post `bindCanvas` so the
-		// worker's per-pane `RenderHandle` (newFromOffscreen) can paint
-		// it directly. After ITER 1c-2 the main-thread `_makeHandle`
-		// is skipped (entry.handle === null) when this branch fires,
-		// so there's no detached-canvas render attempt. Fire-and-forget
-		// bindCanvas — a worker hiccup must not block pane attach.
-		//
-		// ITER 1d: also set `pointerEvents: 'none'` on the (now
-		// transferred) canvas so the pane container's existing
-		// pointer/keyboard handlers continue to receive events even
-		// after the canvas detaches. Without this, browsers can
-		// route pointer events to the canvas element first; once
-		// detached its event behavior is undefined and we'd lose
-		// pointer capture during mouse-mode TUI rendering.
-		if (usingWorker) this._attachWorkerCanvas(paneId, canvas, dpr, scrollbackLines);
+		// The worker mirrors kernel state only; presentation stays on the
+		// main-thread WebGPU host, so attach keeps the canvas local.
 
 		// Initial fit: do it once synchronously after layout settles. We
 		// wait one rAF (so SvelteKit hydration finishes), then fit
@@ -2655,9 +2454,6 @@ export class TerminalManager {
 		this._memoryRestorePending.delete(paneId);
 		this._removeLinkOverlays(entry);
 		this._releaseDetachedResources(entry);
-		workerRendererBridge.destroy(paneId);
-		this.workerAttached.delete(paneId);
-		this.workerInitializing.delete(paneId);
 		if (this._focusedPaneByWorkspace.get(entry.workspaceId) === paneId) {
 			this._focusedPaneByWorkspace.delete(entry.workspaceId);
 		}
@@ -2690,8 +2486,8 @@ export class TerminalManager {
 		}
 		this._releaseTuiCursorSuppression(entry);
 		this._detachParkedBindings(entry);
-		const retainRenderer = this._shouldRetainRenderer(paneId, entry, reason);
-		this._releaseParkedCanvas(paneId, entry, retainRenderer);
+		const retainRenderer = this._shouldRetainRenderer(entry, reason);
+		this._releaseParkedCanvas(entry, retainRenderer);
 		this._flushFeedBuffer(entry);
 		this._replaceParkedContainer(entry, reason);
 		entry.rendererRetained = retainRenderer;
@@ -2723,14 +2519,11 @@ export class TerminalManager {
 		entry.selectionEndAbs = null;
 	}
 
-	private _shouldRetainRenderer(paneId: string, entry: PaneEntry, reason: 'component' | 'memory'): boolean {
-		return reason === 'component'
-			&& entry.handle !== null
-			&& !this.workerAttached.has(paneId)
-			&& !this.workerInitializing.has(paneId);
+	private _shouldRetainRenderer(entry: PaneEntry, reason: 'component' | 'memory'): boolean {
+		return reason === 'component' && entry.handle !== null;
 	}
 
-	private _releaseParkedCanvas(paneId: string, entry: PaneEntry, retainRenderer: boolean): void {
+	private _releaseParkedCanvas(entry: PaneEntry, retainRenderer: boolean): void {
 		if (this._isHostMode(entry)) {
 			if (shouldWipeHostOnPaneRemount(retainRenderer)) this._invalidateHost();
 		} else {
@@ -2740,8 +2533,6 @@ export class TerminalManager {
 		const handle = entry.handle;
 		entry.handle = null;
 		try { handle?.free(); } catch { /* ignore */ }
-		if (this.workerInitializing.has(paneId)) workerRendererBridge.destroy(paneId);
-		else if (this.isWorkerPaneReady(paneId)) workerRendererBridge.releaseCanvas(paneId);
 	}
 
 	private _replaceParkedContainer(entry: PaneEntry, reason: 'component' | 'memory'): void {
@@ -2775,50 +2566,29 @@ export class TerminalManager {
 		await this._ensureDomHostStarted();
 		await this._waitForHostAttach();
 		if (this.panes.get(paneId) !== entry || !entry.parked) return;
-		const resources = await this._prepareUnparkResources(paneId, container, entry);
+		const resources = await this._prepareUnparkResources(container, entry);
 		this._commitUnpark(paneId, container, entry, resources);
 	}
 
 	private async _waitForHostAttach(): Promise<void> {
 		if (this.attachHostPromise === null) return;
-		try { await this.attachHostPromise; } catch { /* ignore */ }
+		await this.attachHostPromise;
 	}
 
 	private _selectUnparkCanvas(
-		paneId: string,
 		container: HTMLElement,
-		entry: PaneEntry,
-	): { usingWorker: boolean; useHost: boolean; canvas: HTMLCanvasElement; hostHandle?: SurfaceHostHandle } {
-		const usingWorker = this.usingWorkerRenderer() === true && this.isWorkerPaneReady(paneId) === true;
+	): { canvas: HTMLCanvasElement; hostHandle: SurfaceHostHandle } {
 		const gh = this.globalHost;
-		const useHost = gh !== null && this.opts.preferWebgpu === true && !usingWorker;
-		const retainedHost = entry.rendererRetained === true && !usingWorker && entry.handle !== null
-			&& gh !== null && entry.canvas === gh.canvas;
-		const retainedCanvas = entry.rendererRetained === true && !usingWorker && entry.handle !== null
-			&& !retainedHost && !useHost;
-		if (retainedHost && gh) return { usingWorker, useHost, canvas: entry.canvas, hostHandle: gh.host };
-		if (retainedCanvas) {
-			container.appendChild(entry.canvas);
-			return { usingWorker, useHost, canvas: entry.canvas };
-		}
-		if (useHost && gh) {
-			container.style.background = 'transparent';
-			return { usingWorker, useHost, canvas: gh.canvas, hostHandle: gh.host };
-		}
-		const canvas = document.createElement('canvas');
-		canvas.style.cssText = 'display:block; width:100%; height:100%; position:relative; z-index:0;';
-		canvas.style.background = 'var(--rg-term-bg, var(--rg-bg))';
-		canvas.setAttribute('aria-hidden', 'true');
-		container.appendChild(canvas);
-		return { usingWorker, useHost, canvas };
+		if (!gh) throw new Error('WEBGPU_INIT_FAILED: SurfaceHost is not attached');
+		container.style.background = 'transparent';
+		return { canvas: gh.canvas, hostHandle: gh.host };
 	}
 
 	private async _prepareUnparkResources(
-		paneId: string,
 		container: HTMLElement,
 		entry: PaneEntry,
-	): Promise<{ usingWorker: boolean; useHost: boolean; canvas: HTMLCanvasElement; hostHandle?: SurfaceHostHandle; handle: RenderHandle | null; dpr: number }> {
-		const selected = this._selectUnparkCanvas(paneId, container, entry);
+	): Promise<{ canvas: HTMLCanvasElement; hostHandle: SurfaceHostHandle; handle: RenderHandle | null; dpr: number }> {
+		const selected = this._selectUnparkCanvas(container);
 		if (this.opts.paddingPx && this.opts.paddingPx > 0) container.style.padding = `${this.opts.paddingPx}px`;
 		const retained = selected.canvas === entry.canvas && entry.rendererRetained === true && entry.handle !== null;
 		if (entry.rendererRetained && !retained) {
@@ -2827,10 +2597,7 @@ export class TerminalManager {
 			try { oldHandle?.free(); } catch { /* stale retained renderer */ }
 			entry.rendererRetained = false;
 		}
-		let handle: RenderHandle | null = null;
-		if (!selected.usingWorker) {
-			handle = retained ? entry.handle : await this._makeHandleSerialized(selected.canvas, selected.hostHandle);
-		}
+		const handle = retained ? entry.handle : await this._makeHandleSerialized(selected.canvas, selected.hostHandle);
 		return { ...selected, handle, dpr: window.devicePixelRatio || 1 };
 	}
 
@@ -2838,17 +2605,14 @@ export class TerminalManager {
 		paneId: string,
 		container: HTMLElement,
 		entry: PaneEntry,
-		resources: { usingWorker: boolean; useHost: boolean; canvas: HTMLCanvasElement; hostHandle?: SurfaceHostHandle; handle: RenderHandle | null; dpr: number },
+		resources: { canvas: HTMLCanvasElement; hostHandle: SurfaceHostHandle; handle: RenderHandle | null; dpr: number },
 	): void {
 		if (this.panes.get(paneId) !== entry || !entry.parked) {
 			try { resources.handle?.free(); } catch { /* best-effort abandoned restore cleanup */ }
-			if (!resources.useHost) {
-				try { resources.canvas.remove(); } catch { /* already detached */ }
-			}
 			return;
 		}
-		const { handle, dpr, canvas, hostHandle, usingWorker, useHost } = resources;
-		const wipeHost = useHost && !!hostHandle && shouldWipeHostOnPaneRemount(entry.rendererRetained);
+		const { handle, dpr, canvas, hostHandle } = resources;
+		const wipeHost = shouldWipeHostOnPaneRemount(entry.rendererRetained);
 		const linkHintEl = createLinkHintOverlay(container);
 		const [cellW, cellH] = handle
 			? (handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as [number, number] | Float32Array)
@@ -2861,7 +2625,6 @@ export class TerminalManager {
 			lastConfiguredDpr: dpr, lastReportedRows: -1, lastReportedCols: -1, lastAppliedPaddingPx: undefined,
 		});
 		if (wipeHost) this._invalidateHost();
-		if (usingWorker) this._bindUnparkWorker(paneId, canvas, dpr);
 		this._bindUnparkListeners(paneId, container, entry);
 		entry.parked = false;
 		entry.parkReason = null;
@@ -2869,49 +2632,6 @@ export class TerminalManager {
 		entry.wasHiddenLastTick = true;
 		this._scheduleInitialFit(entry);
 		this.startRafLoop();
-	}
-
-	private _bindUnparkWorker(paneId: string, canvas: HTMLCanvasElement, dpr: number): void {
-		try {
-			canvas.style.pointerEvents = 'none';
-			const offscreen = canvas.transferControlToOffscreen();
-			const wr = this.syncWorkerRendererIdentity();
-			if (!wr) return;
-			this.workerInitializing.add(paneId);
-			void wr.bindCanvas(paneId, offscreen, {
-				font: this.opts.fontFamily, fontSizePx: this.opts.fontSizePx, dpr,
-			}).then((response) => this._finishUnparkWorker(paneId, dpr, wr, response))
-				.catch((error) => this._failUnparkWorker(paneId, wr, error));
-		} catch (error) {
-			this.workerInitializing.delete(paneId);
-			failWorkerRenderer(error);
-		}
-	}
-
-	private _finishUnparkWorker(
-		paneId: string,
-		dpr: number,
-		wr: NonNullable<ReturnType<typeof getWorkerRenderer>>,
-		response: RenderWorkerResponse,
-	): void {
-		this.workerInitializing.delete(paneId);
-		if (!this.isCurrentWorkerRenderer(wr) || response.type !== 'ready') return;
-		if (typeof response.cellW !== 'number' || typeof response.cellH !== 'number') return;
-		const current = this.panes.get(paneId);
-		if (!current || current.parked) return;
-		current.cellW = quantizeCellSize(response.cellW, dpr);
-		current.cellH = quantizeCellSize(response.cellH, dpr);
-		current.lastConfiguredDpr = dpr;
-		this.fitPaneNow(paneId);
-	}
-
-	private _failUnparkWorker(
-		paneId: string,
-		wr: NonNullable<ReturnType<typeof getWorkerRenderer>>,
-		error: unknown,
-	): void {
-		this.workerInitializing.delete(paneId);
-		if (!isExpectedWorkerLifecycleCancellation(error) && this.isCurrentWorkerRenderer(wr)) failWorkerRenderer(error);
 	}
 
 	private _bindUnparkListeners(paneId: string, container: HTMLElement, entry: PaneEntry): void {
@@ -3041,9 +2761,14 @@ export class TerminalManager {
 			console.debug(`[pty-trace][${performance.now().toFixed(1)}ms][${entry.paneId.slice(0, 8)}][${bytes.length}B] ${hex}${more}`);
 		}
 
-		private _feedChunks(entry: PaneEntry, bytes: Uint8Array, budgetMs: number): number {
+		private _feedChunks(
+			entry: PaneEntry,
+			bytes: Uint8Array,
+			budgetMs: number,
+		): { offset: number; requiresRenderSettle: boolean } {
 			const chunkBytes = 16 * 1024;
 			let offset = 0;
+			let requiresRenderSettle = false;
 			const start = performance.now();
 			const traceCursor = typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_CURSOR_TRACE') === '1';
 			const kernel = entry.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
@@ -3051,13 +2776,14 @@ export class TerminalManager {
 			while (offset < bytes.length) {
 				const end = Math.min(offset + chunkBytes, bytes.length);
 				const chunk = bytes.subarray(offset, end);
-				entry.kernel.feed(chunk);
-				if (this.isWorkerPaneReady(entry.paneId)) this._mirrorWorkerFeed(entry, chunk);
+				requiresRenderSettle = (
+					entry.kernel as unknown as { feed: (data: Uint8Array) => boolean | void }
+				).feed(chunk) === true || requiresRenderSettle;
 				offset = end;
 				if (performance.now() - start >= budgetMs) break;
 			}
 			if (traceCursor) console.debug(`[cursor-trace][${performance.now().toFixed(1)}ms] feed paneId=${entry.paneId.slice(0, 8)} bytes=${bytes.length} consumed=${offset} cursor ${before}→${kernel.cursorRow()},${kernel.cursorCol()})`);
-			return offset;
+			return { offset, requiresRenderSettle };
 		}
 
 		private _drainFeedOutputs(entry: PaneEntry): void {
@@ -3083,13 +2809,14 @@ export class TerminalManager {
 				this.wake();
 				return;
 			}
-			const offset = this._feedChunks(entry, bytes, budgetMs);
+			const { offset, requiresRenderSettle } = this._feedChunks(entry, bytes, budgetMs);
 			if (offset < bytes.length) {
 				const remainder = bytes.slice(offset);
 				if (drainingDeferred) prependDeferredFeed(entry, remainder);
 				else enqueueDeferredFeed(entry, remainder);
 			}
 			entry.linkSpans.markDirty();
+			if (requiresRenderSettle) this._noteTuiCursorSettle(entry, performance.now());
 			this.wake();
 			this._drainFeedOutputs(entry);
 		}
@@ -3134,15 +2861,10 @@ export class TerminalManager {
 			const requiresRenderSettle = (
 				entry.kernel as unknown as { applyDeltaFrame: (frame: Uint8Array) => boolean | void }
 			).applyDeltaFrame(bytes) === true;
-			entry.deltaFrameId += 1;
 			if (traceCursor) {
 				const ts = performance.now().toFixed(1);
 				// eslint-disable-next-line no-console
 				console.debug(`[cursor-trace][${ts}ms] applyDeltaFrame paneId=${paneId.slice(0,8)} bytes=${bytes.length} cursor ${pre}→(${k.cursorRow()},${k.cursorCol()})`);
-			}
-			if (this.isWorkerPaneReady(paneId)) {
-				entry.renderFrameId += 1;
-				workerRendererBridge.applyDelta(paneId, bytes, entry.renderFrameId);
 			}
 			const reply = entry.kernel.takePendingResponse();
 			if (reply.length > 0 && entry.dataHandler) entry.dataHandler(reply);
@@ -3531,7 +3253,6 @@ export class TerminalManager {
 		try {
 			const bytes = new TextEncoder().encode(seq);
 			entry.kernel.feed(bytes);
-			this._mirrorWorkerFeed(entry, bytes);
 		} catch {
 			return; // kernel may be freed mid-teardown
 		}
@@ -3759,14 +3480,6 @@ export class TerminalManager {
 		entry.linkSpans.clear();
 		// Worker mode owns a second semantic kernel. Mirror the same explicit
 		// clear there; ordinary memory reclaim only needs ED 3.
-		if (this.isWorkerPaneReady(entry.paneId)) {
-			if (preservePrompt) {
-				entry.renderFrameId += 1;
-				workerRendererBridge.clearTerminalPreservingPrompt(entry.paneId, entry.renderFrameId);
-			} else {
-				this._mirrorWorkerFeed(entry, new TextEncoder().encode('\x1b[3J'));
-			}
-		}
 		entry.lastScrollOffset = -1;
 		entry.lastScrollTotal = -1;
 	}
@@ -4022,8 +3735,8 @@ export class TerminalManager {
 		if (on) this._scheduleInitialFit(entry);
 	}
 
-	/** iter-60 G4: actual render backend of this pane's handle ("WebGPU" /
-	 *  "Canvas2D"), or null when the pane isn't attached. The mobile footer
+	/** iter-60 G4: actual render backend of this pane's handle (WebGPU),
+	 *  or null when the pane isn't attached. The mobile footer
 	 *  binds this —前 P4 重构后曾恒显默认值。 */
 	backendName(paneId: string): string | null {
 		const h = this.panes.get(paneId)?.handle as unknown as
@@ -4290,107 +4003,12 @@ export class TerminalManager {
 
 	/** §p4 (2026-05-22): does the worker-renderer path own panes' canvases
 	 *  on this app instance? When true, RidgePane should call
-	 *  `canvas.transferControlToOffscreen()` + `WorkerHostedRenderer.bindCanvas`
-	 *  at mount instead of letting `attach()` construct (and the rAF loop
+	 *  at mount; this path is disabled until a worker can own a WebGPU host.
 	 *  drive) a main-thread `RenderHandle`. The decision is process-wide
 	 *  for now — the flag and the singleton are both global — so callers
 	 *  can query without a `paneId`. Mid-session flag toggles take effect
 	 *  on the next pane attach; already-attached panes keep their initial
 	 *  decision until detach. */
-	usingWorkerRenderer(): boolean {
-		const renderer = this.syncWorkerRendererIdentity();
-		return (
-			isWorkerRenderingEnabled() &&
-			typeof HTMLCanvasElement !== 'undefined' &&
-			typeof HTMLCanvasElement.prototype.transferControlToOffscreen === 'function' &&
-			renderer !== null
-		);
-	}
-
-	/** Keep the manager's pane mirror tied to one concrete Worker instance. */
-	private syncWorkerRendererIdentity(): ReturnType<typeof getWorkerRenderer> {
-		const renderer = getWorkerRenderer();
-		this.workerRendererRef = reconcileWorkerRendererIdentity(
-			this.workerRendererRef,
-			renderer,
-			this.workerAttached,
-			this.workerInitializing,
-		);
-		return this.workerRendererRef;
-	}
-
-	/** Async worker callbacks must not resurrect bindings after a renderer
-	 *  restart or explicit dispose. Comparing both manager and singleton
-	 *  identity prevents an old init acknowledgement from touching the new
-	 *  worker's pane set. */
-	private isCurrentWorkerRenderer(renderer: ReturnType<typeof getWorkerRenderer>): boolean {
-		return renderer !== null && this.workerRendererRef === renderer && getWorkerRenderer() === renderer;
-	}
-
-	/** Hot paths use this guard instead of reading `workerAttached` directly.
-	 *  Avoid creating a worker merely because a normal (main-thread) pane
-	 *  received PTY bytes; only an already-known renderer is synchronized. */
-	private isWorkerPaneReady(paneId: string): boolean {
-		if (this.workerRendererRef === null) return false;
-		this.syncWorkerRendererIdentity();
-		return this.workerAttached.has(paneId) && !this.workerInitializing.has(paneId);
-	}
-
-	/** Mirror a successful main-thread kernel feed with the same generation
-	 *  sequence used by delta frames. The worker receives one total order per
-	 *  pane, so a late raw PTY replay cannot overwrite a newer delta snapshot. */
-	private _mirrorWorkerFeed(entry: PaneEntry, bytes: Uint8Array): void {
-		if (!this.isWorkerPaneReady(entry.paneId)) return;
-		entry.renderFrameId += 1;
-		workerRendererBridge.feed(entry.paneId, bytes, entry.renderFrameId);
-	}
-
-	private _fallbackWorkerRendering(error: Error): void {
-		const paneIds = Array.from(new Set([...this.workerAttached, ...this.workerInitializing]));
-		this.workerAttached.clear();
-		this.workerInitializing.clear();
-		if (import.meta.env?.DEV) {
-			// eslint-disable-next-line no-console
-			console.warn('[ridge-term] render worker disabled; restoring main-thread canvases', error);
-		}
-		for (const paneId of paneIds) {
-			const entry = this.panes.get(paneId);
-			if (entry) void this._restoreMainThreadRenderer(entry);
-		}
-	}
-
-	private async _restoreMainThreadRenderer(entry: PaneEntry): Promise<void> {
-		if (entry.parked || entry.handle) return;
-		const canvas = document.createElement('canvas');
-		canvas.style.cssText = 'display:block; width:100%; height:100%; position:relative; z-index:0;';
-		canvas.style.background = 'var(--rg-term-bg, var(--rg-bg))';
-		canvas.setAttribute('aria-hidden', 'true');
-		if (entry.canvas.parentElement === entry.container) {
-			entry.canvas.replaceWith(canvas);
-		} else {
-			entry.container.appendChild(canvas);
-		}
-		entry.canvas = canvas;
-		const handle = await this._makeHandleSerialized(canvas);
-		if (this.panes.get(entry.paneId) !== entry || entry.parked || entry.handle) {
-			try { handle.free(); } catch { /* stale fallback */ }
-			canvas.remove();
-			return;
-		}
-		const dpr = window.devicePixelRatio || 1;
-		const metrics = handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
-			| [number, number]
-			| Float32Array;
-		if (this.opts.theme) handle.applyTheme(this.opts.theme);
-		entry.handle = handle;
-		entry.cellW = quantizeCellSize(Number(metrics[0]), dpr);
-		entry.cellH = quantizeCellSize(Number(metrics[1]), dpr);
-		entry.lastConfiguredDpr = dpr;
-		entry.lastReportedRows = -1;
-		entry.lastReportedCols = -1;
-		this.fitPaneNow(entry.paneId);
-		this.wake();
-	}
 
 	/** §1.33 (2026-05-22): kernel-side gate for the shell-history popup.
 	 *  Returns true ONLY when the wasm kernel is confident a normal shell
@@ -4527,8 +4145,7 @@ export class TerminalManager {
 	 *  使 textarea 精确压在渲染器绘制该格的设备像素上。
 	 *
 	 *  仅在 host 模式且本分区已算出 viewport（scissor）时返回非 null；
-	 *  非 host（每分区独立 canvas，如 Canvas2D / worker 路径）下 canvas 与
-	 *  容器同原点，旧公式即正确，返回 null 让调用方走旧路径兜底。
+	 *  尚未有 viewport 时返回 null，让调用方走通用锚点路径。
 	 *
 	 *  `vpRow`/`col` 为已 clamp 过的视口内行列（含 scrollOffset）。 */
 	private _imeScissorCssPosition(
@@ -4793,10 +4410,8 @@ export class TerminalManager {
 
 	/** Force a full-frame redraw on the next rAF tick (§1.27 fix). Used
 	 *  by `RidgePane::onCompositionEnd` to repaint cells underneath the
-	 *  IME helper textarea — without this, Canvas2D's per-row hash diff
-	 *  may skip redrawing rows whose `cells` are unchanged but whose
-	 *  pixels were smeared by the opaque `.is-composing` overlay. WebGPU
-	 *  already redraws every row per tick, so this is a no-op there
+	 *  IME helper textarea after the opaque `.is-composing` overlay.
+	 *  WebGPU redraws every visible row per tick, so this is a no-op there
 	 *  beyond a single extra wake. */
 	/** Refresh specific panes by id — invalidates render cache and wakes
 	 *  the rAF loop. Used after split resize to redraw affected panes. */
@@ -4819,9 +4434,8 @@ export class TerminalManager {
 	/** Same as `forceFullRedraw` but applied across every attached pane.
 	 *  Used when a global font event lands — e.g. Twemoji finishes loading
 	 *  AFTER panes have already been streaming output. Each pane's
-	 *  `invalidateAll` clears the WebGPU `GlyphAtlas` LRU and resets the
-	 *  Canvas2D row-hash snapshot so the next frame re-rasterizes from
-	 *  scratch against the new font stack. Parked panes are skipped (their
+	 *  `invalidateAll` clears the WebGPU `GlyphAtlas` LRU so the next frame
+	 *  re-rasterizes against the new font stack. Parked panes are skipped (their
 	 *  handles have been freed); they pick up the new font on unpark. */
 	/** Invalidate all panes in a specific workspace. Called after split
 	 *  resize drag completes to refresh all affected panes. */
@@ -4847,7 +4461,7 @@ export class TerminalManager {
 	 * for every attached pane. (round 2.5 will store this once per surface
 	 * rather than per-pane.)
 	 */
-	setFont(family: string, sizePx: number): void {
+	setFont(family: string, sizePx: number): Promise<void> {
 		this.opts.fontFamily = family;
 		this.opts.fontSizePx = sizePx;
 		// Expose the terminal's actual font stack as a CSS custom
@@ -4863,8 +4477,11 @@ export class TerminalManager {
 			document.documentElement.style.setProperty('--rg-term-font-family', family);
 			document.documentElement.style.setProperty('--rg-term-font-size', `${sizePx}px`);
 		}
-		const dpr = window.devicePixelRatio || 1;
-		for (const entry of this.panes.values()) {
+		if (!this.wasmReady) return Promise.resolve();
+		return this._ensureFontStack(family).then(() => {
+			if (this.opts.fontFamily !== family || this.opts.fontSizePx !== sizePx) return;
+			const dpr = window.devicePixelRatio || 1;
+			for (const entry of this.panes.values()) {
 			// Skip parked entries — their handle has been freed. They'll
 			// pick up the new font on the next unpark via this.opts.
 			if (entry.parked) continue;
@@ -4874,18 +4491,7 @@ export class TerminalManager {
 			// re-measures, and re-seed entry.cellW / cellH from the
 			// metrics it returns (then refit so the new column count
 			// reaches the kernel + PTY).
-			if (!entry.handle) {
-				const paneId = entry.paneId;
-				workerRendererBridge.setFont(paneId, family, sizePx, dpr, (cellW, cellH) => {
-					const ent = this.panes.get(paneId);
-					if (!ent) return;
-					ent.cellW = quantizeCellSize(cellW, dpr);
-					ent.cellH = quantizeCellSize(cellH, dpr);
-					ent.lastConfiguredDpr = dpr;
-					void this.fitPane(ent, this._sharedRemoteMode);
-				});
-				continue;
-			}
+			if (!entry.handle) continue;
 			const [w, h] = entry.handle.configure(family, sizePx, dpr) as
 				| [number, number]
 				| Float32Array;
@@ -4894,8 +4500,9 @@ export class TerminalManager {
 			entry.lastConfiguredDpr = dpr;
 			entry.handle.invalidateAll();
 			void this.fitPane(entry, this._sharedRemoteMode);
-		}
-		this.wake();
+			}
+			this.wake();
+		});
 	}
 
 	/** Apply theme overrides to all panes. */
@@ -5265,28 +4872,6 @@ export class TerminalManager {
 		return true;
 	}
 
-	private _resizeWorkerMirror(entry: PaneEntry, grid: FitGeometry): void {
-		const action = workerLifecycleOnFit({ paneId: entry.paneId, rows: grid.rows, cols: grid.cols, dpr: entry.lastConfiguredDpr, attached: this.workerAttached, initializing: this.workerInitializing, isActive: this.usingWorkerRenderer() });
-		switch (action.kind) {
-			case 'attach': {
-				const renderer = this.syncWorkerRendererIdentity();
-				this.workerInitializing.add(entry.paneId);
-				void workerRendererBridge.attach(entry.paneId, action.rows, action.cols, action.dpr).then((ready) => {
-					this.workerInitializing.delete(entry.paneId);
-					if (!ready || !this.isCurrentWorkerRenderer(renderer)) return;
-					this.workerAttached.add(entry.paneId);
-					this.fitPaneNow(entry.paneId);
-				});
-				break;
-			}
-			case 'resize':
-				workerRendererBridge.resize(entry.paneId, action.rows, action.cols, action.dpr, grid.wCss, grid.hCss);
-				break;
-			case 'noop':
-				break;
-		}
-	}
-
 	private _logResizeDecision(entry: PaneEntry, rows: number, cols: number, isAlt: boolean, isInlineTui: boolean): void {
 		if (!import.meta.env?.DEV || typeof console.debug !== 'function') return;
 		const lastAbsCsiPos = entry.kernel.lastAbsCsiPosition();
@@ -5331,7 +4916,6 @@ export class TerminalManager {
 		const grid = this._computeFitGrid(entry, claim, dpr, measured);
 		if (!grid) return;
 		if (!this._fitGridChanged(entry, grid) && !force) return;
-		this._resizeWorkerMirror(entry, grid);
 		await this._applyFitResize(entry, grid);
 	}
 
@@ -5453,7 +5037,8 @@ export class TerminalManager {
 				if (typeof handle?.repaintAll === 'function') handle.repaintAll();
 				else handle?.invalidateAll?.();
 			}
-			perfMark('rg.terminal.render', () => entry.handle?.render(entry.kernel));
+			perfMark('rg.terminal.render', () =>
+				perfMark(`rg.terminal.render.pane.${entry.paneId}`, () => entry.handle?.render(entry.kernel)));
 			state.anyRendered = true;
 		} catch (error) {
 			console.error('[ridge-term] render error', entry.paneId, error);
@@ -5514,9 +5099,19 @@ export class TerminalManager {
 		}, sleepMs);
 	}
 
+	private _hasQueuedFrameWork(order: readonly PaneEntry[]): boolean {
+		return order.some((entry) =>
+			entry.deltaQueueHead < entry.deltaQueue.length || hasDeferredFeed(entry),
+		);
+	}
+
 	private _scheduleNextFrame(state: RafFrameState, tick: () => void): void {
 		if (this.panes.size === 0) return;
-		if (state.anyRendered) {
+		// A synchronized-output boundary may intentionally suppress paint while
+		// parser work remains queued. Keep draining on compositor turns; sleeping
+		// until the 150 ms safety timeout makes a pre-buffered TUI burst freeze and
+		// then jump to its tail even though each individual apply is cheap.
+		if (state.anyRendered || this._hasQueuedFrameWork(state.frameOrder)) {
 			this.rafHandle = requestAnimationFrame(tick);
 			return;
 		}

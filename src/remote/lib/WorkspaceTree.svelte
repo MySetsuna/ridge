@@ -20,7 +20,7 @@
     workspaces = [],
     activeWorkspaceId = $bindable(),
     ws,
-    backendName = 'Canvas2D',
+    backendName = 'WebGPU',
     canManageWorkspaces = true,
     canManagePanes = true,
     onWorkspacesChanged,

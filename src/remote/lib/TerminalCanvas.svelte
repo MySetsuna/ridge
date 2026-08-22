@@ -33,7 +33,7 @@
   // + scrollback preserved across pane switches). All touch / soft-keyboard /
   // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
   // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
-  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onInputTask: onPaneInputTask, onResize: onPaneResize, onFocus: onPaneFocus, onDrainPending, onFirstPaint, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
+  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onInputTask: onPaneInputTask, onResize: onPaneResize, onFocus: onPaneFocus, onDrainPending, onFirstPaint, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('WebGPU'), hostError = null, sentenceBuffer = false }: {
     paneId: string;
     workspaceId: string;
     /** Host teammate state; retained for diagnostics, never a persistent pane border. */
@@ -64,6 +64,7 @@
     scrollbackError?: boolean;
     selectionMode?: boolean;
     backendName?: string;
+    hostError?: string | null;
   } = $props();
 
   const paneId = $derived(paneRefKey({ workspaceId, paneId: remotePaneId }));
@@ -109,9 +110,20 @@
   let hiddenInput: HTMLTextAreaElement | undefined = $state();
   // true once this pane's kernel is attached (or unparked) into the container.
   let attached = $state(false);
+  let attachError = $state<string | null>(null);
+  const webgpuError = $derived(attachError ?? hostError);
+  const needsFontAccess = $derived(attachError?.includes('FONT_ACCESS_REQUIRED') === true);
   const MAX_PENDING_STDIN_BYTES = 64 * 1024;
   const pendingStdin: string[] = [];
   let pendingStdinBytes = 0;
+
+  function formatWebgpuInitError(error: unknown): string {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (detail.includes('FONT_ACCESS_REQUIRED')) return detail;
+    if (detail.includes('FONT_ACCESS_') || detail.includes('FONT_DATA_')) return detail;
+    const prefix = detail.includes('WEBGPU_INIT_FAILED') ? detail : `WEBGPU_INIT_FAILED: ${detail}`;
+    return `${prefix}. Enable WebGPU or update graphics drivers, then reload.`;
+  }
 
   function flushPendingStdin(): void {
     if (!attached) return;
@@ -205,6 +217,52 @@
     return a ? { x: a.x, y: a.y, h: a.cellH } : null;
   }
 
+  async function attachTerminal(authorizeFonts = false): Promise<void> {
+    attachError = null;
+    try {
+      if (authorizeFonts) await manager.authorizeFonts();
+      else await manager.ready();
+    } catch (err) {
+      if (!alive) return;
+      attachError = formatWebgpuInitError(err);
+      console.error('[mobile-term] terminal initialization failed', paneId, err);
+      return;
+    }
+    if (!alive || !containerEl) return;
+    try {
+      if (manager.isParked(paneId)) {
+        await manager.unpark(paneId, containerEl);
+      } else {
+        await manager.attach(paneId, containerEl, workspaceId);
+      }
+    } catch (err) {
+      attachError = formatWebgpuInitError(err);
+      console.error('[mobile-term] WebGPU attach/unpark failed', paneId, err);
+      return;
+    }
+    if (!alive) { manager.park(paneId); return; }
+    attached = true;
+    manager.setLocalGridAuthority(paneId, true);
+    backendName = manager.backendName(paneId) ?? 'WebGPU';
+    manager.onData(paneId, (bytes) => onStdin(td.decode(bytes)));
+    manager.onResize(paneId, (rows, cols) => {
+      const pane = ownPaneRef();
+      if (onPaneResize && pane && containerEl) {
+        onPaneResize(pane, rows, cols, Math.round(containerEl.clientWidth), Math.round(containerEl.clientHeight));
+      }
+    });
+    const pendingFrames = onDrainPending?.(paneId) ?? [];
+    for (const frame of pendingFrames) manager.feed(paneId, frame);
+    manager.flushPaneFeed(paneId);
+    flushPendingStdin();
+    manager.setFocused(paneId, true);
+    manager.fitPaneNow(paneId);
+    focusInput();
+    requestAnimationFrame(() => {
+      if (alive) onFirstPaint?.(paneId);
+    });
+  }
+
   onMount(() => {
     // `autocorrect` is a non-standard (iOS Safari) attribute missing from
     // Svelte's textarea typings — set it via the DOM to keep iOS from rewriting
@@ -246,55 +304,7 @@
     // and queue keystrokes instead of making the user wait for WebGPU/wasm.
     focusInput();
 
-    void (async () => {
-      await manager.ready();
-      if (!alive || !containerEl) return;
-      try {
-        if (manager.isParked(paneId)) {
-          await manager.unpark(paneId, containerEl);
-        } else {
-          await manager.attach(paneId, containerEl, workspaceId);
-        }
-      } catch (err) {
-        console.error('[mobile-term] attach/unpark failed', paneId, err);
-        return;
-      }
-      // Component tore down during the async attach → park so a later remount
-      // can unpark the (still-alive) kernel instead of leaking / double-attaching.
-      if (!alive) { manager.park(paneId); return; }
-      attached = true;
-      // iter-60 G3：手机 SPA = raw 字节模式，本地网格权威在 fit（cloud 腿无
-      // pty-resized 回执，不能等 host 改格——P4 回归根因）。
-      manager.setLocalGridAuthority(paneId, true);
-      // iter-60 G4: report the ACTUAL render backend (P4 refactor lost this
-      // binding — footer showed the 'Canvas2D' default even under WebGPU).
-      backendName = manager.backendName(paneId) ?? 'Canvas2D';
-      // Outbound: kernel-generated responses (DSR/DA) from feed + IME
-      // write/paste → PTY via the host WS (onStdin → ws.sendStdin).
-      manager.onData(paneId, (bytes) => onStdin(td.decode(bytes)));
-      // Grid change → claim this viewport's size on the host (auto 自适应全屏).
-      manager.onResize(paneId, (rows, cols) => {
-        const pane = ownPaneRef();
-        if (onPaneResize && pane && containerEl) {
-          onPaneResize(pane, rows, cols, Math.round(containerEl.clientWidth), Math.round(containerEl.clientHeight));
-        }
-      });
-      // Replay frames captured while this component was between keyed mounts
-      // before the first fit/render. The host replay and live stream then join
-      // the same kernel FIFO, so the switch never shows a stale tail.
-      const pendingFrames = onDrainPending?.(paneId) ?? [];
-      for (const frame of pendingFrames) manager.feed(paneId, frame);
-      manager.flushPaneFeed(paneId);
-      flushPendingStdin();
-      manager.setFocused(paneId, true);
-      // Immediate fit (kernel grid + host claim) instead of waiting out the
-      // ResizeObserver's debounce, so first paint is correctly sized.
-      manager.fitPaneNow(paneId);
-      focusInput();
-      requestAnimationFrame(() => {
-        if (alive) onFirstPaint?.(paneId);
-      });
-    })();
+    void attachTerminal();
 
     return () => {
       if (el) {
@@ -1285,7 +1295,16 @@
       Older output unavailable · Retry
     </button>
   {/if}
-  {#if !attached}
+  {#if webgpuError}
+    <div class="webgpu-error" role="alert" aria-live="assertive">
+      <span>{webgpuError}</span>
+      {#if needsFontAccess}
+        <button class="font-access-button" type="button" onclick={() => void attachTerminal(true)}>
+          Enable local fonts
+        </button>
+      {/if}
+    </div>
+  {:else if !attached}
     <div class="loading">{$t('mobile.initializingTerminal')}</div>
   {/if}
 
@@ -1340,6 +1359,8 @@
   .scrollback-loading{position:absolute;top:0;left:0;right:0;height:2px;z-index:8;overflow:hidden;background:color-mix(in srgb,var(--rg-accent) 20%,transparent)}
   .scrollback-loading::after{content:"";position:absolute;inset:0;width:35%;background:var(--rg-accent);animation:scrollback-progress .9s ease-in-out infinite}
   .scrollback-error{position:absolute;top:6px;left:50%;z-index:9;transform:translateX(-50%);max-width:calc(100% - 24px);padding:5px 10px;border:1px solid color-mix(in srgb,var(--rg-danger,#ef4444) 45%,transparent);border-radius:999px;background:color-mix(in srgb,var(--rg-bg,#111827) 92%,transparent);color:var(--rg-fg,#f9fafb);font-size:11px;white-space:nowrap}
+  .webgpu-error{position:absolute;inset:0;z-index:10;display:grid;place-content:center;padding:24px;background:var(--rg-bg,#111);color:var(--rg-danger,#ff7b72);font:13px/1.5 ui-monospace,monospace;text-align:center;white-space:pre-wrap}
+  .font-access-button{justify-self:center;margin-top:14px;padding:8px 14px;border:1px solid currentColor;border-radius:8px;background:transparent;color:var(--rg-fg,#f9fafb);font:inherit;cursor:pointer}
   @keyframes scrollback-progress{from{transform:translateX(-100%)}to{transform:translateX(385%)}}
   /* Near-invisible input sink parked at the cursor. pointer-events:none keeps it
      from stealing canvas clicks. Opacity must be >0 so the IME candidate window

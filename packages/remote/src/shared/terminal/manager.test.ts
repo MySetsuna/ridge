@@ -45,7 +45,7 @@ function makePane() {
 		isInlineTuiMode: vi.fn(() => false),
 		isSyncOutput: vi.fn(() => false),
 		isAltScreen: vi.fn(() => altScreen),
-		backendName: vi.fn(() => 'canvas2d'),
+		backendName: vi.fn(() => 'WebGPU'),
 		shouldAllowShellHistory: vi.fn(() => true),
 		isMouseReporting: vi.fn(() => mouseModes !== 0),
 		isAppCursorKeys: vi.fn(() => false),
@@ -102,7 +102,7 @@ function makePane() {
 		clearPreedit: vi.fn(),
 		setHistoryOverlay: vi.fn(),
 		clearHistoryOverlay: vi.fn(),
-		backendName: vi.fn(() => 'canvas2d'),
+		backendName: vi.fn(() => 'WebGPU'),
 		setFont: vi.fn(),
 		setTheme: vi.fn(),
 		applyDefaultTheme: vi.fn(),
@@ -142,8 +142,6 @@ function makePane() {
 		initialFitAttempt: 0,
 		syncStart: null,
 		syncTimeoutRendered: false,
-		deltaFrameId: 0,
-		renderFrameId: 0,
 		deltaQueue: [],
 		deltaQueueHead: 0,
 		deltaQueuedBytes: 0,
@@ -218,7 +216,6 @@ function makeManager() {
 		fontFamily: 'monospace',
 		fontSizePx: 14,
 		scrollbackLines: 200,
-		preferWebgpu: false,
 	});
 	const internal = manager as any;
 	internal.wasmReady = true;
@@ -338,7 +335,6 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 
 		expect(fixture.kernel.feed).toHaveBeenCalled();
 		expect(fixture.kernel.applyDeltaFrame).toHaveBeenCalledWith(new Uint8Array([1, 2]));
-		expect((fixture.pane as { deltaFrameId: number }).deltaFrameId).toBe(1);
 		expect(fixture.kernel.prependScrollback).toHaveBeenCalled();
 		expect(fixture.kernel.selectAll).toHaveBeenCalledOnce();
 		expect(sent.length).toBeGreaterThanOrEqual(3);
@@ -411,6 +407,36 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(failure).toHaveBeenCalledOnce();
 		expect(fixture.pane.deltaQueue).toEqual([]);
 		expect(fixture.pane.deltaQueuedBytes).toBe(0);
+	});
+
+	it('keeps compositor turns active while synchronized output still has queued parser work', () => {
+		const { manager, fixture, internal } = makeManager();
+		const raf = vi.fn(() => 7);
+		vi.stubGlobal('requestAnimationFrame', raf);
+		fixture.pane.deltaQueue.push({ bytes: new Uint8Array([1]) });
+		fixture.kernel.isSyncOutput.mockReturnValue(true);
+		const tick = vi.fn();
+		const state = {
+			frameOrder: [fixture.pane],
+			anyRendered: false,
+			minDeadlineMs: Infinity,
+			dateNow: Date.now(),
+			perfNow: 10,
+			dirtyByPane: new Map([[PANE, true]]),
+			activeHost: null,
+			hostFrameOpen: false,
+			surfaceJustWiped: false,
+		};
+
+		internal._renderFrameEntry(fixture.pane, state);
+		expect(fixture.handle.render).not.toHaveBeenCalled();
+		expect(state.minDeadlineMs).toBe(150);
+		internal._scheduleNextFrame(state, tick);
+
+		expect(raf).toHaveBeenCalledOnce();
+		expect(raf).toHaveBeenCalledWith(tick);
+		expect(internal.rafHandle).toBe(7);
+		expect(internal.idleTimer).toBeNull();
 	});
 
 	it('handles key, mouse, wheel, search, selection, and overlay APIs', () => {
@@ -489,15 +515,15 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(manager.scrollState('missing')).toEqual({ offset: 0, total: 0 });
 		expect(manager.isSelecting('missing')).toBe(false);
 		expect(manager.getMousePosition('missing')).toEqual({ row: 0, col: 0 });
-		expect(manager.backendName(PANE)).toBe('canvas2d');
+		expect(manager.backendName(PANE)).toBe('WebGPU');
 		expect(manager.backendName('missing')).toBeNull();
 		expect(manager.isAltScreen(PANE)).toBe(false);
 		expect(manager.debugDumpRows(PANE, 0, 0)[0]?.nonSpace[0]?.ch).toBe('A');
 		expect(manager.debugGeometry()).toHaveLength(1);
 	});
 
-	it('keeps TUI gates, IME anchors, redraw invalidation, and theme state coherent', () => {
-		const { manager, fixture } = makeManager();
+	it('keeps TUI gates, IME anchors, redraw invalidation, and theme state coherent', async () => {
+		const { manager, fixture, internal } = makeManager();
 		manager.markInputStart(PANE);
 		expect(manager.readShellInputSnapshot(PANE)).toEqual(expect.objectContaining({ text: 'A', cursorCol: 0 }));
 		expect(manager.inputAnchorCell(PANE)).toEqual({ row: 3, col: 4 });
@@ -520,7 +546,8 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		manager.invalidateWorkspace('workspace-a');
 		manager.invalidateAllPanes();
 		expect(fixture.handle.invalidateAll).toHaveBeenCalled();
-		manager.setFont('new-font', 16);
+		internal.loadedFontStacks.add('new-font');
+		await manager.setFont('new-font', 16);
 		expect(fixture.handle.configure).toHaveBeenCalledWith('new-font', 16, 1);
 		manager.setTheme({ background: '#101010', foreground: '#f0f0f0' });
 		expect(fixture.handle.applyDefaultTheme).toHaveBeenCalled();
@@ -530,8 +557,32 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		manager.reclaimTerminalMemory({ forceHeapPressure: true });
 		manager.restoreTerminalMemory();
 
-		expect(manager.usingWorkerRenderer()).toBe(false);
 		expect(manager.lastPreeditCall('missing')).toBeNull();
+	});
+
+	it('freezes a raw PTY cursor only when the parser reports repaint activity', () => {
+		const { manager, fixture, internal } = makeManager();
+		fixture.kernel.feed.mockReturnValueOnce(true);
+
+		manager.feed(PANE, '\x1b[2K');
+		expect(fixture.pane.tuiCursorSuppressUntil).toBeGreaterThan(0);
+		expect(fixture.handle.setPresentationCursorSuppressed).toHaveBeenCalledWith(true);
+
+		internal._releaseTuiCursorSuppression(fixture.pane);
+		fixture.handle.setPresentationCursorSuppressed.mockClear();
+		fixture.kernel.feed.mockReturnValueOnce(undefined);
+		manager.feed(PANE, 'plain output');
+		expect(fixture.handle.setPresentationCursorSuppressed).not.toHaveBeenCalledWith(true);
+	});
+
+	it('rejects failed font loading before configuring attached panes', async () => {
+		const { manager, fixture, internal } = makeManager();
+
+		await expect(manager.setFont('missing-font', 16)).rejects.toThrow(
+			'FONT_DATA_MISSING: wasm font installer is unavailable',
+		);
+		expect(fixture.handle.configure).not.toHaveBeenCalled();
+		expect(internal.loadedFontStacks.has('missing-font')).toBe(false);
 	});
 
 	it('covers pointer/link routing, scroll subscriptions, padding, and lifecycle defaults', async () => {
@@ -721,7 +772,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 
 	it('does not wipe the shared host when remounting a retained pane', () => {
 		const { manager, fixture, internal } = makeManager();
-		const host = { resize: vi.fn(), invalidate: vi.fn() };
+		const host = { resize: vi.fn(), invalidate: vi.fn(), beginFrame: vi.fn(() => true), endFrame: vi.fn() };
 		internal.globalHost = { canvas: fixture.pane.canvas, host };
 		manager.park(PANE, 'component');
 		expect(manager.isParked(PANE)).toBe(true);
@@ -763,14 +814,18 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 			observe = vi.fn();
 			disconnect = vi.fn();
 		});
-		const { manager, fixture } = makeManager();
+		const { manager, fixture, internal } = makeManager();
+		(manager as any).globalHost = {
+			canvas: fixture.pane.canvas,
+			host: { resize: vi.fn(), invalidate: vi.fn(), beginFrame: vi.fn(() => true), endFrame: vi.fn() },
+		};
 		const container = makeDomElement();
 		await expect(manager.unpark('missing', container as unknown as HTMLElement)).rejects.toThrow('not parked');
 		manager.park(PANE);
 		expect(manager.isParked(PANE)).toBe(true);
 		await manager.unpark(PANE, container as unknown as HTMLElement);
 		expect(manager.isParked(PANE)).toBe(false);
-		expect(container.appendChild).toHaveBeenCalledWith(fixture.pane.canvas);
+		expect(container.appendChild).not.toHaveBeenCalledWith(fixture.pane.canvas);
 		expect(fixture.handle.configure).toHaveBeenCalled();
 		await expect(manager.unpark(PANE, container as unknown as HTMLElement)).rejects.toThrow('already attached');
 		manager.detach(PANE);
@@ -945,7 +1000,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 	it('covers shared-host resize boundaries and workspace invalidation', async () => {
 		const { manager, fixture, internal } = makeManager();
 		internal.panes.clear();
-		const host = { resize: vi.fn(), invalidate: vi.fn() };
+		const host = { resize: vi.fn(), invalidate: vi.fn(), beginFrame: vi.fn(() => true), endFrame: vi.fn() };
 		internal.globalHost = { canvas: fixture.pane.canvas, host };
 
 		manager.resizeHost({ wCss: 0, hCss: 20 });
@@ -989,6 +1044,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 
 	it('covers shared host attach idempotence, wallpaper, and initialization failure', async () => {
 		const { manager, fixture, internal } = makeManager();
+		manager.detachHost();
 		const ctor = SurfaceHostHandle as any;
 		const originalInit = ctor.init;
 		const host = {
@@ -1016,7 +1072,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 
 			manager.detachHost();
 			ctor.init = vi.fn(async () => { throw new Error('adapter unavailable'); });
-			await manager.attachHost(fixture.pane.canvas);
+			await expect(manager.attachHost(fixture.pane.canvas)).rejects.toThrow('adapter unavailable');
 			expect(internal.globalHost).toBeNull();
 		} finally {
 			ctor.init = originalInit;
@@ -1137,7 +1193,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		});
 		expect((manager as any)._isContainerHidden(fixture.pane)).toBe(false);
 
-		const host = { resize: vi.fn(), invalidate: vi.fn() };
+		const host = { resize: vi.fn(), invalidate: vi.fn(), beginFrame: vi.fn(() => true), endFrame: vi.fn() };
 		internal.globalHost = { canvas: fixture.pane.canvas, host };
 		(manager as any)._recomputeViewport(fixture.pane);
 		expect(fixture.handle.setViewportOffset).toHaveBeenCalled();
@@ -1146,7 +1202,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		internal.globalHost = null;
 		internal._sharedRemoteMode = true;
 		(manager as any)._recomputeViewport(fixture.pane);
-		expect(fixture.pane.canvas.style.position).toBe('absolute');
+		expect(fixture.pane.canvas.style.position).toBeUndefined();
 		(fixture.pane.container.getBoundingClientRect as ReturnType<typeof vi.fn>).mockReturnValueOnce({
 			width: 0, height: 0,
 		});
@@ -1217,29 +1273,6 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		await vi.advanceTimersByTimeAsync(30);
 		expect(fixture.pane.autoScrollTimer).toBeNull();
 
-		const worker = {
-			init: vi.fn(() => Promise.reject(new Error('worker init failed'))),
-			bindCanvas: vi.fn(),
-		};
-		internal.syncWorkerRendererIdentity = vi.fn(() => worker);
-		internal.isCurrentWorkerRenderer = vi.fn(() => true);
-		const canvas = {
-			style: {} as Record<string, string>,
-			transferControlToOffscreen: vi.fn(() => ({})),
-		} as unknown as HTMLCanvasElement;
-		(manager as any)._attachWorkerCanvas(PANE, canvas, 1, 200);
-		await Promise.resolve();
-		await Promise.resolve();
-		await Promise.resolve();
-		await Promise.resolve();
-		expect(internal.workerInitializing.has(PANE)).toBe(false);
-
-		const throwingCanvas = {
-			style: {} as Record<string, string>,
-			transferControlToOffscreen: vi.fn(() => { throw new Error('canvas detached'); }),
-		} as unknown as HTMLCanvasElement;
-		(manager as any)._attachWorkerCanvas(PANE, throwingCanvas, 1, 200);
-		expect(internal.workerInitializing.has(PANE)).toBe(false);
 	} finally {
 		vi.useRealTimers();
 	}
@@ -1264,18 +1297,14 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(debug).toHaveBeenCalledWith(expect.stringContaining('[cursor-trace]'));
 
 		const container = makeContainer();
-		internal.opts.preferWebgpu = true;
 		internal.globalHost = { canvas: { getBoundingClientRect: fixture.pane.canvas.getBoundingClientRect } as HTMLCanvasElement, host: {} };
 		fixture.pane.rendererRetained = false;
 		fixture.pane.handle = null;
-		const selected = (manager as any)._selectUnparkCanvas(PANE, container, fixture.pane);
-		expect(selected.useHost).toBe(true);
+		const selected = (manager as any)._selectUnparkCanvas(container);
 		expect(selected.hostHandle).toBe(internal.globalHost.host);
 
 		fixture.pane.rendererRetained = true;
 		fixture.pane.handle = fixture.handle;
-		internal.usingWorkerRenderer = vi.fn(() => true);
-		internal.isWorkerPaneReady = vi.fn(() => true);
 		vi.stubGlobal('document', {
 			createElement: vi.fn(() => ({
 				style: {} as Record<string, string>,
@@ -1283,48 +1312,25 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 				remove: vi.fn(),
 			})),
 		});
-		const prepared = await (manager as any)._prepareUnparkResources(PANE, container, fixture.pane);
+		internal._makeHandleSerialized = vi.fn(async () => fixture.handle);
+		const prepared = await (manager as any)._prepareUnparkResources(container, fixture.pane);
 		expect(fixture.handle.free).toHaveBeenCalled();
-		expect(prepared.handle).toBeNull();
+		expect(prepared.handle).toBe(fixture.handle);
 
 		const staleHandle = { free: vi.fn() };
-		const staleCanvas = { remove: vi.fn() };
 		(manager as any)._commitUnpark(PANE, container, fixture.pane, {
-			usingWorker: false, useHost: false, canvas: staleCanvas, handle: staleHandle, dpr: 1,
+			canvas: selected.canvas, hostHandle: selected.hostHandle, handle: staleHandle, dpr: 1,
 		});
 		expect(staleHandle.free).toHaveBeenCalledOnce();
-		expect(staleCanvas.remove).toHaveBeenCalledOnce();
 		debug.mockRestore();
 	});
 
-	it('covers unpark worker acknowledgements and cancellation paths', () => {
-		const { manager, fixture, internal } = makeManager();
-		const worker = {};
-		internal.isCurrentWorkerRenderer = vi.fn(() => true);
-		internal.fitPaneNow = vi.fn();
-		internal.workerInitializing.add(PANE);
-		(manager as any)._finishUnparkWorker(PANE, 1, worker, { type: 'pending' });
-		expect(internal.workerInitializing.has(PANE)).toBe(false);
-		internal.workerInitializing.add(PANE);
-		(manager as any)._finishUnparkWorker(PANE, 1, worker, { type: 'ready', cellW: 0, cellH: 0 });
-		internal.workerInitializing.add(PANE);
-		(manager as any)._finishUnparkWorker(PANE, 2, worker, { type: 'ready', cellW: 10, cellH: 20 });
-		expect(fixture.pane.lastConfiguredDpr).toBe(2);
-		expect(internal.fitPaneNow).toHaveBeenCalledWith(PANE);
-
-		internal.workerInitializing.add(PANE);
-		(manager as any)._failUnparkWorker(PANE, worker, new Error('pane destroyed; request cancelled'));
-		internal.workerInitializing.add(PANE);
-		(manager as any)._failUnparkWorker(PANE, worker, new Error('unexpected worker failure'));
-		expect(internal.workerInitializing.has(PANE)).toBe(false);
-	});
-
-	it('covers host fit geometry and worker mirror decisions', async () => {
+	it('covers host fit geometry', async () => {
 		vi.useFakeTimers();
 		try {
 			const { manager, fixture, internal } = makeManager();
 			const hostCanvas = fixture.pane.canvas;
-			internal.globalHost = { canvas: hostCanvas, host: {} };
+			internal.globalHost = { canvas: hostCanvas, host: { beginFrame: vi.fn(() => true), endFrame: vi.fn() } };
 			(globalThis.window.getComputedStyle as ReturnType<typeof vi.fn>).mockReturnValue({
 				paddingLeft: '4px', paddingRight: '6px', paddingTop: '2px', paddingBottom: '3px',
 			});
@@ -1332,13 +1338,6 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 			await (manager as any).fitPane(fixture.pane, true);
 			expect(fixture.handle.setViewportOffset).toHaveBeenCalled();
 
-			internal.usingWorkerRenderer = vi.fn(() => true);
-			(manager as any)._resizeWorkerMirror(fixture.pane, { rows: 20, cols: 80, wCss: 800, hCss: 400 });
-			await Promise.resolve();
-			internal.workerAttached.add(PANE);
-			(manager as any)._resizeWorkerMirror(fixture.pane, { rows: 21, cols: 81, wCss: 810, hCss: 420 });
-			internal.workerInitializing.add(PANE);
-			(manager as any)._resizeWorkerMirror(fixture.pane, { rows: 22, cols: 82, wCss: 820, hCss: 440 });
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1443,6 +1442,43 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 	} finally {
 		vi.useRealTimers();
 	}
+	});
+
+	it('renders only the pane dirtied by a bottom-row scroll', () => {
+		const { manager, fixture, internal } = makeManager();
+		const sibling = makePane();
+		sibling.pane.paneId = 'stable-sibling';
+		sibling.pane.canvas = fixture.pane.canvas;
+		internal.panes.set(sibling.pane.paneId, sibling.pane);
+		internal._activeWorkspaceId = fixture.pane.workspaceId;
+		const host = {
+			beginFrame: vi.fn(() => true),
+			endFrame: vi.fn(),
+		};
+		internal.globalHost = { canvas: fixture.pane.canvas, host };
+		const state: any = {
+			frameOrder: [fixture.pane, sibling.pane],
+			dirtyByPane: new Map([
+				[fixture.pane.paneId, true],
+				[sibling.pane.paneId, false],
+			]),
+			activeHost: host,
+			hostFrameOpen: false,
+			surfaceJustWiped: false,
+			anyRendered: false,
+			minDeadlineMs: Infinity,
+			dateNow: Date.now(),
+			perfNow: performance.now(),
+		};
+
+		internal._renderFrameEntry(fixture.pane, state);
+		internal._renderFrameEntry(sibling.pane, state);
+		internal._finishHostFrame(state);
+
+		expect(fixture.handle.render).toHaveBeenCalledOnce();
+		expect(sibling.handle.render).not.toHaveBeenCalled();
+		expect(host.beginFrame).toHaveBeenCalledOnce();
+		expect(host.endFrame).toHaveBeenCalledOnce();
 	});
 });
 

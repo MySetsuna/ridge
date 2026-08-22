@@ -1,391 +1,261 @@
-//! Glyph rasterizer - Round 3 section 4.1.b.
+//! Selected-font shaping and rasterization for the WebGPU glyph atlas.
 //!
-//! ## Why OffscreenCanvas instead of fontdue / cosmic-text
-//!
-//! Two classes of glyph rasterizers exist for a wasm32 target:
-//!
-//! 1. **Pure-Rust crates** (`fontdue`, `ab_glyph`): take a TTF/OTF font
-//!    file at construction, output bitmap glyphs. Pros: no browser
-//!    coupling, predictable. Cons: must bundle a font asset (500 KB-2 MB
-//!    even for a CJK-trimmed subset) and we'd need a fallback chain
-//!    rasterizer (cosmic-text adds ~5 MB) to support Ridge's mixed
-//!    ASCII + CJK + emoji output.
-//!
-//! 2. **Browser canvas-based** (`OffscreenCanvas` + `fillText`):
-//!    delegates to the browser's font system. Pros: ~0 KB extra wasm,
-//!    full system-font + user-configured fallback chain for free,
-//!    matches what Canvas2dBackend already does so visual consistency
-//!    is automatic. Cons: per-glyph rasterization is a sync browser
-//!    call; not ideal but fine since the GlyphAtlas (section 4.2) caches
-//!    every result.
-//!
-//! Ridge picks (2). The atlas's LRU + the renderer's per-row dirty
-//! hash mean glyphs get rasterized once per (font, size, ch) and
-//! cached for the rest of the session.
-//!
-//! ## Pipeline
-//!
-//! `GlyphRasterizer::new(slot_w, slot_h)` creates an OffscreenCanvas
-//! sized to a single glyph slot. `rasterize(font, size_px, ch)` calls
-//! `set_font` + `fill_text` + `get_image_data`, yielding a
-//! `RasterizedGlyph` with RGBA pixel bytes, advance width, and
-//! ascent offset. The caller (future section 4.1.c `WebGpuBackend::draw_row`
-//! cache-miss path) uploads the bytes to a wgpu texture-array layer
-//! and stores the layer index in the matching `GlyphEntry`.
-//!
-//! ## Status
-//!
-//! Slice 1: struct + new() construct an OffscreenCanvas; rasterize()
-//! is a stub returning Err so the next iteration can fill in the
-//! `set_font` / `fill_text` / `get_image_data` body without also
-//! needing to debug surface acquisition. Cargo check --features webgpu
-//! must compile cleanly with the slot allocation in place.
+//! The host loads the user's installed font files before WebGPU starts and
+//! passes their SFNT bytes through `installFontData`. cosmic-text/swash then
+//! keep atlas misses synchronous without creating a browser 2D context.
 
-#![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-#![allow(dead_code)] // round-3 section 4.1.b first slice; rasterize() body is stubbed.
+#![cfg(feature = "webgpu")]
 
-use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{console, CanvasRenderingContext2d, HtmlCanvasElement};
+use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+use cosmic_text::fontdb;
+use cosmic_text::{
+    Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, SwashContent, Weight,
+    Wrap,
+};
 
 use super::glyph_atlas::GlyphKey;
 
-/// True iff `localStorage.RIDGE_DIAG === '1'` at call time. Used to gate
-/// the emoji-rasterisation diagnostic log so users can capture a
-/// per-glyph trace via `localStorage.RIDGE_DIAG='1'; location.reload()`
-/// when investigating "emoji renders blank" reports without paying the
-/// pixel-scan cost on the hot path. Cheap (3 JS calls + a string
-/// compare) and emoji-codepoint-gated at the call site.
-fn ridge_diag_enabled() -> bool {
-    web_sys::window()
-        .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| s.get_item("RIDGE_DIAG").ok().flatten())
-        .map(|v| v == "1")
-        .unwrap_or(false)
+const MAX_FONT_FACES: usize = 32;
+const MAX_FONT_BYTES: usize = 96 * 1024 * 1024;
+const MAX_SINGLE_FONT_BYTES: usize = 32 * 1024 * 1024;
+
+#[derive(Default)]
+struct FontRegistry {
+    faces: Vec<Arc<Vec<u8>>>,
+    hashes: Vec<u64>,
+    total_bytes: usize,
 }
 
-/// Translate a style_flags bitset (matches `GlyphKey::STYLE_BOLD/ITALIC`)
-/// into the leading CSS-font keyword used by the canvas 2D `font` shorthand.
-/// `""` for plain, `"bold "`, `"italic "`, `"bold italic "`. Trailing space
-/// included so callers can `format!("{prefix}{size}px {family}")`.
-fn css_font_style_prefix(style_flags: u8) -> &'static str {
-    let bold = style_flags & GlyphKey::STYLE_BOLD != 0;
-    let italic = style_flags & GlyphKey::STYLE_ITALIC != 0;
-    match (bold, italic) {
-        (false, false) => "",
-        (true, false) => "bold ",
-        (false, true) => "italic ",
-        (true, true) => "bold italic ",
+thread_local! {
+    static FONT_REGISTRY: RefCell<FontRegistry> = RefCell::new(FontRegistry::default());
+}
+
+/// Validate and retain one SFNT/TTC payload. Returns true only for new data.
+pub fn register_font_data(data: Vec<u8>) -> Result<bool, String> {
+    if data.is_empty() || data.len() > MAX_SINGLE_FONT_BYTES {
+        return Err(format!(
+            "FONT_DATA_INVALID: font payload size {} is outside 1..={MAX_SINGLE_FONT_BYTES}",
+            data.len()
+        ));
     }
+    let mut hasher = DefaultHasher::new();
+    data.hash(&mut hasher);
+    let hash = hasher.finish();
+    FONT_REGISTRY.with(|cell| {
+        let mut registry = cell.borrow_mut();
+        if registry.hashes.contains(&hash) {
+            return Ok(false);
+        }
+        if registry.faces.len() >= MAX_FONT_FACES
+            || registry.total_bytes.saturating_add(data.len()) > MAX_FONT_BYTES
+        {
+            return Err("FONT_DATA_LIMIT: terminal font registry is full".to_string());
+        }
+        let data = Arc::new(data);
+        let mut probe = fontdb::Database::new();
+        if probe
+            .load_font_source(fontdb::Source::Binary(data.clone()))
+            .is_empty()
+        {
+            return Err("FONT_DATA_INVALID: payload contains no supported font face".to_string());
+        }
+        registry.total_bytes += data.len();
+        registry.hashes.push(hash);
+        registry.faces.push(data);
+        Ok(true)
+    })
 }
 
-/// One rasterized glyph: pixel bytes + the metrics WebGpuBackend
-/// needs to position the bitmap inside a cell box. Sized so a future
-/// texture-array upload can `write_texture` directly with the rgba
-/// slice + (width, height).
+fn registered_fonts() -> Vec<Arc<Vec<u8>>> {
+    FONT_REGISTRY.with(|cell| cell.borrow().faces.clone())
+}
+
 #[derive(Debug, Clone)]
 pub struct RasterizedGlyph {
-    /// Tightly-packed RGBA8 pixels, row-major, length == width * height * 4.
+    /// Full atlas-slot RGBA8 pixels, row-major.
     pub rgba: Vec<u8>,
-    /// Bitmap dimensions in device pixels (already multiplied by DPR).
+    /// Painted bounds inside the slot.
     pub width: u16,
     pub height: u16,
-    /// Horizontal advance in CSS pixels (post-DPR-divide). Renderer
-    /// uses this to confirm a width-2 cell actually got a wide glyph.
+    /// Horizontal advance in CSS pixels.
     pub advance: f32,
-    /// Vertical offset from cell top to glyph baseline, CSS pixels.
+    /// Device-pixel offset from cell top to the cropped bitmap top.
     pub ascent_offset: f32,
-    /// True when the rasterized pixels carry the font's native color
-    /// palette (color emoji from COLR / CPAL / sbix / SVG fonts) rather
-    /// than the white-on-transparent coverage mask the rasterizer
-    /// requested via `fillStyle = "#ffffff"`. The renderer uses this to
-    /// stretch the cell quad to the full 2-cell width for wide emoji
-    /// (their natural advance is about 1em, narrower than 2 latin cells, and
-    /// would otherwise leave a visible gap on the right).
     pub is_color: bool,
 }
 
-/// Browser-canvas-based glyph rasterizer.
-///
-/// Owns one DOM `HTMLCanvasElement` + 2D context, sized to fit any
-/// single glyph the terminal ever asks for. Slot is intentionally
-/// generous (square = max cell-height x 2) because the canvas backing
-/// store is a one-time allocation per WebGpuBackend lifetime and
-/// resizing it mid-session would clear the in-flight rendering state.
-///
-/// **Why a DOM canvas instead of `OffscreenCanvas`:** WebView2 / older
-/// Chromium revisions resolve `measureText` against a permissive
-/// font-fallback fast path but punt `fillText` to a stricter pipeline
-/// that doesn't see system emoji fonts (Segoe UI Emoji) nor the
-/// document's `@font-face`-declared faces (the on-demand 'Flag Emoji'
-/// flag subset). Symptom
-/// captured 2026-05-08 via the section A.7 RIDGE_DIAG trace: every emoji
-/// codepoint reported `advance_dev > 0` AND `ascent_dev == font_size`
-/// (browser placeholder when no font matched) AND `non_zero_px == 0`
-/// (zero pixels actually painted) - `fillText` silently no-op'd. A
-/// detached-from-DOM `HTMLCanvasElement` exhibits the same gap on some
-/// Chromium versions, but a canvas inserted into `document.body` does
-/// inherit the document's full font-fallback chain reliably. We hide
-/// it via inline `position:absolute; left:-9999px; visibility:hidden`
-/// so layout / pointer-events don't see it.
+struct PendingImage {
+    x: i32,
+    y: i32,
+    content: SwashContent,
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
 pub struct GlyphRasterizer {
-    canvas: HtmlCanvasElement,
-    ctx: CanvasRenderingContext2d,
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    loaded_sources: usize,
+    resolved_stack: String,
+    resolved_family: Option<String>,
     slot_w: u16,
     slot_h: u16,
 }
 
 impl GlyphRasterizer {
-    /// Create a hidden DOM `<canvas>` of `slot_w x slot_h` device
-    /// pixels + its 2D context. Returns Err if the browser can't
-    /// supply a canvas or 2D rendering on it.
     pub fn new(slot_w: u16, slot_h: u16) -> Result<Self, String> {
-        let document = web_sys::window()
-            .ok_or_else(|| "GlyphRasterizer: no window".to_string())?
-            .document()
-            .ok_or_else(|| "GlyphRasterizer: no document".to_string())?;
-        let canvas: HtmlCanvasElement = document
-            .create_element("canvas")
-            .map_err(|e| format!("GlyphRasterizer: createElement('canvas') threw: {e:?}"))?
-            .dyn_into()
-            .map_err(|_| "GlyphRasterizer: createElement returned non-canvas".to_string())?;
-        canvas.set_width(slot_w as u32);
-        canvas.set_height(slot_h as u32);
-        // Hide the canvas off-screen and out of layout. Some
-        // Chromium / WebView2 versions only resolve the document's
-        // full font-fallback chain (system Segoe UI Emoji + the
-        // @font-face 'Flag Emoji' flag subset) for canvases attached
-        // to the document tree - switching here from OffscreenCanvas
-        // was the section A.7 fix for "emoji rasterises blank" reports.
-        canvas
-            .set_attribute(
-                "style",
-                "position:absolute;left:-9999px;top:-9999px;width:0;height:0;visibility:hidden;pointer-events:none",
-            )
-            .ok();
-        document
-            .body()
-            .ok_or_else(|| "GlyphRasterizer: no document.body".to_string())?
-            .append_child(&canvas)
-            .map_err(|e| format!("GlyphRasterizer: append_child failed: {e:?}"))?;
-        let ctx = canvas
-            .get_context("2d")
-            .map_err(|e| format!("GlyphRasterizer: get_context('2d') threw: {e:?}"))?
-            .ok_or_else(|| "GlyphRasterizer: get_context('2d') returned None".to_string())?
-            .dyn_into::<CanvasRenderingContext2d>()
-            .map_err(|_| "GlyphRasterizer: 2D context type mismatch".to_string())?;
-        Ok(Self {
-            canvas,
-            ctx,
+        let mut rasterizer = Self {
+            font_system: FontSystem::new_with_locale_and_db(
+                "en-US".to_string(),
+                fontdb::Database::new(),
+            ),
+            swash_cache: SwashCache::new(),
+            loaded_sources: 0,
+            resolved_stack: String::new(),
+            resolved_family: None,
             slot_w,
             slot_h,
-        })
+        };
+        rasterizer.sync_registered_fonts()?;
+        Ok(rasterizer)
     }
 
-    /// Rasterize a single glyph to RGBA pixels via the browser's 2D
-    /// canvas API. The pipeline:
-    ///
-    ///   1. Set the CSS font string. `font-size font-family` form -
-    ///      family inherits the user's terminal font setting and the
-    ///      browser supplies its full fallback chain.
-    ///   2. Top-baseline so a glyph drawn at y=0 has its top edge
-    ///      flush with the slot's top - simplifies the future shader
-    ///      that places the bitmap at cell-top + ascent_offset.
-    ///   3. Render in pure white so the shader can tint via the
-    ///      cell's `fg_rgba` uniform without re-rasterizing per color.
-    ///   4. Clear the slot before each glyph - `fill_text` paints
-    ///      additively.
-    ///   5. Paint the glyph at (0, 0). Returns Err if the browser
-    ///      throws (rare; usually CORS-tainted fonts but our canvas
-    ///      is internal so this should never fire).
-    ///   6. Read back the entire slot as RGBA pixels. The atlas /
-    ///      caller can crop to the actual glyph bounding box later
-    ///      if texture-array memory pressure demands it.
-    ///   7. Capture the horizontal advance from `measure_text` so
-    ///      the renderer can validate width-2 cells got an
-    ///      appropriately wide glyph.
-    /// section 4.7 (2026-05-07): `glyph_text` may be a single codepoint (the
-    /// common path, ASCII / CJK / single emoji) OR a multi-codepoint
-    /// extended grapheme cluster (family, rainbow flag, US flag). The browser's
-    /// `fill_text` natively handles ZWJ / variation selectors / RIS
-    /// pairs when the font stack includes color-emoji fonts, so the
-    /// rasterizer body is identical - only the input width is wider.
+    /// Pull newly registered host fonts into this live rasterizer.
+    pub fn sync_registered_fonts(&mut self) -> Result<bool, String> {
+        let fonts = registered_fonts();
+        if fonts.is_empty() {
+            return Err(
+                "FONT_DATA_MISSING: install selected system fonts before WebGPU initialization"
+                    .to_string(),
+            );
+        }
+        let mut changed = false;
+        for data in fonts.iter().skip(self.loaded_sources) {
+            if self
+                .font_system
+                .db_mut()
+                .load_font_source(fontdb::Source::Binary(data.clone()))
+                .is_empty()
+            {
+                return Err("FONT_DATA_INVALID: registered font could not be loaded".to_string());
+            }
+            changed = true;
+        }
+        self.loaded_sources = fonts.len();
+        if changed {
+            self.swash_cache = SwashCache::new();
+            self.resolved_stack.clear();
+            self.resolved_family = None;
+        }
+        Ok(changed)
+    }
+
     pub fn rasterize(
-        &self,
+        &mut self,
         font_family: &str,
         font_size_px: f32,
         dpr: f32,
         style_flags: u8,
         glyph_text: &str,
     ) -> Result<RasterizedGlyph, String> {
-        // The OffscreenCanvas backing store is `slot_w x slot_h` DEVICE
-        // pixels. Painting at `{font_size_px}px` (CSS px) without DPR
-        // scaling left the glyph occupying only `font_size / dpr` of
-        // those device pixels - visibly tiny / thin on HiDPI. Render
-        // at `font_size_px * dpr` so the glyph fills DPR-scaled pixels.
-        let dpr_eff = if dpr.is_finite() && dpr > 0.0 {
-            dpr
-        } else {
-            1.0
-        };
-        let device_size_px = (font_size_px * dpr_eff).max(1.0);
+        let dpr = valid_dpr(dpr);
+        let device_size = (font_size_px * dpr).max(1.0);
+        let line_height = (device_size * 1.2).max(1.0);
+        let family = self.resolve_family(font_family)?;
+        let attrs = attrs_for(&family, style_flags);
+        let mut buffer = Buffer::new(
+            &mut self.font_system,
+            Metrics::new(device_size, line_height),
+        );
+        buffer.set_size(Some(self.slot_w as f32), Some(self.slot_h as f32));
+        buffer.set_wrap(Wrap::None);
+        buffer.set_text(glyph_text, &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(&mut self.font_system, false);
 
-        // Build CSS font string with optional `bold ` / `italic ` prefix
-        // so the browser actually applies the SGR weight/slant. Without
-        // this, BOLD cells get a separate atlas slot (per GlyphKey
-        // discriminator) but the painted bitmap is identical to plain -
-        // visible weight loss + cache thrash.
-        let style_prefix = css_font_style_prefix(style_flags);
-        let font_css = format!("{}{}px {}", style_prefix, device_size_px, font_family);
-        self.ctx.set_font(&font_css);
-        // Use the alphabetic baseline (default) and explicitly position it
-        // at `ascent_dev` below the slot top. With `text_baseline = "top"`
-        // the EM-box top is at y=0, but `font_bounding_box_ascent` may
-        // exceed the EM-box ascent - diacriticals or extreme caps in some
-        // fonts then extend ABOVE y=0 and get clipped at the slot top.
-        // Anchoring on the alphabetic baseline `ascent_dev` below y=0
-        // gives every glyph the full ascent room measureText reported,
-        // so the top of any rendered glyph stays inside [0, ascent_dev].
-        // (Caught 2026-05-05 from a user report that the top of glyphs
-        // looked clipped under WebGPU.)
-        self.ctx.set_text_baseline("alphabetic");
-        self.ctx.set_fill_style_str("#ffffff");
+        let mut advance_dev = 0.0_f32;
+        let mut glyphs = Vec::new();
+        for run in buffer.layout_runs() {
+            advance_dev = advance_dev.max(run.line_w);
+            for glyph in run.glyphs {
+                let physical = glyph.physical((0.0, run.line_y), 1.0);
+                glyphs.push((physical.x, physical.y, physical.cache_key));
+            }
+        }
 
-        let slot_w = self.slot_w as f64;
-        let slot_h = self.slot_h as f64;
-        self.ctx.clear_rect(0.0, 0.0, slot_w, slot_h);
+        let mut images = Vec::with_capacity(glyphs.len());
+        let mut min_y = i32::MAX;
+        let mut max_x = 0_i32;
+        let mut max_y = i32::MIN;
+        let mut is_color = false;
+        for (origin_x, origin_y, key) in glyphs {
+            let Some(image) = self
+                .swash_cache
+                .get_image_uncached(&mut self.font_system, key)
+            else {
+                continue;
+            };
+            let x = origin_x + image.placement.left;
+            let y = origin_y - image.placement.top;
+            min_y = min_y.min(y);
+            max_x = max_x.max(x.saturating_add(image.placement.width as i32));
+            max_y = max_y.max(y.saturating_add(image.placement.height as i32));
+            is_color |= image.content == SwashContent::Color;
+            images.push(PendingImage {
+                x,
+                y,
+                content: image.content,
+                width: image.placement.width,
+                height: image.placement.height,
+                data: image.data,
+            });
+        }
 
-        // Measure first so we know where to place the baseline. We only
-        // need the font-wide ascent here; per-glyph actualBoundingBox
-        // is derived after the fill_text call below.
-        let metrics = self
-            .ctx
-            .measure_text(glyph_text)
-            .map_err(|e| format!("GlyphRasterizer::measure_text: {e:?}"))?;
-        let advance_dev = metrics.width() as f32;
-        let advance = advance_dev / dpr_eff;
-        let ascent_dev = metrics.font_bounding_box_ascent() as f32;
-        let descent_dev = metrics.font_bounding_box_descent() as f32;
-        let bbox_h_dev = if ascent_dev > 0.0 && descent_dev > 0.0 {
-            ascent_dev + descent_dev
-        } else {
-            // Browser hasn't populated bbox metrics (rare cold-start).
-            // 1.2x line-height matches measure() above + Canvas2dBackend.
-            device_size_px * 1.2
-        };
-        // Baseline y inside the slot. With `text_baseline = "alphabetic"`,
-        // `fill_text(text, x, y)` positions the alphabetic baseline at y.
-        // Falling back to `device_size_px * 0.8` when the font hasn't
-        // populated bbox metrics yet (about the typical ascent ratio).
-        let baseline_y = if ascent_dev > 0.0 {
-            ascent_dev as f64
-        } else {
-            (device_size_px * 0.8) as f64
-        };
+        if images.is_empty() {
+            return Ok(RasterizedGlyph {
+                rgba: vec![0; self.slot_w as usize * self.slot_h as usize * 4],
+                width: advance_dev.ceil().clamp(1.0, self.slot_w as f32) as u16,
+                height: 1,
+                advance: advance_dev / dpr,
+                ascent_offset: 0.0,
+                is_color: false,
+            });
+        }
 
-        self.ctx
-            .fill_text(glyph_text, 0.0, baseline_y)
-            .map_err(|e| format!("GlyphRasterizer::fill_text: {e:?}"))?;
-
-        let image_data = self
-            .ctx
-            .get_image_data(0.0, 0.0, slot_w, slot_h)
-            .map_err(|e| format!("GlyphRasterizer::get_image_data: {e:?}"))?;
-        let mut rgba: Vec<u8> = image_data.data().to_vec();
-
-        // Device-pixel bounding box of the painted glyph, clamped to
-        // slot. The caller crops `atlas_uv` to this rectangle so the
-        // cell quad samples only the rendered glyph instead of the
-        // entire mostly-empty slot.
-
-        // Width must cover the glyph's ACTUAL painted right edge, not just the
-        // advance. Italic / synthetic-oblique glyphs - especially CJK, which
-        // usually lack a true italic face so the browser shears the upright
-        // glyph - lean their top-right PAST the advance. Cropping to `advance`
-        // alone shaved that overhang off (the "italic CJK missing top-right
-        // corner" report). `actualBoundingBoxRight` is the painted right edge;
-        // for upright glyphs it is about advance, so this is a no-op there.
-        let actual_right_dev = metrics.actual_bounding_box_right() as f32;
-        let bbox_w = advance_dev
-            .max(actual_right_dev)
-            .ceil()
-            .clamp(1.0, self.slot_w as f32) as u16;
-        let bbox_h = bbox_h_dev.ceil().clamp(1.0, self.slot_h as f32) as u16;
-
-        // Detect whether the browser stamped a color-emoji palette into
-        // RGB, or honoured the white fillStyle (monochrome glyph). Judge
-        // chroma, not brightness: some Canvas2D implementations encode
-        // monochrome antialiasing as gray RGB with opaque alpha. Treating
-        // that gray as color makes the shader bypass the cell foreground.
-        let is_color = detect_color(&rgba);
-
-        // section B.4 (2026-05-08) - premultiply alpha. getImageData per spec
-        // returns NON-premultiplied (straight-alpha) bytes. Linear-
-        // filter sampling of straight-alpha textures interpolates rgb
-        // independently of alpha, so an AA fringe pixel between a
-        // painted (R, G, B, alpha=255) texel and a transparent
-        // (0, 0, 0, 0) neighbour samples as (R/2, G/2, B/2, 127). The
-        // shader's previous `mix(bg, glyph_rgb, coverage)` formula
-        // then applied coverage = alpha/2 to glyph_rgb = R/2 - i.e.
-        // the color contribution at the AA fringe was (alpha/2)*(R/2)
-        // = alpha*R/4 instead of the correct alpha*R/2. Color emoji
-        // edges visibly darkened toward black; monochrome glyphs got
-        // gray halos misclassified as "color" by the per-pixel
-        // heuristic (already replaced by section B.3's per-instance flag).
-
-        // Premultiplying at upload time means Linear-filter samples
-        // interpolate (alpha*R, alpha*G, alpha*B, alpha) -> midway
-        // = (alpha*R/2, alpha*G/2, alpha*B/2, alpha/2) which, with
-        // a premultiplied composite formula in the shader (`bg*(1-a)
-        // + sampled.rgb`) gives the correct alpha*R/2 contribution.
-        // No special case for monochrome - `(alpha, alpha, alpha)`
-        // post-premult is fine because the shader's `is_color = false`
-        // path discards `sampled.rgb` and rebuilds the contribution
-        // from `coverage * fg` safely.
-        //
-        // is_color detection happens BEFORE premult since the
-        // threshold (`r < 250`) is calibrated against straight-alpha
-        // bytes. After premult, every non-fully-opaque rgb value is
-        // < 255 and the heuristic would (correctly) classify the
-        // mono glyph as mono - but only because the heuristic now
-        // depends on the per-instance flag's pipeline, not on the
-        // bytes. Keeping the order explicit anyway so future
-        // refactors don't accidentally swap them.
-        premultiply_rgba(&mut rgba);
-
-        // Emoji-rasterisation diagnostic. Gated on (a) leading codepoint
-        // >= U+2600 (covers Dingbats + every SMP emoji block, skips ASCII
-        // / CJK / Latin extension hot paths) and (b) RIDGE_DIAG=1, so
-        // normal users pay nothing. When user reports "emoji blank", the
-        // emitted line tells us in one shot whether the rasterizer
-        // received any pixels at all (non_zero_px), whether color was
-        // detected (is_color), and which font_css the OffscreenCanvas
-        // resolved against - three orthogonal failure modes.
-        log_emoji_diagnostic(
-            glyph_text,
-            &font_css,
+        let mut crop_y = min_y;
+        let width = max_x.clamp(1, self.slot_w as i32) as u16;
+        let mut height = max_y.saturating_sub(crop_y).clamp(1, self.slot_h as i32) as u16;
+        let mut rgba = vec![0; self.slot_w as usize * self.slot_h as usize * 4];
+        for image in &images {
+            composite_image(
+                &mut rgba,
+                self.slot_w as usize,
+                self.slot_h as usize,
+                image,
+                crop_y,
+            );
+        }
+        stabilize_box_connector_edges(
+            &mut rgba,
+            self.slot_w as usize,
+            width as usize,
+            &mut height,
+            &mut crop_y,
             advance_dev,
-            ascent_dev,
-            bbox_w,
-            bbox_h,
-            is_color,
-            &rgba,
+            line_height,
+            glyph_text,
         );
 
         Ok(RasterizedGlyph {
             rgba,
-            // Was: `self.slot_w / self.slot_h`. That was wrong per the
-            // field's documented contract ("Bitmap dimensions in device
-            // pixels"); it produced a [0,0,1,1] sample over the whole
-            // 32x32 slot and shrank the glyph into a corner of the cell.
-            width: bbox_w,
-            height: bbox_h,
-            advance,
-            // `set_text_baseline("top")` plus `fill_text(_, 0.0, 0.0)`
-            // means the glyph's top edge sits at y=0, so the offset
-            // from cell-top to glyph-top is 0. A future slice that
-            // wants pixel-perfect baseline alignment can re-derive
-            // this from `metrics.font_bounding_box_ascent()`.
-            ascent_offset: 0.0,
+            width,
+            height,
+            advance: advance_dev / dpr,
+            ascent_offset: crop_y as f32,
             is_color,
         })
     }
@@ -394,88 +264,405 @@ impl GlyphRasterizer {
         (self.slot_w, self.slot_h)
     }
 
-    /// Measure the cell metrics (cell_w, cell_h) for the given font.
-    ///
-    /// Mirrors `Canvas2dBackend::measure_font` bit-for-bit so the
-    /// WebGPU and Canvas2D paths produce identical cellW/cellH numbers
-    /// for the same (family, size_px) - fitPane stays backend-agnostic.
-    ///
-    /// Algorithm (matches `Canvas2dBackend`):
-    /// - `cell_w = advance('M')` rounded to int CSS px (>= 1).
-    /// - `cell_h = font_bounding_box_ascent + font_bounding_box_descent`
-    ///   when both are available; falls back to `font_size_px * 1.2`
-    ///   if the browser returns zeros (rare; some systems on first
-    ///   measurement before font is loaded). Rounded to int (>= 1).
-    ///
-    /// Sub-pixel cell sizes cause boundary-alignment issues documented
-    /// in `canvas2d.rs`'s module header - rounding here is load-bearing.
-    pub fn measure(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
-        let font_css = format!("{}px {}", font_size_px, font_family);
-        self.ctx.set_font(&font_css);
-        self.ctx.set_text_baseline("top");
-        let metrics = self
-            .ctx
-            .measure_text("M")
-            .map_err(|e| format!("GlyphRasterizer::measure: measure_text threw: {e:?}"))?;
-        let w = metrics.width() as f32;
-        let ascent = metrics.font_bounding_box_ascent() as f32;
-        let descent = metrics.font_bounding_box_descent() as f32;
-        let h = if ascent > 0.0 && descent > 0.0 {
-            ascent + descent
-        } else {
-            font_size_px * 1.2
-        };
-        Ok((w.round().max(1.0), h.round().max(1.0)))
+    pub fn measure(&mut self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
+        let family = self.resolve_family(font_family)?;
+        let metrics = Metrics::new(font_size_px.max(1.0), (font_size_px * 1.2).max(1.0));
+        let mut buffer = Buffer::new(&mut self.font_system, metrics);
+        buffer.set_size(None, Some(metrics.line_height));
+        buffer.set_wrap(Wrap::None);
+        buffer.set_text(
+            "M",
+            &Attrs::new().family(Family::Name(&family)),
+            Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut self.font_system, false);
+        let run = buffer
+            .layout_runs()
+            .next()
+            .ok_or_else(|| format!("FONT_DATA_MISSING: no face matched {family}"))?;
+        Ok((
+            run.line_w.round().max(1.0),
+            run.line_height.round().max(1.0),
+        ))
+    }
+
+    fn resolve_family(&mut self, stack: &str) -> Result<String, String> {
+        if self.resolved_stack == stack {
+            if let Some(family) = self.resolved_family.as_ref() {
+                return Ok(family.clone());
+            }
+        }
+        let family = first_available_family(stack, |candidate| {
+            let query_family = match candidate.to_ascii_lowercase().as_str() {
+                "monospace" | "ui-monospace" => Family::Monospace,
+                "serif" => Family::Serif,
+                "sans-serif" | "system-ui" => Family::SansSerif,
+                _ => Family::Name(candidate),
+            };
+            let query = fontdb::Query {
+                families: std::slice::from_ref(&query_family),
+                weight: fontdb::Weight::NORMAL,
+                stretch: fontdb::Stretch::Normal,
+                style: fontdb::Style::Normal,
+            };
+            let id = self.font_system.db().query(&query)?;
+            self.font_system
+                .db()
+                .face(id)
+                .and_then(|face| face.families.first())
+                .map(|(name, _)| name.clone())
+                .or_else(|| Some(candidate.to_string()))
+        })
+        .ok_or_else(|| format!("FONT_DATA_MISSING: no loaded face matched {stack}"))?;
+        self.resolved_stack.clear();
+        self.resolved_stack.push_str(stack);
+        self.resolved_family = Some(family.clone());
+        Ok(family)
     }
 }
 
-fn detect_color(rgba: &[u8]) -> bool {
-    rgba.chunks_exact(4).any(|px| {
-        if px[3] < 8 {
-            return false;
-        }
-        let max = px[..3].iter().copied().max().unwrap_or(0);
-        let min = px[..3].iter().copied().min().unwrap_or(0);
-        max.saturating_sub(min) >= 8
-    })
+fn valid_dpr(dpr: f32) -> f32 {
+    if dpr.is_finite() && dpr > 0.0 {
+        dpr
+    } else {
+        1.0
+    }
 }
 
-fn premultiply_rgba(rgba: &mut [u8]) {
-    for px in rgba.chunks_exact_mut(4) {
-        let alpha = px[3] as u32;
-        match alpha {
-            0 => px[..3].fill(0),
-            255 => {}
-            a => {
-                for channel in &mut px[..3] {
-                    *channel = ((*channel as u32 * a + 127) / 255) as u8;
+fn first_available_family(
+    stack: &str,
+    mut resolve: impl FnMut(&str) -> Option<String>,
+) -> Option<String> {
+    stack
+        .split(',')
+        .map(|part| part.trim().trim_matches(['\'', '"']).trim())
+        .filter(|part| !part.is_empty())
+        .find_map(|part| resolve(part))
+}
+
+fn attrs_for(family: &str, style_flags: u8) -> Attrs<'_> {
+    let weight = if style_flags & GlyphKey::STYLE_BOLD != 0 {
+        Weight::BOLD
+    } else {
+        Weight::NORMAL
+    };
+    let style = if style_flags & GlyphKey::STYLE_ITALIC != 0 {
+        Style::Italic
+    } else {
+        Style::Normal
+    };
+    Attrs::new()
+        .family(Family::Name(family))
+        .weight(weight)
+        .style(style)
+}
+
+fn composite_image(
+    dst: &mut [u8],
+    slot_w: usize,
+    slot_h: usize,
+    image: &PendingImage,
+    crop_y: i32,
+) {
+    for src_y in 0..image.height as usize {
+        for src_x in 0..image.width as usize {
+            let x = image.x + src_x as i32;
+            let y = image.y - crop_y + src_y as i32;
+            if x < 0 || y < 0 || x as usize >= slot_w || y as usize >= slot_h {
+                continue;
+            }
+            let src = match image.content {
+                SwashContent::Mask => {
+                    let alpha = image.data[src_y * image.width as usize + src_x];
+                    [alpha, alpha, alpha, alpha]
                 }
+                SwashContent::Color => {
+                    let offset = (src_y * image.width as usize + src_x) * 4;
+                    let alpha = image.data[offset + 3];
+                    [
+                        premultiply(image.data[offset], alpha),
+                        premultiply(image.data[offset + 1], alpha),
+                        premultiply(image.data[offset + 2], alpha),
+                        alpha,
+                    ]
+                }
+                SwashContent::SubpixelMask => continue,
+            };
+            let offset = (y as usize * slot_w + x as usize) * 4;
+            blend_premult(&mut dst[offset..offset + 4], src);
+        }
+    }
+}
+
+fn premultiply(channel: u8, alpha: u8) -> u8 {
+    ((channel as u32 * alpha as u32 + 127) / 255) as u8
+}
+
+fn blend_premult(dst: &mut [u8], src: [u8; 4]) {
+    let inv = 255_u32 - src[3] as u32;
+    for channel in 0..3 {
+        dst[channel] =
+            (src[channel] as u32 + (dst[channel] as u32 * inv + 127) / 255).min(255) as u8;
+    }
+    dst[3] = (src[3] as u32 + (dst[3] as u32 * inv + 127) / 255).min(255) as u8;
+}
+
+/// Preserve the selected font's box-drawing outline while removing the
+/// repeated anti-aliased notch at horizontal cell joins. Swash rasterizes a
+/// fractional advance into an integer bitmap, so the last covered device pixel
+/// can be translucent even though the outline reaches the advance boundary.
+/// Adjacent cached glyphs then repeat that dim endpoint at every cell. Only
+/// already-covered boundary pixels are made opaque. Vertical connectors are
+/// extended through line-height slack by repeating the font's own edge row;
+/// the curved outline itself is never replaced with a procedural shape.
+fn stabilize_box_connector_edges(
+    rgba: &mut [u8],
+    slot_w: usize,
+    width: usize,
+    height: &mut u16,
+    ascent_offset: &mut i32,
+    advance_dev: f32,
+    line_height: f32,
+    glyph_text: &str,
+) {
+    let mut chars = glyph_text.chars();
+    let Some(ch) = chars.next() else { return };
+    if chars.next().is_some() || !('\u{2500}'..='\u{257f}').contains(&ch) || slot_w == 0 {
+        return;
+    }
+    let right = advance_dev.ceil().max(1.0) as usize - 1;
+    let glyph_height = *height as usize;
+    for x in [0, right] {
+        if x >= width || x >= slot_w {
+            continue;
+        }
+        for y in 0..glyph_height {
+            let offset = (y * slot_w + x) * 4;
+            if offset + 4 <= rgba.len() && rgba[offset + 3] != 0 {
+                rgba[offset..offset + 4].fill(255);
             }
         }
     }
-}
 
-fn log_emoji_diagnostic(
-    glyph_text: &str,
-    font_css: &str,
-    advance_dev: f32,
-    ascent_dev: f32,
-    bbox_w: u16,
-    bbox_h: u16,
-    is_color: bool,
-    rgba: &[u8],
-) {
-    let first_cp = glyph_text.chars().next().map(|c| c as u32).unwrap_or(0);
-    if first_cp < 0x2600 || !ridge_diag_enabled() {
+    // Common light box glyphs must also meet across row boundaries. Bottom
+    // corners and vertical strokes start at the cell top; retain the original
+    // bitmap by shifting it down, then repeat only its first connector row into
+    // the font's top slack. One device-pixel overlap prevents a sampling seam
+    // where adjacent row quads meet exactly at the same boundary.
+    let target_height = line_height.round().max(1.0) as i32;
+    let slot_h = rgba.len() / (slot_w * 4);
+    let row_bytes = slot_w * 4;
+    let connector_center_x = (advance_dev.ceil().max(1.0) as usize - 1) / 2;
+    let top_extension = match ch {
+        '│' | '╰' | '╯' => (*ascent_offset).max(0) as usize + 1,
+        _ => 0,
+    }
+    .min(slot_h.saturating_sub(glyph_height));
+    let top_source = (0..glyph_height)
+        .find(|&y| (0..width.min(slot_w)).any(|x| rgba[(y * slot_w + x) * 4 + 3] >= 192))
+        .map(|row| (row, 192))
+        .or_else(|| {
+            (0..glyph_height)
+                .find(|&y| (0..width.min(slot_w)).any(|x| rgba[(y * slot_w + x) * 4 + 3] >= 128))
+                .map(|row| (row, 128))
+        })
+        .or_else(|| {
+            (0..glyph_height)
+                .find(|&y| (0..width.min(slot_w)).any(|x| rgba[(y * slot_w + x) * 4 + 3] != 0))
+                .map(|row| (row, 1))
+        });
+    let mut glyph_height = glyph_height;
+    if top_extension != 0 {
+        rgba.copy_within(0..glyph_height * row_bytes, top_extension * row_bytes);
+        if let Some((source_row, min_alpha)) = top_source {
+            let source = (source_row + top_extension) * row_bytes;
+            let connector_x = (0..width.min(slot_w))
+                .filter(|&x| rgba[source + x * 4 + 3] >= min_alpha)
+                .min_by_key(|&x| x.abs_diff(connector_center_x));
+            if let Some(x) = connector_x {
+                for y in 0..top_extension {
+                    let dest = y * row_bytes + x * 4;
+                    rgba[dest..dest + 4].fill(255);
+                }
+            }
+        }
+        *ascent_offset -= top_extension as i32;
+        *height += top_extension as u16;
+        glyph_height += top_extension;
+    }
+
+    // Top corners and vertical strokes finish at the cell bottom. Repeat only
+    // the font's own last connector row through the remaining bottom slack and
+    // one device pixel into the next row; curves and horizontal arms remain
+    // byte-for-byte intact.
+    let extension = match ch {
+        '│' | '╭' | '╮' => {
+            target_height
+                .saturating_sub(*ascent_offset + *height as i32)
+                .max(0) as usize
+                + 1
+        }
+        _ => 0,
+    };
+    let extension = extension.min(slot_h.saturating_sub(glyph_height));
+    if extension == 0 {
         return;
     }
-    let total_px = rgba.len() / 4;
-    let non_zero_px = rgba.chunks_exact(4).filter(|p| p[3] >= 8).count();
-    let msg = format!(
-        "[noto-emoji-diag] cp=U+{first_cp:04X} font=\"{font_css}\" \
-         advance_dev={advance_dev:.2} ascent_dev={ascent_dev:.2} \
-         bbox=({bbox_w}x{bbox_h}) is_color={is_color} \
-         non_zero_px={non_zero_px}/{total_px}"
-    );
-    console::log_1(&JsValue::from_str(&msg));
+    let source = (0..glyph_height)
+        .rev()
+        .find(|&y| (0..width.min(slot_w)).any(|x| rgba[(y * slot_w + x) * 4 + 3] >= 192))
+        .map(|row| (row, 192))
+        .or_else(|| {
+            (0..glyph_height)
+                .rev()
+                .find(|&y| (0..width.min(slot_w)).any(|x| rgba[(y * slot_w + x) * 4 + 3] >= 128))
+                .map(|row| (row, 128))
+        })
+        .or_else(|| {
+            (0..glyph_height)
+                .rev()
+                .find(|&y| (0..width.min(slot_w)).any(|x| rgba[(y * slot_w + x) * 4 + 3] != 0))
+                .map(|row| (row, 1))
+        });
+    let Some((source_row, min_alpha)) = source else {
+        return;
+    };
+    let source = source_row * slot_w * 4;
+    let connector_x = (0..width.min(slot_w))
+        .filter(|&x| rgba[source + x * 4 + 3] >= min_alpha)
+        .min_by_key(|&x| x.abs_diff(connector_center_x));
+    if let Some(x) = connector_x {
+        for y in glyph_height..glyph_height + extension {
+            let dest = y * slot_w * 4 + x * 4;
+            rgba[dest..dest + 4].fill(255);
+        }
+    }
+    *height += extension as u16;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn css_stack_uses_first_available_family() {
+        assert_eq!(
+            first_available_family("'JetBrains Mono', ui-monospace, Consolas", |family| {
+                match family {
+                    "ui-monospace" => Some("Consolas".to_string()),
+                    _ => None,
+                }
+            })
+            .as_deref(),
+            Some("Consolas")
+        );
+        assert_eq!(
+            first_available_family("  ", |_| Some("unused".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn premultiplied_blend_preserves_coverage() {
+        let mut dst = [0, 0, 0, 0];
+        blend_premult(&mut dst, [64, 32, 16, 128]);
+        assert_eq!(dst, [64, 32, 16, 128]);
+        blend_premult(&mut dst, [0, 64, 0, 128]);
+        assert_eq!(dst, [32, 80, 8, 192]);
+    }
+
+    #[test]
+    fn box_connector_edges_keep_shape_and_remove_dim_join() {
+        let mut rgba = vec![0; 3 * 2 * 4];
+        rgba[3] = 96;
+        rgba[(2 * 4)..(2 * 4 + 4)].fill(204);
+
+        let mut height = 2;
+        let mut ascent_offset = 0;
+        stabilize_box_connector_edges(
+            &mut rgba,
+            3,
+            3,
+            &mut height,
+            &mut ascent_offset,
+            3.0,
+            2.0,
+            "─",
+        );
+
+        assert_eq!(&rgba[0..4], &[255; 4]);
+        assert_eq!(&rgba[(2 * 4)..(2 * 4 + 4)], &[255; 4]);
+        assert_eq!(&rgba[(3 * 4)..(3 * 4 + 4)], &[0; 4]);
+
+        let mut ordinary = rgba.clone();
+        ordinary[3] = 96;
+        stabilize_box_connector_edges(
+            &mut ordinary,
+            3,
+            3,
+            &mut height,
+            &mut ascent_offset,
+            3.0,
+            2.0,
+            "A",
+        );
+        assert_eq!(ordinary[3], 96);
+    }
+
+    #[test]
+    fn vertical_box_glyph_extends_only_its_existing_connector_pixels() {
+        let mut rgba = vec![0; 3 * 6 * 4];
+        rgba[(1 * 4)..(1 * 4 + 4)].fill(128);
+        rgba[(4 * 4)..(4 * 4 + 4)].fill(128);
+        let mut height = 2;
+        let mut ascent_offset = 0;
+
+        stabilize_box_connector_edges(
+            &mut rgba,
+            3,
+            3,
+            &mut height,
+            &mut ascent_offset,
+            3.0,
+            4.0,
+            "│",
+        );
+
+        assert_eq!(ascent_offset, -1);
+        assert_eq!(height, 6);
+        assert_eq!(&rgba[(1 * 4)..(1 * 4 + 4)], &[255; 4]);
+        assert_eq!(&rgba[(2 * 3 * 4 + 4)..(2 * 3 * 4 + 8)], &[128; 4]);
+        assert_eq!(&rgba[(5 * 3 * 4 + 4)..(5 * 3 * 4 + 8)], &[255; 4]);
+        assert_eq!(&rgba[(2 * 3 * 4)..(2 * 3 * 4 + 4)], &[0; 4]);
+    }
+
+    #[test]
+    fn bottom_corner_extends_its_connector_to_the_cell_top() {
+        let mut rgba = vec![0; 3 * 6 * 4];
+        rgba[(1 * 4)..(1 * 4 + 4)].fill(128);
+        rgba[(4 * 4)..(4 * 4 + 4)].fill(64);
+        let mut height = 2;
+        let mut ascent_offset = 2;
+
+        stabilize_box_connector_edges(
+            &mut rgba,
+            3,
+            3,
+            &mut height,
+            &mut ascent_offset,
+            3.0,
+            4.0,
+            "╰",
+        );
+
+        assert_eq!(ascent_offset, -1);
+        assert_eq!(height, 5);
+        for y in 0..3 {
+            assert_eq!(&rgba[(y * 3 * 4 + 4)..(y * 3 * 4 + 8)], &[255; 4]);
+        }
+        assert_eq!(&rgba[(3 * 3 * 4 + 4)..(3 * 3 * 4 + 8)], &[128; 4]);
+        assert_eq!(&rgba[(4 * 3 * 4 + 4)..(4 * 3 * 4 + 8)], &[64; 4]);
+        assert_eq!(&rgba[0..4], &[0; 4]);
+    }
 }

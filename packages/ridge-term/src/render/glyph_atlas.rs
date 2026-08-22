@@ -2,19 +2,16 @@
 //!
 //! ## Purpose (TASKS §4.2 + OVERVIEW §D1)
 //!
-//! Today every Canvas2D backend pays the browser to rasterize each glyph
-//! every frame via `fillText`. With WebGPU (§4.1) we'll upload glyph
-//! bitmaps once into a texture array and reference them by `(layer, uv)`
-//! at draw time — that's the speedup. The atlas IS the cache that maps
-//! `GlyphKey → GlyphEntry`; texture management lives in `WebGpuBackend`.
+//! The WebGPU renderer rasterizes each selected-font glyph once, uploads its
+//! bitmap to a texture array, then references it by `(layer, uv)` at draw
+//! time. The atlas maps `GlyphKey → GlyphEntry`; texture ownership remains
+//! in the shared WebGPU context.
 //!
 //! ## Decoupling from the renderer
 //!
-//! `GlyphAtlas` knows nothing about wgpu / web-sys / Canvas2D. It's a
-//! pure data structure: insert + lookup + LRU eviction. This lets host
-//! `cargo test --lib` run the eviction logic without a GPU and lets a
-//! future Canvas2D path opt-in to atlas-based draw if metrics ever prove
-//! that's faster than `fillText`.
+//! `GlyphAtlas` knows nothing about wgpu or web-sys. It is a pure data
+//! structure: insert + lookup + LRU eviction. Host `cargo test --lib` can
+//! therefore verify eviction without a GPU.
 //!
 //! ## Key design
 //!
@@ -91,8 +88,8 @@ pub struct GlyphEntry {
     /// Vertical offset from cell top to glyph baseline. Backend uses
     /// this to position the bitmap inside the cell box.
     pub ascent_offset: f32,
-    /// Bitmap pixel dimensions (pre-DPR). Backend may cross-check
-    /// against the atlas slot it was uploaded to.
+    /// Native device-pixel bitmap dimensions after removing any atlas-only
+    /// supersample factor. The draw quad must preserve this exact extent.
     pub px_w: u16,
     pub px_h: u16,
     /// True when the glyph carries a color-emoji palette in its atlas
@@ -101,6 +98,22 @@ pub struct GlyphEntry {
     /// emoji fonts target ~1em advance, narrower than 2 latin cells,
     /// and would otherwise leave a visible gap.
     pub is_color: bool,
+}
+
+/// Place a native-rasterized glyph without stretching it to the cell height.
+#[cfg_attr(
+    not(any(test, all(target_arch = "wasm32", feature = "webgpu"))),
+    allow(dead_code)
+)]
+pub(crate) fn glyph_quad_geometry(
+    pixel_x: f32,
+    pixel_y: f32,
+    entry: &GlyphEntry,
+) -> ([f32; 2], [f32; 2]) {
+    (
+        [pixel_x, pixel_y + entry.ascent_offset],
+        [(entry.px_w as f32).max(1.0), (entry.px_h as f32).max(1.0)],
+    )
 }
 
 struct AtlasEntry {
@@ -369,6 +382,20 @@ mod tests {
         assert_ne!(low, high);
         assert_eq!(low.raster_dpr_q, 1000);
         assert_eq!(high.raster_dpr_q, 2000);
+    }
+
+    #[test]
+    fn glyph_quad_preserves_native_bitmap_extent_and_vertical_offset() {
+        let glyph = GlyphEntry {
+            ascent_offset: 3.0,
+            px_w: 7,
+            px_h: 11,
+            ..entry(0)
+        };
+        assert_eq!(
+            glyph_quad_geometry(10.0, 20.0, &glyph),
+            ([10.0, 23.0], [7.0, 11.0])
+        );
     }
 
     #[test]

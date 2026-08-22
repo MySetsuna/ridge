@@ -52,16 +52,15 @@
 - 批准证据：用户授权“审核无问题即全部通过”；审计通过。
 - 类型：`FIX`
 - 原始意图：ridge-term 中 PowerShell/Codex 的细线、边框与字形须接近原生 PowerShell 的平滑度。
-- 当前证据：共享 `TerminalManager` 默认优先 WebGPU、失败回退 Canvas2D，并按 DPR 量化 cell；
-  `image-1.png` 仍显示观感差异，现无原生对照矩阵。
-- 目标行为：同字体、字号、DPR 与缩放下，线框连续、基线稳定、字形不锯齿/发虚；WebGPU 与
-  Canvas2D fallback 不得产生明显不同的 cell 几何。
-- 范围：ridge-term 字形栅格、字体栈、glyph atlas、Canvas2D/WebGPU 设备像素映射。
+- 当前证据：终端仅走 WebGPU；桌面由受限原生命令读取所选系统字体字节，Remote 经显式
+  Local Font Access 授权取得字节，再由 Wasm 内 cosmic-text/swash 同步栅格化并写入 glyph atlas。
+- 目标行为：同字体、字号、DPR 与缩放下，所选字体真实字形、圆角、基线及 1px 线保持锐利稳定。
+- 范围：ridge-term 字形栅格、系统字体数据服务、字体栈、glyph atlas 与 WebGPU 设备像素映射。
 - 非目标：重做终端协议解析；改变用户选定字体语义。
 - 边界：不得以 CSS blur/transform、截图后处理或改 PTY rows/cols 假装修复。
 - 假设/待确认：先判字体栈、hinting、device-pixel 对齐、WebGPU atlas 或 Canvas2D raster 哪层失真。
 - 验收：DPR `1/1.25/1.5/2`、100%/125%/150% 缩放的原生 PS 对照图；同一 box-drawing fixture
-  验证 cell、基线、1px 线连续；两 backend 均有可复核捕获。
+  验证 cell、基线、1px 线连续；WebGPU 实窗有可复核捕获且运行错误为空。
 - 预期落点：共享 terminal manager/font stack、ridge-term renderer 与视觉 fixture。
 
 ### REQ-CODEX-RENDER-STABILITY-01
@@ -1360,6 +1359,24 @@
 - 假设:“所有流行 CLI agent”指支持 MCP 或可使用标准 bridge 的客户端；未提供 MCP 能力者需其自身适配，不由 Ridge 冒充私有协议。
 - 验收:协议测试以至少三种不同 clientInfo/name 完成 initialize/tools/list 与一项只读工具且结果一致；代码/文档扫描无固定 RidgeCode 默认调用；launch 测试证明仅使用能力清单、未知/空 profile 拒绝；提供 Codex/Claude/Gemini 或同类 CLI 配置示例，并明确其他 MCP 客户端同契约。
 - 追踪:ridge-mcp server/bridge → launch capabilities → host split/launch → docs/mcp-integration → multi-client contract tests
+
+### REQ-TERMINAL-WEBGPU-ONLY-01 · 终端渲染改为 WebGPU 单后端
+
+- Approval evidence:`批准 PENDING-REQ-TERMINAL-WEBGPU-
+  ONLY-01`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 类型:`REMOVE` + `MODIFY`
+- 批准证据:`批准 PENDING-REQ-TERMINAL-WEBGPU-ONLY-01`（聊天界面在 WebGPU- 后折行）
+- 关联 Active 条款:`REQ-TERMINAL-RASTER-01`、`REQ-CODEX-RENDER-STABILITY-01`；本条取代其中 Canvas2D fallback/双后端一致性部分，不削弱真实字体、滚动、cursor 与稳定性要求。
+- 行为:ridge-term 仅保留 WebGPU 渲染后端；主线程、worker/offscreen、共享 host 与所有构造入口均不再创建或降级至 Canvas2D。无 WebGPU 能力、adapter/device/surface 初始化失败时，向上返回明确可行动错误并终止该 pane 渲染，不得黑屏、假成功或静默回退。HTML canvas 作为 WebGPU surface 可保留，但不得取得 `2d` context。
+- 范围:`packages/ridge-term` 的 Canvas2D backend、`AnyBackend` 分支、RenderHandle 构造/导出、worker backend 选择、WebGPU-first fallback；`packages/remote` TerminalManager/render worker 的 Canvas2D 请求与降级接线；相关 web-sys feature、测试、诊断、文档及生成 wasm 绑定。
+- 非目标:不移除 WebGPU 所需 HTML canvas/surface；不新增另一套软件栅格兜底；不改变 VT/PTY 协议、用户字体选择、终端 rows/cols、输入/选择/IME/历史 overlay 语义；本项不授权发布。
+- 边界:WebGPU 现有滚动拷贝、glyph atlas、DPR 几何、cursor/presentation fence、壁纸/透明背景与 accessibility 接线保持可用；失败必须显式可诊断；删除代码不得以禁用但遗留死分支代替。
+- 假设/待确认:按“彻底移除”执行为同时删除 main-thread Canvas2D、OffscreenCanvas 2D worker 路径、fallback API/类型/依赖/测试与调用方；因此不支持 WebGPU 的浏览器/WebView/设备不再提供终端渲染。
+- 验收:① `rg` 不再发现 `Canvas2dBackend`、`CanvasRenderingContext2d`、`OffscreenCanvasRenderingContext2d`、`getContext('2d')` 或 terminal backend=`canvas2d` 生产接线；② 所有 RenderHandle/worker 构造仅走 WebGPU，初始化失败返回结构化错误且 UI/E2E 可见；③ wasm32 `ridge-term --features webgpu` 编译、Rust/TS 定向与全量回归通过；④ dev:cdp 在 WebGPU 可用时验证普通 shell、TUI/alt-screen/DECSTBM 滚动、真实字体 `╭╮╯╰`、cursor/IME/selection；⑤ 无 WebGPU fixture 断言明确失败且无 Canvas2D context；⑥ 生成 wasm 绑定与锁文件无遗留导出。
+- 当前实现证据（2026-08-23）：终端 Canvas2D 生产实现符号扫描 0 命中；Rust `431/431`、Vitest `1973 passed + 5 skipped`、Svelte `0/0`，native/wasm32 WebGPU check 与 desktop/mobile build 通过。真实 WebView2 CDP 在 DPR `1/1.25/1.5/2` 四档均为 `backend=WebGPU`、`runtimeErrors=[]`；120 帧 alt-screen TUI burst、DECSTBM 与真实字体 `╭╮╯╰` fixture 皆通过并留存截图。renderer 单测精确约束主屏、inline TUI、alt-screen、DECSTBM 的暴露带重绘；glyph quad 单测约束原生 bitmap 尺寸与垂直 offset，不再拉伸至 cell 高度。
+- 追踪:`REQ-TERMINAL-WEBGPU-ONLY-01` → ridge-term render/mod.rs/lib.rs/webgpu → remote TerminalManager/renderWorker → wasm bindings/features → Rust/TS/dev:cdp 能力与失败路径测试
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |

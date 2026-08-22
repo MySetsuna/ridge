@@ -364,7 +364,7 @@
   // recompute viewports for that workspace's panes against the (still
   // alive) global host canvas, invalidate, and wake the RAF loop so the
   // next frame paints the right scissors. No-op when no global host
-  // (Canvas2D fallback path doesn't share a surface).
+  // (the WebGPU-only host surface is shared by all panes).
   $effect(() => {
     const wsId = $activeWorkspaceId;
     if (!wsId) return;

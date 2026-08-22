@@ -9,7 +9,6 @@
     "build:remote": "pnpm build:remote:desktop && pnpm build:remote:mobile",
     "build:remote:desktop": "node scripts/build-remote-desktop.mjs",
     "build:remote:mobile": "vite build --config vite.remote.config.js",
-    "build:flag-font": "node scripts/build-flag-font.mjs",
     "publish:remote-cloud": "node scripts/publish-remote-cloud.mjs",
     "sync:signaling": "node scripts/sync-signaling.mjs",
     "dev:remote": "node scripts/start-remote-dev.mjs",

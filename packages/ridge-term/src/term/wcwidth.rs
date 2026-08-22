@@ -148,7 +148,7 @@ pub fn wcwidth(cp: u32) -> u8 {
     //         px_w`)
     //
     // The renderer's "narrow cell with wide-rendered glyph" path
-    // (see webgpu.rs::draw_row §B.8 branch + canvas2d.rs equivalent)
+    // (see webgpu.rs::draw_row §B.8 branch)
     // splits the cell into a 1-cell bg quad + a natural-advance glyph
     // quad that is allowed to overflow into the next cell. The next
     // cell's instance, drawn after, naturally over-paints the
@@ -257,9 +257,8 @@ pub fn wcwidth_grapheme(s: &str) -> u8 {
     // Gating on Extended_Pictographic-ish range membership keeps a
     // stray VS16 after ASCII (`a\u{FE0F}`) from over-allocating —
     // pragmatic since ASCII / Latin / CJK letters never carry VS16
-    // legitimately. Lead-codepoint check uses the same ranges used
-    // upstream for color-emoji detection (`is_color_emoji_codepoint`)
-    // plus a few text-default emoji blocks not in that set
+    // legitimately. Lead-codepoint check uses emoji-capable ranges,
+    // including a few text-default emoji blocks
     // (Letterlike Symbols' ™ U+2122, dingbats text presentation, etc.).
     let leading = s.chars().next().map(|c| c as u32).unwrap_or(0);
     let has_vs16 = s.chars().any(|c| c as u32 == 0xFE0F);
@@ -315,31 +314,6 @@ fn is_emoji_capable_codepoint(cp: u32) -> bool {
         return true;
     }
     false
-}
-
-/// True when the codepoint is in a Unicode block fonts typically render
-/// as a color emoji glyph (COLR / CPAL / sbix / SVG). Used by Canvas2D
-/// to decide whether a width-2 cell should stretch its `fillText` output
-/// horizontally to fill both cells — emoji glyphs from system fonts
-/// have a natural advance ≈ 1em, which is narrower than 2 latin-cell
-/// widths, leaving a visible gap on the right of the cell pair.
-///
-/// Conservative on purpose: covers the major emoji blocks but not every
-/// possible color glyph. CJK ideographs (also width-2) are NOT included
-/// — their fonts target 1em advance by design and shouldn't be stretched.
-///
-/// WebGPU has a more accurate per-glyph detection (pixel-scan in the
-/// rasterizer, stored as `GlyphEntry::is_color`); Canvas2D draws
-/// directly via the browser's `fillText` and never sees the rasterized
-/// pixels, so it falls back to this codepoint heuristic.
-#[inline]
-pub fn is_color_emoji_codepoint(cp: u32) -> bool {
-    cp == 0x1F004                            // 🀄
-        || cp == 0x1F0CF                      // 🃏
-        || (0x1F1E6..=0x1F1FF).contains(&cp)  // Regional Indicators (flag halves)
-        || (0x1F200..=0x1F251).contains(&cp)  // Enclosed CJK
-        || (0x1F300..=0x1FBFF).contains(&cp)  // Symbols + emoticons + Supplemental Symbols
-        || (0x2600..=0x27BF).contains(&cp) // Misc symbols + Dingbats (✅ ☀ ⚡ etc.)
 }
 
 /// §A.6 (2026-05-08) — `true` when a width=1 codepoint should still be
@@ -453,8 +427,8 @@ mod tests {
         // Strict Unicode wcwidth applies: only Emoji_Presentation=Yes
         // codepoints are width=2; everything else (✻ ✽ ✶ ✢ ✔ ⏸ ⚙
         // and the entire Dingbat star/asterisk block) returns 1.
-        // The renderer-side runtime-overflow path (see webgpu.rs +
-        // canvas2d.rs §B.8 branch) handles the visual widening at
+        // The renderer-side runtime-overflow path (see webgpu.rs
+        // §B.8 branch) handles the visual widening at
         // draw time without affecting cursor accounting — Claude
         // Code / npm string-width / .NET .Length all see width=1
         // and stay aligned.

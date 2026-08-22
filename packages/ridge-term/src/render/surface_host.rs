@@ -40,6 +40,7 @@ use web_sys::HtmlCanvasElement;
 
 use crate::term::grid::ScrollOp;
 
+use super::backend::{scroll_copy_plan, ScrollCopyResult};
 use super::gpu_context::{GpuContext, CANVAS_FORMAT, WALLPAPER_UNIFORM_SIZE};
 use super::wallpaper::cover_uv_transform;
 
@@ -177,6 +178,23 @@ fn create_frame_target(
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
+}
+
+fn create_scroll_scratch(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("ridge-host-scroll-scratch"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: CANVAS_FORMAT,
+        usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
 }
 
 fn create_blit_resources(
@@ -363,6 +381,9 @@ pub struct SurfaceHost {
     /// contents remain defined across frames and WebView2 compositor churn.
     frame_store: wgpu::Texture,
     frame_store_view: wgpu::TextureView,
+    /// Same-sized staging texture for row scrolls. WebGPU copies within one
+    /// texture cannot safely overlap, which every one-row terminal scroll does.
+    frame_scroll_scratch: wgpu::Texture,
     blit_bind_group_layout: wgpu::BindGroupLayout,
     blit_sampler: wgpu::Sampler,
     blit_pipeline: wgpu::RenderPipeline,
@@ -398,8 +419,8 @@ impl SurfaceHost {
     /// (2 swap-chain textures × BGRA × ~4 MP).
     ///
     /// Returns `Err` if the WebGPU adapter / device acquisition fails or
-    /// `instance.create_surface` rejects the canvas. JS catches and falls
-    /// back to per-pane Canvas2D (each pane gets its own DOM canvas).
+    /// `instance.create_surface` rejects the canvas. JS surfaces this as an
+    /// actionable `WEBGPU_INIT_FAILED`; no panic crosses the wasm boundary.
     pub async fn init(canvas: HtmlCanvasElement) -> Result<Rc<RefCell<Self>>, String> {
         let ctx = GpuContext::get_or_init().await?;
         let surface = {
@@ -454,6 +475,7 @@ impl SurfaceHost {
         let (
             frame_store,
             frame_store_view,
+            frame_scroll_scratch,
             blit_bind_group_layout,
             blit_sampler,
             blit_pipeline,
@@ -474,6 +496,7 @@ impl SurfaceHost {
             (
                 frame_store,
                 frame_store_view,
+                create_scroll_scratch(&ctx_b.device, 1, 1),
                 blit_bind_group_layout,
                 blit_sampler,
                 blit_pipeline,
@@ -497,6 +520,7 @@ impl SurfaceHost {
             frame_clear_rgba: [0, 0, 0, 255],
             frame_store,
             frame_store_view,
+            frame_scroll_scratch,
             blit_bind_group_layout,
             blit_sampler,
             blit_pipeline,
@@ -532,9 +556,15 @@ impl SurfaceHost {
         self.config.height = backing_h;
         self.surface
             .configure(&self.ctx.borrow().device, &self.config);
-        let (frame_store, frame_store_view) = {
+        let (frame_store, frame_store_view, frame_scroll_scratch) = {
             let ctx = self.ctx.borrow();
-            create_frame_target(&ctx.device, backing_w, backing_h)
+            let (frame_store, frame_store_view) =
+                create_frame_target(&ctx.device, backing_w, backing_h);
+            (
+                frame_store,
+                frame_store_view,
+                create_scroll_scratch(&ctx.device, backing_w, backing_h),
+            )
         };
         let blit_bind_group = {
             let ctx = self.ctx.borrow();
@@ -555,6 +585,7 @@ impl SurfaceHost {
         };
         self.frame_store = frame_store;
         self.frame_store_view = frame_store_view;
+        self.frame_scroll_scratch = frame_scroll_scratch;
         self.blit_bind_group = blit_bind_group;
         self.needs_full_seed = true;
     }
@@ -776,99 +807,97 @@ impl SurfaceHost {
     }
 
     /// Move one pane's already-composited terminal rows inside the persistent
-    /// frame store. Each texture copy is non-overlapping and ordered so its
-    /// source has not yet been overwritten, making this a GPU DMA move rather
-    /// than a full glyph/instance re-encode.
-    pub fn scroll_pane(&mut self, viewport: ScissorRect, scroll: ScrollOp, cell_h: u32) -> bool {
-        if viewport.is_empty() || cell_h == 0 || scroll.count == 0 {
-            return false;
+    /// frame store. Fractional-DPR rows use absolute rounded boundaries; only
+    /// equal-height source/destination pairs are copied. The result names every
+    /// row the renderer must repaint, and any host/encoder failure fails closed
+    /// to the complete logical scroll region.
+    pub fn scroll_pane(
+        &mut self,
+        viewport: ScissorRect,
+        scroll: ScrollOp,
+        cell_h_css: f32,
+        dpr: f32,
+    ) -> ScrollCopyResult {
+        if viewport.is_empty() || scroll.count == 0 {
+            return ScrollCopyResult::repaint_all(scroll);
         }
         let (Some(viewport_right), Some(viewport_bottom)) = (
             viewport.x.checked_add(viewport.w),
             viewport.y.checked_add(viewport.h),
         ) else {
-            return false;
+            return ScrollCopyResult::repaint_all(scroll);
         };
         if viewport_right > self.config.width || viewport_bottom > self.config.height {
-            return false;
+            return ScrollCopyResult::repaint_all(scroll);
         }
-        let top = match u32::try_from(scroll.top) {
-            Ok(value) => value,
-            Err(_) => return false,
+        let Some(plan) = scroll_copy_plan(scroll, cell_h_css, dpr, viewport.h) else {
+            return ScrollCopyResult::repaint_all(scroll);
         };
-        let bottom = match u32::try_from(scroll.bottom) {
-            Ok(value) => value,
-            Err(_) => return false,
-        };
-        let count = match u32::try_from(scroll.count) {
-            Ok(value) => value,
-            Err(_) => return false,
-        };
-        if top > bottom || count > bottom - top + 1 {
-            return false;
+        if plan.copies.is_empty() {
+            return ScrollCopyResult::new(plan.repaint_rows);
         }
-        let Some(region_top) = top.checked_mul(cell_h) else {
-            return false;
-        };
-        let Some(region_bottom) = bottom
-            .checked_add(1)
-            .and_then(|row| row.checked_mul(cell_h))
-        else {
-            return false;
-        };
-        if region_bottom > viewport.h || region_top >= region_bottom {
-            return false;
-        }
-        if count == bottom - top + 1 {
-            // All rows are newly exposed; Renderer will repaint the entire
-            // region, so there is no preserved pixel band to copy.
-            return true;
-        }
-        let frame_store = &self.frame_store;
         let Some(encoder) = self.current_encoder.as_mut() else {
-            return false;
+            return ScrollCopyResult::repaint_all(scroll);
         };
-        let copy_row = |encoder: &mut wgpu::CommandEncoder, source_row: u32, dest_row: u32| {
-            let source_y = viewport.y + source_row * cell_h;
-            let dest_y = viewport.y + dest_row * cell_h;
+        for copy in &plan.copies {
             encoder.copy_texture_to_texture(
                 wgpu::ImageCopyTexture {
-                    texture: frame_store,
+                    texture: &self.frame_store,
                     mip_level: 0,
                     origin: wgpu::Origin3d {
                         x: viewport.x,
-                        y: source_y,
+                        y: viewport.y + copy.source_y,
                         z: 0,
                     },
                     aspect: wgpu::TextureAspect::All,
                 },
                 wgpu::ImageCopyTexture {
-                    texture: frame_store,
+                    texture: &self.frame_scroll_scratch,
                     mip_level: 0,
                     origin: wgpu::Origin3d {
                         x: viewport.x,
-                        y: dest_y,
+                        y: viewport.y + copy.source_y,
                         z: 0,
                     },
                     aspect: wgpu::TextureAspect::All,
                 },
                 wgpu::Extent3d {
                     width: viewport.w,
-                    height: cell_h,
+                    height: copy.height,
                     depth_or_array_layers: 1,
                 },
             );
-        };
-        if scroll.up {
-            for dest in top..=bottom - count {
-                copy_row(encoder, dest + count, dest);
-            }
-        } else {
-            for dest in (top + count..=bottom).rev() {
-                copy_row(encoder, dest - count, dest);
-            }
         }
-        true
+        for copy in &plan.copies {
+            encoder.copy_texture_to_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &self.frame_scroll_scratch,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: viewport.x,
+                        y: viewport.y + copy.source_y,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::ImageCopyTexture {
+                    texture: &self.frame_store,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: viewport.x,
+                        y: viewport.y + copy.destination_y,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: viewport.w,
+                    height: copy.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        ScrollCopyResult::new(plan.repaint_rows)
     }
 
     /// Open a render pass for one pane, set its viewport + scissor + the

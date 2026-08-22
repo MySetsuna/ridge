@@ -280,7 +280,8 @@
   // Kernel palette derived from the desktop theme; applied to the canvas once it
   // mounts (the theme push usually arrives before the terminal exists).
   let kernelTheme: Record<string, string> | null = $state(null);
-  let backendName = $state('Canvas2D');
+  let backendName = $state('WebGPU');
+  let hostCanvasError = $state<string | null>(null);
   let scrollbackLoadingPaneIds = $state<string[]>([]);
   let scrollbackErrorPaneIds = $state<string[]>([]);
 
@@ -505,16 +506,19 @@
     } catch { /* manager not loaded / already torn down */ }
   }
 
-  // iter-61 手机 WebGPU 回归修复：P4 前旧 controller 每 pane 自建 SurfaceHost；
-  // P4 改用共享 manager 后，WebGPU 只在存在全局 SurfaceHost 时启用——
-  // `newWithWebgpuFirst(canvas, None)` 在 Rust 里恒回落 Canvas2D（ridge-term
-  // lib.rs），而手机端从未调用 attachHost → 恒 Canvas2D（随机下划线等 canvas2d
-  // 伪影随之）。此 action 复刻桌面 +page 的全局 host 画布：应用生命周期绑定一次，
-  // 随父容器 resize 同步 GPU 交换链；WebGPU 不可用时静默回落 per-pane Canvas2D。
+  // Shared WebGPU host canvas: bind once, resize with its parent, and surface
+  // initialization failures instead of hiding them behind a second renderer.
+  function formatWebgpuInitError(error: unknown): string {
+    const detail = error instanceof Error ? error.message : String(error);
+    const prefix = detail.includes('WEBGPU_INIT_FAILED') ? detail : `WEBGPU_INIT_FAILED: ${detail}`;
+    return `${prefix}. Enable WebGPU or update graphics drivers, then reload.`;
+  }
+
   function hostCanvas(node: HTMLCanvasElement) {
     let observer: ResizeObserver | undefined;
     let torndown = false;
     let mgr: import('@ridge/remote/shared/terminal/manager').TerminalManager | null = null;
+    hostCanvasError = null;
     void (async () => {
       try {
         const { TerminalManager } = await import('@ridge/remote/shared/terminal/manager');
@@ -532,12 +536,14 @@
           observer.observe(parent);
         }
       } catch (err) {
-        console.warn('[mobile] attachHost failed — per-pane Canvas2D fallback', err);
+        if (!torndown) hostCanvasError = formatWebgpuInitError(err);
+        console.warn('[mobile] WebGPU host initialization failed', err);
       }
     })();
     return {
       destroy() {
         torndown = true;
+        hostCanvasError = null;
         observer?.disconnect();
         if (sharedGrid) mgr?.setSharedRemoteMode(false);
         mgr?.detachHost();
@@ -1195,9 +1201,8 @@
       {/if}
     </header>
 
-    <!-- iter-61: term-stage 把「全局 WebGPU host 画布 + 终端容器」限定在终端区域
-         内叠放（header/底栏不受层叠影响）。容器在 host 模式被 attach() 置透明，
-         GPU 像素经画布透出；WebGPU 不可用时 attach() 回落 per-pane Canvas2D。 -->
+   <!-- term-stage keeps the shared WebGPU host canvas and terminal input surface
+        inside the terminal region; initialization failures remain visible. -->
     <div class="term-stage" style:transform={`translateY(${ui.keyboardShift}px)`}>
       <canvas class="host-canvas" data-rg-host aria-hidden="true" use:hostCanvas></canvas>
       {#await TerminalCanvas}
@@ -1210,8 +1215,9 @@
         {#key `${ui.activeWorkspaceId}:${ui.activePaneId}`}
           <module.default
             bind:this={canvasRef}
-            bind:backendName
-            paneId={ui.activePaneId}
+             bind:backendName
+             hostError={hostCanvasError}
+             paneId={ui.activePaneId}
             workspaceId={ui.activeWorkspaceId}
             agentState={activePane?.agentState ?? (activePane?.isAgent ? 'busy' : undefined)}
             agentNeedsAttention={paneNeedsAttention(activePane)}

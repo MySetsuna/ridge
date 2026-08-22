@@ -390,6 +390,7 @@ pub fn run() {
             pane::register_teammate_agent,
             pane::release_teammate_agent,
             terminal::create_pane,
+            commands::terminal_font::load_terminal_font_faces,
             terminal::activate_pane_pty,
             terminal::get_teammate_metrics,
             terminal::change_pane_shell,

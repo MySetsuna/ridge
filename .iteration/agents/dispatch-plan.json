@@ -1,213 +1,113 @@
 {
   "baseline": {
-    "head": "4f8ab2ed1d7094b1e65a42a4ac49d06de064e055",
-    "worktree_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    "head": "36222979feae0c10d8574f3550ef1fc24e923e60",
+    "worktree_digest": "ac898e4311d07a7da72ea474812368cd16a6d377f87eaeedca0e82028e4100af"
   },
   "config": {
     "backend": "native",
     "enabled": true,
-    "max_packet_bytes": 32768,
-    "max_total_packet_bytes": 98304,
+    "max_packet_bytes": 24000,
+    "max_total_packet_bytes": 72000,
     "max_workers": 3
   },
-  "dispatch_id": "116c7eac1da88bb58f726441",
-  "execution_mode": "parallel",
+  "dispatch_id": "d42d3b697d0b5767ced4b39c",
+  "execution_mode": "bounded_single",
   "model_capabilities": null,
   "orchestration_enabled": true,
   "packets": [
     {
       "baseline": {
-        "codegraph_revision": "current-index-after-origin-main-merge",
-        "head": "4f8ab2ed1d7094b1e65a42a4ac49d06de064e055",
-        "worktree_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "codegraph_revision": "current-index",
+        "head": "36222979feae0c10d8574f3550ef1fc24e923e60",
+        "worktree_digest": "ac898e4311d07a7da72ea474812368cd16a6d377f87eaeedca0e82028e4100af"
       },
       "codegraph": {
         "facts": [
           {
-            "evidence": "CodeGraph 返回 packages/remote/src/shared/terminal/manager.ts::clearScrollback/destroy/fit 调用点。",
-            "fact": "terminal manager 已有默认 scrollback 5000、clearScrollback、destroy 清 worker/timer/coalesced bytes 与 Resize 防抖；仍须核验 UI 右键清空及后台/远端全链语义。"
-          },
-          {
-            "evidence": "docs/iterations/CONTRACT-iteration-75.md、docs/PROJECT-STATE.md；项目 AGENTS.md 的运行事实验收规则。",
-            "fact": "迭代 75 契约与项目状态已随 origin/main 合入，须以运行证据而非文档关闭标记判断完成度。"
+            "evidence": "scripts/cdp-term-render-e2e.mjs:1195-1320",
+            "fact": "The current fixture-only CDP path proves WebGPU shell output, selection, resize, workspace round-trip and burst performance but does not emit rounded corners or a DECSTBM region."
           }
         ],
-        "queries": [
-          "HostsPanel、hosts store、AgentCenterPanel、terminal manager、Tauri window 与 workspace 打开流程；远程 Host attach/resize、clearScrollback/destroy、Agent Commune 展示、多窗口单例调用链"
-        ]
+        "queries": []
       },
       "constraints": [
-        "先用 CodeGraph；若目标文件在索引待同步横幅中，才精确读取该文件。",
-        "不得修改业务代码、文档、依赖或生成物。",
-        "不得调用 NotebookLM、批准需求、提交或推送。",
-        "文档标记仅作线索；完成状态必须同时给代码符号、确定性测或明确缺证。",
-        "分别覆盖 Host 列表/新增反馈/拖拽/首帧 Resize、内存释放/Scrollback/clear、多窗口工作区单例、Commune 可见性。",
-        "将结构化结果写入 packet 指定 result_path；验证输出写入 .iteration/agents/evidence-host-memory-window-commune-audit.txt。"
+        "Actual worker must be gpt-5.6-luna at reasoning max; do not delegate.",
+        "Add the smallest deterministic fixture after returning to a PowerShell prompt: emit ╭╮╯╰ through the real PTY, exercise DECSTBM with a bounded region and reset margins, assert stable visible markers, and capture one named PNG.",
+        "Do not launch or stop Tauri/CDP; the primary agent owns runtime lifecycle and will execute the fixture.",
+        "Do not add sleeps beyond existing bounded wait helpers; do not change default real-Codex behavior except sharing the new deterministic raster fixture.",
+        "Use apply_patch. Do not commit, push, stash, checkout, release, or touch src-tauri/Cargo.toml."
       ],
-      "depends_on": [],
-      "dispatch_id": "116c7eac1da88bb58f726441",
-      "exclusive_resources": [],
-      "execution_kind": "read",
-      "isolation": "shared",
-      "model_route": {
-        "difficulty": "complex",
-        "reasoning_effort": "high",
-        "resolution": "backend_adapter",
-        "tier": "frontier"
-      },
-      "objective": "承接迭代 75：核对远程 Host 接入、终端 Scrollback/真正清空/释放、多窗口与工作区单例、Agent's Commune 展示现状，标出半成品、未完成和回归及可验证首修顺序。",
-      "packet_bytes": 8300,
-      "packet_hash": "fe9b8b739d214c78e1652f4dd62fcdf7f350250add226b00533d2081a05f89f4",
-      "requirements": {
-        "ids": [
-          "REQ-20260730-01"
-        ],
-        "records": [
-          {
-            "id": "REQ-20260730-01",
-            "markdown": "### REQ-20260730-01 · 下一迭代：Remote、桌面端与跨窗口稳定性重构\n\n- 批准依据:`全部批准，现在立刻快速推进。可以使用subagent 或者 用ridge-mcp启动队友高速迭代`\n- 状态:`ACTIVE`\n- 版本:`v1`\n- 行为:拉取并冻结最新代码基线，完整纳入最近两次项目 NLM 对话、上一迭代半成品/未完成/回归项及本次 Remote/桌面稳定性与性能需求；建立三源去重追踪后，按依赖、风险、优先级与可验证性逐轮推进。须消除 Remote 公网高频重复 RPC、超时队列、非 Git 轮询、销毁 Pane 残留请求与重复日志；约束桌面终端内存和 Scrollback，统一真正清空语义；补齐 Agent's Commune 可见性核查、桌面多窗口与 Remote 工作区单例、远程 Host 接入/反馈/拖拽/Resize 全链路。\n- 边界:保留用户工作与 Git 历史；不自动发布、不推送、不删除用户数据、不作无关重构；NotebookLM 只供战略建议，不裁决代码事实；窗口允许多开但 Remote 工作区跨窗口全局单例；终端输入不得丢字节、乱序或改变交互语义；外部进程统一经具墙钟超时、取消、Windows 进程树清理及同生死许可的出口；低优先级浏览器 Warning 不阻塞核心交付。\n- 验收:① 三源矩阵逐项标注已完成/半完成/未完成/回归并附代码、提交/状态和测试证据；② 迭代任务逐项列现状、目标、方案、验收、回归、依赖、风险、优先级、顺序；③ 同场景 Console 重复错误较基线减少至少 90%，同错聚合计数；④ 非 Git 目录每目录生命周期至多探测一次，确认后停 status/branch/stash 轮询，目录切换才重检；⑤ 同键幂等 RPC 未完成时合并，Resize/Input 调度有界且输入不丢不乱，超时指数退避、暂停阈值、队列上限、统计均有确定性测试；⑥ Pane Destroy 后 Pending RPC/计数归零，陈旧 Pane fail-closed，真挂起替身验证超时/取消后进程树回收；⑦ Scrollback 有明确上限和自动释放测试，右键清空及 clear 均清页面、Scrollback、后台缓冲；⑧ 多窗口并存且 Remote 工作区全局单例，重复打开聚焦旧窗口；⑨ 远程 Host 可列出/创建/拖拽接入，弹窗立即关闭、面板反馈阶段，接入后按实际尺寸自动 Resize，按钮可重同步；⑩ Agent's Commune 以可见 E2E 或明确未落地证据验收；⑪ 相关单测、集成/E2E、typecheck、lint、build、运行冒烟均记录命令、退出码和证据；⑫ 性能同场景 A/B 报告 RPC 数、延迟、CPU、网络、WebView2 内存、正确率。\n- 追踪:`REQ-20260730-01 → .iteration/context.json 单目标执行包 → RPC/SCM/PTY/terminal/window/remote-host/commune symbols and paths → deterministic unit/integration/E2E/performance regressions`\n\n#### 执行顺序\n\n1. 同步并冻结基线；读取最近两次 NLM 对话与上一迭代状态，只作事实盘点。\n2. 建三源去重矩阵，先识别既有护栏、半成品、缺测与回归，避免重复建设。\n3. 先立可观测基线与统一 RPC/PTY 生命周期护栏；继而 SCM 非 Git 缓存、日志聚合；再处理终端内存/清空。\n4. 生命周期和观测护栏稳定后，分波推进跨窗口工作区单例与远程 Host 接入。\n5. Agent's Commune 先核需求—实现—展示链：已有则修展示/回归，未有则最小实现。\n6. 核心闸通过后方处理浏览器 Warning。\n\n#### 回归矩阵下限\n\n- 本地桌面、Remote 局域网、Remote 公网等价受控场景；正常网络、延迟、丢包、断连、重连。\n- Git 仓库、非 Git 目录、目录切换；watcher/heartbeat/pane/SCM 多触发同源共闸。\n- Pane 创建、输入、Resize、销毁、恢复；销毁/超时/取消竞态与队列饱和。\n- 长时输出、超限 Scrollback、重复 clear/右键清空、Pane 关闭后的 WebView2 内存回落。\n- 两窗口争用同 Remote 工作区、旧窗口最小化/后台、焦点切换、新窗口打开空闲工作区。\n- 远程 Host 慢发现、空列表、已有工作区、新建失败、拖拽接入、接入后尺寸变化与手动重同步。",
-            "section": "active",
-            "title": "下一迭代：Remote、桌面端与跨窗口稳定性重构"
-          }
-        ]
-      },
-      "result_path": ".iteration/agents/result-host-memory-window-commune-audit.json",
-      "schema_version": 1,
-      "scope": {
-        "allowed_files": [
-          "docs/iterations/CONTRACT-iteration-75.md",
-          "docs/PROJECT-STATE.md",
-          "src/lib/stores/hosts.ts",
-          "src/lib/components/hosts/HostsPanel.svelte",
-          "src/lib/teammate/AgentCenterPanel.svelte",
-          "packages/remote/src/shared/terminal/manager.ts",
-          "src/routes/+page.svelte",
-          "src-tauri/src/lib.rs"
-        ],
-        "allowed_write_paths": [],
-        "control_write_paths": [
-          ".iteration/agents/result-host-memory-window-commune-audit.json"
-        ],
-        "deny_unlisted": true
-      },
-      "symbols": [
-        "HostsPanel",
-        "hosts",
-        "AgentCenterPanel",
-        "clearScrollback",
-        "destroy",
-        "multi-window",
-        "workspace singleton"
+      "depends_on": [
+        "terminal-webgpu-only-glyph-final",
+        "terminal-webgpu-only-remote-final"
       ],
-      "task_id": "host-memory-window-commune-audit",
-      "transport": {
-        "completion_rule": "transport receipt is not completion; finalized result file is required",
-        "requested_backend": "native"
-      },
-      "verification": [
-        {
-          "command": "rg -n \"clearScrollback|scrollback|destroy|Host|workspace|AgentCenter|Commune|resize\" docs/iterations/CONTRACT-iteration-75.md src/lib/stores/hosts.ts src/lib/components/hosts/HostsPanel.svelte src/lib/teammate/AgentCenterPanel.svelte packages/remote/src/shared/terminal/manager.ts src/routes/+page.svelte src-tauri/src/lib.rs",
-          "expected_exit": 0
-        },
-        {
-          "command": "git diff --exit-code -- docs/iterations/CONTRACT-iteration-75.md docs/PROJECT-STATE.md src/lib/stores/hosts.ts src/lib/components/hosts/HostsPanel.svelte src/lib/teammate/AgentCenterPanel.svelte packages/remote/src/shared/terminal/manager.ts src/routes/+page.svelte src-tauri/src/lib.rs",
-          "expected_exit": 0
-        }
+      "dispatch_id": "d42d3b697d0b5767ced4b39c",
+      "exclusive_resources": [
+        "terminal-cdp-fixture"
       ],
-      "worker_policy": {
-        "may_approve_requirements": false,
-        "may_call_notebooklm": false,
-        "may_commit_or_push": false,
-        "may_expand_scope": false,
-        "must_write_result_file": true
-      }
-    },
-    {
-      "baseline": {
-        "codegraph_revision": "current-index-after-origin-main-merge",
-        "head": "4f8ab2ed1d7094b1e65a42a4ac49d06de064e055",
-        "worktree_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-      },
-      "codegraph": {
-        "facts": [
-          {
-            "evidence": "主代理 CodeGraph 查询；其后精确 rg 排除生成目录亦无 chrome.runtime/onMessage/tabs.sendMessage/sendResponse/runtime.lastError 源码命中。",
-            "fact": "CodeGraph 首轮仅命中 web-remote-dist 生成物内同名 sendMessage，未发现源码 Chrome Extension Messaging 调用链。"
-          }
-        ],
-        "queries": [
-          "项目源码中 chrome.runtime.onMessage、chrome.tabs.sendMessage、sendResponse、runtime.lastError 的定义与调用链；排除生成目录"
-        ]
-      },
-      "constraints": [
-        "先用 CodeGraph，再做限定范围的 rg 或精确读取。",
-        "不得修改业务代码、文档、依赖或生成物。",
-        "不得调用 NotebookLM、批准需求、提交或推送。",
-        "结论必须区分项目代码、浏览器内核、第三方扩展；给出手机端可复现的无痕/逐扩展隔离步骤。",
-        "将结构化结果写入 packet 指定 result_path；验证输出写入 .iteration/agents/evidence-mobile-runtime-message-audit.txt。"
-      ],
-      "depends_on": [],
-      "dispatch_id": "116c7eac1da88bb58f726441",
-      "exclusive_resources": [],
-      "execution_kind": "read",
+      "execution_kind": "write",
       "isolation": "shared",
       "model_route": {
         "difficulty": "medium",
-        "reasoning_effort": "medium",
+        "reasoning_effort": "high",
         "resolution": "backend_adapter",
         "tier": "intermediate"
       },
-      "objective": "确认手机 Remote 端 runtime.lastError 是否源自项目自身 Chrome Extension Messaging；盘点项目消息调用链、服务工作线程与第三方扩展隔离验证法，禁止以屏蔽 Console 代替根因。",
-      "packet_bytes": 6114,
-      "packet_hash": "b84475784eba39125f46a289a667624db7ea5bdc0eafedb3a24781319ddee578",
+      "objective": "Extend the existing real WebView2 terminal fixture with selected-font rounded-corner box glyphs and a bounded DECSTBM scroll-region exercise, asserting kernel visibility and capturing a dedicated screenshot.",
+      "packet_bytes": 7447,
+      "packet_hash": "e0b08573aed6b7e485f0600a5972e990ab58a296271b923e677c6fe8ec9faccb",
       "requirements": {
         "ids": [
-          "REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01"
+          "REQ-TERMINAL-WEBGPU-ONLY-01",
+          "REQ-TERMINAL-RASTER-01"
         ],
         "records": [
           {
-            "id": "REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01",
-            "markdown": "### REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01 · 手机 Remote 端 Chrome Messaging 通道关闭报错根因消除\n\n- 批准依据:`批准 PENDING-REQ-20260730-02`\n- 状态:`ACTIVE`\n- 版本:`v1`\n- 行为:定位手机 Remote 页面长期高频 `Unchecked runtime.lastError: A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received` 的真实来源。项目监听器仅在确需异步响应时保持通道；成功、失败、异常、超时、提前退出、页面/Tab/Frame/Port 销毁、切后台、导航与重连均恰一次响应或取消；无需响应者不保持通道。发送端消费并分类无接收方、通道关闭与 runtime.lastError，不无意义重试或重复监听。若项目未使用 Chrome Extension Messaging，则以移动浏览器隔离实验确认第三方来源，业务代码不作遮掩性修改。\n- 边界:仅限手机 Remote 端及其启动、PWA/service worker、共享 transport/terminal 与实际移动浏览器运行环境；先证明 API 归属再改码；普通 Worker 同名 sendMessage 不等于 Chrome API；源存在时不改 generated/minified 产物；不屏蔽 Console、不篡改第三方扩展、不顺带清其他告警；响应至多一次，监听器/timer/pending 与页面生命周期同生死且清理归零；重试有界。\n- 验收:① CodeGraph 与精确源码/清单查询列全手机 Remote Chrome Messaging 注册点、发送点及调用链，并排除普通 Worker 同名方法；② 每个 return true/等价异步监听器具成功、失败、throw、timeout、early-return、background、navigation、目标销毁分支测，恰一次完成/取消且计数归零；③ 无需响应者不 return true，Promise 模式仅在实际 API/Manifest 支持时采用；④ 发送端覆盖 no receiver、channel closed、runtime.lastError、页面销毁、切后台、超时，消费错误、重试有界、不重复注册；⑤ 同一手机 Remote 场景 A/B 中项目来源重复错误降为零，终端输入、后台保活、重连与失败反馈不回归；⑥ 若仓库无 Extension Messaging，则以干净 Profile/无扩展环境及逐个禁用对照隔离第三方来源，业务代码 diff 为零；⑦ 输出根因、修改文件、关键调用链、移动自动化/适用真机验证命令、退出码、浏览器版本与证据。\n- 追踪:`REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01 → src/remote startup/service-worker/transport or third-party mobile-browser isolation evidence → unit/integration/mobile-browser console regression`\n\n#### 停机条件\n\n- 未证明手机 Remote 端 API 归属前，不修改业务代码。\n- 实际移动浏览器/Manifest 对 Promise listener 支持不明时，先核官方契约与现有 manifest。\n- 只能在含用户数据的常用移动 Profile 复现且无痕/隔离环境不可用时，停止扩展归因并请求安全诊断窗口。",
+            "id": "REQ-TERMINAL-WEBGPU-ONLY-01",
+            "markdown": "### REQ-TERMINAL-WEBGPU-ONLY-01 · 终端渲染改为 WebGPU 单后端\n\n- Approval evidence:`批准 PENDING-REQ-TERMINAL-WEBGPU-\n  ONLY-01`\n- 状态:`ACTIVE`\n- 版本:`v1`\n- 类型:`REMOVE` + `MODIFY`\n- 批准证据:`批准 PENDING-REQ-TERMINAL-WEBGPU-ONLY-01`（聊天界面在 WebGPU- 后折行）\n- 关联 Active 条款:`REQ-TERMINAL-RASTER-01`、`REQ-CODEX-RENDER-STABILITY-01`；本条取代其中 Canvas2D fallback/双后端一致性部分，不削弱真实字体、滚动、cursor 与稳定性要求。\n- 行为:ridge-term 仅保留 WebGPU 渲染后端；主线程、worker/offscreen、共享 host 与所有构造入口均不再创建或降级至 Canvas2D。无 WebGPU 能力、adapter/device/surface 初始化失败时，向上返回明确可行动错误并终止该 pane 渲染，不得黑屏、假成功或静默回退。HTML canvas 作为 WebGPU surface 可保留，但不得取得 `2d` context。\n- 范围:`packages/ridge-term` 的 Canvas2D backend、`AnyBackend` 分支、RenderHandle 构造/导出、worker backend 选择、WebGPU-first fallback；`packages/remote` TerminalManager/render worker 的 Canvas2D 请求与降级接线；相关 web-sys feature、测试、诊断、文档及生成 wasm 绑定。\n- 非目标:不移除 WebGPU 所需 HTML canvas/surface；不新增另一套软件栅格兜底；不改变 VT/PTY 协议、用户字体选择、终端 rows/cols、输入/选择/IME/历史 overlay 语义；本项不授权发布。\n- 边界:WebGPU 现有滚动拷贝、glyph atlas、DPR 几何、cursor/presentation fence、壁纸/透明背景与 accessibility 接线保持可用；失败必须显式可诊断；删除代码不得以禁用但遗留死分支代替。\n- 假设/待确认:按“彻底移除”执行为同时删除 main-thread Canvas2D、OffscreenCanvas 2D worker 路径、fallback API/类型/依赖/测试与调用方；因此不支持 WebGPU 的浏览器/WebView/设备不再提供终端渲染。\n- 验收:① `rg` 不再发现 `Canvas2dBackend`、`CanvasRenderingContext2d`、`OffscreenCanvasRenderingContext2d`、`getContext('2d')` 或 terminal backend=`canvas2d` 生产接线；② 所有 RenderHandle/worker 构造仅走 WebGPU，初始化失败返回结构化错误且 UI/E2E 可见；③ wasm32 `ridge-term --features webgpu` 编译、Rust/TS 定向与全量回归通过；④ dev:cdp 在 WebGPU 可用时验证普通 shell、TUI/alt-screen/DECSTBM 滚动、真实字体 `╭╮╯╰`、cursor/IME/selection；⑤ 无 WebGPU fixture 断言明确失败且无 Canvas2D context；⑥ 生成 wasm 绑定与锁文件无遗留导出。\n- 追踪:`REQ-TERMINAL-WEBGPU-ONLY-01` → ridge-term render/mod.rs/lib.rs/webgpu → remote TerminalManager/renderWorker → wasm bindings/features → Rust/TS/dev:cdp 能力与失败路径测试",
             "section": "active",
-            "title": "手机 Remote 端 Chrome Messaging 通道关闭报错根因消除"
+            "title": "终端渲染改为 WebGPU 单后端"
+          },
+          {
+            "id": "REQ-TERMINAL-RASTER-01",
+            "markdown": "### REQ-TERMINAL-RASTER-01\n\n- 状态:`ACTIVE`\n- 版本:`v0.3.0`\n- 行为:见本条既有原始意图与目标行为。\n- 边界:见本条既有范围、非目标及不可动边界。\n- 验收:见本条既有确定性验收与用户可观察结果。\n- 追踪:见本条既有预期落点或追踪。\n\n- 状态：`ACTIVE`\n- 日期：`2026-07-29`\n- 版本：`v0.3.0`\n- 批准证据：用户授权“审核无问题即全部通过”；审计通过。\n- 类型：`FIX`\n- 原始意图：ridge-term 中 PowerShell/Codex 的细线、边框与字形须接近原生 PowerShell 的平滑度。\n- 当前证据：共享 `TerminalManager` 默认优先 WebGPU、失败回退 Canvas2D，并按 DPR 量化 cell；\n  `image-1.png` 仍显示观感差异，现无原生对照矩阵。\n- 目标行为：同字体、字号、DPR 与缩放下，线框连续、基线稳定、字形不锯齿/发虚；WebGPU 与\n  Canvas2D fallback 不得产生明显不同的 cell 几何。\n- 范围：ridge-term 字形栅格、字体栈、glyph atlas、Canvas2D/WebGPU 设备像素映射。\n- 非目标：重做终端协议解析；改变用户选定字体语义。\n- 边界：不得以 CSS blur/transform、截图后处理或改 PTY rows/cols 假装修复。\n- 假设/待确认：先判字体栈、hinting、device-pixel 对齐、WebGPU atlas 或 Canvas2D raster 哪层失真。\n- 验收：DPR `1/1.25/1.5/2`、100%/125%/150% 缩放的原生 PS 对照图；同一 box-drawing fixture\n  验证 cell、基线、1px 线连续；两 backend 均有可复核捕获。\n- 预期落点：共享 terminal manager/font stack、ridge-term renderer 与视觉 fixture。",
+            "section": "active",
+            "title": ""
           }
         ]
       },
-      "result_path": ".iteration/agents/result-mobile-runtime-message-audit.json",
+      "result_path": ".iteration/agents/result-terminal-webgpu-only-cdp-fixture.json",
       "schema_version": 1,
       "scope": {
         "allowed_files": [
-          "src/service-worker.ts",
-          "vite.remote.config.js",
-          "src/remote/svelte.config.js",
-          "src/remote/MainApp.svelte",
-          "package.json"
+          "scripts/cdp-term-render-e2e.mjs"
         ],
-        "allowed_write_paths": [],
+        "allowed_write_paths": [
+          "scripts/cdp-term-render-e2e.mjs"
+        ],
         "control_write_paths": [
-          ".iteration/agents/result-mobile-runtime-message-audit.json"
+          ".iteration/agents/result-terminal-webgpu-only-cdp-fixture.json"
         ],
         "deny_unlisted": true
       },
       "symbols": [
-        "service-worker",
-        "chrome.runtime.onMessage",
-        "chrome.tabs.sendMessage",
-        "sendResponse",
-        "runtime.lastError"
+        "cdp-term-render-e2e fixtureOnly",
+        "writePty",
+        "visibleRows",
+        "capture"
       ],
-      "task_id": "mobile-runtime-message-audit",
+      "task_id": "terminal-webgpu-only-cdp-fixture",
       "transport": {
         "completion_rule": "transport receipt is not completion; finalized result file is required",
         "requested_backend": "native"
       },
       "verification": [
         {
-          "command": "rg -n \"chrome\\.(runtime|tabs)|browser\\.(runtime|tabs)|sendResponse|runtime\\.lastError\" src packages vite.remote.config.js --glob \"!**/dist/**\"",
-          "expected_exit": 1
+          "command": "node --check scripts/cdp-term-render-e2e.mjs",
+          "expected_exit": 0
         },
         {
-          "command": "git diff --exit-code -- src/service-worker.ts vite.remote.config.js src/remote/svelte.config.js src/remote/MainApp.svelte package.json",
+          "command": "git diff --check -- scripts/cdp-term-render-e2e.mjs",
           "expected_exit": 0
         }
       ],
@@ -221,37 +121,34 @@
     },
     {
       "baseline": {
-        "codegraph_revision": "current-index-after-origin-main-merge",
-        "head": "4f8ab2ed1d7094b1e65a42a4ac49d06de064e055",
-        "worktree_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "codegraph_revision": "current-index",
+        "head": "36222979feae0c10d8574f3550ef1fc24e923e60",
+        "worktree_digest": "ac898e4311d07a7da72ea474812368cd16a6d377f87eaeedca0e82028e4100af"
       },
       "codegraph": {
         "facts": [
           {
-            "evidence": "CodeGraph 返回 packages/ridge-core/src/commands/git.rs::get_scm_status/get_scm_status_sync 与 src/lib/components/SourceControl.svelte 调用点。",
-            "fact": "后端 get_scm_status 已在 spawn git 前向上查找 .git，并以 slot 实现 latest-win；但前端 SourceControl 仍有多入口轮询和错误日志。"
-          },
-          {
-            "evidence": "CodeGraph 返回 packages/remote/src/shared/terminal/workerHostedRenderer.ts 与其测试。",
-            "fact": "WorkerHostedRenderer 已有 256 pending 上限、5 秒超时及 terminate 清 pending；该护栏不等于 cloud RPC/PTY 调度全链已有同类保护。"
+            "evidence": "packages/ridge-term/src/render/gpu_context.rs:1042-1055; packages/ridge-term/src/render/webgpu.rs:725-746,1004-1007,1192-1195,1501-1504",
+            "fact": "Atlas entries store native logical pixel width and height, but all glyph quads currently use entry.px_w with the row/cell height, potentially resampling vertically at fractional DPR."
           }
         ],
         "queries": [
-          "rpcClient.ts、cloudRemote.ts、RidgePane.svelte、SourceControl.svelte、PaneGitPill.svelte、git.rs 之间的 RPC 调度、去重、超时、SCM 非 Git 检测与 Pane 销毁调用链"
+          "WebGpuPaneBackend append_atlas_glyph GlyphEntry px_h raster size"
         ]
       },
       "constraints": [
-        "先用 CodeGraph；若目标文件在索引待同步横幅中，才精确读取该文件。",
-        "不得修改业务代码、文档、依赖或生成物。",
-        "不得调用 NotebookLM、批准需求、提交或推送。",
-        "逐项标已完成、半完成、未完成或回归；不得把局部 worker 护栏误判为端到端 RPC 护栏。",
-        "首修建议须遵循共享出口、墙钟超时、取消杀进程树、生命周期同生死原则。",
-        "将结构化结果写入 packet 指定 result_path；验证输出写入 .iteration/agents/evidence-rpc-scm-pty-audit.txt。"
+        "Actual worker must be gpt-5.6-luna at reasoning max; do not delegate.",
+        "Prove geometry from current rasterizer/atlas/shader before editing; use entry native bitmap dimensions and baseline offset consistently for row, cursor, history overlay, and other atlas glyph paths.",
+        "Do not remove CanvasRenderingContext2d glyph raster input: it is required to preserve the user-selected system font. It must remain private to WebGPU atlas upload and never paint the terminal surface.",
+        "Do not add supersampling, CSS blur, transforms, bundled-font substitution, or change rows/cols.",
+        "Use apply_patch. Do not commit, push, stash, checkout, release, or touch src-tauri/Cargo.toml."
       ],
       "depends_on": [],
-      "dispatch_id": "116c7eac1da88bb58f726441",
-      "exclusive_resources": [],
-      "execution_kind": "read",
+      "dispatch_id": "d42d3b697d0b5767ced4b39c",
+      "exclusive_resources": [
+        "ridge-term-webgpu-glyph-atlas"
+      ],
+      "execution_kind": "write",
       "isolation": "shared",
       "model_route": {
         "difficulty": "complex",
@@ -259,63 +156,212 @@
         "resolution": "backend_adapter",
         "tier": "frontier"
       },
-      "objective": "盘点 Remote RPC、终端输入/Resize、SCM 轮询与 Pane 生命周期现有去重、合并、超时、退避、队列上限、取消机制；指出最小首修点、调用链与同构测试。",
-      "packet_bytes": 8347,
-      "packet_hash": "a9f6a54d765797d22500ad72f4af8007a4c0a287911f593d8cccf0162b2b3f88",
+      "objective": "Eliminate WebGPU atlas glyph vertical resampling so selected-font pixels are presented at their native device-pixel geometry; retain hidden DOM Canvas2D only as glyph atlas input, never as presentation fallback.",
+      "packet_bytes": 8247,
+      "packet_hash": "9035658872d1617d362e06f7a30fb2e36e2e6846c2e776a9b82dfbdb5846a835",
       "requirements": {
         "ids": [
-          "REQ-20260730-01"
+          "REQ-TERMINAL-WEBGPU-ONLY-01",
+          "REQ-TERMINAL-RASTER-01"
         ],
         "records": [
           {
-            "id": "REQ-20260730-01",
-            "markdown": "### REQ-20260730-01 · 下一迭代：Remote、桌面端与跨窗口稳定性重构\n\n- 批准依据:`全部批准，现在立刻快速推进。可以使用subagent 或者 用ridge-mcp启动队友高速迭代`\n- 状态:`ACTIVE`\n- 版本:`v1`\n- 行为:拉取并冻结最新代码基线，完整纳入最近两次项目 NLM 对话、上一迭代半成品/未完成/回归项及本次 Remote/桌面稳定性与性能需求；建立三源去重追踪后，按依赖、风险、优先级与可验证性逐轮推进。须消除 Remote 公网高频重复 RPC、超时队列、非 Git 轮询、销毁 Pane 残留请求与重复日志；约束桌面终端内存和 Scrollback，统一真正清空语义；补齐 Agent's Commune 可见性核查、桌面多窗口与 Remote 工作区单例、远程 Host 接入/反馈/拖拽/Resize 全链路。\n- 边界:保留用户工作与 Git 历史；不自动发布、不推送、不删除用户数据、不作无关重构；NotebookLM 只供战略建议，不裁决代码事实；窗口允许多开但 Remote 工作区跨窗口全局单例；终端输入不得丢字节、乱序或改变交互语义；外部进程统一经具墙钟超时、取消、Windows 进程树清理及同生死许可的出口；低优先级浏览器 Warning 不阻塞核心交付。\n- 验收:① 三源矩阵逐项标注已完成/半完成/未完成/回归并附代码、提交/状态和测试证据；② 迭代任务逐项列现状、目标、方案、验收、回归、依赖、风险、优先级、顺序；③ 同场景 Console 重复错误较基线减少至少 90%，同错聚合计数；④ 非 Git 目录每目录生命周期至多探测一次，确认后停 status/branch/stash 轮询，目录切换才重检；⑤ 同键幂等 RPC 未完成时合并，Resize/Input 调度有界且输入不丢不乱，超时指数退避、暂停阈值、队列上限、统计均有确定性测试；⑥ Pane Destroy 后 Pending RPC/计数归零，陈旧 Pane fail-closed，真挂起替身验证超时/取消后进程树回收；⑦ Scrollback 有明确上限和自动释放测试，右键清空及 clear 均清页面、Scrollback、后台缓冲；⑧ 多窗口并存且 Remote 工作区全局单例，重复打开聚焦旧窗口；⑨ 远程 Host 可列出/创建/拖拽接入，弹窗立即关闭、面板反馈阶段，接入后按实际尺寸自动 Resize，按钮可重同步；⑩ Agent's Commune 以可见 E2E 或明确未落地证据验收；⑪ 相关单测、集成/E2E、typecheck、lint、build、运行冒烟均记录命令、退出码和证据；⑫ 性能同场景 A/B 报告 RPC 数、延迟、CPU、网络、WebView2 内存、正确率。\n- 追踪:`REQ-20260730-01 → .iteration/context.json 单目标执行包 → RPC/SCM/PTY/terminal/window/remote-host/commune symbols and paths → deterministic unit/integration/E2E/performance regressions`\n\n#### 执行顺序\n\n1. 同步并冻结基线；读取最近两次 NLM 对话与上一迭代状态，只作事实盘点。\n2. 建三源去重矩阵，先识别既有护栏、半成品、缺测与回归，避免重复建设。\n3. 先立可观测基线与统一 RPC/PTY 生命周期护栏；继而 SCM 非 Git 缓存、日志聚合；再处理终端内存/清空。\n4. 生命周期和观测护栏稳定后，分波推进跨窗口工作区单例与远程 Host 接入。\n5. Agent's Commune 先核需求—实现—展示链：已有则修展示/回归，未有则最小实现。\n6. 核心闸通过后方处理浏览器 Warning。\n\n#### 回归矩阵下限\n\n- 本地桌面、Remote 局域网、Remote 公网等价受控场景；正常网络、延迟、丢包、断连、重连。\n- Git 仓库、非 Git 目录、目录切换；watcher/heartbeat/pane/SCM 多触发同源共闸。\n- Pane 创建、输入、Resize、销毁、恢复；销毁/超时/取消竞态与队列饱和。\n- 长时输出、超限 Scrollback、重复 clear/右键清空、Pane 关闭后的 WebView2 内存回落。\n- 两窗口争用同 Remote 工作区、旧窗口最小化/后台、焦点切换、新窗口打开空闲工作区。\n- 远程 Host 慢发现、空列表、已有工作区、新建失败、拖拽接入、接入后尺寸变化与手动重同步。",
+            "id": "REQ-TERMINAL-WEBGPU-ONLY-01",
+            "markdown": "### REQ-TERMINAL-WEBGPU-ONLY-01 · 终端渲染改为 WebGPU 单后端\n\n- Approval evidence:`批准 PENDING-REQ-TERMINAL-WEBGPU-\n  ONLY-01`\n- 状态:`ACTIVE`\n- 版本:`v1`\n- 类型:`REMOVE` + `MODIFY`\n- 批准证据:`批准 PENDING-REQ-TERMINAL-WEBGPU-ONLY-01`（聊天界面在 WebGPU- 后折行）\n- 关联 Active 条款:`REQ-TERMINAL-RASTER-01`、`REQ-CODEX-RENDER-STABILITY-01`；本条取代其中 Canvas2D fallback/双后端一致性部分，不削弱真实字体、滚动、cursor 与稳定性要求。\n- 行为:ridge-term 仅保留 WebGPU 渲染后端；主线程、worker/offscreen、共享 host 与所有构造入口均不再创建或降级至 Canvas2D。无 WebGPU 能力、adapter/device/surface 初始化失败时，向上返回明确可行动错误并终止该 pane 渲染，不得黑屏、假成功或静默回退。HTML canvas 作为 WebGPU surface 可保留，但不得取得 `2d` context。\n- 范围:`packages/ridge-term` 的 Canvas2D backend、`AnyBackend` 分支、RenderHandle 构造/导出、worker backend 选择、WebGPU-first fallback；`packages/remote` TerminalManager/render worker 的 Canvas2D 请求与降级接线；相关 web-sys feature、测试、诊断、文档及生成 wasm 绑定。\n- 非目标:不移除 WebGPU 所需 HTML canvas/surface；不新增另一套软件栅格兜底；不改变 VT/PTY 协议、用户字体选择、终端 rows/cols、输入/选择/IME/历史 overlay 语义；本项不授权发布。\n- 边界:WebGPU 现有滚动拷贝、glyph atlas、DPR 几何、cursor/presentation fence、壁纸/透明背景与 accessibility 接线保持可用；失败必须显式可诊断；删除代码不得以禁用但遗留死分支代替。\n- 假设/待确认:按“彻底移除”执行为同时删除 main-thread Canvas2D、OffscreenCanvas 2D worker 路径、fallback API/类型/依赖/测试与调用方；因此不支持 WebGPU 的浏览器/WebView/设备不再提供终端渲染。\n- 验收:① `rg` 不再发现 `Canvas2dBackend`、`CanvasRenderingContext2d`、`OffscreenCanvasRenderingContext2d`、`getContext('2d')` 或 terminal backend=`canvas2d` 生产接线；② 所有 RenderHandle/worker 构造仅走 WebGPU，初始化失败返回结构化错误且 UI/E2E 可见；③ wasm32 `ridge-term --features webgpu` 编译、Rust/TS 定向与全量回归通过；④ dev:cdp 在 WebGPU 可用时验证普通 shell、TUI/alt-screen/DECSTBM 滚动、真实字体 `╭╮╯╰`、cursor/IME/selection；⑤ 无 WebGPU fixture 断言明确失败且无 Canvas2D context；⑥ 生成 wasm 绑定与锁文件无遗留导出。\n- 追踪:`REQ-TERMINAL-WEBGPU-ONLY-01` → ridge-term render/mod.rs/lib.rs/webgpu → remote TerminalManager/renderWorker → wasm bindings/features → Rust/TS/dev:cdp 能力与失败路径测试",
             "section": "active",
-            "title": "下一迭代：Remote、桌面端与跨窗口稳定性重构"
+            "title": "终端渲染改为 WebGPU 单后端"
+          },
+          {
+            "id": "REQ-TERMINAL-RASTER-01",
+            "markdown": "### REQ-TERMINAL-RASTER-01\n\n- 状态:`ACTIVE`\n- 版本:`v0.3.0`\n- 行为:见本条既有原始意图与目标行为。\n- 边界:见本条既有范围、非目标及不可动边界。\n- 验收:见本条既有确定性验收与用户可观察结果。\n- 追踪:见本条既有预期落点或追踪。\n\n- 状态：`ACTIVE`\n- 日期：`2026-07-29`\n- 版本：`v0.3.0`\n- 批准证据：用户授权“审核无问题即全部通过”；审计通过。\n- 类型：`FIX`\n- 原始意图：ridge-term 中 PowerShell/Codex 的细线、边框与字形须接近原生 PowerShell 的平滑度。\n- 当前证据：共享 `TerminalManager` 默认优先 WebGPU、失败回退 Canvas2D，并按 DPR 量化 cell；\n  `image-1.png` 仍显示观感差异，现无原生对照矩阵。\n- 目标行为：同字体、字号、DPR 与缩放下，线框连续、基线稳定、字形不锯齿/发虚；WebGPU 与\n  Canvas2D fallback 不得产生明显不同的 cell 几何。\n- 范围：ridge-term 字形栅格、字体栈、glyph atlas、Canvas2D/WebGPU 设备像素映射。\n- 非目标：重做终端协议解析；改变用户选定字体语义。\n- 边界：不得以 CSS blur/transform、截图后处理或改 PTY rows/cols 假装修复。\n- 假设/待确认：先判字体栈、hinting、device-pixel 对齐、WebGPU atlas 或 Canvas2D raster 哪层失真。\n- 验收：DPR `1/1.25/1.5/2`、100%/125%/150% 缩放的原生 PS 对照图；同一 box-drawing fixture\n  验证 cell、基线、1px 线连续；两 backend 均有可复核捕获。\n- 预期落点：共享 terminal manager/font stack、ridge-term renderer 与视觉 fixture。",
+            "section": "active",
+            "title": ""
           }
         ]
       },
-      "result_path": ".iteration/agents/result-rpc-scm-pty-audit.json",
+      "result_path": ".iteration/agents/result-terminal-webgpu-only-glyph-final.json",
       "schema_version": 1,
       "scope": {
         "allowed_files": [
-          "packages/remote/src/shared/transport/rpcClient.ts",
-          "src/remote/lib/cloudRemote.ts",
-          "src/lib/components/RidgePane.svelte",
-          "src/lib/components/SourceControl.svelte",
-          "src/lib/components/PaneGitPill.svelte",
-          "src/lib/utils/pLimit.ts",
-          "packages/ridge-core/src/commands/git.rs",
-          "packages/remote/src/shared/cloud/faultInjection.test.ts"
+          "packages/ridge-term/src/render/glyph_rasterizer.rs",
+          "packages/ridge-term/src/render/gpu_context.rs",
+          "packages/ridge-term/src/render/webgpu.rs",
+          "packages/ridge-term/src/render/renderer.rs"
         ],
-        "allowed_write_paths": [],
+        "allowed_write_paths": [
+          "packages/ridge-term/src/render/glyph_rasterizer.rs",
+          "packages/ridge-term/src/render/gpu_context.rs",
+          "packages/ridge-term/src/render/webgpu.rs"
+        ],
         "control_write_paths": [
-          ".iteration/agents/result-rpc-scm-pty-audit.json"
+          ".iteration/agents/result-terminal-webgpu-only-glyph-final.json"
         ],
         "deny_unlisted": true
       },
       "symbols": [
-        "RpcClient",
-        "write_to_pty",
-        "resize_pane",
-        "get_scm_status",
-        "git_list_branches",
-        "enqueuePtyWrite",
-        "pLimit"
+        "WebGpuPaneBackend::append_atlas_glyph",
+        "GlyphRasterizer::rasterize",
+        "GlyphEntry::px_h"
       ],
-      "task_id": "rpc-scm-pty-audit",
+      "task_id": "terminal-webgpu-only-glyph-final",
       "transport": {
         "completion_rule": "transport receipt is not completion; finalized result file is required",
         "requested_backend": "native"
       },
       "verification": [
         {
-          "command": "rg -n \"MAX_WORKER_PENDING|WORKER_REQUEST_TIMEOUT_MS|enqueuePtyWrite|get_scm_status|git_list_branches|write_to_pty|resize_pane\" packages/remote/src/shared/transport/rpcClient.ts src/remote/lib/cloudRemote.ts src/lib/components/RidgePane.svelte src/lib/components/SourceControl.svelte src/lib/components/PaneGitPill.svelte packages/ridge-core/src/commands/git.rs",
+          "command": "$env:CARGO_HOME='C:\\DevKit\\Rust\\.cargo'; $env:RUSTUP_HOME='C:\\DevKit\\Rust\\.rustup'; cargo test -p ridge-term render::renderer::tests:: --lib",
           "expected_exit": 0
         },
         {
-          "command": "git diff --exit-code -- packages/remote/src/shared/transport/rpcClient.ts src/remote/lib/cloudRemote.ts src/lib/components/RidgePane.svelte src/lib/components/SourceControl.svelte src/lib/components/PaneGitPill.svelte src/lib/utils/pLimit.ts packages/ridge-core/src/commands/git.rs packages/remote/src/shared/cloud/faultInjection.test.ts",
+          "command": "$env:CARGO_HOME='C:\\DevKit\\Rust\\.cargo'; $env:RUSTUP_HOME='C:\\DevKit\\Rust\\.rustup'; cargo check -p ridge-term --target wasm32-unknown-unknown --features webgpu",
           "expected_exit": 0
+        },
+        {
+          "command": "git diff --check -- packages/ridge-term/src/render/glyph_rasterizer.rs packages/ridge-term/src/render/gpu_context.rs packages/ridge-term/src/render/webgpu.rs",
+          "expected_exit": 0
+        }
+      ],
+      "worker_policy": {
+        "may_approve_requirements": false,
+        "may_call_notebooklm": false,
+        "may_commit_or_push": false,
+        "may_expand_scope": false,
+        "must_write_result_file": true
+      }
+    },
+    {
+      "baseline": {
+        "codegraph_revision": "current-index",
+        "head": "36222979feae0c10d8574f3550ef1fc24e923e60",
+        "worktree_digest": "ac898e4311d07a7da72ea474812368cd16a6d377f87eaeedca0e82028e4100af"
+      },
+      "codegraph": {
+        "facts": [
+          {
+            "evidence": "packages/remote/src/shared/terminal/manager.ts:2353,4107,5028",
+            "fact": "usingWorkerRenderer always returns false, so its manager bridge/mirror branches are dead; worker presentation APIs have already been removed."
+          },
+          {
+            "evidence": "src/lib/components/RidgePane.svelte:1430-1512; src/remote/lib/TerminalCanvas.svelte:252-261; src/remote/MainApp.svelte:506-536,1197-1201",
+            "fact": "Desktop attach rejection is not caught into pane UI; Remote TerminalCanvas catches and only logs, while MainApp attachHost still claims Canvas2D fallback."
+          }
+        ],
+        "queries": [
+          "TerminalManager dead worker presentation and preferWebgpu callers",
+          "RidgePane TerminalCanvas WebGPU initialization error visibility"
+        ]
+      },
+      "constraints": [
+        "Actual worker must be gpt-5.6-luna at reasoning max; do not delegate.",
+        "Deletion-first: remove disabled worker render/mirror production modules and their obsolete tests when no live caller remains; do not retain false-gated branches.",
+        "Preserve main-thread WebGPU parked-pane, cursor, selection, IME, PTY FIFO, and current frame semantics.",
+        "Remove ManagerOptions.preferWebgpu and all tests/callers; no compatibility no-op.",
+        "Display actionable WEBGPU_INIT_FAILED text in both desktop RidgePane and Remote TerminalCanvas, including attachHost failure propagation; add deterministic UI tests where practical.",
+        "Use apply_patch. Do not commit, push, stash, checkout, release, or touch src-tauri/Cargo.toml."
+      ],
+      "depends_on": [],
+      "dispatch_id": "d42d3b697d0b5767ced4b39c",
+      "exclusive_resources": [
+        "remote-terminal-manager",
+        "remote-terminal-ui"
+      ],
+      "execution_kind": "write",
+      "isolation": "shared",
+      "model_route": {
+        "difficulty": "complex",
+        "reasoning_effort": "high",
+        "resolution": "backend_adapter",
+        "tier": "frontier"
+      },
+      "objective": "Delete dormant worker presentation/kernel-mirror branches and the no-op preferWebgpu flag; surface WEBGPU_INIT_FAILED visibly in desktop and Remote terminal panes; remove stale Canvas2D fallback wording.",
+      "packet_bytes": 10016,
+      "packet_hash": "aa05873966df82d4a5d1ceb6215684e45c57e37d7613b9b53a97437b165f36e0",
+      "requirements": {
+        "ids": [
+          "REQ-TERMINAL-WEBGPU-ONLY-01",
+          "REQ-CODEX-RENDER-STABILITY-01"
+        ],
+        "records": [
+          {
+            "id": "REQ-TERMINAL-WEBGPU-ONLY-01",
+            "markdown": "### REQ-TERMINAL-WEBGPU-ONLY-01 · 终端渲染改为 WebGPU 单后端\n\n- Approval evidence:`批准 PENDING-REQ-TERMINAL-WEBGPU-\n  ONLY-01`\n- 状态:`ACTIVE`\n- 版本:`v1`\n- 类型:`REMOVE` + `MODIFY`\n- 批准证据:`批准 PENDING-REQ-TERMINAL-WEBGPU-ONLY-01`（聊天界面在 WebGPU- 后折行）\n- 关联 Active 条款:`REQ-TERMINAL-RASTER-01`、`REQ-CODEX-RENDER-STABILITY-01`；本条取代其中 Canvas2D fallback/双后端一致性部分，不削弱真实字体、滚动、cursor 与稳定性要求。\n- 行为:ridge-term 仅保留 WebGPU 渲染后端；主线程、worker/offscreen、共享 host 与所有构造入口均不再创建或降级至 Canvas2D。无 WebGPU 能力、adapter/device/surface 初始化失败时，向上返回明确可行动错误并终止该 pane 渲染，不得黑屏、假成功或静默回退。HTML canvas 作为 WebGPU surface 可保留，但不得取得 `2d` context。\n- 范围:`packages/ridge-term` 的 Canvas2D backend、`AnyBackend` 分支、RenderHandle 构造/导出、worker backend 选择、WebGPU-first fallback；`packages/remote` TerminalManager/render worker 的 Canvas2D 请求与降级接线；相关 web-sys feature、测试、诊断、文档及生成 wasm 绑定。\n- 非目标:不移除 WebGPU 所需 HTML canvas/surface；不新增另一套软件栅格兜底；不改变 VT/PTY 协议、用户字体选择、终端 rows/cols、输入/选择/IME/历史 overlay 语义；本项不授权发布。\n- 边界:WebGPU 现有滚动拷贝、glyph atlas、DPR 几何、cursor/presentation fence、壁纸/透明背景与 accessibility 接线保持可用；失败必须显式可诊断；删除代码不得以禁用但遗留死分支代替。\n- 假设/待确认:按“彻底移除”执行为同时删除 main-thread Canvas2D、OffscreenCanvas 2D worker 路径、fallback API/类型/依赖/测试与调用方；因此不支持 WebGPU 的浏览器/WebView/设备不再提供终端渲染。\n- 验收:① `rg` 不再发现 `Canvas2dBackend`、`CanvasRenderingContext2d`、`OffscreenCanvasRenderingContext2d`、`getContext('2d')` 或 terminal backend=`canvas2d` 生产接线；② 所有 RenderHandle/worker 构造仅走 WebGPU，初始化失败返回结构化错误且 UI/E2E 可见；③ wasm32 `ridge-term --features webgpu` 编译、Rust/TS 定向与全量回归通过；④ dev:cdp 在 WebGPU 可用时验证普通 shell、TUI/alt-screen/DECSTBM 滚动、真实字体 `╭╮╯╰`、cursor/IME/selection；⑤ 无 WebGPU fixture 断言明确失败且无 Canvas2D context；⑥ 生成 wasm 绑定与锁文件无遗留导出。\n- 追踪:`REQ-TERMINAL-WEBGPU-ONLY-01` → ridge-term render/mod.rs/lib.rs/webgpu → remote TerminalManager/renderWorker → wasm bindings/features → Rust/TS/dev:cdp 能力与失败路径测试",
+            "section": "active",
+            "title": "终端渲染改为 WebGPU 单后端"
+          },
+          {
+            "id": "REQ-CODEX-RENDER-STABILITY-01",
+            "markdown": "### REQ-CODEX-RENDER-STABILITY-01\n\n- 状态:`ACTIVE`\n- 版本:`v0.3.0`\n- 行为:见本条既有原始意图与目标行为。\n- 边界:见本条既有范围、非目标及不可动边界。\n- 验收:见本条既有确定性验收与用户可观察结果。\n- 追踪:见本条既有预期落点或追踪。\n\n- 状态：`ACTIVE`\n- 日期：`2026-07-29`\n- 版本：`v0.3.0`\n- 批准证据：用户授权“审核无问题即全部通过”；审计通过。\n- 类型：`FIX`\n- 原始意图：Codex 在 ridge-term 连续输出时，画面与光标不得到处闪烁。\n- 当前证据：Remote worker 现以每 pane 单调 `renderFrameId` 统一 fence raw feed 与 delta；worker\n  拒绝非法或迟到 frame，避免旧 PTY replay 覆盖新快照。`renderWorker`、`WorkerHostedRenderer`、\n  `workerRendererBridge` 与 `TerminalManager` 定向回归 `4 files / 99 passed`；真实 Codex/Claude\n  录制与 WebView2 现场矩阵仍待补证。\n- 目标行为：活动 pane 仅真实终端光标按协议闪烁；非活动 pane 无光标；Codex 流式更新不得交替\n  呈现半帧、旧帧或多位置 cursor。\n- 范围：Codex/Claude 流式 PTY 录制、kernel dirty 状态、render/present 与 cursor focus 投影。\n- 非目标：关闭所有动画；为单一 Agent CLI 写硬编码渲染分支。\n- 边界：先以 kernel cell/dirty/render trace 分层归因；不得简单关闭所有 cursor blink 或降低刷新率。\n- 假设/待确认：Codex 与 Claude 是否同根，须由同一录制回放矩阵裁决。\n- 验收：同一 Codex JSONL/PTY 录制重放；逐帧断言单 cursor、单调 frame generation、无旧行复活；\n  与 Claude fixture 对照，明确共同或独立根因。\n- 预期落点：`RidgePane.svelte`、`TerminalManager`、ridge-term render loop 与录制回放测试。",
+            "section": "active",
+            "title": ""
+          }
+        ]
+      },
+      "result_path": ".iteration/agents/result-terminal-webgpu-only-remote-final.json",
+      "schema_version": 1,
+      "scope": {
+        "allowed_files": [
+          "packages/remote/src/shared/terminal/manager.attach.test.ts",
+          "packages/remote/src/shared/terminal/manager.test.ts",
+          "packages/remote/src/shared/terminal/manager.ts",
+          "packages/remote/src/shared/terminal/renderWorker.protocol.ts",
+          "packages/remote/src/shared/terminal/renderWorker.test.ts",
+          "packages/remote/src/shared/terminal/renderWorker.ts",
+          "packages/remote/src/shared/terminal/workerHostedRenderer.test.ts",
+          "packages/remote/src/shared/terminal/workerHostedRenderer.ts",
+          "packages/remote/src/shared/terminal/workerRendererBridge.test.ts",
+          "packages/remote/src/shared/terminal/workerRendererBridge.ts",
+          "packages/remote/src/shared/terminal/workerRendererSingleton.ts",
+          "src/lib/components/RidgePane.svelte",
+          "src/remote/lib/TerminalCanvas.svelte",
+          "src/remote/lib/TerminalCanvas.test.ts",
+          "src/remote/MainApp.svelte"
+        ],
+        "allowed_write_paths": [
+          "packages/remote/src/shared/terminal/manager.attach.test.ts",
+          "packages/remote/src/shared/terminal/manager.test.ts",
+          "packages/remote/src/shared/terminal/manager.ts",
+          "packages/remote/src/shared/terminal/renderWorker.protocol.ts",
+          "packages/remote/src/shared/terminal/renderWorker.test.ts",
+          "packages/remote/src/shared/terminal/renderWorker.ts",
+          "packages/remote/src/shared/terminal/workerHostedRenderer.test.ts",
+          "packages/remote/src/shared/terminal/workerHostedRenderer.ts",
+          "packages/remote/src/shared/terminal/workerRendererBridge.test.ts",
+          "packages/remote/src/shared/terminal/workerRendererBridge.ts",
+          "packages/remote/src/shared/terminal/workerRendererSingleton.ts",
+          "src/lib/components/RidgePane.svelte",
+          "src/remote/lib/TerminalCanvas.svelte",
+          "src/remote/lib/TerminalCanvas.test.ts",
+          "src/remote/MainApp.svelte"
+        ],
+        "control_write_paths": [
+          ".iteration/agents/result-terminal-webgpu-only-remote-final.json"
+        ],
+        "deny_unlisted": true
+      },
+      "symbols": [
+        "TerminalManager::attach",
+        "TerminalManager::attachHost",
+        "RidgePane",
+        "TerminalCanvas"
+      ],
+      "task_id": "terminal-webgpu-only-remote-final",
+      "transport": {
+        "completion_rule": "transport receipt is not completion; finalized result file is required",
+        "requested_backend": "native"
+      },
+      "verification": [
+        {
+          "command": "pnpm exec vitest run packages/remote/src/shared/terminal/manager.attach.test.ts packages/remote/src/shared/terminal/manager.test.ts src/remote/lib/TerminalCanvas.test.ts",
+          "expected_exit": 0
+        },
+        {
+          "command": "pnpm check",
+          "expected_exit": 0
+        },
+        {
+          "command": "rg -n \"preferWebgpu|usingWorkerRenderer|workerRendererBridge|render worker presentation|Canvas2D fallback|Canvas2D 回落\" packages/remote/src/shared/terminal src/lib/components/RidgePane.svelte src/remote/lib/TerminalCanvas.svelte src/remote/MainApp.svelte",
+          "expected_exit": 1
         }
       ],
       "worker_policy": {
@@ -327,10 +373,12 @@
       }
     }
   ],
-  "parallel_rejections": [],
-  "plan_hash": "a4be734b1c29ecf51b90fb78c0ebc1df2d0e272a0085bd42f789adaa95d081d7",
+  "parallel_rejections": [
+    "terminal-webgpu-only-remote-final:write_isolation"
+  ],
+  "plan_hash": "025605e9e887c89a9ce9dc231ffaebae28cdfca05fe5041633780242fd14473b",
   "schema_version": 1,
-  "total_packet_bytes": 22761,
+  "total_packet_bytes": 25710,
   "transport": {
     "auto_order": [
       "ridge",
@@ -382,9 +430,13 @@
   },
   "waves": [
     [
-      "host-memory-window-commune-audit",
-      "mobile-runtime-message-audit",
-      "rpc-scm-pty-audit"
+      "terminal-webgpu-only-glyph-final"
+    ],
+    [
+      "terminal-webgpu-only-remote-final"
+    ],
+    [
+      "terminal-webgpu-only-cdp-fixture"
     ]
   ]
 }

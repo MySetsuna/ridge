@@ -18,7 +18,7 @@
     canManagePanes = true,
     selectionMode = $bindable(false),
     sentenceBuffer = $bindable(false),
-    backendName = 'Canvas2D',
+    backendName = 'WebGPU',
     panes = [],
     activePaneId = $bindable(null),
     workspaces = [],

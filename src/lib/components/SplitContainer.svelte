@@ -551,8 +551,8 @@ import {
              and `backdrop-blur-md` from this wrapper. The 90 %-opaque
              surface tint sat on top of the global host canvas and hid
              every GPU-drawn pixel ("black screen" symptom). Per-pane
-             Canvas2D fallback paints `--rg-term-bg` directly in its own
-             child canvas so it doesn't need the wrapper tint either.
+             The WebGPU-only surface draws `--rg-term-bg` through the shared
+             host canvas, so it doesn't need the wrapper tint either.
              Card outline stays via the box-shadow. -->
         <div
           data-pane-id={node.id}
