@@ -130,18 +130,24 @@ describe('DOM-light actions and color normalization', () => {
 	});
 
 	it('normalizes browser CSS colors and clamps replacement alpha', () => {
-		let fill = '#000000';
-		const context = {
-			get fillStyle() { return fill; },
-			set fillStyle(value: string) {
-				if (value === 'red') fill = '#ff0000';
-				else if (value.startsWith('rgb')) fill = 'rgba(1, 2, 3, 0.5)';
-				else fill = value;
-			},
+		const element = {
+			isConnected: false,
+			style: { color: '', cssText: '' },
+			setAttribute: vi.fn(),
 		};
-		vi.stubGlobal('document', { createElement: () => ({ getContext: () => context }) });
+		vi.stubGlobal('document', {
+			documentElement: { appendChild: () => { element.isConnected = true; } },
+			createElement: () => element,
+		});
+		vi.stubGlobal('getComputedStyle', () => ({
+			color: element.style.color === 'red'
+				? 'rgb(255, 0, 0)'
+				: element.style.color.startsWith('rgb')
+					? 'rgba(1, 2, 3, 0.5)'
+					: element.style.color,
+		}));
 		expect(hex8('red')).toBe('#ff0000ff');
-		expect(hex8('rgb(1, 2, 3)')).toBe('#01020380');
+		expect(hex8('rgba(1, 2, 3, 0.5)')).toBe('#01020380');
 		expect(hex8WithAlpha('#123456', 2)).toBe('#123456ff');
 		expect(hex8WithAlpha('#123456', -1)).toBe('#12345600');
 	});

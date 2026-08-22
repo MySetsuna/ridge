@@ -6,13 +6,8 @@ import {
   REMOTE_TERM_FONT,
   EMOJI_FALLBACK,
   SYSTEM_EMOJI_FALLBACK,
-  FLAG_EMOJI_FAMILY,
-  TEXT_MONO,
 } from './fontStack';
 
-// Desktop and web-remote share ONE function: `withEmojiFallback(family,
-// flagFaceInjected)`. With no flag face it appends the system emoji chain; with
-// one it prepends 'Flag Emoji' so flag codepoints hit the subset face first.
 describe('withEmojiFallback (system emoji, no flag face)', () => {
   it('empty input → DEFAULT_TERM_FONT', () => {
     expect(withEmojiFallback('')).toBe(DEFAULT_TERM_FONT);
@@ -45,26 +40,6 @@ describe('withEmojiFallback (system emoji, no flag face)', () => {
   });
 });
 
-describe('withEmojiFallback (flag face injected → Flag Emoji first)', () => {
-  it('empty input → Flag Emoji ahead of system emoji', () => {
-    expect(withEmojiFallback('', true)).toBe(
-      `${TEXT_MONO},${FLAG_EMOJI_FAMILY},${EMOJI_FALLBACK},monospace`,
-    );
-  });
-
-  it('keeps a user mono font, prepends Flag Emoji to the chain', () => {
-    expect(withEmojiFallback("'Fira Code'", true)).toBe(
-      `'Fira Code',${FLAG_EMOJI_FAMILY},${EMOJI_FALLBACK},monospace`,
-    );
-  });
-
-  it('strips an existing Flag Emoji family before re-appending (no dupes)', () => {
-    expect(withEmojiFallback("'Fira Code','Flag Emoji'", true)).toBe(
-      `'Fira Code',${FLAG_EMOJI_FAMILY},${EMOJI_FALLBACK},monospace`,
-    );
-  });
-});
-
 describe('font-stack constants', () => {
   it('DEFAULT_TERM_FONT / EMOJI_FALLBACK carry no bundled Noto', () => {
     expect(DEFAULT_TERM_FONT).not.toContain('Noto');
@@ -78,8 +53,8 @@ describe('font-stack constants', () => {
 
   it('withRemoteEmojiFallback is a back-compat alias of withEmojiFallback', () => {
     expect(withRemoteEmojiFallback).toBe(withEmojiFallback);
-    expect(withRemoteEmojiFallback("'Fira Code'", true)).toBe(
-      `'Fira Code',${FLAG_EMOJI_FAMILY},${EMOJI_FALLBACK},monospace`,
+    expect(withRemoteEmojiFallback("'Fira Code'")).toBe(
+      `'Fira Code',${EMOJI_FALLBACK},monospace`,
     );
   });
 });

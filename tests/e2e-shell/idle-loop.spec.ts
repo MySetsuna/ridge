@@ -120,7 +120,7 @@ describe('idle loop — RAF rate at steady state is heavily reduced', () => {
     await new Promise((r) => setTimeout(r, 800));
   });
 
-  it('idle stability: kernel theme + pixel sample unchanged across a 2 s idle', async () => {
+  it('idle stability: kernel theme + cursor unchanged across a 2 s idle', async () => {
     // After all the wakes from earlier tests have settled, the screen
     // should be stable. Capture state, sleep 2 s, capture again, diff.
     const r = await browser.execute(async (id: string) => {
@@ -128,13 +128,11 @@ describe('idle loop — RAF rate at steady state is heavily reduced', () => {
       const before = {
         theme: w.__windE2E.kernelThemeProbe(id),
         cursor: w.__windE2E.kernelCursor(id),
-        pixel: w.__windE2E.sampleHostPixel(0.5, 0.85),
       };
       await new Promise((r) => setTimeout(r, 2000));
       const after = {
         theme: w.__windE2E.kernelThemeProbe(id),
         cursor: w.__windE2E.kernelCursor(id),
-        pixel: w.__windE2E.sampleHostPixel(0.5, 0.85),
       };
       return { before, after };
     }, paneId);
@@ -143,10 +141,5 @@ describe('idle loop — RAF rate at steady state is heavily reduced', () => {
     expect(r.after.theme.bg).toBe(r.before.theme.bg);
     expect(r.after.cursor.row).toBe(r.before.cursor.row);
     expect(r.after.cursor.col).toBe(r.before.cursor.col);
-    // Pixel sample on host canvas: drawImage on a freshly-presented
-    // WebGPU canvas can be flaky across the WebDriver bridge — we
-    // assert "non-null structure" rather than RGB equality so a
-    // browser-side readback hiccup doesn't fail the spec.
-    expect(r.after.pixel).not.toBeNull();
   });
 });

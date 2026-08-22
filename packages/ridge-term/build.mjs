@@ -8,16 +8,11 @@
 //     `pnpm add file:...` ends up with the wrong package name.
 //
 // Usage:
-//   node build.mjs                   # release, dual-backend (Canvas2D + WebGPU; default)
+//   node build.mjs                   # release, WebGPU-only
 //   node build.mjs --dev             # dev (faster compile, larger wasm)
-//   node build.mjs --no-webgpu       # release, Canvas2D-only (smaller wasm)
-//   node build.mjs --dev --no-webgpu # dev + Canvas2D-only
 //
 // Note: `--webgpu` (legacy flag from round 4.5) is still accepted but is
-// now a no-op — WebGPU ships in the default cargo feature set so the JS
-// `RenderHandle.newWithWebgpuFirst` is always present, and TerminalManager
-// runtime-detects the GPU adapter at attach time. To force a Canvas2D-only
-// bundle (e.g. size-constrained), pass `--no-webgpu`.
+// now a no-op — WebGPU and the pure-Rust glyph rasterizer ship by default.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -27,13 +22,13 @@ import { cargoTool } from '../../scripts/lib/toolPath.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.argv.includes('--dev');
-// `--no-webgpu` strips the WebGPU backend by passing `--no-default-features`
-// to cargo. Default builds include WebGPU because the user wants the GPU
-// path on by default with runtime adapter detection (no build-time gate).
-const noWebgpu = process.argv.includes('--no-webgpu');
+if (process.argv.includes('--no-webgpu')) {
+	console.error('[ridge-term] --no-webgpu is unsupported: terminal presentation is WebGPU-only');
+	process.exit(2);
+}
 
 console.log(
-	`[ridge-term] ${isDev ? 'dev' : 'release'} build${noWebgpu ? ' (Canvas2D-only)' : ' (Canvas2D + WebGPU)'}`,
+	`[ridge-term] ${isDev ? 'dev' : 'release'} build (WebGPU-only)`,
 );
 
 // 1. Run wasm-pack from the explicit Cargo bin directory (or an explicit
@@ -47,13 +42,6 @@ const wasmPackArgs = [
 	'--out-name', 'ridge_term',
 	isDev ? '--dev' : '--release',
 ];
-
-// `wasm-pack build` forwards everything after `--` to cargo. The webgpu
-// feature is in cargo's default feature set (Cargo.toml `[features]`),
-// so we only need cargo-side flags when explicitly opting OUT.
-if (noWebgpu) {
-	wasmPackArgs.push('--', '--no-default-features');
-}
 
 const wasmPackResult = spawnSync(cargoTool('wasm-pack'), wasmPackArgs, {
 	stdio: 'inherit',
@@ -93,7 +81,7 @@ const pkgJsonPath = path.join(__dirname, 'pkg', 'package.json');
 const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
 
 pkg.name = '@ridge/term-wasm';
-pkg.description = 'Ridge terminal: VT kernel + Canvas2D renderer (WASM)';
+pkg.description = 'Ridge terminal: VT kernel + WebGPU renderer (WASM)';
 // sideEffects: false would let bundlers tree-shake everything; that
 // breaks wasm-bindgen's init code which has top-level side effects.
 // Be explicit about what's needed.

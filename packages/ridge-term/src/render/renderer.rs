@@ -203,22 +203,6 @@ pub(crate) fn history_text_width(text: &str) -> usize {
         .min(HISTORY_OVERLAY_COL_CAP)
 }
 
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn truncate_history_text(text: &str, max_cells: usize) -> String {
-    let mut cells = 0usize;
-    text.chars()
-        .take_while(|ch| {
-            let next = cells + if ch.is_ascii() { 1 } else { 2 };
-            if next > max_cells {
-                false
-            } else {
-                cells = next;
-                true
-            }
-        })
-        .collect()
-}
-
 /// Resolve the popup inside the pane-local cell rectangle. Prefer the
 /// requested anchor side, flip when the other side fits, then clamp.
 #[cfg(any(target_arch = "wasm32", test))]
@@ -485,10 +469,8 @@ impl<B: RenderBackend> Renderer<B> {
     ///     frame actually shows the cursor instead of catching it on
     ///     the off-half by accident.
     ///
-    /// Also forwards to the backend's `invalidate_atlas` so any GPU
-    /// glyph cache (WebGPU `GlyphAtlas`) drops stale entries sized for
-    /// the previous metrics. Canvas2D's default no-op is a free
-    /// fall-through.
+    /// Also forwards to the WebGPU backend's `invalidate_atlas` so the shared
+    /// `GlyphAtlas` drops stale entries sized for the previous metrics.
     pub fn invalidate_all(&mut self) {
         self.snapshot.clear();
         self.visual_snapshot.clear();
@@ -561,9 +543,8 @@ impl<B: RenderBackend> Renderer<B> {
         &self.theme
     }
 
-    /// Drive one frame. Returns `true` if anything was drawn (caller may
-    /// use this to decide whether to skip swapchain present in WebGPU
-    /// cases — Canvas2D ignores the return).
+    /// Drive one frame. Returns `true` if anything was drawn; the caller uses
+    /// this to avoid scheduling or presenting an idle WebGPU frame.
     ///
     /// `selection` is the kernel's current selection range (drawn as a
     /// translucent overlay over selected cells). Pass `None` for no
@@ -578,11 +559,10 @@ impl<B: RenderBackend> Renderer<B> {
         self.tick_with_scroll(terminal, selection, now_ms, &[])
     }
 
-    /// Drive one frame, optionally reusing pixels for a physical viewport
-    /// scroll observed by the VT kernel. The fast path is deliberately narrow:
-    /// only a settled primary shell may copy a full viewport upward. TUI,
-    /// selection, overlays and structural invalidation retain the ordinary
-    /// revision path so no transient pixels can leak across layers.
+    /// Drive one frame, optionally reusing pixels for one compacted physical
+    /// scroll observed by the VT kernel. Primary shells, inline TUIs,
+    /// alt-screen applications and DECSTBM regions share this path; overlays,
+    /// invalid mappings and structural invalidation fall back to repainting.
     pub fn tick_with_scroll(
         &mut self,
         terminal: &Terminal,
@@ -631,17 +611,13 @@ impl<B: RenderBackend> Renderer<B> {
         */
 
         // Grow OR shrink the snapshot if the grid changed size. §A.3
-        // (2026-05-07): previously this branch only fired on growth, so
-        // a *narrowing* primary-screen resize left the dirty-row cache
-        // sized to the old grid and Canvas2D never marked the trailing
-        // rows for redraw — old pixels past the new bottom or right of
-        // each row stayed visible (the §1.26 ghost-prompt symptom under
-        // Canvas2D specifically). Forcing both ends to track `rows_n`
-        // here pairs with `Grid::resize` clearing the cell state: the
-        // next frame re-snapshots every source revision and
-        // paints blanks over the stale pixels. WebGPU was already safe
-        // because `requires_full_frame()` clears the swap-chain every
-        // tick, but going through this path keeps both backends honest.
+        // Historical root cause (2026-05-07): the removed Canvas2D path only
+        // handled growth, so a narrowing resize left the dirty-row cache sized
+        // to the old grid and never marked trailing pixels for redraw. Those
+        // stale pixels resurfaced when the size was restored (§1.26).
+        // Current WebGPU-only rendering keeps the invariant: snapshot
+        // cardinality must track `rows_n`, so the next frame re-snapshots each
+        // source revision and paints blanks over every former cell.
         self.update_snapshot_size(rows_n);
         /*
         if self.snapshot.len() != rows_n {
@@ -654,11 +630,10 @@ impl<B: RenderBackend> Renderer<B> {
         }
         */
 
-        // Backends that can't preserve content across frames (WebGPU
-        // clears the swap-chain on every present) need every visible row
-        // dirty every tick — otherwise non-dirty rows render only their
-        // cleared bg and lose all glyphs. Canvas2D returns false here so
-        // dirty-row diffing keeps its perf benefit.
+        // Honor backend one-frame seed requests. WebGPU's persistent frame
+        // store normally preserves clean rows; after construction or a
+        // structural invalidation `requires_full_frame()` forces one complete
+        // encode, then row-revision diffing resumes.
         self.update_backend_frame_policy();
 
         // Paint truth is the Grid row-revision snapshot, not "the app used
@@ -688,21 +663,29 @@ impl<B: RenderBackend> Renderer<B> {
         }
         */
 
-        // For ordinary shell output, a bottom-margin scroll moves almost every
-        // row without changing its cells. Move the renderer snapshot with the
-        // same operation before diffing so WebGPU can issue one texture copy
-        // and redraw only the newly exposed rows. All other cases retain the
-        // revision diff below; that intentionally redraws moved rows.
+        // For ordinary shell/TUI output, a scroll moves rows without changing
+        // their cells. Record the physical copy before advancing the snapshot;
+        // the backend must return every exposed or non-copyable destination so
+        // failed/fractional-DPR copies are repaired in this same frame.
         let scroll_copy = self.scroll_copy_candidate(terminal, selection, offset, scroll_ops);
-        if let Some(scroll) = scroll_copy {
+        let scroll_repaint_rows = if let Some(scroll) = scroll_copy {
+            let result = self.backend.scroll_rows(scroll, self.metrics);
             self.shift_snapshot_for_scroll(scroll);
-        }
+            result.repaint_rows
+        } else {
+            Vec::new()
+        };
 
         // Grid mutators advance the affected row revision, including
         // hyperlink and grapheme sidecars. We read via `viewport_row` so the
         // same O(rows) revision compare covers live grid and scrollback views
         // without allocating a flags array or hashing every visible cell.
         let mut dirty_rows = self.collect_dirty_rows(terminal, rows_n);
+        for row in scroll_repaint_rows {
+            if row < rows_n && !dirty_rows.contains(&row) {
+                dirty_rows.push(row);
+            }
+        }
 
         // Cursor handling: show the cursor when (a) the surface is focused,
         // (b) DEC ?25 is enabled, and (c) we're on the visible blink half.
@@ -819,7 +802,6 @@ impl<B: RenderBackend> Renderer<B> {
                 cursor: new_cursor,
                 attrs_table: &terminal.grid().attrs,
                 full_redraw: do_full,
-                scroll: scroll_copy,
                 selection_rects: &sel_rects,
                 hyperlink_rects: &hl_rects,
                 preedit: self.preedit.as_ref(),
@@ -1112,7 +1094,7 @@ impl<B: RenderBackend> Renderer<B> {
     pub fn is_dirty(&self, terminal: &Terminal, selection: Option<SelRange>, now_ms: f64) -> bool {
         // Pending unconditional redraw — first frame or set by an
         // earlier mutation we haven't tick-consumed yet.
-        if self.first_frame || self.full_redraw_pending {
+        if self.first_frame || self.full_redraw_pending || self.backend.requires_full_frame() {
             return true;
         }
 
@@ -1573,7 +1555,7 @@ mod tests {
     // never whole-viewport clear solely because absolute CSI / TUI is active.
 
     use super::Renderer;
-    use crate::render::backend::{FrameMetrics, RenderBackend, RowDraw, Theme};
+    use crate::render::backend::{FrameMetrics, RenderBackend, RowDraw, ScrollCopyResult, Theme};
     use crate::term::attr_table::AttrTable;
     use crate::term::{grid::ScrollOp, Terminal};
 
@@ -1585,6 +1567,9 @@ mod tests {
         cursor_positions: Vec<(usize, usize)>,
         atlas_invalidations: u32,
         scroll_copy: bool,
+        scroll_copy_fails: bool,
+        scroll_repaint_rows: Option<Vec<usize>>,
+        requires_full_frame: bool,
         scrolls: Vec<ScrollOp>,
         drawn_rows: Vec<usize>,
         last_drawn: Vec<usize>,
@@ -1609,8 +1594,18 @@ mod tests {
         fn supports_scroll_copy(&self) -> bool {
             self.scroll_copy
         }
-        fn scroll_rows(&mut self, scroll: ScrollOp) {
+        fn requires_full_frame(&self) -> bool {
+            self.requires_full_frame
+        }
+        fn scroll_rows(&mut self, scroll: ScrollOp, _: FrameMetrics) -> ScrollCopyResult {
             self.scrolls.push(scroll);
+            if self.scroll_copy_fails {
+                ScrollCopyResult::repaint_all(scroll)
+            } else if let Some(rows) = self.scroll_repaint_rows.clone() {
+                ScrollCopyResult::new(rows)
+            } else {
+                ScrollCopyResult::copied(scroll)
+            }
         }
         fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, _: &AttrTable) {
             self.last_drawn.push(row.row_index);
@@ -1625,6 +1620,7 @@ mod tests {
         fn draw_hyperlink_underlines(&mut self, _: &[(usize, usize, usize)]) {}
         fn end_frame(&mut self) {
             self.frames += 1;
+            self.requires_full_frame = false;
         }
     }
 
@@ -1804,16 +1800,34 @@ mod tests {
         let mut drawn = renderer.backend().last_drawn.clone();
         drawn.sort_unstable();
         drawn.dedup();
-        assert!(
-            drawn.len() <= 2,
-            "scroll copy must not repaint the whole viewport: {drawn:?}"
-        );
+        assert_eq!(drawn, vec![2, 3]);
     }
 
     #[test]
-    fn alt_screen_and_inline_tui_scrolls_still_copy_pixels() {
+    fn backend_only_full_frame_request_wakes_idle_renderer_once() {
+        let mut term = Terminal::new(4, 12, 0);
+        term.feed(b"stable");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
+        assert!(renderer.tick(&term, None, 0.0));
+        assert!(!renderer.is_dirty(&term, None, 0.0));
+
+        renderer.backend_mut().requires_full_frame = true;
+        assert!(renderer.is_dirty(&term, None, 0.0));
+        assert!(renderer.tick(&term, None, 0.0));
+        assert_eq!(renderer.backend().last_drawn, vec![0, 1, 2, 3]);
+        assert!(!renderer.is_dirty(&term, None, 0.0));
+    }
+
+    #[test]
+    fn alt_screen_scroll_copies_pixels_and_repaints_exposed_band() {
         let mut term = Terminal::new(6, 12, 0);
-        term.feed(b"\x1b[?1049h\x1b[?25l\x1b[1;1Hline1\r\nline2\r\nline3\r\nline4\r\nline5\r\nline6");
+        term.feed(
+            b"\x1b[?1049h\x1b[?25l\x1b[1;1Hline1\r\nline2\r\nline3\r\nline4\r\nline5\r\nline6",
+        );
         let mut renderer = Renderer::new(
             RecordingBackend {
                 scroll_copy: true,
@@ -1843,10 +1857,113 @@ mod tests {
         let mut drawn = renderer.backend().last_drawn.clone();
         drawn.sort_unstable();
         drawn.dedup();
-        assert!(
-            drawn.len() < 6,
-            "TUI scroll must not repaint every row: {drawn:?}"
+        assert_eq!(drawn, vec![4, 5]);
+    }
+
+    #[test]
+    fn inline_tui_scroll_copies_pixels_and_repaints_exposed_band() {
+        let mut term = Terminal::new(6, 12, 0);
+        term.feed(b"\x1b[?25l");
+        feed_ratatui_frame(&mut term, "I");
+        assert!(term
+            .grid()
+            .is_inline_tui_active_at(crate::term::clock::now_ms(), false));
+
+        let mut renderer = Renderer::new(
+            RecordingBackend {
+                scroll_copy: true,
+                ..RecordingBackend::default()
+            },
+            metrics(),
+            Theme::default_dark(),
         );
+        renderer.set_focused(false);
+        assert!(renderer.tick(&term, None, 0.0));
+        renderer.backend_mut().last_drawn.clear();
+        renderer.backend_mut().scrolls.clear();
+
+        term.feed(b"\x1b[6;1H\nnext");
+        let scrolls = term.take_scroll_ops();
+        assert_eq!(scrolls.len(), 1, "inline TUI fixture must scroll once");
+        assert!(renderer.tick_with_scroll(&term, None, 0.0, &scrolls));
+        assert_eq!(renderer.backend().scrolls, scrolls);
+        assert_eq!(renderer.backend().clears, 1);
+        let mut drawn = renderer.backend().last_drawn.clone();
+        drawn.sort_unstable();
+        drawn.dedup();
+        assert_eq!(drawn, vec![4, 5]);
+    }
+
+    #[test]
+    fn failed_scroll_copy_repaints_region_and_keeps_snapshot_exact() {
+        let mut term = Terminal::new(4, 12, 0);
+        term.feed(b"A\r\nB\r\nC\r\nD");
+        let mut renderer = Renderer::new(
+            RecordingBackend {
+                scroll_copy: true,
+                scroll_copy_fails: true,
+                ..RecordingBackend::default()
+            },
+            metrics(),
+            Theme::default_dark(),
+        );
+        renderer.set_focused(false);
+        assert!(renderer.tick(&term, None, 0.0));
+        renderer.backend_mut().last_drawn.clear();
+
+        term.feed(b"\r\nE");
+        let scrolls = term.take_scroll_ops();
+        assert!(renderer.tick_with_scroll(&term, None, 0.0, &scrolls));
+        let mut drawn = renderer.backend().last_drawn.clone();
+        drawn.sort_unstable();
+        drawn.dedup();
+        assert_eq!(drawn, vec![0, 1, 2, 3]);
+        assert!(
+            !renderer.tick(&term, None, 0.0),
+            "failed copy fallback must still commit the exact row snapshot"
+        );
+    }
+
+    #[test]
+    fn decstbm_partial_region_scroll_copies_only_the_region() {
+        let mut term = Terminal::new(8, 12, 0);
+        // Set a four-row DECSTBM region (terminal rows 2..=5), then fill it
+        // without scrolling so the next line produces exactly one partial
+        // region scroll operation.
+        term.feed(b"\x1b[2;5r\x1b[2;1HA\r\nB\r\nC\r\nD");
+        assert!(term.take_scroll_ops().is_empty());
+
+        let mut renderer = Renderer::new(
+            RecordingBackend {
+                scroll_copy: true,
+                ..RecordingBackend::default()
+            },
+            metrics(),
+            Theme::default_dark(),
+        );
+        renderer.set_focused(false);
+        assert!(renderer.tick(&term, None, 0.0));
+        renderer.backend_mut().last_drawn.clear();
+        renderer.backend_mut().scrolls.clear();
+
+        term.feed(b"\r\nE");
+        let scrolls = term.take_scroll_ops();
+        assert_eq!(
+            scrolls,
+            vec![ScrollOp {
+                top: 1,
+                bottom: 4,
+                count: 1,
+                up: true,
+            }],
+            "DECSTBM must emit a bounded region scroll"
+        );
+        assert!(renderer.tick_with_scroll(&term, None, 0.0, &scrolls));
+        assert_eq!(renderer.backend().scrolls, scrolls);
+        let mut drawn = renderer.backend().last_drawn.clone();
+        drawn.sort_unstable();
+        drawn.dedup();
+        assert_eq!(drawn, vec![3, 4]);
     }
 
     #[test]

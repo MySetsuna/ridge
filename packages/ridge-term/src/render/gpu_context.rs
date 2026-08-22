@@ -102,15 +102,13 @@ pub const CANVAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 /// of the per-frame `TextureView` we render INTO. Same as `CANVAS_FORMAT`
 /// (linear `Bgra8Unorm`) so the byte values the shader writes show up
 /// on screen unchanged — `theme.bg = #1e1e2e` produces pixels at exactly
-/// `#1e1e2e`, matching the Canvas2D backend (which uses CSS `rgba()`
-/// strings for fills, also no gamma awareness). Earlier this was
+/// `#1e1e2e`, matching the host's CSS `rgba()` theme values. Earlier this was
 /// `Bgra8UnormSrgb` so the ROP would gamma-encode the shader's linear
-/// output, but that produced a darker background than Canvas2D / theme
+/// output, but that produced a darker background than the theme
 /// asked for and wasn't visually consistent with the rest of the app
 /// (CSS `rgb(...)` colors are sRGB byte values too). Trade-off: the
 /// shader's alpha blending happens in sRGB space rather than linear
-/// space — same as Canvas2D and any DOM compositing, so the choice
-/// keeps the two backends visually identical.
+/// space, matching the host's DOM compositing semantics.
 pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 /// std140 size of `WallpaperUniform`: vec2(8) + vec2(8) + vec3-padded-to-vec4(16) = 32 bytes.
@@ -221,13 +219,13 @@ thread_local! {
     /// Process-wide singleton. `None` until the first
     /// `GpuContext::get_or_init` call succeeds; cached `Some` thereafter.
     /// Failure is *not* cached — each call re-attempts so a transient
-    /// adapter miss doesn't permanently lock the session into Canvas2D.
+    /// adapter miss does not permanently lock the session out of WebGPU.
     static SHARED_GPU: RefCell<Option<Rc<RefCell<GpuContext>>>> = const { RefCell::new(None) };
 }
 
 /// §atlas-race detector: read the process-wide overwrite-after-cite count
-/// from the shared GPU context. Returns 0 before the context inits (Canvas2D
-/// path, or pre-first-frame). Surfaced to JS via `lib.rs::atlasOverwriteAfterCiteCount`.
+/// from the shared GPU context. Returns 0 before the context initializes or
+/// before the first frame. Surfaced to JS via `lib.rs::atlasOverwriteAfterCiteCount`.
 pub fn atlas_overwrite_after_cite_count() -> u64 {
     SHARED_GPU.with(|cell| {
         cell.borrow()
@@ -235,6 +233,25 @@ pub fn atlas_overwrite_after_cite_count() -> u64 {
             .map(|rc| rc.borrow().atlas_overwrite_after_cite)
             .unwrap_or(0)
     })
+}
+
+/// Register host-provided system-font bytes and synchronize a live shared
+/// rasterizer. The atlas is invalidated only when the payload is new.
+pub fn install_font_data(data: Vec<u8>) -> Result<bool, String> {
+    let added = super::glyph_rasterizer::register_font_data(data)?;
+    if !added {
+        return Ok(false);
+    }
+    SHARED_GPU.with(|cell| -> Result<(), String> {
+        let Some(ctx) = cell.borrow().as_ref().cloned() else {
+            return Ok(());
+        };
+        let mut ctx = ctx.borrow_mut();
+        ctx.rasterizer.sync_registered_fonts()?;
+        ctx.invalidate_atlas();
+        Ok(())
+    })?;
+    Ok(true)
 }
 
 /// §stale-replay detector: read the process-wide count of cached replays
@@ -247,8 +264,9 @@ impl GpuContext {
     ///
     /// Returns `Err` on adapter / device acquisition failure so the
     /// caller (`WebGpuBackend::new`, eventually `RenderHandle
-    /// ::newWithWebgpuFirst`) can fall back to Canvas2D. Failure is not
-    /// memoized — a flaky adapter on call N can succeed on call N+1.
+    /// ::newWithWebgpuFirst`) can report an explicit initialization error.
+    /// Failure is not memoized — a flaky adapter on call N can succeed on
+    /// call N+1.
     pub async fn get_or_init() -> Result<Rc<RefCell<Self>>, String> {
         if let Some(rc) = SHARED_GPU.with(|cell| cell.borrow().clone()) {
             return Ok(rc);
@@ -276,9 +294,7 @@ impl GpuContext {
                 force_fallback_adapter: false,
             })
             .await
-            .ok_or_else(|| {
-                "GpuContext: no GPU adapter available — falling back to Canvas2D".to_string()
-            })?;
+            .ok_or_else(|| "GpuContext: no WebGPU adapter available".to_string())?;
 
         // Pick texture-array depth before requesting the device — wgpu
         // only honors `max_texture_array_layers` up to whatever we
@@ -463,21 +479,14 @@ impl GpuContext {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            // §A.8 (2026-05-08): Linear filtering for atlas sampling.
-            // Color emoji from system fonts (Segoe UI Emoji ≈ 1.37em
-            // advance) get sampled into a 2-cell-wide quad (≈ 1.2em),
-            // i.e. a slight horizontal compression — Nearest produced
-            // visible jagged edges, Linear smooths the resampling so
-            // emoji match the sharpness of native PowerShell text.
-            // For ASCII / CJK glyphs at 1:1 atlas-px-to-quad-px the
-            // Linear filter degenerates to the source pixel
-            // (touching only one texel), so Latin / CJK rendering is
-            // unaffected. Combined with native-DPR rasterisation and
-            // natural-advance quads for color
-            // emoji, this restores a "native" look across both
-            // backends.
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            // Glyphs are rasterized at the current device scale and their
+            // quads preserve that device-pixel extent. Linear filtering would
+            // blend neighbouring transparent texels whenever the pane origin
+            // or DPR lands between pixels, producing a soft fringe and visible
+            // seams between adjacent box-drawing glyphs. Sample the native
+            // bitmap exactly; wallpaper scaling keeps its separate sampler.
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
@@ -593,7 +602,7 @@ impl GpuContext {
             // Linear (NOT sRGB) — matches `SURFACE_FORMAT` so the whole
             // pipeline treats colors as "sRGB byte / 255" semantic values
             // throughout. With `Rgba8UnormSrgb` here, sampling would
-            // gamma-decode the OffscreenCanvas's sRGB-byte glyph pixels
+            // gamma-decode the DOM canvas's sRGB-byte glyph pixels
             // into linear space, the shader would mix in linear, then
             // write back to `Bgra8Unorm` (linear) — net effect: every
             // color-emoji RGB channel ends up displayed at its linear
@@ -657,7 +666,7 @@ impl GpuContext {
 
     /// Compute the device-pixel atlas slot size required for the given
     /// (cell_w, cell_h, dpr). Wide CJK cells need ≥ `cell_w × dpr × 2`
-    /// device pixels horizontally so the rasterizer's OffscreenCanvas
+    /// device pixels horizontally so the rasterizer's DOM canvas
     /// holds the full advance without clipping. `slot_w` is rounded up
     /// to a power of two so `bytes_per_row = slot_w × 4` always
     /// satisfies wgpu's 256-byte alignment. Vertical adds 25% safety
@@ -831,7 +840,7 @@ impl GpuContext {
             ..Default::default()
         });
 
-        // Rasterizer's OffscreenCanvas dimensions must match the slot
+        // Rasterizer's DOM canvas dimensions must match the slot
         // exactly so its `get_image_data` is `slot_w × slot_h × 4`
         // bytes — same shape `queue.write_texture` expects.
         let rasterizer = GlyphRasterizer::new(self.slot_w as u16, self.slot_h as u16)?;
@@ -1051,7 +1060,10 @@ impl GpuContext {
             layer: layer as u16,
             uv: [0.0, 0.0, u1, v1],
             advance: glyph.advance,
-            ascent_offset: glyph.ascent_offset,
+            // Rasterizer metrics are at the upload density; CellInstance
+            // coordinates are native device pixels, so remove only the
+            // explicit atlas supersample factor.
+            ascent_offset: glyph.ascent_offset / ss,
             px_w: logical_px_w,
             px_h: logical_px_h,
             is_color: glyph.is_color,

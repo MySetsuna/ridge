@@ -14,7 +14,6 @@ import { pruneOutputs, walk } from './prune-stale-fonts.mjs';
 import { collectEvidence, main as prodStatusMain, parseArgs } from './check-prod-status.mjs';
 import { buildPlan as tauriBuildPlan, main as tauriBuildMain } from './tauri-build.mjs';
 import { buildDebugPlan, renameDebugArtifacts, main as debugBuildMain } from './tauri-build-debug.mjs';
-import { buildFlagFont, TWEMOJI_SHA256 } from './build-flag-font.mjs';
 import { main as remoteDesktopBuild } from './build-remote-desktop.mjs';
 import { main as remoteDevMain, parseArgs as remoteDevArgs } from './start-remote-dev.mjs';
 import { main as viteDevMain, viteArgs } from './start-vite-dev.mjs';
@@ -187,32 +186,6 @@ describe('Tauri build command plans', () => {
     const io = quietIo();
     expect(await debugBuildMain({ envSource: {}, platform: 'linux', spawnImpl: spawn, spawnSyncImpl: () => ({ status: 1 }), fsImpl: { readFileSync: () => JSON.stringify({ version: '2.0.0' }), existsSync: () => false, mkdirSync: vi.fn() }, rootDir: 'C:/repo', io, now: () => 0 })).toBe(0);
     expect(io.warn).toHaveBeenCalled();
-  });
-});
-
-describe('flag font build guard', () => {
-  const fontFs = (exists = true, size = 10) => ({
-    existsSync: () => exists,
-    readFileSync: () => Buffer.from('font'),
-    statSync: () => ({ size }),
-    mkdirSync: vi.fn(),
-    copyFileSync: vi.fn(),
-    rmSync: vi.fn(),
-  });
-
-  it('accepts a hashed cached source and mirrors a bounded subset', () => {
-    const fs = fontFs();
-    expect(buildFlagFont({ rootDir: 'C:/repo', fsImpl: fs, hashFile: () => TWEMOJI_SHA256, execFileSyncImpl: vi.fn(), io: quietIo() })).toBe(true);
-    expect(fs.copyFileSync).toHaveBeenCalled();
-  });
-
-  it('rejects a bad download, missing subset tool, and oversized output', () => {
-    const bad = fontFs(false);
-    expect(buildFlagFont({ rootDir: 'C:/repo', fsImpl: bad, hashFile: () => 'bad', execFileSyncImpl: vi.fn(), io: quietIo() })).toBe(false);
-    const missingTool = fontFs();
-    const toolError = Object.assign(new Error('missing'), { code: 'ENOENT' });
-    expect(buildFlagFont({ rootDir: 'C:/repo', fsImpl: missingTool, hashFile: () => TWEMOJI_SHA256, execFileSyncImpl: () => { throw toolError; }, io: quietIo() })).toBe(false);
-    expect(buildFlagFont({ rootDir: 'C:/repo', fsImpl: fontFs(true, 2 * 1024 * 1024), hashFile: () => TWEMOJI_SHA256, execFileSyncImpl: vi.fn(), io: quietIo() })).toBe(false);
   });
 });
 

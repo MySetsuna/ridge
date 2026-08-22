@@ -58,19 +58,27 @@ pub fn _init() {
 /// dirty-row fast path (vs. the always-full-frame correctness default) on a
 /// release WebView2 whose swap chain reliably preserves prior pixels under
 /// LoadOp::Load. `manager.ts` gates this on `localStorage.RIDGE_PRESENT_FAST`.
-/// Compiled only with the WebGPU backend; absent on Canvas2D-only builds (the
-/// JS caller guards with `typeof`). See `render/webgpu.rs::requires_full_frame`.
+/// Compiled only with the WebGPU backend. See
+/// `render/webgpu.rs::requires_full_frame`.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 #[wasm_bindgen(js_name = setPresentFast)]
 pub fn set_present_fast(on: bool) {
     crate::render::webgpu::set_present_fast(on);
 }
 
+/// Install one host-resolved system font into the synchronous WebGPU glyph
+/// rasterizer. JS must finish this preload before constructing SurfaceHost.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen(js_name = installFontData)]
+pub fn install_font_data(data: Vec<u8>) -> Result<bool, JsValue> {
+    crate::render::gpu_context::install_font_data(data).map_err(JsValue::from)
+}
+
 /// §atlas-race detector (2026-06-22): read the process-wide count of
 /// "a glyph-atlas layer was overwritten after a recorded draw already cited
 /// it this frame" events — the exact cross-pane switch-workspace garble.
-/// Returned as `f64` (counts never approach 2^53). 0 on Canvas2D-only builds
-/// (JS guards with `typeof`). Poll from CDP/console for release forensics;
+/// Returned as `f64` (counts never approach 2^53). Poll from CDP/console for
+/// release forensics;
 /// any non-zero value localises a residual `frame_written` hole (details are
 /// logged to the devtools console at detection time).
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
@@ -169,6 +177,31 @@ mod render_scroll_op_tests {
         );
         assert_eq!(ops.len(), 2, "opposite direction keeps a safe fallback");
     }
+
+    #[test]
+    fn compatible_downward_region_scrolls_compact_across_capture_batches() {
+        let mut ops = Vec::new();
+        for count in [1, 2] {
+            append_render_scroll_ops(
+                &mut ops,
+                vec![ScrollOp {
+                    top: 3,
+                    bottom: 9,
+                    count,
+                    up: false,
+                }],
+            );
+        }
+        assert_eq!(
+            ops,
+            vec![ScrollOp {
+                top: 3,
+                bottom: 9,
+                count: 3,
+                up: false,
+            }]
+        );
+    }
 }
 
 /// §1.33 (2026-05-22) — sticky window for the shell-history popup gate.
@@ -192,7 +225,7 @@ impl JsTerminal {
         }
     }
 
-    pub fn feed(&mut self, bytes: &[u8]) {
+    pub fn feed(&mut self, bytes: &[u8]) -> bool {
         // §B.2 (2026-05-08) — selection now uses abs-row anchors that
         // are stable across TUI redraws, viewport scroll, and even
         // ordinary push-to-scrollback. The ONLY case where stored
@@ -210,8 +243,11 @@ impl JsTerminal {
         // the over-eager invalidation was the actual blocker.
         let evictions_before = self.inner.scrollback_eviction_count();
         let clears_before = self.inner.scrollback_clear_count();
+        let render_activity_before = self.inner.grid().render_activity_seq();
         self.inner.feed(bytes);
         self.capture_render_scroll_ops();
+        let requires_render_settle =
+            self.inner.grid().render_activity_seq() != render_activity_before;
         let evictions_after = self.inner.scrollback_eviction_count();
         let clears_after = self.inner.scrollback_clear_count();
         if evictions_after != evictions_before || clears_after != clears_before {
@@ -221,6 +257,7 @@ impl JsTerminal {
             self.selection.clear();
             self.search.clear();
         }
+        requires_render_settle
     }
 
     /// Prepend older history at the OLDEST end of the scrollback ring.
@@ -1227,139 +1264,39 @@ mod delta_selection_tests {
 // Renderer (wasm-only)
 // =====================================================================
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 mod renderer_js {
     use super::*;
     use crate::render::backend::RenderBackend;
-    use crate::render::{AnyBackend, Canvas2dBackend, FrameMetrics, Renderer, Theme};
-    use web_sys::{HtmlCanvasElement, OffscreenCanvas};
+    use crate::render::webgpu::WebGpuPaneBackend;
+    use crate::render::{FrameMetrics, Renderer, Theme};
+    use web_sys::HtmlCanvasElement;
 
     #[wasm_bindgen]
     pub struct RenderHandle {
-        renderer: Renderer<AnyBackend>,
+        renderer: Renderer<WebGpuPaneBackend>,
     }
 
     #[wasm_bindgen]
     impl RenderHandle {
-        /// Sync constructor — Canvas2D-only. JS calls
-        /// `new RenderHandle(canvas)`. For runtime-WebGPU adoption with
-        /// graceful Canvas2D fallback, JS calls
-        /// `await RenderHandle.newWithWebgpuFirst(canvas)` instead.
-        #[wasm_bindgen(constructor)]
-        pub fn new(canvas: HtmlCanvasElement) -> Result<RenderHandle, JsValue> {
-            let backend = Canvas2dBackend::new(canvas).map_err(JsValue::from)?;
-            let metrics = FrameMetrics {
-                cell_w: 8.0,
-                cell_h: 16.0,
-                dpr: 1.0,
-                tui_mode: false,
-            };
-            let renderer = Renderer::new(
-                AnyBackend::Canvas2d(backend),
-                metrics,
-                Theme::default_dark(),
-            );
-            Ok(RenderHandle { renderer })
-        }
-
-        /// §p4.9 (2026-05-22) — worker-thread constructor.
-        ///
-        /// JS bridge: `RenderHandle.newFromOffscreen(offscreenCanvas)`.
-        /// Called from `renderWorker.ts::loadKernelAdapter` after the
-        /// host transferred a canvas via
-        /// `canvas.transferControlToOffscreen()` + postMessage. The
-        /// `OffscreenCanvas` here is the same object the worker side
-        /// receives in the `bindCanvas` request.
-        ///
-        /// Canvas2D-only — the WebGPU-first branch is reserved for the
-        /// main-thread `newWithWebgpuFirst` because the WebGPU surface
-        /// host needs DOM access (window-level GPU adapter / device).
-        /// On the worker path we paint via Canvas2D, which is fully
-        /// available inside a DedicatedWorker since 2018.
-        #[wasm_bindgen(js_name = newFromOffscreen)]
-        pub fn new_from_offscreen(canvas: OffscreenCanvas) -> Result<RenderHandle, JsValue> {
-            let backend = Canvas2dBackend::new_from_offscreen(canvas).map_err(JsValue::from)?;
-            let metrics = FrameMetrics {
-                cell_w: 8.0,
-                cell_h: 16.0,
-                dpr: 1.0,
-                tui_mode: false,
-            };
-            let renderer = Renderer::new(
-                AnyBackend::Canvas2d(backend),
-                metrics,
-                Theme::default_dark(),
-            );
-            Ok(RenderHandle { renderer })
-        }
-
-        /// Async constructor — try WebGPU first, fall back to Canvas2D
-        /// on adapter miss / device-creation failure. Always succeeds
-        /// when `Canvas2dBackend::new` succeeds; returns Err only if
-        /// even the Canvas2D fallback can't initialize (rare; usually
-        /// indicates a malformed canvas element).
-        ///
-        /// Only compiled when the `webgpu` cargo feature is on (the
-        /// `wasm-bindgen-futures` dep needed for `#[wasm_bindgen]
-        /// async fn` is gated behind that feature). In default builds,
-        /// JS callers should use the sync `new RenderHandle(canvas)`
-        /// constructor; they can detect the async constructor's
-        /// presence via `typeof RenderHandle.newWithWebgpuFirst ===
-        /// 'function'`.
-        #[cfg(feature = "webgpu")]
+        /// Async WebGPU-only constructor. `surface_host` owns the shared
+        /// presentation surface; initialization failures are returned to
+        /// JavaScript with the stable `WEBGPU_INIT_FAILED:` prefix.
         #[wasm_bindgen(js_name = newWithWebgpuFirst)]
         pub async fn new_with_webgpu_first(
-            canvas: HtmlCanvasElement,
-            surface_host: Option<SurfaceHostHandle>,
+            _canvas: HtmlCanvasElement,
+            surface_host: SurfaceHostHandle,
         ) -> Result<RenderHandle, JsValue> {
-            // Per-workspace SurfaceHost (2026-05-08): JS passes the
-            // pane's workspace's SurfaceHostHandle. If `None` (Canvas2D-
-            // only build, manager.attachHost failed for this workspace,
-            // adapter miss), fall through to Canvas2D against this
-            // pane's own canvas.
-            //
-            // The `canvas` parameter is the per-pane fallback DOM
-            // element used by Canvas2D. WebGPU draws never touch it
-            // — they go through the per-workspace `<canvas data-rg-ws-host>`
-            // bound to the workspace's SurfaceHost.
-            if let Some(handle) = surface_host {
-                match crate::render::webgpu::WebGpuPaneBackend::new(handle.host_rc()).await {
-                    Ok(b) => {
-                        web_sys::console::log_1(&"[ridge] WebGPU backend OK".into());
-                        let metrics = FrameMetrics {
-                            cell_w: 8.0,
-                            cell_h: 16.0,
-                            dpr: 1.0,
-                            tui_mode: false,
-                        };
-                        let renderer =
-                            Renderer::new(AnyBackend::Webgpu(b), metrics, Theme::default_dark());
-                        return Ok(RenderHandle { renderer });
-                    }
-                    Err(e) => {
-                        web_sys::console::log_1(
-                            &format!("[ridge] WebGPU backend failed: {e:?}").into(),
-                        );
-                    }
-                }
-            } else {
-                web_sys::console::log_1(
-                    &"[ridge] surface_host is None — attachHost never completed".into(),
-                );
-            }
-            // No host available or WebGPU adapter missed — Canvas2D.
-            let backend = Canvas2dBackend::new(canvas).map_err(JsValue::from)?;
+            let backend = WebGpuPaneBackend::new(surface_host.host_rc())
+                .await
+                .map_err(|error| JsValue::from_str(&format!("WEBGPU_INIT_FAILED: {error}")))?;
             let metrics = FrameMetrics {
                 cell_w: 8.0,
                 cell_h: 16.0,
                 dpr: 1.0,
                 tui_mode: false,
             };
-            let renderer = Renderer::new(
-                AnyBackend::Canvas2d(backend),
-                metrics,
-                Theme::default_dark(),
-            );
+            let renderer = Renderer::new(backend, metrics, Theme::default_dark());
             Ok(RenderHandle { renderer })
         }
 
@@ -1372,11 +1309,8 @@ mod renderer_js {
             font_size_px: f32,
             dpr: f32,
         ) -> Result<Vec<f32>, JsValue> {
-            // Unified font config — AnyBackend dispatches to
-            // Canvas2dBackend::set_font (which expects a single CSS
-            // string built from family+size) or to
-            // WebGpuBackend::set_font_config (which takes them
-            // separately for the rasterizer).
+            // Keep font family and size together so the glyph atlas uses
+            // the selected system-font fallback chain.
             self.renderer
                 .backend_mut()
                 .set_font_config(font_family.clone(), font_size_px);
@@ -1409,8 +1343,7 @@ mod renderer_js {
         /// `manager.ts::_recomputeViewport` whenever the splitter drag
         /// moves the pane's container without changing its size.
         ///
-        /// No-op for Canvas2D-backed handles. WebGPU handles forward
-        /// to `WebGpuPaneBackend::set_viewport_offset`. Does **not**
+        /// Forward the host-canvas offset to WebGPU. Does **not**
         /// trigger a redraw on its own — the pane content is unchanged
         /// on a positional shift; JS calls `surfaceHost.invalidate()`
         /// after layout settle to clear the old area.
@@ -1651,15 +1584,10 @@ mod renderer_js {
             out.into_boxed_slice()
         }
 
-        /// Return the active rendering backend name: `"WebGPU"` or `"Canvas2D"`.
-        /// Used by the remote page to show a small indicator badge.
+        /// Return the active rendering backend name.
         #[wasm_bindgen(js_name = backendName)]
         pub fn backend_name(&self) -> String {
-            match self.renderer.backend() {
-                AnyBackend::Canvas2d(_) => "Canvas2D".to_string(),
-                #[cfg(feature = "webgpu")]
-                AnyBackend::Webgpu(_) => "WebGPU".to_string(),
-            }
+            "WebGPU".to_string()
         }
     }
 
@@ -1726,8 +1654,7 @@ mod renderer_js {
         /// Returns `Err` (rejected promise on the JS side) when the
         /// WebGPU adapter / device acquisition fails or
         /// `instance.create_surface` rejects the canvas. JS catches
-        /// and either retries or falls back to per-pane Canvas2D for
-        /// panes in this workspace.
+        /// and surfaces a structured initialization error to JavaScript.
         #[wasm_bindgen(js_name = init)]
         pub async fn init(canvas: HtmlCanvasElement) -> Result<SurfaceHostHandle, JsValue> {
             let host = crate::render::surface_host::SurfaceHost::init(canvas)
@@ -1824,7 +1751,7 @@ mod renderer_js {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub use renderer_js::RenderHandle;
 
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]

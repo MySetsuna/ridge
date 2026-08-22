@@ -1,14 +1,13 @@
 //! Rendering layer.
 //!
-//! Gated on `target_arch = "wasm32"` because the backends use web-sys.
+//! WebGPU presentation modules are gated on `target_arch = "wasm32"` because
+//! they use web-sys.
 //! The `term` module (VT kernel) stays target-agnostic so unit tests
 //! run on the host with `cargo test --lib`.
 
 pub mod backend;
-#[cfg(target_arch = "wasm32")]
-pub mod canvas2d;
 pub mod glyph_atlas;
-#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[cfg(feature = "webgpu")]
 pub mod glyph_rasterizer;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod gpu_context;
@@ -27,24 +26,13 @@ pub struct Rect {
     pub h: f32,
 }
 
-/// Snap a CSS-pixel coordinate to the nearest device pixel, then express it
-/// back in CSS pixels for a scaled Canvas2D context.
-///
-/// Rounding CSS coordinates directly is only correct at DPR 1. At DPR 1.25
-/// or 1.5 it leaves edges at fractional backing-store pixels, which makes
-/// box-drawing strokes and adjacent cell backgrounds blur or gap.
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) fn snap_css_to_device(value: f64, dpr: f64) -> f64 {
-    let dpr = if dpr.is_finite() && dpr > 0.0 {
-        dpr
-    } else {
-        1.0
-    };
-    (value * dpr).round() / dpr
+pub(crate) fn is_box_drawing(character: char) -> bool {
+    matches!(character, '\u{2500}'..='\u{257F}')
 }
 
-/// Generates procedural rectangles for Box Drawing (U+2500..=U+257F) and
-/// Block Elements (U+2580..=U+259F). Returns None if the character is not supported.
+/// Generates procedural rectangles for Block Elements (U+2580..=U+259F).
+/// Box Drawing characters always return `None` so WebGPU rasterizes the exact
+/// selected-font glyph through the atlas.
 ///
 /// Coverage of the Block Elements range (U+2580..=U+259F):
 ///   - Half blocks (▀ ▄ ▌ ▐) + full block (█)
@@ -57,78 +45,6 @@ pub(crate) fn snap_css_to_device(value: f64, dpr: f64) -> f64 {
 /// they need an alpha-modulated full-cell quad rather than opaque
 /// rectangles, so the caller (`webgpu::draw_row_texts`) special-cases them
 /// with a scaled fg alpha before falling through to this lookup.
-#[derive(Clone, Copy)]
-enum Corner {
-    TopLeft,
-    TopRight,
-    BottomRight,
-    BottomLeft,
-}
-
-fn append_rounded_corner(
-    rects: &mut Vec<Rect>,
-    corner: Corner,
-    cell_x: f32,
-    cell_y: f32,
-    cell_w: f32,
-    cell_h: f32,
-    lw: f32,
-    lh: f32,
-) {
-    let radius = (cell_w.min(cell_h) * 0.42).max(lw.max(lh) * 1.5);
-    let cx = cell_x + (cell_w - lw) / 2.0;
-    let cy = cell_y + (cell_h - lh) / 2.0;
-    let (center_x, center_y, start, end, h_from_left, v_from_top) = match corner {
-        Corner::TopLeft => (cx + radius, cy + radius, std::f32::consts::PI, std::f32::consts::PI * 1.5, false, false),
-        Corner::TopRight => (cx + lw - radius, cy + radius, std::f32::consts::PI * 1.5, std::f32::consts::PI * 2.0, true, false),
-        Corner::BottomRight => (cx + lw - radius, cy + lh - radius, 0.0, std::f32::consts::PI * 0.5, true, true),
-        Corner::BottomLeft => (cx + radius, cy + lh - radius, std::f32::consts::PI * 0.5, std::f32::consts::PI, false, true),
-    };
-    if h_from_left {
-        rects.push(Rect {
-            x: cell_x,
-            y: cy,
-            w: (center_x - cell_x).max(lw),
-            h: lh,
-        });
-    } else {
-        rects.push(Rect {
-            x: center_x,
-            y: cy,
-            w: (cell_x + cell_w - center_x).max(lw) + 1.0,
-            h: lh,
-        });
-    }
-    if v_from_top {
-        rects.push(Rect {
-            x: cx,
-            y: cell_y,
-            w: lw,
-            h: (center_y - cell_y).max(lh),
-        });
-    } else {
-        rects.push(Rect {
-            x: cx,
-            y: center_y,
-            w: lw,
-            h: (cell_y + cell_h - center_y).max(lh) + 1.0,
-        });
-    }
-    let steps = 6_u32;
-    let span = end - start;
-    for i in 0..=steps {
-        let t = start + span * (i as f32 / steps as f32);
-        let x = center_x + radius * t.cos() - lw * 0.5;
-        let y = center_y + radius * t.sin() - lh * 0.5;
-        rects.push(Rect {
-            x,
-            y,
-            w: lw,
-            h: lh,
-        });
-    }
-}
-
 pub fn procedural_box(
     c: char,
     cell_x: f32,
@@ -136,36 +52,14 @@ pub fn procedural_box(
     cell_w: f32,
     cell_h: f32,
 ) -> Option<Vec<Rect>> {
+    if is_box_drawing(c) {
+        return None;
+    }
     let mut rects = Vec::with_capacity(2);
 
     // Procedural drawing: use the exact provided bounds.
     // Rounding and snapping happen in the renderer's pixel-coordinate space,
     // not here, to avoid double-rounding artifacts.
-    //
-    // LIGHT vs HEAVY stroke widths. Unicode separates U+2500-U+250B/2502-3
-    // (light) from U+2501/2503 (heavy) plus the heavy stub set
-    // (U+2578..U+257B) — they're meant to render visibly thicker. Earlier
-    // versions of this function collapsed both weights onto the same `lw`
-    // and `lh`, so opencode's ThickBorder (┃ ╹) drew at the same hairline
-    // weight as a normal │ vt100 box. The thicker stroke is what users
-    // notice on PowerShell / Windows Terminal too.
-    let lw = (cell_w * 0.22).max(2.0);
-    let lh = (cell_h * 0.14).max(2.0);
-    let lw_heavy = cell_w * 0.38;
-    let lh_heavy = cell_h * 0.28;
-
-    // Centers for line drawing
-    let cx = cell_x + (cell_w - lw) / 2.0;
-    let cy = cell_y + (cell_h - lh) / 2.0;
-    let cy_heavy = cell_y + (cell_h - lh_heavy) / 2.0;
-    // HEAVY vertical strokes ┃ ╹ ╻ shift right of the cell centre by the
-    // "extra weight" the stroke carries over LIGHT (`lw_heavy - lw`). This
-    // partially closes the seam against the cell-right neighbour (opencode
-    // ThickBorder's input-box interior) without going all the way to a
-    // flush-right placement — which would make `┃` look conspicuously
-    // off-centre when used as a plain text character (rare but valid).
-    let cx_heavy = cell_x + (cell_w - lw_heavy) / 2.0 + (lw_heavy - lw);
-
     // Half-cell helpers for the quadrant block characters (U+2596..=U+259F).
     // A quadrant is `cell_w/2 × cell_h/2` anchored at one of the four
     // corners of the cell.
@@ -352,253 +246,6 @@ pub fn procedural_box(
             rects.push(q_br);
         } // ▟ all except upper-left
 
-        // --- Box Drawing (U+2500 - U+257F) Core set ---
-        // For straight horizontal / vertical lines we extend the rect by
-        // 1 procedural-px past the cell boundary on the "outgoing" side.
-        // webgpu.rs::draw_row_texts pixel-snaps these to device-px integer
-        // bounds, so the +1 lands as a 1 device-px overlap with the next
-        // cell's rect. Without it, opencode-style multi-row ┃ stacks
-        // (gocui / charmbracelet ThickBorder = ┃ left + ╹ bottom-left)
-        // showed a visible gap between cells on a subset of GPUs — the
-        // mathematically-exact tile boundary at `(N+1) * cell_h_dev`
-        // rasterised to no pixel coverage on neither row's quad. The
-        // overlap is invisible (both quads paint the same fg color) and
-        // restores seam-free vertical / horizontal runs.
-        '\u{2500}' => rects.push(Rect {
-            x: cell_x,
-            y: cy,
-            w: cell_w + 1.0,
-            h: lh,
-        }), // ─ LIGHT
-        '\u{2501}' => rects.push(Rect {
-            x: cell_x,
-            y: cy_heavy,
-            w: cell_w + 1.0,
-            h: lh_heavy,
-        }), // ━ HEAVY
-        '\u{2502}' => rects.push(Rect {
-            x: cx,
-            y: cell_y,
-            w: lw,
-            h: cell_h + 1.0,
-        }), // │ LIGHT (centred)
-        '\u{2503}' => rects.push(Rect {
-            x: cx_heavy,
-            y: cell_y,
-            w: lw_heavy,
-            h: cell_h + 1.0,
-        }), // ┃ HEAVY (centred)
-
-        // Stub-ends (U+2574..U+257B) — single-direction half-cell lines.
-        // LIGHT variants (╴╵╶╷) use the thin stroke, HEAVY variants
-        // (╸╹╺╻) the thick one. Each stub extends by 1 procedural-px
-        // toward the adjacent cell to overlap with whatever continues
-        // the line (matches the ─/│ overlap).
-        // LIGHT left/right (horizontal stub, thin)
-        '\u{2574}' => rects.push(Rect {
-            x: cell_x,
-            y: cy,
-            w: cell_w / 2.0 + 1.0,
-            h: lh,
-        }), // ╴
-        '\u{2576}' => rects.push(Rect {
-            x: cell_x + cell_w / 2.0,
-            y: cy,
-            w: cell_w / 2.0 + 1.0,
-            h: lh,
-        }), // ╶
-        // HEAVY left/right (horizontal stub, thick)
-        '\u{2578}' => rects.push(Rect {
-            x: cell_x,
-            y: cy_heavy,
-            w: cell_w / 2.0 + 1.0,
-            h: lh_heavy,
-        }), // ╸
-        '\u{257A}' => rects.push(Rect {
-            x: cell_x + cell_w / 2.0,
-            y: cy_heavy,
-            w: cell_w / 2.0 + 1.0,
-            h: lh_heavy,
-        }), // ╺
-        // LIGHT up/down (vertical stub, thin)
-        '\u{2575}' => rects.push(Rect {
-            x: cx,
-            y: cell_y,
-            w: lw,
-            h: cell_h / 2.0 + 1.0,
-        }), // ╵
-        '\u{2577}' => rects.push(Rect {
-            x: cx,
-            y: cell_y + cell_h / 2.0,
-            w: lw,
-            h: cell_h / 2.0 + 1.0,
-        }), // ╷
-        // HEAVY up/down (vertical stub, thick) — centred like ┃ so they
-        // align with ┃ above/below in a vertical chain (opencode's
-        // L-shape input box draws ╹ as the bottom-left corner attached
-        // to a column of ┃; centred ╹ keeps the column straight).
-        '\u{2579}' => rects.push(Rect {
-            x: cx_heavy,
-            y: cell_y,
-            w: lw_heavy,
-            h: cell_h / 2.0 + 1.0,
-        }), // ╹
-        '\u{257B}' => rects.push(Rect {
-            x: cx_heavy,
-            y: cell_y + cell_h / 2.0,
-            w: lw_heavy,
-            h: cell_h / 2.0 + 1.0,
-        }), // ╻
-
-        '\u{250C}' | '\u{250D}' | '\u{250E}' | '\u{250F}' => {
-            // Top-left
-            rects.push(Rect {
-                x: cx,
-                y: cy,
-                w: cell_w - (cx - cell_x),
-                h: lh,
-            });
-            rects.push(Rect {
-                x: cx,
-                y: cy,
-                w: lw,
-                h: cell_h - (cy - cell_y),
-            });
-        }
-        '\u{2510}' | '\u{2511}' | '\u{2512}' | '\u{2513}' => {
-            // Top-right
-            rects.push(Rect {
-                x: cell_x,
-                y: cy,
-                w: cx - cell_x + lw,
-                h: lh,
-            });
-            rects.push(Rect {
-                x: cx,
-                y: cy,
-                w: lw,
-                h: cell_h - (cy - cell_y),
-            });
-        }
-        '\u{2514}' | '\u{2515}' | '\u{2516}' | '\u{2517}' => {
-            // Bottom-left
-            rects.push(Rect {
-                x: cx,
-                y: cy,
-                w: cell_w - (cx - cell_x),
-                h: lh,
-            });
-            rects.push(Rect {
-                x: cx,
-                y: cell_y,
-                w: lw,
-                h: cy - cell_y + lh,
-            });
-        }
-        '\u{2518}' | '\u{2519}' | '\u{251A}' | '\u{251B}' => {
-            // Bottom-right
-            rects.push(Rect {
-                x: cell_x,
-                y: cy,
-                w: cx - cell_x + lw,
-                h: lh,
-            });
-            rects.push(Rect {
-                x: cx,
-                y: cell_y,
-                w: lw,
-                h: cy - cell_y + lh,
-            });
-        }
-        // Rounded corners ╭ ╮ ╯ ╰. Atlas fillText at top-baseline is
-        // blurry and undersized versus conhost/WT. Pixel-snapped arms plus
-        // a short quarter-circle keep the radius without AA smear.
-        '\u{256D}' => append_rounded_corner(&mut rects, Corner::TopLeft, cell_x, cell_y, cell_w, cell_h, lw, lh),
-        '\u{256E}' => append_rounded_corner(&mut rects, Corner::TopRight, cell_x, cell_y, cell_w, cell_h, lw, lh),
-        '\u{256F}' => append_rounded_corner(&mut rects, Corner::BottomRight, cell_x, cell_y, cell_w, cell_h, lw, lh),
-        '\u{2570}' => append_rounded_corner(&mut rects, Corner::BottomLeft, cell_x, cell_y, cell_w, cell_h, lw, lh),
-        '\u{251C}' | '\u{251D}' | '\u{251E}' | '\u{251F}' | '\u{2520}' | '\u{2521}'
-        | '\u{2522}' | '\u{2523}' => {
-            // Vertical-right
-            rects.push(Rect {
-                x: cx,
-                y: cell_y,
-                w: lw,
-                h: cell_h,
-            });
-            rects.push(Rect {
-                x: cx,
-                y: cy,
-                w: cell_w - (cx - cell_x),
-                h: lh,
-            });
-        }
-        '\u{2524}' | '\u{2525}' | '\u{2526}' | '\u{2527}' | '\u{2528}' | '\u{2529}'
-        | '\u{252A}' | '\u{252B}' => {
-            // Vertical-left
-            rects.push(Rect {
-                x: cx,
-                y: cell_y,
-                w: lw,
-                h: cell_h,
-            });
-            rects.push(Rect {
-                x: cell_x,
-                y: cy,
-                w: cx - cell_x + lw,
-                h: lh,
-            });
-        }
-        '\u{252C}' | '\u{252D}' | '\u{252E}' | '\u{252F}' | '\u{2530}' | '\u{2531}'
-        | '\u{2532}' | '\u{2533}' => {
-            // Horizontal-down
-            rects.push(Rect {
-                x: cell_x,
-                y: cy,
-                w: cell_w,
-                h: lh,
-            });
-            rects.push(Rect {
-                x: cx,
-                y: cy,
-                w: lw,
-                h: cell_h - (cy - cell_y),
-            });
-        }
-        '\u{2534}' | '\u{2535}' | '\u{2536}' | '\u{2537}' | '\u{2538}' | '\u{2539}'
-        | '\u{253A}' | '\u{253B}' => {
-            // Horizontal-up
-            rects.push(Rect {
-                x: cell_x,
-                y: cy,
-                w: cell_w,
-                h: lh,
-            });
-            rects.push(Rect {
-                x: cx,
-                y: cell_y,
-                w: lw,
-                h: cy - cell_y + lh,
-            });
-        }
-
-        '\u{253C}' | '\u{253D}' | '\u{253E}' | '\u{253F}' | '\u{2540}' | '\u{2541}'
-        | '\u{2542}' | '\u{2543}' | '\u{2544}' | '\u{2545}' | '\u{2546}' | '\u{2547}'
-        | '\u{2548}' | '\u{2549}' | '\u{254A}' | '\u{254B}' => {
-            rects.push(Rect {
-                x: cell_x,
-                y: cy,
-                w: cell_w,
-                h: lh,
-            });
-            rects.push(Rect {
-                x: cx,
-                y: cell_y,
-                w: lw,
-                h: cell_h,
-            });
-        }
-
         _ => return None,
     }
     Some(rects)
@@ -711,14 +358,15 @@ mod fit_glyph_box_tests {
 // borrows it via Rc<RefCell<>> instead of constructing its own copies.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 // Shared swap-chain host (Round 3 §4.3 Phase B): one wgpu::Surface
-// bound to the global host canvas in +page.svelte. Per-pane backends
-// each pane's draw clipped by its own scissor rect. Single submit +
-// present per frame regardless of pane count.
+// bound to the global host canvas in +page.svelte. Per-pane
+// WebGpuPaneBackend instances record each pane's draw clipped by its own
+// scissor rect. Single submit + present per frame regardless of pane count.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-// Glyph rasterizer (Round 3 §4.1.b). OffscreenCanvas-based — uses the
-// browser's font fallback chain for free, no extra wasm bundle weight.
-// Owned by future WebGpuBackend::draw_row cache-miss path; gated on
-// the same wasm32 + webgpu feature combination.
+// Glyph rasterizer (Round 3 §4.1.b). Uses a hidden DOM canvas only as
+// selected-system-font glyph raster input feeding the WebGPU atlas; it is
+// never a presentation backend and adds no extra wasm bundle weight.
+// Owned by the shared WebGPU cache-miss path; gated on the same wasm32 +
+// webgpu feature combination.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub use backend::{CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme};
 pub use renderer::Renderer;
@@ -727,9 +375,8 @@ pub use renderer::Renderer;
 //
 // `cell.wgsl` is `include_str!`'d into the binary and only validated by
 // wgpu at `device.create_shader_module()` time — i.e. inside the
-// browser, on the first WebGPU pane attach. A typo there is a
-// production-only failure that surfaces as a JS console error and
-// silent fallback to Canvas2D for that pane.
+// browser, on the first WebGPU pane attach. A typo there would otherwise
+// become a runtime initialization failure surfaced to the pane UI.
 //
 // Naga is the parser+validator wgpu uses internally. Pulling it as a
 // host dev-dep (see Cargo.toml `[dev-dependencies]`) lets us validate
@@ -770,250 +417,9 @@ mod wgsl_validation_tests {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-pub use canvas2d::Canvas2dBackend;
-
-// ─── AnyBackend (Round 3 §4.1.e infrastructure) ─────────────────────
-//
-// Enum-dispatch wrapper that holds either a Canvas2dBackend or
-// (when the `webgpu` cargo feature is on) a WebGpuBackend. Implements
-// `RenderBackend` by forwarding every trait method to the active
-// variant. Lets `RenderHandle` use `Renderer<AnyBackend>` and switch
-// backends at construction time based on adapter availability without
-// changing the `Renderer<B>` generic to `Renderer<dyn RenderBackend>`
-// (which would force trait-object dispatch through a vtable for every
-// frame's per-row draw call — not what we want on the hot path).
-//
-// The match arms on each method are mechanical but the compiler
-// inlines monomorphized variants on optimization, so the runtime
-// cost is one branch + a tail call.
-//
-// Wiring `RenderHandle` to use this lands in §4.1.e.next; this
-// commit just defines the enum + impl so the dispatch code is
-// reviewable in isolation.
-
-#[cfg(target_arch = "wasm32")]
-pub enum AnyBackend {
-    Canvas2d(Canvas2dBackend),
-    #[cfg(feature = "webgpu")]
-    Webgpu(webgpu::WebGpuPaneBackend),
-}
-
-#[cfg(target_arch = "wasm32")]
-impl AnyBackend {
-    /// Set the font CSS family + pixel size. Translates the unified
-    /// (family, size_px) form into whichever shape each backend
-    /// expects: Canvas2D wants a single CSS string; WebGPU wants
-    /// the two parts separately for the rasterizer.
-    pub fn set_font_config(&mut self, font_family: String, font_size_px: f32) {
-        match self {
-            AnyBackend::Canvas2d(b) => {
-                b.set_font(format!("{}px {}", font_size_px, font_family));
-            }
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => {
-                b.set_font_config(font_family, font_size_px);
-            }
-        }
-    }
-
-    /// Phase B: record the pane's `(x, y)` position on the host canvas
-    /// in device pixels. Drives `pass.set_viewport` / `set_scissor_rect`
-    /// inside the host's shared render pass so the pane's draw lands at
-    /// the correct rect on the host canvas.
-    ///
-    /// No-op for Canvas2D — that backend owns its own per-pane DOM
-    /// canvas, positioned by CSS, so JS-driven offsets are not relevant.
-    pub fn set_viewport_offset(&mut self, _x: u32, _y: u32) {
-        match self {
-            AnyBackend::Canvas2d(_) => {
-                // Per-pane canvas owns its DOM position; no GPU-side
-                // viewport to update.
-            }
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => {
-                b.set_viewport_offset(_x, _y);
-            }
-        }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-impl RenderBackend for AnyBackend {
-    fn measure_font(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
-        match self {
-            AnyBackend::Canvas2d(b) => b.measure_font(font_family, font_size_px),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.measure_font(font_family, font_size_px),
-        }
-    }
-
-    fn requires_full_frame(&self) -> bool {
-        // CRITICAL: forward to the active variant. Without this override,
-        // AnyBackend would fall back to the trait's default `false`
-        // regardless of which inner backend is active — and the WebGPU
-        // visibility fix (`renderer.rs::tick` uses this to mark every
-        // visible row dirty for backends that can't preserve content
-        // across frames) would be entirely defeated. Caught 2026-05-05
-        // from a user report that non-active rows disappeared with
-        // WebGPU active.
-        match self {
-            AnyBackend::Canvas2d(b) => b.requires_full_frame(),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.requires_full_frame(),
-        }
-    }
-
-    fn resize_surface(&mut self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), String> {
-        match self {
-            AnyBackend::Canvas2d(b) => b.resize_surface(width_css, height_css, dpr),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.resize_surface(width_css, height_css, dpr),
-        }
-    }
-
-    fn invalidate_atlas(&mut self) {
-        // CRITICAL: forward to the active variant. Canvas2D's default
-        // no-op is fine but WebGPU MUST drop its GlyphAtlas + reset
-        // next_layer on resize / font change; without this forward,
-        // AnyBackend would fall through to the trait default and
-        // stale glyph UVs persist across DPR / font-size changes —
-        // exactly the "resize + claude → 字符位置错乱" report.
-        match self {
-            AnyBackend::Canvas2d(b) => b.invalidate_atlas(),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.invalidate_atlas(),
-        }
-    }
-
-    fn on_full_invalidate(&mut self) {
-        // Forward so WebGPU's `needs_initial_clear` flag flips when the
-        // renderer detects scroll / sel toggle / snapshot growth — the
-        // trait default would silently swallow it and the next frame
-        // would `LoadOp::Load` over an undefined or stale background.
-        match self {
-            AnyBackend::Canvas2d(b) => b.on_full_invalidate(),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.on_full_invalidate(),
-        }
-    }
-
-    fn supports_scroll_copy(&self) -> bool {
-        match self {
-            AnyBackend::Canvas2d(b) => b.supports_scroll_copy(),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.supports_scroll_copy(),
-        }
-    }
-
-    fn scroll_rows(&mut self, scroll: crate::term::grid::ScrollOp) {
-        match self {
-            AnyBackend::Canvas2d(b) => b.scroll_rows(scroll),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.scroll_rows(scroll),
-        }
-    }
-
-    fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme) {
-        match self {
-            AnyBackend::Canvas2d(b) => b.begin_frame(metrics, theme),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.begin_frame(metrics, theme),
-        }
-    }
-
-    fn clear(&mut self) {
-        match self {
-            AnyBackend::Canvas2d(b) => b.clear(),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.clear(),
-        }
-    }
-
-    fn draw_row_backgrounds(
-        &mut self,
-        row: &RowDraw<'_>,
-        attrs_table: &crate::term::attr_table::AttrTable,
-    ) {
-        match self {
-            AnyBackend::Canvas2d(b) => b.draw_row_backgrounds(row, attrs_table),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.draw_row_backgrounds(row, attrs_table),
-        }
-    }
-
-    fn draw_row_texts(
-        &mut self,
-        row: &RowDraw<'_>,
-        attrs_table: &crate::term::attr_table::AttrTable,
-    ) {
-        match self {
-            AnyBackend::Canvas2d(b) => b.draw_row_texts(row, attrs_table),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.draw_row_texts(row, attrs_table),
-        }
-    }
-
-    fn draw_cursor(
-        &mut self,
-        cursor: &CursorDraw,
-        attrs_table: &crate::term::attr_table::AttrTable,
-    ) {
-        match self {
-            AnyBackend::Canvas2d(b) => b.draw_cursor(cursor, attrs_table),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.draw_cursor(cursor, attrs_table),
-        }
-    }
-
-    fn draw_selection_overlay(&mut self, rects: &[(usize, usize, usize)]) {
-        match self {
-            AnyBackend::Canvas2d(b) => b.draw_selection_overlay(rects),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.draw_selection_overlay(rects),
-        }
-    }
-
-    fn draw_hyperlink_underlines(&mut self, rects: &[(usize, usize, usize)]) {
-        match self {
-            AnyBackend::Canvas2d(b) => b.draw_hyperlink_underlines(rects),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.draw_hyperlink_underlines(rects),
-        }
-    }
-
-    fn draw_preedit_overlay(&mut self, text: &str, row: usize, col: usize, theme: &Theme) {
-        match self {
-            AnyBackend::Canvas2d(b) => b.draw_preedit_overlay(text, row, col, theme),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.draw_preedit_overlay(text, row, col, theme),
-        }
-    }
-
-    fn draw_history_overlay(
-        &mut self,
-        overlay: &crate::render::renderer::HistoryOverlay,
-        theme: &Theme,
-    ) {
-        match self {
-            AnyBackend::Canvas2d(b) => b.draw_history_overlay(overlay, theme),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.draw_history_overlay(overlay, theme),
-        }
-    }
-
-    fn end_frame(&mut self) {
-        match self {
-            AnyBackend::Canvas2d(b) => b.end_frame(),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::Webgpu(b) => b.end_frame(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod procedural_box_tests {
-    use super::{procedural_box, snap_css_to_device, Rect};
+    use super::{procedural_box, Rect};
 
     // Unit-cell bounds keep the assertions simple: every fraction maps to
     // an exact f32 with no rounding required.
@@ -1197,132 +603,14 @@ mod procedural_box_tests {
         assert!(procedural_box('😀', CX, CY, CW, CH).is_none());
     }
 
-    /// Rounded corners ╭ ╮ ╯ ╰ stay on the procedural path so they snap to
-    /// device pixels instead of an atlas glyph (which looked thin/blurry).
     #[test]
-    fn rounded_corners_are_procedural_and_cover_the_cell_corner() {
-        for ch in ['\u{256D}', '\u{256E}', '\u{256F}', '\u{2570}'] {
-            let rects = box_for(ch);
+    fn every_box_drawing_character_uses_selected_font_glyphs() {
+        for codepoint in 0x2500..=0x257f {
+            let ch = char::from_u32(codepoint).expect("Box Drawing scalar");
             assert!(
-                rects.len() >= 3,
-                "{:?} needs arms plus the rounded join, got {}",
-                ch,
-                rects.len()
+                procedural_box(ch, CX, CY, CW, CH).is_none(),
+                "U+{codepoint:04X} must be rasterized from the selected font"
             );
         }
-    }
-
-    /// Straight ─/━/│/┃ runs must overlap their neighbour cell by 1
-    /// procedural-px on the continuation axis. opencode draws a ThickBorder
-    /// frame as a vertical stack of ┃ cells finishing at a ╹ stub; without
-    /// the overlap the device-px tile boundary at `(N+1) * cell_h_dev`
-    /// rasterised to zero coverage on a subset of GPUs, producing the
-    /// visible gap users reported between adjacent ┃ cells. Regression
-    /// guard so a future refactor doesn't drop the +1.
-    #[test]
-    fn straight_lines_extend_past_cell_boundary_by_one_px() {
-        for ch in ['\u{2500}', '\u{2501}'] {
-            let h = box_for(ch);
-            assert_eq!(h.len(), 1, "{:?}", ch);
-            assert_eq!(h[0].w, CW + 1.0, "{:?} must extend +1px rightward", ch);
-        }
-        for ch in ['\u{2502}', '\u{2503}'] {
-            let v = box_for(ch);
-            assert_eq!(v.len(), 1, "{:?}", ch);
-            assert_eq!(v[0].h, CH + 1.0, "{:?} must extend +1px downward", ch);
-        }
-    }
-
-    /// HEAVY variants ━/┃ and the HEAVY stub set ╸╹╺╻ must render with
-    /// a visibly thicker stroke than their LIGHT counterparts ─/│/╴╵╶╷.
-    /// Earlier this function collapsed both weights onto the same `lw`/`lh`,
-    /// so opencode's ThickBorder looked identical to a vt100 │ — the user
-    /// expected the heavier line they get in PowerShell / Windows Terminal.
-    #[test]
-    fn heavy_strokes_are_thicker_than_light() {
-        let light_h = box_for('\u{2500}')[0].h; // ─
-        let heavy_h = box_for('\u{2501}')[0].h; // ━
-        assert!(
-            heavy_h > light_h,
-            "━ ({}) must be thicker than ─ ({})",
-            heavy_h,
-            light_h
-        );
-
-        let light_w = box_for('\u{2502}')[0].w; // │
-        let heavy_w = box_for('\u{2503}')[0].w; // ┃
-        assert!(
-            heavy_w > light_w,
-            "┃ ({}) must be thicker than │ ({})",
-            heavy_w,
-            light_w
-        );
-
-        // Heavy vertical stubs (╹╻) thicker than light (╵╷).
-        assert!(
-            box_for('\u{2579}')[0].w > box_for('\u{2575}')[0].w,
-            "╹ vs ╵"
-        );
-        assert!(
-            box_for('\u{257B}')[0].w > box_for('\u{2577}')[0].w,
-            "╻ vs ╷"
-        );
-        // Heavy horizontal stubs (╸╺) thicker than light (╴╶).
-        assert!(
-            box_for('\u{2578}')[0].h > box_for('\u{2574}')[0].h,
-            "╸ vs ╴"
-        );
-        assert!(
-            box_for('\u{257A}')[0].h > box_for('\u{2576}')[0].h,
-            "╺ vs ╶"
-        );
-    }
-
-    /// Stub characters (U+2574..U+257B) — ╴╵╶╷╸╹╺╻ — must produce
-    /// procedural rects (not None / atlas fallback) anchored at the
-    /// correct half-cell edge with +1 px overlap toward the line they
-    /// terminate. Stroke-thickness vs light/heavy separation is covered
-    /// by `heavy_strokes_are_thicker_than_light`; this test just checks
-    /// position/anchor.
-    #[test]
-    fn stub_chars_have_procedural_half_cell_geometry() {
-        // Point UP — anchored at cell top, half-cell height + 1 overlap.
-        for ch in ['\u{2575}', '\u{2579}'] {
-            let r = box_for(ch);
-            assert_eq!(r.len(), 1, "{:?}", ch);
-            assert_eq!(r[0].y, CY, "{:?} y", ch);
-            assert_eq!(r[0].h, CH / 2.0 + 1.0, "{:?} h", ch);
-        }
-        // Point DOWN — anchored at cell midline.
-        for ch in ['\u{2577}', '\u{257B}'] {
-            let r = box_for(ch);
-            assert_eq!(r[0].y, CY + CH / 2.0, "{:?} y", ch);
-            assert_eq!(r[0].h, CH / 2.0 + 1.0, "{:?} h", ch);
-        }
-        // Point LEFT — anchored at cell-left.
-        for ch in ['\u{2574}', '\u{2578}'] {
-            let r = box_for(ch);
-            assert_eq!(r[0].x, CX, "{:?} x", ch);
-            assert_eq!(r[0].w, CW / 2.0 + 1.0, "{:?} w", ch);
-        }
-        // Point RIGHT — anchored at cell midline.
-        for ch in ['\u{2576}', '\u{257A}'] {
-            let r = box_for(ch);
-            assert_eq!(r[0].x, CX + CW / 2.0, "{:?} x", ch);
-            assert_eq!(r[0].w, CW / 2.0 + 1.0, "{:?} w", ch);
-        }
-    }
-
-    #[test]
-    fn css_coordinates_snap_in_device_pixel_space() {
-        let snapped = snap_css_to_device(10.5, 1.25);
-        assert!((snapped - 10.4).abs() < f32::EPSILON as f64);
-        assert!((snap_css_to_device(10.0, 1.5) - 10.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn invalid_dpr_falls_back_to_css_pixel_rounding() {
-        assert_eq!(snap_css_to_device(10.6, 0.0), 11.0);
-        assert_eq!(snap_css_to_device(10.6, f64::NAN), 11.0);
     }
 }

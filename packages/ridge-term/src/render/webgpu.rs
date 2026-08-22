@@ -42,23 +42,25 @@
 //! ## Adapter-miss policy
 //!
 //! `new(host)` returns `Err` when `GpuContext::get_or_init` fails (no
-//! WebGPU adapter). `RenderHandle::newWithWebgpuFirst` then falls back
-//! to `Canvas2dBackend` so the pane never crashes; the error string
-//! is the only signal.
+//! WebGPU adapter). `RenderHandle::newWithWebgpuFirst` propagates the
+//! explicit initialization error so the host can surface the failure.
 
 #![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use super::glyph_atlas::{GlyphEntry, GlyphKey};
+use super::glyph_atlas::{glyph_quad_geometry, GlyphEntry, GlyphKey};
 use super::gpu_context::{GpuContext, ATLAS_SUPERSAMPLE};
 use super::surface_host::{ScissorRect, SurfaceHost};
-use crate::render::backend::{CursorDraw, FrameMetrics, RenderBackend, RowDraw, Theme};
-use crate::render::procedural_box;
+use crate::render::backend::{
+    physical_row_boundary, CursorDraw, FrameMetrics, RenderBackend, RowDraw, ScrollCopyResult,
+    Theme,
+};
 use crate::render::renderer::{
     history_overlay_geometry, history_overlay_surface, history_text, history_text_width,
 };
+use crate::render::{is_box_drawing, procedural_box};
 use crate::term::attr_table::AttrTable;
 use crate::term::cell::{scan_line_path, RenderPath};
 use crate::term::grid::ScrollOp;
@@ -263,6 +265,9 @@ fn append_procedural_glyph(
     let Some(character) = glyph_text.chars().next() else {
         return false;
     };
+    if is_box_drawing(character) {
+        return false;
+    }
     if let Some(alpha) = shade_alpha(character) {
         let mut color = rgba_u8_to_f32(fg);
         color[3] *= alpha;
@@ -441,12 +446,25 @@ fn cursor_geometry(
 }
 
 impl WebGpuPaneBackend {
+    fn row_pixel_bounds(&self, row: usize) -> (f32, f32) {
+        let fallback_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
+        let fallback_top = row as f32 * fallback_h;
+        let top = physical_row_boundary(row, self.metrics.cell_h, self.metrics.dpr)
+            .map(|value| value as f32)
+            .unwrap_or(fallback_top);
+        let bottom = row
+            .checked_add(1)
+            .and_then(|next| physical_row_boundary(next, self.metrics.cell_h, self.metrics.dpr))
+            .map(|value| value as f32)
+            .unwrap_or(fallback_top + fallback_h);
+        (top, bottom)
+    }
+
     fn measure_font(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
-        // Delegate to the shared rasterizer's OffscreenCanvas-backed
-        // measure path. Bit-for-bit identical to Canvas2dBackend so
-        // fitPane stays backend-agnostic.
+        // Delegate to the shared selected-system-font rasterizer used by the
+        // WebGPU glyph atlas; the host uses these metrics to fit the pane.
         self.ctx
-            .borrow()
+            .borrow_mut()
             .rasterizer
             .measure(font_family, font_size_px)
     }
@@ -463,12 +481,10 @@ impl WebGpuPaneBackend {
         !self.viewport.is_empty() && self.host.borrow().is_frame_open()
     }
 
-    fn scroll_rows(&mut self, scroll: ScrollOp) {
-        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0) as u32;
-        let _ = self
-            .host
+    fn scroll_rows(&mut self, scroll: ScrollOp, metrics: FrameMetrics) -> ScrollCopyResult {
+        self.host
             .borrow_mut()
-            .scroll_pane(self.viewport, scroll, cell_h);
+            .scroll_pane(self.viewport, scroll, metrics.cell_h, metrics.dpr)
     }
 
     fn on_full_invalidate(&mut self) {
@@ -534,7 +550,7 @@ impl WebGpuPaneBackend {
         let mut ctx = self.ctx.borrow_mut();
 
         // 1) Atlas slot growth — only ever grows. Shrinking on small
-        //    metric jiggles would thrash the rasterizer's OffscreenCanvas
+        //    metric jiggles would thrash the rasterizer's hidden DOM canvas
         //    allocation and re-rasterize every glyph.
         if need_w > ctx.slot_w || need_h > ctx.slot_h {
             ctx.slot_w = need_w.max(ctx.slot_w);
@@ -615,7 +631,8 @@ impl WebGpuPaneBackend {
             self.damaged_rows.push(row_idx as u32);
         }
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
-        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
+        let (pixel_y, pixel_y_bot) = self.row_pixel_bounds(row_idx);
+        let row_h_int = pixel_y_bot - pixel_y;
         let tui_mode = self.metrics.tui_mode;
         let theme = self.theme.clone();
 
@@ -644,10 +661,6 @@ impl WebGpuPaneBackend {
             let pixel_x = (col as f32 * cell_w + 0.5).floor();
             let pixel_x_right = ((col + cell_span) as f32 * cell_w + 0.5).floor();
             let cell_w_px = pixel_x_right - pixel_x;
-
-            let pixel_y = (row_idx as f32 * cell_h + 0.5).floor();
-            let pixel_y_bot = ((row_idx + 1) as f32 * cell_h + 0.5).floor();
-            let row_h_int = pixel_y_bot - pixel_y;
 
             row_bg_instances.push(CellInstance {
                 cell_xy: [pixel_x, pixel_y],
@@ -729,7 +742,6 @@ impl WebGpuPaneBackend {
         entry: Option<GlyphEntry>,
         pixel_x: f32,
         pixel_y: f32,
-        row_h_int: f32,
         fg: [u8; 4],
         drawn_procedurally: bool,
     ) {
@@ -737,9 +749,10 @@ impl WebGpuPaneBackend {
             return;
         }
         if let Some(entry) = entry {
+            let (cell_xy, cell_size) = glyph_quad_geometry(pixel_x, pixel_y, &entry);
             instances.push(CellInstance {
-                cell_xy: [pixel_x, pixel_y],
-                cell_size: [(entry.px_w as f32).max(1.0), row_h_int],
+                cell_xy,
+                cell_size,
                 atlas_uv: entry.uv,
                 atlas_layer: entry.layer as u32,
                 fg_rgba: rgba_u8_to_f32(fg),
@@ -752,7 +765,8 @@ impl WebGpuPaneBackend {
     fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
         let row_idx = row.row_index;
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
-        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
+        let (pixel_y, pixel_y_bot) = self.row_pixel_bounds(row_idx);
+        let row_h_int = pixel_y_bot - pixel_y;
         let tui_mode = self.metrics.tui_mode;
         let theme = self.theme.clone();
 
@@ -774,9 +788,6 @@ impl WebGpuPaneBackend {
             // Pixel-aligned positions — floor(pos + 0.5) prevents sub-pixel
             // seams between adjacent cells that would show as hairline gaps.
             let pixel_x = (col as f32 * cell_w + 0.5).floor();
-            let pixel_y = (row_idx as f32 * cell_h + 0.5).floor();
-            let pixel_y_bot = ((row_idx + 1) as f32 * cell_h + 0.5).floor();
-            let row_h_int = pixel_y_bot - pixel_y;
 
             // ── Fast-path skip: for pure ASCII lines, no cluster lookup
             // is needed. This avoids the linear scan through `row.clusters`
@@ -809,7 +820,8 @@ impl WebGpuPaneBackend {
             );
             let entry = self.admit_glyph(key, glyph_text, style_flags);
 
-            // Procedural block/box-drawing chars
+            // Block Elements/shades retain exact cell geometry. Every Box
+            // Drawing scalar bypasses this helper and uses the font atlas.
             let drawn_procedurally = append_procedural_glyph(
                 &mut row_glyph_instances,
                 glyph_text,
@@ -820,82 +832,11 @@ impl WebGpuPaneBackend {
                 cell_w,
                 row_h_int,
             );
-            /*
-            let first_char = glyph_text.chars().next();
-            let mut drawn_procedurally = false;
-
-            if let Some(ch) = first_char {
-                // Shade characters (U+2591..=U+2593) — full-cell quad
-                // with the fg alpha scaled by 25 / 50 / 75 percent so
-                // the rasterizer's antialiased glyph is replaced by a
-                // resolution-independent shade that aligns to the cell
-                // grid (btop / mc / shading-based gauges depend on
-                // this). Handled here (not in `procedural_box`) so the
-                // function signature stays opaque-rect-only.
-                let shade_alpha: Option<f32> = match ch {
-                    '\u{2591}' => Some(0.25), // ░ light
-                    '\u{2592}' => Some(0.50), // ▒ medium
-                    '\u{2593}' => Some(0.75), // ▓ dark
-                    _ => None,
-                };
-                if let Some(alpha) = shade_alpha {
-                    let mut fg_scaled = rgba_u8_to_f32(fg);
-                    fg_scaled[3] *= alpha;
-                    row_glyph_instances.push(CellInstance {
-                        cell_xy: [pixel_x, pixel_y],
-                        cell_size: [cell_span as f32 * cell_w, row_h_int],
-                        atlas_uv: [0.0, 0.0, 0.0, 0.0],
-                        atlas_layer: 0,
-                        fg_rgba: fg_scaled,
-                        bg_rgba: [0.0, 0.0, 0.0, 0.0],
-                        is_color: INSTANCE_MODE_PROCEDURAL,
-                    });
-                    drawn_procedurally = true;
-                } else if let Some(rects) =
-                    procedural_box(ch, pixel_x, pixel_y, cell_span as f32 * cell_w, row_h_int)
-                {
-                    for r in rects {
-                        // Pixel-snap to integer boundaries. When cell_w
-                        // or cell_h is odd (which is common after the
-                        // (px * dpr).round() step in line 520-521), the
-                        // half/quarter expressions in procedural_box
-                        // (cell_w * 0.5, cell_h * 0.125, …) land on
-                        // half-pixel coordinates. The GPU then alpha-
-                        // blends the rect's edge across two pixels,
-                        // making the same character look thicker or
-                        // thinner depending on whether its cell happens
-                        // to sit on an even/odd row or column. Snapping
-                        // each edge independently (NOT left + width)
-                        // means ▀ and ▄ in the same column stay flush,
-                        // and every ▀ on the screen renders at the
-                        // identical integer height.
-                        let r_x = r.x.round();
-                        let r_y = r.y.round();
-                        let r_right = (r.x + r.w).round();
-                        let r_bot = (r.y + r.h).round();
-                        let r_w = (r_right - r_x).max(1.0);
-                        let r_h = (r_bot - r_y).max(1.0);
-                        row_glyph_instances.push(CellInstance {
-                            cell_xy: [r_x, r_y],
-                            cell_size: [r_w, r_h],
-                            atlas_uv: [0.0, 0.0, 0.0, 0.0],
-                            atlas_layer: 0,
-                            fg_rgba: rgba_u8_to_f32(fg),
-                            bg_rgba: [0.0, 0.0, 0.0, 0.0], // Background already painted
-                            is_color: INSTANCE_MODE_PROCEDURAL,
-                        });
-                    }
-                    drawn_procedurally = true;
-                }
-            }
-
-            */
             Self::append_atlas_glyph(
                 &mut row_glyph_instances,
                 entry,
                 pixel_x,
                 pixel_y,
-                row_h_int,
                 fg,
                 drawn_procedurally,
             );
@@ -905,7 +846,6 @@ impl WebGpuPaneBackend {
 
     fn draw_cursor(&mut self, cursor: &CursorDraw, _attrs_table: &AttrTable) {
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
-        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
         let effective_col = cursor.col as f64;
         let pixel_x = (effective_col as f32 * cell_w + 0.5).floor();
         let cursor_span = cursor.width.max(1) as usize;
@@ -916,8 +856,7 @@ impl WebGpuPaneBackend {
         let pixel_x_right = ((effective_col + effective_span_f) as f32 * cell_w + 0.5).floor();
         let span_w = pixel_x_right - pixel_x;
 
-        let pixel_y = (cursor.row as f32 * cell_h + 0.5).floor();
-        let pixel_y_bot = ((cursor.row + 1) as f32 * cell_h + 0.5).floor();
+        let (pixel_y, pixel_y_bot) = self.row_pixel_bounds(cursor.row);
         let cell_h_int = pixel_y_bot - pixel_y;
         let bar_thickness = (2.0 * self.metrics.dpr).round().max(1.0);
 
@@ -940,14 +879,7 @@ impl WebGpuPaneBackend {
             is_color: 0,
         });
 
-        self.draw_cursor_glyph(
-            cursor,
-            effective_col,
-            cell_w,
-            pixel_y,
-            cell_h_int,
-            cursor_color,
-        );
+        self.draw_cursor_glyph(cursor, effective_col, cell_w, pixel_y, cursor_color);
     }
 }
 
@@ -978,7 +910,6 @@ impl WebGpuPaneBackend {
         effective_col: f64,
         cell_w: f32,
         pixel_y: f32,
-        cell_h: f32,
         cursor_color: [f32; 4],
     ) {
         use crate::render::backend::CursorStyle;
@@ -1003,9 +934,10 @@ impl WebGpuPaneBackend {
             self.frame_pinned[entry.layer as usize] = true;
         }
         let gx = (effective_col as f32 * cell_w + 0.5).floor();
+        let (cell_xy, cell_size) = glyph_quad_geometry(gx, pixel_y, &entry);
         self.pending_instances.push(CellInstance {
-            cell_xy: [gx, pixel_y],
-            cell_size: [(entry.px_w as f32).max(1.0), cell_h],
+            cell_xy,
+            cell_size,
             atlas_uv: entry.uv,
             atlas_layer: entry.layer as u32,
             fg_rgba: rgba_u8_to_f32(self.theme.cursor_text_color),
@@ -1044,7 +976,6 @@ impl WebGpuPaneBackend {
             return;
         }
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
-        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
         let sel_color = rgba_u8_to_f32(self.theme.selection_bg);
         for &(row, col_start, col_end) in rects {
             if col_end <= col_start {
@@ -1053,8 +984,7 @@ impl WebGpuPaneBackend {
             let pixel_x = (col_start as f32) * cell_w;
             let pixel_x_right = (col_end as f32) * cell_w;
             let width = pixel_x_right - pixel_x;
-            let pixel_y = (row as f32) * cell_h;
-            let pixel_y_bot = (row + 1) as f32 * cell_h;
+            let (pixel_y, pixel_y_bot) = self.row_pixel_bounds(row);
             let height = pixel_y_bot - pixel_y;
             self.pending_instances.push(CellInstance {
                 cell_xy: [pixel_x, pixel_y],
@@ -1082,8 +1012,8 @@ impl WebGpuPaneBackend {
             return;
         }
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
-        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
-        let pixel_y = row as f32 * cell_h;
+        let (pixel_y, pixel_y_bot) = self.row_pixel_bounds(row);
+        let cell_h = pixel_y_bot - pixel_y;
         // CJK chars from candidate previews can be wide; ASCII pinyin is
         // narrow. Cheap heuristic: codepoint < 0x80 → 1 cell, otherwise
         // 2 cells. Correct for the IME-preedit use case (pinyin + Chinese
@@ -1129,7 +1059,6 @@ impl WebGpuPaneBackend {
             col,
             cell_w,
             pixel_y,
-            cell_h,
             fg_color,
             font_family_hash,
             font_size_q,
@@ -1158,7 +1087,6 @@ impl WebGpuPaneBackend {
         col: usize,
         cell_w: f32,
         pixel_y: f32,
-        cell_h: f32,
         fg_color: [f32; 4],
         font_family_hash: u64,
         font_size_q: u16,
@@ -1191,9 +1119,14 @@ impl WebGpuPaneBackend {
                 if (entry.layer as usize) < self.frame_pinned.len() {
                     self.frame_pinned[entry.layer as usize] = true;
                 }
+                let (cell_xy, cell_size) = glyph_quad_geometry(
+                    (col + cell_offset) as f32 * cell_w,
+                    pixel_y,
+                    &entry,
+                );
                 self.pending_instances.push(CellInstance {
-                    cell_xy: [(col + cell_offset) as f32 * cell_w, pixel_y],
-                    cell_size: [(entry.px_w as f32).max(1.0), cell_h],
+                    cell_xy,
+                    cell_size,
                     atlas_uv: entry.uv,
                     atlas_layer: entry.layer as u32,
                     fg_rgba: fg_color,
@@ -1212,7 +1145,6 @@ impl WebGpuPaneBackend {
             return;
         }
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
-        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
         let thickness = (2.0 * self.metrics.dpr).round().max(1.0);
         let link_color = rgba_u8_to_f32(self.theme.hyperlink_color);
         for &(row, col_start, col_end) in rects {
@@ -1222,7 +1154,7 @@ impl WebGpuPaneBackend {
             let pixel_x = (col_start as f32) * cell_w;
             let pixel_x_right = (col_end as f32) * cell_w;
             let width = pixel_x_right - pixel_x;
-            let pixel_y_bot = (row + 1) as f32 * cell_h;
+            let (_, pixel_y_bot) = self.row_pixel_bounds(row);
             let pixel_y = pixel_y_bot - thickness;
             self.pending_instances.push(CellInstance {
                 cell_xy: [pixel_x, pixel_y],
@@ -1421,7 +1353,6 @@ impl WebGpuPaneBackend {
                 inner_x,
                 panel_cells_w,
                 cell_w,
-                cell_h,
                 glyph_color,
                 font_family_hash,
                 font_size_q,
@@ -1436,7 +1367,6 @@ impl WebGpuPaneBackend {
         inner_x: f32,
         panel_cells_w: usize,
         cell_w: f32,
-        cell_h: f32,
         glyph_color: [f32; 4],
         font_family_hash: u64,
         font_size_q: u16,
@@ -1451,8 +1381,6 @@ impl WebGpuPaneBackend {
                 ch,
                 row_y,
                 inner_x + cell_offset as f32 * cell_w,
-                cell_w,
-                cell_h,
                 glyph_color,
                 font_family_hash,
                 font_size_q,
@@ -1466,8 +1394,6 @@ impl WebGpuPaneBackend {
         ch: char,
         row_y: f32,
         pixel_x: f32,
-        _cell_w: f32,
-        cell_h: f32,
         glyph_color: [f32; 4],
         font_family_hash: u64,
         font_size_q: u16,
@@ -1500,9 +1426,10 @@ impl WebGpuPaneBackend {
         if (entry.layer as usize) < self.frame_pinned.len() {
             self.frame_pinned[entry.layer as usize] = true;
         }
+        let (cell_xy, cell_size) = glyph_quad_geometry(pixel_x, row_y, &entry);
         self.pending_instances.push(CellInstance {
-            cell_xy: [pixel_x, row_y],
-            cell_size: [(entry.px_w as f32).max(1.0), cell_h],
+            cell_xy,
+            cell_size,
             atlas_uv: entry.uv,
             atlas_layer: entry.layer as u32,
             fg_rgba: glyph_color,
@@ -1519,11 +1446,13 @@ impl WebGpuPaneBackend {
         }
         self.damaged_rows.sort_unstable();
         self.damaged_rows.dedup();
-        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
         let viewport = self.viewport;
         let rect_for_rows = |start: u32, end: u32| {
-            let top = (start as f32 * cell_h).round().max(0.0) as u32;
-            let bottom = (end as f32 * cell_h).round().max(0.0) as u32;
+            let fallback_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
+            let top = physical_row_boundary(start as usize, self.metrics.cell_h, self.metrics.dpr)
+                .unwrap_or_else(|| (start as f32 * fallback_h).round().max(0.0) as u32);
+            let bottom = physical_row_boundary(end as usize, self.metrics.cell_h, self.metrics.dpr)
+                .unwrap_or_else(|| (end as f32 * fallback_h).round().max(0.0) as u32);
             let clipped_top = top.min(viewport.h);
             let clipped_bottom = bottom.min(viewport.h);
             ScissorRect {
@@ -1698,8 +1627,8 @@ impl RenderBackend for WebGpuPaneBackend {
         WebGpuPaneBackend::supports_scroll_copy(self)
     }
 
-    fn scroll_rows(&mut self, scroll: ScrollOp) {
-        WebGpuPaneBackend::scroll_rows(self, scroll)
+    fn scroll_rows(&mut self, scroll: ScrollOp, metrics: FrameMetrics) -> ScrollCopyResult {
+        WebGpuPaneBackend::scroll_rows(self, scroll, metrics)
     }
 
     fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme) {

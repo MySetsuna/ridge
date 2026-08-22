@@ -1,7 +1,7 @@
 {
-  "exploration_calls": 0,
-  "codegraph_queries": 0,
-  "files_read": 0,
-  "retries": 0,
-  "token": 0
+  "exploration_calls": 52,
+  "codegraph_queries": 8,
+  "files_read": 63,
+  "retries": 14,
+  "token": 58000
 }

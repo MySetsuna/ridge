@@ -32,7 +32,7 @@
 
 ## Architecture
 
-Ridge is a **native terminal workbench** built on Tauri v2 (Rust backend + Svelte 5 frontend). Every pane hosts an independent PTY session; the layout engine supports unlimited recursive horizontal/vertical splits. A WebWorker-hosted terminal renderer (Rust → WASM) drives the grid, with WebGPU as the primary backend and Canvas2D as the universal fallback.
+Ridge is a **native terminal workbench** built on Tauri v2 (Rust backend + Svelte 5 frontend). Every pane hosts an independent PTY session; the layout engine supports unlimited recursive horizontal/vertical splits. A main-thread WebGPU-only terminal host (Rust → WASM) drives the grid.
 
 ```
 ┌─ Tauri v2 (Rust) ─────────────────────────────────────────┐
@@ -52,7 +52,7 @@ Ridge is a **native terminal workbench** built on Tauri v2 (Rust backend + Svelt
 │  │  RidgePane (terminal shell + Monaco editor)         │   │
 │  │  Sidebar: Explorer · Search · Source Control · Apps │   │
 │  │  Multi-workspace with .ridge file persistence       │   │
-│  │  TerminalManager → WebWorker → ridge-term (WASM)    │   │
+│  │  TerminalManager → WebGPU surface → ridge-term     │   │
 │  └─────────────────────────────────────────────────────┘   │
 └───────────────────────────────────────────────────────────┘
 ```
@@ -77,7 +77,7 @@ re-exports, so each relocation is a **zero-behavior-change** move:
 | `src-tauri` (`ridge`) | — | Desktop Tauri host: command handlers, engine, remote + teammate servers. Bins: `ridge` (app), `tmux` (shim), `remote-server`. |
 | `packages/ridge-core` | ✓ | Runtime-agnostic command + workspace domain core: one `dispatch()` entry, one capability allow-list, shared by every host. |
 | `packages/ridge-tmux` | ✓ | Headless, socket-namespaced **tmux session engine** (in-process PTY registry behind the `tmux` shim). Extracted from `teammate/native.rs`; its optional `http` feature exposes the shared `/api/v1/tmux/*` router mounted by **both** the desktop server and `ridge-cli tmux`. |
-| `packages/ridge-term` | ✓ | Rust terminal kernel: VT parser, grid, scrollback, selection, search, Canvas2D/WebGPU backends. Compiled to WASM (lean on native via `default-features = false`). |
+| `packages/ridge-term` | ✓ | Rust terminal kernel: VT parser, grid, scrollback, selection, search, WebGPU rendering. Compiled to WASM (lean on native via `default-features = false`). |
 | `packages/ridge-cli` | ✓ | Headless remote host for Linux/VPS: device pairing + E2EE WebRTC PTY bridge (`remote`), and a headless tmux engine host (`tmux`). Reuses `ridge-core` + `ridge-tmux` (zero Tauri). |
 | `packages/rg-split` | n/a | Pure-render split-pane layout component (frontend). Zero internal state; the store is the single source of truth. |
 
@@ -155,8 +155,8 @@ Shared plumbing:
 | Desktop framework | [Tauri v2](https://v2.tauri.app/) |
 | Frontend | Svelte 5 + SvelteKit (SPA mode) + Tailwind CSS v4 |
 | Terminal kernel | Custom Rust crate (`ridge-term`) → WASM via wasm-bindgen |
-| GPU rendering | wgpu (WebGPU), Canvas2D fallback via OffscreenCanvas |
-| Rendering host | Web Worker (`type: module`) for off-main-thread paint |
+| GPU rendering | wgpu (WebGPU-only) |
+| Rendering host | Main-thread terminal host (`TerminalManager` + WebGPU surface) |
 | Code editor | Monaco Editor 0.55 |
 | Git | libgit2 (`git2` crate v0.19) |
 | Database | SQLite via rusqlite (bundled) |
@@ -243,9 +243,6 @@ src/
 │   ├── terminal/               # Terminal lifecycle & rendering
 │   │   ├── manager.ts          # TerminalManager singleton (attach, render RAF loop)
 │   │   ├── ptyBridge.ts        # PTY output → kernel.feed() bridge
-│   │   ├── workerHostedRenderer.ts   # WebWorker proxy for off-main-thread render
-│   │   ├── renderWorker.ts     # Worker-side render orchestration
-│   │   ├── workerRendererBridge.ts   # Main ↔ worker protocol definitions
 │   │   ├── linkSpans.ts        # Clickable-link detector
 │   │   └── ...
 │   ├── stores/                 # Svelte writable stores

@@ -3,9 +3,9 @@
 //! Browsers only expose WebGPU (`navigator.gpu`) in a **secure context**
 //! (https / wss / localhost / file). A phone or desktop browser reaching the
 //! remote UI over `http://<lan-ip>:9527` is *not* a secure context, so the
-//! terminal renderer silently falls back to Canvas2D. Serving the same page
-//! over TLS turns the LAN origin into a secure context and unlocks the
-//! WebGPU render path.
+//! WebGPU-only terminal renderer cannot initialize. Serving the same page
+//! over TLS turns the LAN origin into a secure context and enables the
+//! terminal render path.
 //!
 //! There is no public CA that will issue a cert for a private LAN IP, so we
 //! run our own. On first run we generate a long-lived **local root CA** and

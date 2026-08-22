@@ -43,11 +43,12 @@ const wasm = vi.hoisted(() => {
 			new Uint8Array([seq, row, col]));
 		shouldAllowShellHistory = vi.fn(() => true);
 		isMouseReporting = vi.fn(() => this.mouseMode !== 0);
-		backendName = vi.fn(() => 'canvas2d');
+		backendName = vi.fn(() => 'WebGPU');
 		setPresentFast = vi.fn();
 	}
 
 	class FakeRenderHandle {
+		static newWithWebgpuFirst = vi.fn(async () => new FakeRenderHandle());
 		configure = vi.fn(() => [10, 20]);
 		applyDefaultTheme = vi.fn();
 		applyTheme = vi.fn();
@@ -63,19 +64,35 @@ const wasm = vi.hoisted(() => {
 		]));
 		presentedCursorRow = vi.fn(() => 2);
 		presentedCursorCol = vi.fn(() => 3);
+		backendName = vi.fn(() => 'WebGPU');
 	}
+
+	const host = {
+		clone: vi.fn(),
+		resize: vi.fn(),
+		invalidate: vi.fn(),
+		setWallpaper: vi.fn(),
+		clearWallpaper: vi.fn(),
+	};
+	host.clone.mockReturnValue(host);
 
 	return {
 		FakeKernel,
 		FakeRenderHandle,
 		init: vi.fn(async () => undefined),
+		installFontData: vi.fn(() => true),
 		atlasOverwriteAfterCiteCount: vi.fn(() => 7),
 		setPresentFast: vi.fn(),
-		SurfaceHostHandle: { init: vi.fn() },
+		SurfaceHostHandle: { init: vi.fn(async () => host) },
+		host,
 	};
 });
 
-const tauri = vi.hoisted(() => ({ invoke: vi.fn(async () => undefined) }));
+const tauri = vi.hoisted(() => ({
+	invoke: vi.fn(async (command: string) => command === 'load_terminal_font_faces'
+		? [{ family: 'monospace', dataBase64: 'AA==' }]
+		: undefined),
+}));
 
 vi.mock('@tauri-apps/api/core', () => tauri);
 
@@ -84,6 +101,7 @@ vi.mock('@ridge/term-wasm', () => ({
 	TerminalKernel: wasm.FakeKernel,
 	RenderHandle: wasm.FakeRenderHandle,
 	SurfaceHostHandle: wasm.SurfaceHostHandle,
+	installFontData: wasm.installFontData,
 	atlasOverwriteAfterCiteCount: wasm.atlasOverwriteAfterCiteCount,
 	setPresentFast: wasm.setPresentFast,
 }));
@@ -123,6 +141,7 @@ class FakeElement {
 class FakeCanvas extends FakeElement {
 	width = 800;
 	height = 400;
+	getContext = vi.fn(() => null);
 }
 
 function makeContainer(): FakeElement {
@@ -158,10 +177,11 @@ beforeEach(() => {
 	vi.stubGlobal('document', {
 		hidden: false,
 		createElement: vi.fn((tag: string) => tag === 'canvas' ? new FakeCanvas() : new FakeElement()),
-		querySelector: vi.fn(() => null),
+		querySelector: vi.fn((selector: string) => selector === 'canvas[data-rg-host]' ? new FakeCanvas() : null),
 		addEventListener: vi.fn(),
 		removeEventListener: vi.fn(),
 	});
+	wasm.SurfaceHostHandle.init.mockResolvedValue(wasm.host);
 	(TerminalManager as any)._instance = null;
 	TerminalManager.setHostPorts(null);
 });
@@ -175,7 +195,7 @@ afterEach(() => {
 describe('TerminalManager attach lifecycle', () => {
 	it('initializes wasm once and exposes atlas/present-fast diagnostics', async () => {
 		const manager = TerminalManager.instance({
-			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200, preferWebgpu: false,
+			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200,
 		});
 		const storage = localStorage as unknown as { getItem: ReturnType<typeof vi.fn> };
 		storage.getItem.mockImplementation((key: string) => key === 'RIDGE_PRESENT_FAST' ? '1' : null);
@@ -188,9 +208,9 @@ describe('TerminalManager attach lifecycle', () => {
 		expect((window as any).__ridgeAtlasRace()).toEqual({ overwriteAfterCite: 7 });
 	});
 
-	it('uses WebGPU-first handles and falls back to Canvas2D on constructor failure', async () => {
+	it('uses WebGPU-only handles and surfaces constructor failure', async () => {
 		const manager = TerminalManager.instance({
-			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200, preferWebgpu: true,
+			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200,
 		});
 		(manager as any).wasmReady = true;
 		const ctor = wasm.FakeRenderHandle as any;
@@ -198,60 +218,29 @@ describe('TerminalManager attach lifecycle', () => {
 		try {
 			const preferred = new wasm.FakeRenderHandle();
 			ctor.newWithWebgpuFirst = vi.fn(async () => preferred);
-			await expect((manager as any)._makeHandle(new FakeCanvas())).resolves.toBe(preferred);
+			await expect((manager as any)._makeHandle(new FakeCanvas(), wasm.host)).resolves.toBe(preferred);
 
 			ctor.newWithWebgpuFirst = vi.fn(async () => { throw new Error('adapter unavailable'); });
-			const fallback = await (manager as any)._makeHandle(new FakeCanvas());
-			expect(fallback).toBeInstanceOf(wasm.FakeRenderHandle);
+			await expect((manager as any)._makeHandle(new FakeCanvas(), wasm.host))
+				.rejects.toThrow('adapter unavailable');
 			expect(ctor.newWithWebgpuFirst).toHaveBeenCalledOnce();
 		} finally {
 			ctor.newWithWebgpuFirst = original;
 		}
 	});
 
-	it('hands an offscreen canvas to the worker and updates returned cell metrics', async () => {
-		const manager = TerminalManager.instance({
-			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200, preferWebgpu: false,
-		});
-		const internal = manager as any;
-		const worker = {
-			init: vi.fn(async () => undefined),
-			bindCanvas: vi.fn(async () => ({ type: 'ready', cellW: 9, cellH: 18 })),
-		};
-		const canvas = new FakeCanvas() as any;
-		canvas.transferControlToOffscreen = vi.fn(() => ({ offscreen: true }));
-		internal.panes.set('worker-pane', { parked: false, cellW: 8, cellH: 16, lastConfiguredDpr: 1 });
-		internal.syncWorkerRendererIdentity = vi.fn(() => worker);
-		internal.isCurrentWorkerRenderer = vi.fn(() => true);
-		internal.fitPaneNow = vi.fn();
-
-		internal._attachWorkerCanvas('worker-pane', canvas, 1, 200);
-		await Promise.resolve();
-		await Promise.resolve();
-		await Promise.resolve();
-		await Promise.resolve();
-		await Promise.resolve();
-
-		expect(worker.init).toHaveBeenCalledWith({
-			paneId: 'worker-pane', dims: { rows: 24, cols: 80, dpr: 1 }, backend: 'canvas2d', scrollbackLines: 200,
-		});
-		expect(worker.bindCanvas).toHaveBeenCalledOnce();
-		expect(internal.panes.get('worker-pane')).toMatchObject({ cellW: 9, cellH: 18, lastConfiguredDpr: 1 });
-		expect(internal.fitPaneNow).toHaveBeenCalledWith('worker-pane');
-	});
-
 	it('keeps attach helpers fail-closed when host setup is unavailable', async () => {
 		const manager = TerminalManager.instance({
-			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200, preferWebgpu: true,
+			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200,
 			theme: { background: '#010203' },
 		});
 		const internal = manager as any;
 		internal.attachHostPromise = Promise.reject(new Error('host unavailable'));
-		await internal._awaitAttachHost();
+		await expect(internal._awaitAttachHost()).rejects.toThrow('host unavailable');
 		const host = { canvas: new FakeCanvas(), host: {} };
 		internal.globalHost = host;
 		const container = makeContainer();
-		expect(internal._createAttachCanvas(container, false)).toEqual({ canvas: host.canvas, hostHandle: host.host });
+		expect(internal._createAttachCanvas(container)).toEqual({ canvas: host.canvas, hostHandle: host.host });
 		expect(container.style.background).toBe('transparent');
 		const traced = localStorage as unknown as { getItem: ReturnType<typeof vi.fn> };
 		traced.getItem.mockReturnValue('1');
@@ -266,7 +255,6 @@ describe('TerminalManager attach lifecycle', () => {
 			fontSizePx: 14,
 			scrollbackLines: 200,
 			paddingPx: 6,
-			preferWebgpu: false,
 			theme: { background: '#010203', foreground: '#fefefe' },
 		});
 		const container = makeContainer();
@@ -283,7 +271,7 @@ describe('TerminalManager attach lifecycle', () => {
 		const entry = (manager as any).panes.get('pane-a');
 		expect(entry).toBeDefined();
 		expect(entry.canvas).toBeInstanceOf(FakeCanvas);
-		expect(entry.canvas.style.background).toBe('var(--rg-term-bg, var(--rg-bg))');
+		expect(container.style.background).toBe('transparent');
 		expect(container.style.padding).toBe('6px');
 		expect(entry.resizeObserver.observe).toHaveBeenCalledWith(container);
 		expect(wasm.FakeKernel.instances).toHaveLength(1);
@@ -303,7 +291,7 @@ describe('TerminalManager attach lifecycle', () => {
 
 	it('routes focus and pointer events through the attached kernel and cleans listeners', async () => {
 		const manager = TerminalManager.instance({
-			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200, preferWebgpu: false,
+			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200,
 		});
 		(manager as any).wasmReady = true;
 		const container = makeContainer();
@@ -355,7 +343,7 @@ describe('TerminalManager attach lifecycle', () => {
 
 	it('batches TUI motion, host drag auto-scroll, modifier hover, and cancellation', async () => {
 		const manager = TerminalManager.instance({
-			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200, preferWebgpu: false,
+			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200,
 		});
 		(manager as any).wasmReady = true;
 		const container = makeContainer();
@@ -406,7 +394,7 @@ describe('TerminalManager attach lifecycle', () => {
 
 	it('exposes development diagnostics for PTY, kernel, theme, selection, and worker state', async () => {
 		const manager = TerminalManager.instance({
-			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200, preferWebgpu: false,
+			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200,
 			theme: { background: '#010203', foreground: '#fefefe' },
 		});
 		(manager as any).wasmReady = true;
@@ -431,7 +419,6 @@ describe('TerminalManager attach lifecycle', () => {
 			bg: '#010203ff', fg: '#040506ff', cursor: '#070809ff', tuiBg: '#0a0b0cff',
 		});
 		hooks.setTheme({ background: '#111111', foreground: '#eeeeee' });
-		expect(hooks.sampleHostPixel()).toBeNull();
 		expect(hooks.inputAnchorResolved('pane-a')).toMatchObject({ row: 2, col: 3, cellW: 10, cellH: 20 });
 		expect(hooks.lastPreeditCall('pane-a')).toBeNull();
 		hooks.kernelDecState('pane-a');
@@ -445,9 +432,14 @@ describe('TerminalManager attach lifecycle', () => {
 		hooks.installPtyWriteSpy('pane-a');
 		manager.write('pane-a', 'echo');
 		expect(hooks.ptyWriteLog('pane-a')).toHaveLength(1);
+		const remountedHandler = vi.fn();
+		manager.onData('pane-a', remountedHandler);
+		hooks.installPtyWriteSpy('pane-a');
+		manager.write('pane-a', 'after-remount');
+		expect(hooks.ptyWriteLog('pane-a')).toHaveLength(2);
+		expect(remountedHandler).toHaveBeenCalledOnce();
 		hooks.clearPtyWriteLog('pane-a');
 		expect(hooks.ptyWriteLog('pane-a')).toEqual([]);
-		expect(hooks.workerBridge()).toEqual({ active: false, pending: 0 });
 		manager.detach('pane-a');
 	});
 });

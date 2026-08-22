@@ -29,7 +29,6 @@
 import { hex8, hex8WithAlpha } from './cssColor';
 import { TerminalManager } from './manager';
 import { withEmojiFallback } from './fontStack';
-import { ensureFlagFont } from './flagEmojiSupport';
 
 // Color normalization moved to $lib/utils/cssColor — shared with
 // $lib/monaco/ridgeTheme so wasm-kernel and Monaco editor parse the
@@ -162,24 +161,16 @@ export function setupTerminalThemeBridge(): () => void {
 	let _lastFontFamily: string | null = null;
 	let _lastFontSize: number | null = null;
 
-	// Probe once at boot (cached): on a flag-less OS (Windows/WebView2, whose
-	// Segoe UI Emoji has no flag glyphs) this registers the unicode-range
-	// 'Flag Emoji' @font-face and returns true; the browser still only fetches
-	// the tiny flags.woff2 when a flag codepoint actually appears. macOS renders
-	// flags natively → returns false, nothing injected. SAME shared mechanism as
-	// the web-remote controller, so both surfaces render flags identically.
-	const flagFaceInjected = ensureFlagFont();
-
-	// Emoji font ordering lives in ./fontStack (shared with manager.ts +
-	// the web-remote controller) — `withEmojiFallback` normalizes any font
-	// string to the system emoji chain, placing 'Flag Emoji' first when the
-	// probe injected it so country flags render on Windows too.
+	// Font ordering lives in ./fontStack. The native/browser font-data service
+	// supplies the selected installed faces directly to the Wasm rasterizer.
 	const pushFont = (family: string, size: number) => {
 		if (family === _lastFontFamily && size === _lastFontSize) return;
 		_lastFontFamily = family;
 		_lastFontSize = size;
 
-		manager.setFont(withEmojiFallback(family, flagFaceInjected), size);
+		void manager.setFont(withEmojiFallback(family), size).catch((error) => {
+			console.error('[ridge-term] selected system font could not be loaded', error);
+		});
 	};
 
 	// Initial push: the store fires immediately on subscribe. settings.ts's

@@ -6,9 +6,8 @@
 //! "draw cell at (row, col) with this glyph + fg + bg + flags". How the
 //! backend turns that into pixels is its own business.
 //!
-//! Two backends will implement this:
-//! - `Canvas2dBackend` (round 2.2, this round): correctness oracle, slow but obviously right
-//! - `WebGpuBackend` (round 3): performance, validated against Canvas2D output
+//! The WebGPU backend implements this interface while the terminal-facing
+//! draw orchestration stays independent from GPU resource details.
 //!
 //! ## Two-pass draw
 //!
@@ -18,12 +17,9 @@
 //!   3. For each cell, paint its glyph
 //!   4. Paint the cursor (if visible)
 //!
-//! Why two passes: Canvas2D's `fillText` produces anti-aliased glyph edges
-//! that can be partially over the *next* cell's pixels. If we draw each
-//! cell's bg+glyph together, the next cell's bg will overwrite the previous
-//! cell's anti-aliased trailing pixels. Two passes (all bgs first, all
-//! glyphs after) avoids this. WebGPU has the same constraint with
-//! sub-pixel-positioned SDF rendering, so the discipline transfers.
+//! Two passes keep anti-aliased, sub-pixel-positioned glyph edges from
+//! bleeding into the next cell's background: draw all backgrounds first,
+//! then draw all glyphs.
 //!
 //! ## Dirty rows
 //!
@@ -267,6 +263,164 @@ pub struct FrameMetrics {
     pub tui_mode: bool,
 }
 
+/// One non-overlapping row move inside a pane-local device-pixel viewport.
+/// Coordinates are relative to the pane; `SurfaceHost` adds its integer
+/// viewport origin when recording the texture copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollRowCopy {
+    pub source_row: usize,
+    pub destination_row: usize,
+    pub source_y: u32,
+    pub destination_y: u32,
+    pub height: u32,
+}
+
+/// Deterministic physical copy plan for one terminal scroll operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScrollCopyPlan {
+    pub copies: Vec<ScrollRowCopy>,
+    pub repaint_rows: Vec<usize>,
+}
+
+/// Rows whose pixels were not preserved by a scroll copy. Callers must paint
+/// every returned row in the same frame; ignoring this result can retain stale
+/// frame-store pixels while the renderer snapshot advances.
+#[must_use]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScrollCopyResult {
+    pub repaint_rows: Vec<usize>,
+}
+
+impl ScrollCopyResult {
+    pub fn new(repaint_rows: Vec<usize>) -> Self {
+        Self { repaint_rows }
+    }
+
+    /// Successful equal-height copies still expose `count` new rows.
+    pub fn copied(scroll: crate::term::grid::ScrollOp) -> Self {
+        Self::new(exposed_scroll_rows(scroll))
+    }
+
+    /// Fail closed: repaint the complete logical region when no physical copy
+    /// can be trusted.
+    pub fn repaint_all(scroll: crate::term::grid::ScrollOp) -> Self {
+        let repaint_rows = if scroll.top <= scroll.bottom {
+            (scroll.top..=scroll.bottom).collect()
+        } else {
+            Vec::new()
+        };
+        Self::new(repaint_rows)
+    }
+}
+
+fn exposed_scroll_rows(scroll: crate::term::grid::ScrollOp) -> Vec<usize> {
+    if scroll.top > scroll.bottom || scroll.count == 0 {
+        return Vec::new();
+    }
+    let height = scroll.bottom - scroll.top + 1;
+    let count = scroll.count.min(height);
+    if scroll.up {
+        (scroll.bottom + 1 - count..=scroll.bottom).collect()
+    } else {
+        (scroll.top..scroll.top + count).collect()
+    }
+}
+
+#[cfg_attr(
+    not(any(test, all(target_arch = "wasm32", feature = "webgpu"))),
+    allow(dead_code)
+)]
+pub(crate) fn physical_row_boundary(row: usize, cell_h_css: f32, dpr: f32) -> Option<u32> {
+    if !cell_h_css.is_finite() || cell_h_css <= 0.0 || !dpr.is_finite() || dpr <= 0.0 {
+        return None;
+    }
+    let boundary = (row as f64 * f64::from(cell_h_css) * f64::from(dpr)).round();
+    if !boundary.is_finite() || boundary < 0.0 || boundary > f64::from(u32::MAX) {
+        return None;
+    }
+    Some(boundary as u32)
+}
+
+/// Build row copies from absolute rounded physical boundaries. Rounding a
+/// single `cell_h * dpr` and multiplying it by the row loses the alternating
+/// device-pixel heights present at fractional DPR. Absolute boundaries retain
+/// that distribution; only source/destination rows with identical height may
+/// be copied, and every other destination is returned for repaint.
+#[cfg_attr(
+    not(any(test, all(target_arch = "wasm32", feature = "webgpu"))),
+    allow(dead_code)
+)]
+pub(crate) fn scroll_copy_plan(
+    scroll: crate::term::grid::ScrollOp,
+    cell_h_css: f32,
+    dpr: f32,
+    viewport_height: u32,
+) -> Option<ScrollCopyPlan> {
+    if !cell_h_css.is_finite()
+        || cell_h_css <= 0.0
+        || !dpr.is_finite()
+        || dpr <= 0.0
+        || scroll.top > scroll.bottom
+        || scroll.count == 0
+    {
+        return None;
+    }
+    let region_end = scroll.bottom.checked_add(1)?;
+    let region_height = region_end.checked_sub(scroll.top)?;
+    if scroll.count > region_height {
+        return None;
+    }
+    let mut boundaries = Vec::with_capacity(region_height.checked_add(1)?);
+    for row in scroll.top..=region_end {
+        boundaries.push(physical_row_boundary(row, cell_h_css, dpr)?);
+    }
+    if boundaries.last().copied()? > viewport_height {
+        return None;
+    }
+
+    let row_bounds = |row: usize| -> Option<(u32, u32)> {
+        let index = row.checked_sub(scroll.top)?;
+        Some((*boundaries.get(index)?, *boundaries.get(index + 1)?))
+    };
+    let mut plan = ScrollCopyPlan {
+        copies: Vec::with_capacity(region_height - scroll.count),
+        repaint_rows: exposed_scroll_rows(scroll),
+    };
+    let mut append_destination = |source_row: usize, destination_row: usize| -> Option<()> {
+        let (source_y, source_bottom) = row_bounds(source_row)?;
+        let (destination_y, destination_bottom) = row_bounds(destination_row)?;
+        let source_height = source_bottom.checked_sub(source_y)?;
+        let destination_height = destination_bottom.checked_sub(destination_y)?;
+        if source_height > 0 && source_height == destination_height {
+            plan.copies.push(ScrollRowCopy {
+                source_row,
+                destination_row,
+                source_y,
+                destination_y,
+                height: source_height,
+            });
+        } else {
+            plan.repaint_rows.push(destination_row);
+        }
+        Some(())
+    };
+
+    if scroll.count < region_height {
+        if scroll.up {
+            for destination_row in scroll.top..=scroll.bottom - scroll.count {
+                append_destination(destination_row + scroll.count, destination_row)?;
+            }
+        } else {
+            for destination_row in (scroll.top + scroll.count..=scroll.bottom).rev() {
+                append_destination(destination_row - scroll.count, destination_row)?;
+            }
+        }
+    }
+    plan.repaint_rows.sort_unstable();
+    plan.repaint_rows.dedup();
+    Some(plan)
+}
+
 /// What a backend must implement. Methods are called in this order each frame:
 ///   1. begin_frame(metrics, theme)
 ///   2. clear()
@@ -286,10 +440,8 @@ pub trait RenderBackend {
     /// therefore needs the renderer to mark every visible row dirty
     /// every tick (full redraw).
     ///
-    /// Canvas2D returns `false` (default): un-touched rows keep their
-    /// previous frame's pixels because we only `fillRect`/`fillText`
-    /// where dirty.
-    /// WebGPU returns `true`: `LoadOp::Clear` wipes the entire swap-chain
+    /// The default is `false`; WebGPU returns `true` because `LoadOp::Clear`
+    /// wipes the entire swap-chain
     /// texture each frame; without forcing every row through `draw_row`,
     /// non-dirty rows lose their glyphs and the user sees only the row
     /// they're typing on.
@@ -302,8 +454,8 @@ pub trait RenderBackend {
 
     /// Drop any cached glyph state that becomes stale when cell metrics
     /// change (DPR change, font size change, font family change). Default
-    /// is a no-op — Canvas2D rasterizes per-frame and has no state to
-    /// drop. WebGPU clears its `GlyphAtlas` LRU and resets the next-free
+    /// is a no-op for backends without cached glyph state. WebGPU clears its
+    /// `GlyphAtlas` LRU and resets the next-free
     /// texture-array layer pointer so the next frame re-rasterizes
     /// against the new metrics instead of pointing the shader at stale
     /// UVs left over from the previous size.
@@ -314,8 +466,7 @@ pub trait RenderBackend {
 
     /// Notify the backend that the next frame will be a full redraw and
     /// that any per-frame preserved-content optimization needs to seed a
-    /// fresh background. Default no-op — Canvas2D draws bg+glyph
-    /// directly per dirty row and doesn't need to know. WebGPU flips
+    /// fresh background. Default no-op; WebGPU flips
     /// `needs_initial_clear` so `end_frame` switches back to
     /// `LoadOp::Clear` for that one frame; subsequent frames return to
     /// `LoadOp::Load` + row-dirty diff. Called by `Renderer::tick`
@@ -333,8 +484,16 @@ pub trait RenderBackend {
 
     /// Move already-rendered cell rows before drawing newly exposed rows.
     /// Called only when `supports_scroll_copy()` returned true and no overlay
-    /// can be left behind by the move.
-    fn scroll_rows(&mut self, _scroll: crate::term::grid::ScrollOp) {}
+    /// can be left behind by the move. The result is consumed by `Renderer`
+    /// before it advances its snapshot, so a failed or partial physical copy
+    /// deterministically repaints every affected destination row.
+    fn scroll_rows(
+        &mut self,
+        scroll: crate::term::grid::ScrollOp,
+        _metrics: FrameMetrics,
+    ) -> ScrollCopyResult {
+        ScrollCopyResult::repaint_all(scroll)
+    }
 
     /// Begin a frame — record metrics + theme for this draw cycle.
     fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme);
@@ -417,9 +576,7 @@ pub trait RenderBackend {
     ) {
     }
 
-    /// Commit the frame to the surface. For Canvas2D this is a no-op
-    /// (drawing was already direct); for WebGPU this submits the command
-    /// encoder.
+    /// Commit the frame to the surface and submit the command encoder.
     fn end_frame(&mut self);
 }
 
@@ -433,7 +590,6 @@ pub struct FrameDraw<'a> {
     pub cursor: Option<&'a CursorDraw>,
     pub attrs_table: &'a crate::term::attr_table::AttrTable,
     pub full_redraw: bool,
-    pub scroll: Option<crate::term::grid::ScrollOp>,
     pub selection_rects: &'a [(usize, usize, usize)],
     pub hyperlink_rects: &'a [(usize, usize, usize)],
     pub preedit: Option<&'a crate::render::renderer::Preedit>,
@@ -448,16 +604,12 @@ pub fn draw_frame<B: RenderBackend>(backend: &mut B, frame: FrameDraw<'_>) {
         cursor,
         attrs_table,
         full_redraw,
-        scroll,
         selection_rects,
         hyperlink_rects,
         preedit,
         history_overlay,
     } = frame;
     backend.begin_frame(metrics, theme);
-    if let Some(scroll) = scroll {
-        backend.scroll_rows(scroll);
-    }
     if full_redraw {
         backend.clear();
     }
@@ -509,7 +661,7 @@ pub fn draw_frame<B: RenderBackend>(backend: &mut B, frame: FrameDraw<'_>) {
 }
 
 /// Convenience to build attrs given an interned id + table + theme,
-/// also handling the inverse / hidden flags. Used by both backends.
+/// also handling the inverse / hidden flags. Used by the WebGPU renderer.
 pub fn resolve_cell_colors(
     cell: &Cell,
     attrs_table: &crate::term::attr_table::AttrTable,
@@ -844,5 +996,57 @@ mod tests {
         t.apply_partial(|k| m.get(k).cloned());
         assert_eq!(t.bg, original_bg);
         assert_eq!(t.palette[1], original_red);
+    }
+
+    #[test]
+    fn fractional_dpr_125_repaints_only_unequal_height_destinations() {
+        let scroll = crate::term::grid::ScrollOp {
+            top: 0,
+            bottom: 4,
+            count: 1,
+            up: true,
+        };
+        let plan = scroll_copy_plan(scroll, 15.0, 1.25, 94).expect("valid 1.25 DPR plan");
+
+        assert_eq!(
+            plan.copies,
+            vec![
+                ScrollRowCopy {
+                    source_row: 1,
+                    destination_row: 0,
+                    source_y: 19,
+                    destination_y: 0,
+                    height: 19,
+                },
+                ScrollRowCopy {
+                    source_row: 4,
+                    destination_row: 3,
+                    source_y: 75,
+                    destination_y: 56,
+                    height: 19,
+                },
+            ]
+        );
+        assert_eq!(plan.repaint_rows, vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn fractional_dpr_150_downward_count_two_copies_equal_height_rows() {
+        let scroll = crate::term::grid::ScrollOp {
+            top: 1,
+            bottom: 6,
+            count: 2,
+            up: false,
+        };
+        let plan = scroll_copy_plan(scroll, 15.0, 1.5, 158).expect("valid 1.5 DPR plan");
+
+        assert_eq!(
+            plan.copies
+                .iter()
+                .map(|copy| (copy.source_row, copy.destination_row, copy.height))
+                .collect::<Vec<_>>(),
+            vec![(4, 6, 23), (3, 5, 22), (2, 4, 23), (1, 3, 22)]
+        );
+        assert_eq!(plan.repaint_rows, vec![1, 2]);
     }
 }

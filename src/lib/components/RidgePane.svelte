@@ -67,6 +67,14 @@ let alive = true;
 // pane's wasm renderer at its default `focused=true` → both panes blink
 // after a split until the next activePaneId change.
 let attached = $state(false);
+let webgpuInitError = $state<string | null>(null);
+
+function formatWebgpuInitError(error: unknown): string {
+	const detail = error instanceof Error ? error.message : String(error);
+	if (detail.includes('FONT_ACCESS_') || detail.includes('FONT_DATA_')) return detail;
+	const prefix = detail.includes('WEBGPU_INIT_FAILED') ? detail : `WEBGPU_INIT_FAILED: ${detail}`;
+	return `${prefix}. Enable WebGPU or update graphics drivers, then reload.`;
+}
 
 // 右键菜单"切换终端类型"子菜单需要 shell 列表；挂载预加载（共享缓存），
 // 使 onContextMenu 能同步构建子菜单项。
@@ -1221,7 +1229,7 @@ function onCompositionStart() {
 
 		// §1.27 fix: force a full-frame redraw so any canvas pixels that
 	// were under the now-shrunk `.is-composing` overlay are repainted
-	// from kernel cell state. Without this, Canvas2D's per-row hash diff
+	// from kernel cell state. Without this, the renderer's per-row hash diff
 	// can skip rows whose CELLS are unchanged but whose PIXELS were
 	// smeared by the overlay, leaving preedit-shaped residue. WebGPU
 	// already redraws every row per tick, so this is effectively a wake
@@ -1470,7 +1478,14 @@ onMount(() => {
 		// live terminal with a duplicate.
 		await waitForDesktopKernelReattach();
 		if (!alive) return;
-		await manager.ready();
+		try {
+			await manager.ready();
+		} catch (error) {
+			if (!alive) return;
+			webgpuInitError = formatWebgpuInitError(error);
+			console.error('[ridge-pane] WebGPU initialization failed', error);
+			return;
+		}
 		if (!alive) return;
 
 		// Branch on parking state (TASKS §5.1).
@@ -1482,7 +1497,14 @@ onMount(() => {
 		// it during the unmount window. Just bind a fresh canvas and
 		// rejoin the render loop.
 		if (manager.isParked(paneId)) {
-			await manager.unpark(paneId, container);
+			try {
+				await manager.unpark(paneId, container);
+			} catch (error) {
+				if (!alive) return;
+				webgpuInitError = formatWebgpuInitError(error);
+				console.error('[ridge-pane] WebGPU unpark failed', error);
+				return;
+			}
 			if (!alive) return;
 			attached = true;
 			startPtyRuntimeSampler();
@@ -1507,7 +1529,14 @@ onMount(() => {
 		// start backend PTY, replay scrollback, activate stream.
 		// §A.8 — pass workspaceId so the manager binds this pane to
 		// the correct per-workspace SurfaceHost / canvas.
-		await manager.attach(paneId, container, workspaceId);
+		try {
+			await manager.attach(paneId, container, workspaceId);
+		} catch (error) {
+			if (!alive) return;
+			webgpuInitError = formatWebgpuInitError(error);
+			console.error('[ridge-pane] WebGPU attach failed', error);
+			return;
+		}
 		if (!alive) return;
 		attached = true;
 		startPtyRuntimeSampler();
@@ -2350,7 +2379,7 @@ function captureBackspace(node: HTMLElement) {
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<!-- Renderer owns the terminal background. Keep this DOM layer transparent so the shared WebGPU host canvas remains visible after split/reparent; Canvas2D fallback paints its own background. -->
+<!-- Renderer owns the terminal background. Keep this DOM layer transparent so the shared WebGPU host canvas remains visible after split/reparent. -->
 <div
 	bind:this={container}
 	class="rg-pane-container h-full w-full min-h-0 min-w-0 outline-none relative"
@@ -2368,6 +2397,9 @@ function captureBackspace(node: HTMLElement) {
 	onkeydown={onContainerKeyDown}
 	use:captureBackspace
 >
+	{#if webgpuInitError}
+		<div class="rg-webgpu-error" role="alert" aria-live="assertive">{webgpuInitError}</div>
+	{/if}
 	<!-- IME helper textarea. Gated on Settings.terminalImeMode === 'ime'
 	     so users who only type ASCII can flip to 'direct' mode and the
 	     textarea never enters the DOM — OS IME has no focusable input
@@ -2532,6 +2564,19 @@ function captureBackspace(node: HTMLElement) {
 		 * long enough to register, short enough not to be annoying. */
 		box-shadow: inset 0 0 0 2px rgba(255, 200, 0, 0.65);
 		transition: box-shadow 60ms ease-out;
+	}
+	.rg-webgpu-error {
+		position: absolute;
+		inset: 0;
+		display: grid;
+		place-content: center;
+		padding: 24px;
+		z-index: 100;
+		background: var(--rg-bg, #111);
+		color: var(--rg-danger, #ff7b72);
+		font: 13px/1.5 ui-monospace, monospace;
+		text-align: center;
+		white-space: pre-wrap;
 	}
 	.rg-ime-helper {
 		/* IME anchor textarea. The OS IME treats this as a visible

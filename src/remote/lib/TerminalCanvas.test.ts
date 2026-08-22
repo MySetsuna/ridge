@@ -4,6 +4,14 @@ import { describe, expect, it } from 'vitest';
 const source = readFileSync(new URL('./TerminalCanvas.svelte', import.meta.url), 'utf8');
 
 describe('remote pane Agent status chrome contract', () => {
+  it('surfaces actionable WebGPU initialization failures', () => {
+    expect(source).toContain('let attachError = $state<string | null>(null);');
+    expect(source).toContain('hostError?: string | null;');
+    expect(source).toContain('role="alert"');
+    expect(source).toContain('WEBGPU_INIT_FAILED');
+    expect(source).toContain("backendName = $bindable('WebGPU')");
+  });
+
   it('uses only a transient intervention rail without changing terminal geometry', () => {
     expect(source).toContain('class:agent-needs-attention={agentNeedsAttention}');
     expect(source).toContain('.container.agent-needs-attention{box-shadow:inset 0 0 0 2px var(--rg-ansi-yellow,#d29922)}');

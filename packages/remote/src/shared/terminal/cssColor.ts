@@ -10,18 +10,46 @@
 //   - src/lib/monaco/ridgeTheme.ts    — defines per-Ridge-theme Monaco
 //     color overrides that match `--rg-bg` exactly.
 //
-// Single canvas-2d normalization context — re-used across every call so
-// we don't allocate a fresh canvas per color lookup. Returns null when
-// document is unavailable (SSR / pre-mount) or the input is unparseable.
+// A hidden DOM element delegates CSS parsing to the browser without acquiring
+// a Canvas2D context. Returns null during SSR/pre-mount or for invalid input.
 
-let _normCtx: CanvasRenderingContext2D | null = null;
+let _normElement: HTMLSpanElement | null = null;
 
-function getCtx(): CanvasRenderingContext2D | null {
-	if (typeof document === 'undefined') return null;
-	if (_normCtx) return _normCtx;
-	const c = document.createElement('canvas');
-	_normCtx = c.getContext('2d');
-	return _normCtx;
+function getNormElement(): HTMLSpanElement | null {
+	if (typeof document === 'undefined' || !document.documentElement) return null;
+	if (_normElement?.isConnected) return _normElement;
+	const element = document.createElement('span');
+	element.setAttribute('aria-hidden', 'true');
+	element.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;contain:strict';
+	document.documentElement.appendChild(element);
+	_normElement = element;
+	return element;
+}
+
+function parseSerializedColor(value: string): { r: number; g: number; b: number; a: number } | null {
+	const hex = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(value);
+	if (hex) {
+		let digits = hex[1];
+		if (digits.length <= 4) digits = [...digits].map((digit) => digit + digit).join('');
+		if (digits.length === 6) digits += 'ff';
+		return {
+			r: Number.parseInt(digits.slice(0, 2), 16),
+			g: Number.parseInt(digits.slice(2, 4), 16),
+			b: Number.parseInt(digits.slice(4, 6), 16),
+			a: Number.parseInt(digits.slice(6, 8), 16),
+		};
+	}
+
+	const rgb = /^rgba?\(\s*([\d.]+)\s*(?:,\s*|\s+)([\d.]+)\s*(?:,\s*|\s+)([\d.]+)(?:\s*(?:,|\/)\s*([\d.]+%?))?\s*\)$/i.exec(value);
+	if (!rgb) return null;
+	return {
+		r: Math.round(Number.parseFloat(rgb[1])),
+		g: Math.round(Number.parseFloat(rgb[2])),
+		b: Math.round(Number.parseFloat(rgb[3])),
+		a: rgb[4] === undefined
+			? 255
+			: Math.round(Number.parseFloat(rgb[4]) * (rgb[4].endsWith('%') ? 2.55 : 255)),
+	};
 }
 
 /**
@@ -33,31 +61,16 @@ function parseToRgba(css: string): { r: number; g: number; b: number; a: number 
 	if (!css) return null;
 	const trimmed = css.trim();
 	if (!trimmed) return null;
+	const direct = parseSerializedColor(trimmed);
+	if (direct) return direct;
 
-	const ctx = getCtx();
-	if (!ctx) return null;
-
-	// Reset to known-good first so unparseable input doesn't silently
-	// inherit the prior successful parse.
-	ctx.fillStyle = '#000000';
-	ctx.fillStyle = trimmed;
-	const out = ctx.fillStyle as string;
-
-	if (out.startsWith('#')) {
-		// Browser returns #RRGGBB for opaque colors.
-		if (out.length !== 7) return null;
-		const r = Number.parseInt(out.slice(1, 3), 16);
-		const g = Number.parseInt(out.slice(3, 5), 16);
-		const b = Number.parseInt(out.slice(5, 7), 16);
-		return { r, g, b, a: 255 };
-	}
-	const m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/.exec(out);
-	if (!m) return null;
-	const r = Number.parseInt(m[1], 10);
-	const g = Number.parseInt(m[2], 10);
-	const b = Number.parseInt(m[3], 10);
-	const a = m[4] !== undefined ? Math.round(Number.parseFloat(m[4]) * 255) : 255;
-	return { r, g, b, a };
+	const element = getNormElement();
+	if (!element || typeof getComputedStyle !== 'function') return null;
+	element.style.color = '';
+	element.style.color = trimmed;
+	if (!element.style.color) return null;
+	const out = getComputedStyle(element).color.trim();
+	return parseSerializedColor(out);
 }
 
 const toHex = (n: number): string =>

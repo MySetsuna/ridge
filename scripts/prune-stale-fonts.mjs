@@ -9,15 +9,15 @@
 // 根因）。beforeBuildCommand 先于 cargo bundle 跑：此处清掉上一轮遗留的 staging
 // 大字体，Tauri 再从干净源码重新 stage，最终 staging 即干净。
 //
-// 合法的 web-remote 字体都很小（codicon ~70KB .ttf、flags.woff2 ~76KB）；>1MB 的
-// 字体一律视为回归残留。按体积清理，绝不误伤 codicon / flags。
+// 合法的 web-remote 字体仅余小型 UI 字体（如 codicon ~70KB）；>1MB 的
+// 字体一律视为回归残留。按体积清理，绝不误伤 UI 字体。
 
 import { readdirSync, statSync, rmSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const MAX_FONT_BYTES = 1024 * 1024; // 1MB —— codicon/flags 远低于此
+const MAX_FONT_BYTES = 1024 * 1024; // 1MB —— codicon 远低于此
 const FONT_RE = /\.(ttf|otf|woff2?)$/i;
 
 export const SCAN_DIRS = [
