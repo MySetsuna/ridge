@@ -1105,30 +1105,6 @@ pub fn classify_command_risk(command: String) -> Result<Value, String> {
     serde_json::to_value(ridge_core::classify_shell_command(&command)).map_err(|e| e.to_string())
 }
 
-/// 功能2 —— 返回当前 teammate MCP 端点 + Bearer token，供指挥部「复制连接信息」按钮用。
-/// 先惰性拉起 teammate server（与首个 PTY 注入同一路径），再读运行态 `teammate_binding`。
-/// binding 为 None（服务尚未启动）时返回明确错误，前端据此提示「先打开一个终端分屏」。
-///
-/// **安全（设计文档 D6 硬约束）**：本命令返回**鉴权 token**，**仅限桌面本机 IPC 调用**——
-/// 绝不加入 `REMOTE_ALLOWLIST`（`packages/ridge-core/src/capability.rs`），不暴露给
-/// web-remote / LAN host / 云端控制面。否则任一远端控制器即可窃取本机 MCP 令牌、冒充队友。
-/// token 只在运行时动态返回，绝不写入任何静态文档或仓库文件。
-#[tauri::command]
-pub fn get_teammate_connection_info(state: State<'_, AppState>) -> Result<Value, String> {
-    crate::teammate::ensure_teammate_started(&state);
-    let binding = state
-        .teammate_binding
-        .read()
-        .clone()
-        .ok_or_else(|| "teammate 服务未启动：请先打开一个终端分屏".to_string())?;
-    // base_url 形如 http://127.0.0.1:<port>；只替换 scheme 前缀（replacen 限 1 次）。
-    let ws_endpoint = format!(
-        "{}/api/v1/mcp/ws",
-        binding.base_url.replacen("http", "ws", 1)
-    );
-    Ok(json!({ "wsEndpoint": ws_endpoint, "token": binding.token }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

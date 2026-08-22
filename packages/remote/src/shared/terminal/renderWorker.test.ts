@@ -816,7 +816,7 @@ describe('renderWorker.handleRequest — Renderer adapter wiring (p4.8)', () => 
 		}
 	});
 
-	it('settles a native repaint cursor without delaying grid paints', () => {
+	it('freezes a native repaint cursor without delaying grid paints', () => {
 		vi.useFakeTimers();
 		try {
 			const { state, mocks } = initAndBind();
@@ -845,6 +845,40 @@ describe('renderWorker.handleRequest — Renderer adapter wiring (p4.8)', () => 
 				mocks.adapter,
 			);
 			expect(mocks.renderer.render).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('releases the frozen cursor at an explicit synchronized-output boundary', () => {
+		vi.useFakeTimers();
+		try {
+			const { state, mocks } = initAndBind();
+			mocks.renderer.render.mockClear();
+			mocks.renderer.setPresentationCursorSuppressed.mockClear();
+			mocks.kernel.applyDeltaFrame.mockReturnValue(true);
+			mocks.kernel.isSyncOutput.mockReturnValue(true);
+
+			handleRequest(
+				state,
+				{ type: 'applyDelta', paneId: PANE, bytes: new Uint8Array([7]) },
+				mocks.adapter,
+			);
+			expect(mocks.renderer.setPresentationCursorSuppressed).toHaveBeenCalledWith(true);
+			expect(mocks.renderer.render).not.toHaveBeenCalled();
+
+			mocks.kernel.applyDeltaFrame.mockReturnValue(false);
+			mocks.kernel.isSyncOutput.mockReturnValue(false);
+			handleRequest(
+				state,
+				{ type: 'applyDelta', paneId: PANE, bytes: new Uint8Array([8]) },
+				mocks.adapter,
+			);
+			expect(mocks.renderer.setPresentationCursorSuppressed).toHaveBeenLastCalledWith(false);
+			expect(mocks.renderer.render).toHaveBeenCalledOnce();
+			const releaseOrder = mocks.renderer.setPresentationCursorSuppressed.mock.invocationCallOrder.at(-1)!;
+			const renderOrder = mocks.renderer.render.mock.invocationCallOrder[0];
+			expect(releaseOrder).toBeLessThan(renderOrder);
 		} finally {
 			vi.useRealTimers();
 		}

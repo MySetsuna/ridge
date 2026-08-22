@@ -1495,11 +1495,30 @@ mod renderer_js {
         }
 
         /// Presentation-only gate for a short native inline-TUI repaint walk.
-        /// Grid cells still render immediately; this suppresses only the
-        /// transient terminal cursor until the browser compositor settles.
+        /// Grid cells still render immediately; while set, the renderer
+        /// freezes the cursor at its last presented position until the
+        /// browser compositor settles. Name retained for JS compatibility.
         #[wasm_bindgen(js_name = setPresentationCursorSuppressed)]
         pub fn set_presentation_cursor_suppressed(&mut self, suppressed: bool) {
             self.renderer.set_presentation_cursor_suppressed(suppressed);
+        }
+
+        /// DEV/e2e probe for the cell currently presented, including a freeze.
+        /// `-1` means no cursor is on screen. Not used by the compositor loop.
+        #[wasm_bindgen(js_name = presentedCursorRow)]
+        pub fn presented_cursor_row(&self) -> i32 {
+            self.renderer
+                .presented_cursor_cell()
+                .map(|(row, _)| row as i32)
+                .unwrap_or(-1)
+        }
+
+        #[wasm_bindgen(js_name = presentedCursorCol)]
+        pub fn presented_cursor_col(&self) -> i32 {
+            self.renderer
+                .presented_cursor_cell()
+                .map(|(_, col)| col as i32)
+                .unwrap_or(-1)
         }
 
         /// Install an IME preedit overlay at the given cell. The renderer

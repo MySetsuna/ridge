@@ -57,6 +57,78 @@ pub(crate) fn snap_css_to_device(value: f64, dpr: f64) -> f64 {
 /// they need an alpha-modulated full-cell quad rather than opaque
 /// rectangles, so the caller (`webgpu::draw_row_texts`) special-cases them
 /// with a scaled fg alpha before falling through to this lookup.
+#[derive(Clone, Copy)]
+enum Corner {
+    TopLeft,
+    TopRight,
+    BottomRight,
+    BottomLeft,
+}
+
+fn append_rounded_corner(
+    rects: &mut Vec<Rect>,
+    corner: Corner,
+    cell_x: f32,
+    cell_y: f32,
+    cell_w: f32,
+    cell_h: f32,
+    lw: f32,
+    lh: f32,
+) {
+    let radius = (cell_w.min(cell_h) * 0.42).max(lw.max(lh) * 1.5);
+    let cx = cell_x + (cell_w - lw) / 2.0;
+    let cy = cell_y + (cell_h - lh) / 2.0;
+    let (center_x, center_y, start, end, h_from_left, v_from_top) = match corner {
+        Corner::TopLeft => (cx + radius, cy + radius, std::f32::consts::PI, std::f32::consts::PI * 1.5, false, false),
+        Corner::TopRight => (cx + lw - radius, cy + radius, std::f32::consts::PI * 1.5, std::f32::consts::PI * 2.0, true, false),
+        Corner::BottomRight => (cx + lw - radius, cy + lh - radius, 0.0, std::f32::consts::PI * 0.5, true, true),
+        Corner::BottomLeft => (cx + radius, cy + lh - radius, std::f32::consts::PI * 0.5, std::f32::consts::PI, false, true),
+    };
+    if h_from_left {
+        rects.push(Rect {
+            x: cell_x,
+            y: cy,
+            w: (center_x - cell_x).max(lw),
+            h: lh,
+        });
+    } else {
+        rects.push(Rect {
+            x: center_x,
+            y: cy,
+            w: (cell_x + cell_w - center_x).max(lw) + 1.0,
+            h: lh,
+        });
+    }
+    if v_from_top {
+        rects.push(Rect {
+            x: cx,
+            y: cell_y,
+            w: lw,
+            h: (center_y - cell_y).max(lh),
+        });
+    } else {
+        rects.push(Rect {
+            x: cx,
+            y: center_y,
+            w: lw,
+            h: (cell_y + cell_h - center_y).max(lh) + 1.0,
+        });
+    }
+    let steps = 6_u32;
+    let span = end - start;
+    for i in 0..=steps {
+        let t = start + span * (i as f32 / steps as f32);
+        let x = center_x + radius * t.cos() - lw * 0.5;
+        let y = center_y + radius * t.sin() - lh * 0.5;
+        rects.push(Rect {
+            x,
+            y,
+            w: lw,
+            h: lh,
+        });
+    }
+}
+
 pub fn procedural_box(
     c: char,
     cell_x: f32,
@@ -77,8 +149,8 @@ pub fn procedural_box(
     // and `lh`, so opencode's ThickBorder (┃ ╹) drew at the same hairline
     // weight as a normal │ vt100 box. The thicker stroke is what users
     // notice on PowerShell / Windows Terminal too.
-    let lw = cell_w * 0.15;
-    let lh = cell_h * 0.1;
+    let lw = (cell_w * 0.22).max(2.0);
+    let lh = (cell_h * 0.14).max(2.0);
     let lw_heavy = cell_w * 0.38;
     let lh_heavy = cell_h * 0.28;
 
@@ -438,14 +510,13 @@ pub fn procedural_box(
                 h: cy - cell_y + lh,
             });
         }
-        // Rounded corners ╭ ╮ ╯ ╰ (U+256D..U+2570) intentionally fall
-        // through to atlas rendering: a procedural rect can't draw a true
-        // radius, and forcing them to share sharp-corner geometry visibly
-        // degraded every TUI that uses lipgloss/bubbletea defaults
-        // (lazygit, gh, opencode) where the rounded edge is part of the
-        // design language. Atlas rendering preserves the radius; the
-        // matching ┃/│ run terminates at the rounded corner with a +1 px
-        // overlap (see 2500..2503 above) so the seam stays gap-free.
+        // Rounded corners ╭ ╮ ╯ ╰. Atlas fillText at top-baseline is
+        // blurry and undersized versus conhost/WT. Pixel-snapped arms plus
+        // a short quarter-circle keep the radius without AA smear.
+        '\u{256D}' => append_rounded_corner(&mut rects, Corner::TopLeft, cell_x, cell_y, cell_w, cell_h, lw, lh),
+        '\u{256E}' => append_rounded_corner(&mut rects, Corner::TopRight, cell_x, cell_y, cell_w, cell_h, lw, lh),
+        '\u{256F}' => append_rounded_corner(&mut rects, Corner::BottomRight, cell_x, cell_y, cell_w, cell_h, lw, lh),
+        '\u{2570}' => append_rounded_corner(&mut rects, Corner::BottomLeft, cell_x, cell_y, cell_w, cell_h, lw, lh),
         '\u{251C}' | '\u{251D}' | '\u{251E}' | '\u{251F}' | '\u{2520}' | '\u{2521}'
         | '\u{2522}' | '\u{2523}' => {
             // Vertical-right
@@ -1126,17 +1197,17 @@ mod procedural_box_tests {
         assert!(procedural_box('😀', CX, CY, CW, CH).is_none());
     }
 
-    /// Rounded corners ╭ ╮ ╯ ╰ (U+256D..U+2570) MUST fall through to atlas
-    /// rendering — procedural sharp-rect approximation discards the radius
-    /// and is a visible regression for lipgloss/bubbletea/lazygit/gh UIs.
-    /// Regression guard against re-introducing the procedural mapping.
+    /// Rounded corners ╭ ╮ ╯ ╰ stay on the procedural path so they snap to
+    /// device pixels instead of an atlas glyph (which looked thin/blurry).
     #[test]
-    fn rounded_corners_fall_through_to_atlas() {
+    fn rounded_corners_are_procedural_and_cover_the_cell_corner() {
         for ch in ['\u{256D}', '\u{256E}', '\u{256F}', '\u{2570}'] {
+            let rects = box_for(ch);
             assert!(
-                procedural_box(ch, CX, CY, CW, CH).is_none(),
-                "{:?} must return None so the atlas path renders the radius",
-                ch
+                rects.len() >= 3,
+                "{:?} needs arms plus the rounded join, got {}",
+                ch,
+                rects.len()
             );
         }
     }

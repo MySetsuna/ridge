@@ -658,30 +658,44 @@ fn kill_pty_process_tree(handle: &mut PtyHandle) {
     }
 }
 
+fn take_pty_slots<T, U>(
+    terminals: &mut HashMap<Uuid, T>,
+    pending_spawns: &mut HashMap<Uuid, U>,
+    generations: &mut HashMap<Uuid, u64>,
+    pane_id: Uuid,
+) -> (Option<T>, Option<U>) {
+    let handle = terminals.remove(&pane_id);
+    let pending = pending_spawns.remove(&pane_id);
+    if handle.is_some() || pending.is_some() {
+        *generations.entry(pane_id).or_insert(0) += 1;
+    }
+    (handle, pending)
+}
+
 pub(crate) fn teardown_pane_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
-    let handle = {
+    // Bump generation under the same take as explicit kill (`take_pty_slots`)
+    // BEFORE the child is killed below, so a stale reader EOF cannot demote or
+    // yank a replacement. Live or pending both count as one bump.
+    let (handle, pending) = {
         let mut map = state.workspaces.write();
-        map.get_mut(&workspace_id).and_then(|ws| {
-            let h = ws.terminals.remove(&pane_id);
-            if h.is_some() {
-                // Bump the pane's PTY generation the instant we tear down the old
-                // PTY — BEFORE the child is killed below — so the old reader, on
-                // its (async) EOF, sees a newer generation and skips the
-                // child-exit→Idle demotion (it is no longer the pane's current
-                // PTY). This closes the [teardown, new-PTY-live) window where a
-                // reuse/spawn-process agent's just-set Busy would otherwise be
-                // clobbered to Idle. See `engine::pty` reader cleanup.
-                *ws.pty_generation.entry(pane_id).or_insert(0) += 1;
-            }
-            h
-        })
+        map.get_mut(&workspace_id)
+            .map(|ws| {
+                take_pty_slots(
+                    &mut ws.terminals,
+                    &mut ws.pending_spawns,
+                    &mut ws.pty_generation,
+                    pane_id,
+                )
+            })
+            .unwrap_or((None, None))
     };
-    if handle.is_some() {
+    if handle.is_some() || pending.is_some() {
         pty_log::teammate_replace_pty(workspace_id, pane_id);
     }
     if let Some(mut handle) = handle {
         kill_pty_process_tree(&mut handle);
     }
+    drop(pending);
     state.clear_pty_scrollback(workspace_id, pane_id);
     crate::teammate::mcp::clear_pty_runtime_snapshot(workspace_id, pane_id);
 }
@@ -723,6 +737,7 @@ fn install_kernel_pty(
         resize_silence_deadline: Arc::new(AtomicI64::new(0)),
         parser,
         delta_mode: Arc::new(AtomicBool::new(false)),
+        workspace: Arc::new(Mutex::new(workspace_id)),
     };
     {
         let mut map = state.workspaces.write();
@@ -1634,6 +1649,7 @@ pub(crate) fn activate_pane_pty_state(
         resize_silence_deadline: Arc::new(AtomicI64::new(0)),
         parser,
         delta_mode: Arc::new(AtomicBool::new(false)),
+        workspace: Arc::new(Mutex::new(workspace_id)),
     };
 
     {
@@ -2420,14 +2436,22 @@ pub async fn kill_pty_if_present(
             c.store(true, std::sync::atomic::Ordering::Release);
         }
         crate::teammate::native::set_attachment(&socket, gid, None);
-        {
+        let (_handle, _pending) = {
             let mut map = state.workspaces.write();
             if let Some(ws) = map.get_mut(&workspace_id) {
-                ws.terminals.remove(&pane_id);
+                let slots = take_pty_slots(
+                    &mut ws.terminals,
+                    &mut ws.pending_spawns,
+                    &mut ws.pty_generation,
+                    pane_id,
+                );
                 let _ = ws.pane_tree.close(pane_id);
                 ws.pane_sizes.remove(&pane_id);
+                slots
+            } else {
+                (None, None)
             }
-        }
+        };
         state.clear_pty_scrollback(workspace_id, pane_id);
         state.unregister_pane_delta_channel(workspace_id, pane_id);
         if let Some(app) = state.app_handle.get() {
@@ -2450,14 +2474,22 @@ pub async fn kill_pty_if_present(
     };
     if is_foreign {
         let _ = state.hosts.detach_foreign(pane_id);
-        {
+        let (_handle, _pending) = {
             let mut map = state.workspaces.write();
             if let Some(ws) = map.get_mut(&workspace_id) {
-                ws.terminals.remove(&pane_id);
+                let slots = take_pty_slots(
+                    &mut ws.terminals,
+                    &mut ws.pending_spawns,
+                    &mut ws.pty_generation,
+                    pane_id,
+                );
                 let _ = ws.pane_tree.close(pane_id);
                 ws.pane_sizes.remove(&pane_id);
+                slots
+            } else {
+                (None, None)
             }
-        }
+        };
         state.clear_pty_scrollback(workspace_id, pane_id);
         state.unregister_pane_delta_channel(workspace_id, pane_id);
         return;
@@ -2468,20 +2500,23 @@ pub async fn kill_pty_if_present(
     state.unregister_pane_delta_channel(workspace_id, pane_id);
     state.clear_pty_scrollback(workspace_id, pane_id);
     // Drain both the live terminal AND any unconsumed PendingSpawn under a
-    // single write lock. The `_pending` binding's drop releases its master /
+    // single write lock. The `pending` binding's drop releases its master /
     // slave / cmd halves, freeing the OS-level PTY fds — without this, a
     // pane that was Phase-1-prepared but never activated leaks the pair.
-    let (handle, _pending) = {
+    let (handle, pending) = {
         let mut map = state.workspaces.write();
         map.get_mut(&workspace_id)
             .map(|ws| {
-                (
-                    ws.terminals.remove(&pane_id),
-                    ws.pending_spawns.remove(&pane_id),
+                take_pty_slots(
+                    &mut ws.terminals,
+                    &mut ws.pending_spawns,
+                    &mut ws.pty_generation,
+                    pane_id,
                 )
             })
             .unwrap_or((None, None))
     };
+    let removed = handle.is_some() || pending.is_some();
     if let Some(mut handle) = handle {
         // §1.35 — gracefully exit TUI modes before killing. A stuck or
         // foreground TUI may still hold alt screen / DECCKM / mouse /
@@ -2501,15 +2536,15 @@ pub async fn kill_pty_if_present(
         // orphan that rebuild re-creates the orphan (pending) → reap never converges.
         // Explicit closes pass true (the pane is gone from the tree, so the frontend
         // re-renders without it instead of rebuilding).
-        if emit_pane_closed {
-            let _ = state
-                .event_tx
-                .send(crate::types::GlobalEvent::PaneClosed {
-                    workspace_id,
-                    pane_id,
-                })
-                .await;
-        }
+    }
+    if removed && emit_pane_closed {
+        let _ = state
+            .event_tx
+            .send(crate::types::GlobalEvent::PaneClosed {
+                workspace_id,
+                pane_id,
+            })
+            .await;
     }
 }
 
@@ -2788,6 +2823,8 @@ mod write_scope_tests {
 
 #[cfg(test)]
 mod pty_lifecycle_contract_tests {
+    use super::*;
+
     #[test]
     fn validate_agent_launch_requires_exe_and_existing_cwd() {
         let missing = std::path::Path::new("C:\\ridge-no-such-agent-cwd");
@@ -2854,6 +2891,56 @@ mod pty_lifecycle_contract_tests {
             "replacement and explicit PTY teardown must share tree-kill guard",
         );
         assert!(source.contains("ridge_core::process_guard::kill_process_tree(pid);"));
+    }
+
+    #[test]
+    fn explicit_pty_take_bumps_generation_for_live_or_pending_once() {
+        let pane_id = Uuid::new_v4();
+        let mut terminals = HashMap::from([(pane_id, "live")]);
+        let mut pending = HashMap::new();
+        let mut generations = HashMap::from([(pane_id, 3)]);
+
+        let (taken, pending_taken) =
+            take_pty_slots(&mut terminals, &mut pending, &mut generations, pane_id);
+        assert_eq!(taken, Some("live"));
+        assert_eq!(pending_taken, None);
+        assert_eq!(generations[&pane_id], 4);
+
+        let (taken, pending_taken) =
+            take_pty_slots(&mut terminals, &mut pending, &mut generations, pane_id);
+        assert_eq!(taken, None);
+        assert_eq!(pending_taken, None);
+        assert_eq!(generations[&pane_id], 4);
+
+        let pending_pane = Uuid::new_v4();
+        pending.insert(pending_pane, "pending");
+        let (taken, pending_taken) =
+            take_pty_slots(&mut terminals, &mut pending, &mut generations, pending_pane);
+        assert_eq!(taken, None);
+        assert_eq!(pending_taken, Some("pending"));
+        assert_eq!(generations[&pending_pane], 1);
+    }
+
+    #[test]
+    fn replacement_teardown_shares_explicit_take_and_bumps_once() {
+        let source = include_str!("terminal.rs");
+        let production = source
+            .split("mod pty_lifecycle_contract_tests")
+            .next()
+            .unwrap_or(source);
+        let teardown = production
+            .split("pub(crate) fn teardown_pane_pty_if_present")
+            .nth(1)
+            .and_then(|rest| rest.split("fn install_kernel_pty").next())
+            .expect("teardown_pane_pty_if_present body");
+        assert!(
+            teardown.contains("take_pty_slots("),
+            "replacement teardown must bump generation via the same take as explicit kill"
+        );
+        assert!(
+            !teardown.contains("terminals.remove("),
+            "teardown must not bypass take_pty_slots"
+        );
     }
 }
 

@@ -723,21 +723,29 @@ struct A2aRoute {
 /// its endpoint before A2A can be selected.
 #[derive(Default)]
 pub struct A2aEndpointRegistry {
-    routes: Mutex<HashMap<String, A2aRoute>>,
+    routes: Mutex<HashMap<(String, String), A2aRoute>>,
 }
 
 impl A2aEndpointRegistry {
     pub fn register(
         &self,
+        workspace_id: impl Into<String>,
         agent_id: impl Into<String>,
         generation: u64,
         lease: impl Into<String>,
         config: A2aClientConfig,
     ) -> Result<AgentCard, String> {
+        let workspace_id = workspace_id.into();
         let agent_id = agent_id.into();
         let lease = lease.into();
-        if agent_id.trim().is_empty() || generation == 0 || lease.trim().is_empty() {
-            return Err("A2A registration requires agent_id, generation, and lease".into());
+        if workspace_id.trim().is_empty()
+            || agent_id.trim().is_empty()
+            || generation == 0
+            || lease.trim().is_empty()
+        {
+            return Err(
+                "A2A registration requires workspace_id, agent_id, generation, and lease".into(),
+            );
         }
         let client = A2aClient::discover(config).map_err(|error| error.to_string())?;
         let card = client.agent_card().clone();
@@ -745,7 +753,8 @@ impl A2aEndpointRegistry {
             .routes
             .lock()
             .map_err(|_| "A2A route registry lock poisoned".to_string())?;
-        if let Some(current) = routes.get(&agent_id) {
+        let key = (workspace_id, agent_id);
+        if let Some(current) = routes.get(&key) {
             if generation < current.generation {
                 return Err("A2A registration generation is stale".into());
             }
@@ -754,7 +763,7 @@ impl A2aEndpointRegistry {
             }
         }
         routes.insert(
-            agent_id,
+            key,
             A2aRoute {
                 generation,
                 lease,
@@ -764,37 +773,44 @@ impl A2aEndpointRegistry {
         Ok(card)
     }
 
-    pub fn unregister(&self, agent_id: &str, generation: u64, lease: &str) -> Result<bool, String> {
+    pub fn unregister(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        generation: u64,
+        lease: &str,
+    ) -> Result<bool, String> {
         let mut routes = self
             .routes
             .lock()
             .map_err(|_| "A2A route registry lock poisoned".to_string())?;
-        let Some(current) = routes.get(agent_id) else {
+        let key = (workspace_id.to_string(), agent_id.to_string());
+        let Some(current) = routes.get(&key) else {
             return Ok(false);
         };
         if current.generation != generation || current.lease != lease {
             return Err("A2A route teardown generation or lease is stale".into());
         }
-        routes.remove(agent_id);
+        routes.remove(&key);
         Ok(true)
     }
 
     pub fn probe(&self, target: &Value) -> bool {
-        let Some((agent_id, generation, lease)) = target_identity(target) else {
+        let Some((workspace_id, agent_id, generation, lease)) = target_identity(target) else {
             return false;
         };
         let Ok(routes) = self.routes.lock() else {
             return false;
         };
-        let Some(route) = routes.get(agent_id) else {
+        let Some(route) = routes.get(&(workspace_id.to_string(), agent_id.to_string())) else {
             return false;
         };
         route.generation == generation && route.lease == lease
     }
 
     pub fn deliver(&self, target: &Value, entry: &Value) -> Result<A2aDeliveryResult, String> {
-        let Some((agent_id, generation, lease)) = target_identity(target) else {
-            return Err("A2A delivery target lacks agent_id, generation, or lease".into());
+        let Some((workspace_id, agent_id, generation, lease)) = target_identity(target) else {
+            return Err("A2A delivery target lacks workspace_id, agent_id, generation, or lease".into());
         };
         let client = {
             let routes = self
@@ -802,7 +818,7 @@ impl A2aEndpointRegistry {
                 .lock()
                 .map_err(|_| "A2A route registry lock poisoned".to_string())?;
             let route = routes
-                .get(agent_id)
+                .get(&(workspace_id.to_string(), agent_id.to_string()))
                 .ok_or_else(|| A2aError::RouteUnavailable.to_string())?;
             if route.generation != generation || route.lease != lease {
                 return Err(A2aError::RouteUnavailable.to_string());
@@ -816,8 +832,14 @@ impl A2aEndpointRegistry {
     }
 }
 
-fn target_identity(target: &Value) -> Option<(&str, u64, &str)> {
+fn target_identity(target: &Value) -> Option<(&str, &str, u64, &str)> {
+    let workspace_id = target
+        .get("workspaceId")
+        .or_else(|| target.get("workspace_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())?;
     Some((
+        workspace_id,
         target.get("agentId")?.as_str()?,
         target.get("generation")?.as_u64()?,
         target.get("lease")?.as_str()?,
@@ -1163,8 +1185,12 @@ mod tests {
         }))
         .unwrap();
         let error = A2aClient::from_card(config, card).unwrap_err();
-        assert!(error.to_string().contains("no selectable JSON-RPC interface")
-            || error.to_string().contains("HTTP URL"));
+        assert!(
+            error
+                .to_string()
+                .contains("no selectable JSON-RPC interface")
+                || error.to_string().contains("HTTP URL")
+        );
     }
 
     #[test]
@@ -1371,6 +1397,7 @@ mod tests {
         let registry = A2aEndpointRegistry::default();
         registry
             .register(
+                "ws-a",
                 "agent-a",
                 2,
                 "lease-2",
@@ -1381,18 +1408,27 @@ mod tests {
             )
             .unwrap();
         assert!(registry.probe(&json!({
+            "workspaceId": "ws-a",
             "agentId": "agent-a",
             "generation": 2,
             "lease": "lease-2"
         })));
         assert!(!registry.probe(&json!({
+            "workspaceId": "ws-a",
             "agentId": "agent-a",
             "generation": 1,
             "lease": "lease-1"
         })));
-        assert!(registry.unregister("agent-a", 1, "lease-2").is_err());
-        assert!(registry.unregister("agent-a", 2, "lease-2").unwrap());
         assert!(!registry.probe(&json!({
+            "workspaceId": "ws-b",
+            "agentId": "agent-a",
+            "generation": 2,
+            "lease": "lease-2"
+        })));
+        assert!(registry.unregister("ws-a", "agent-a", 1, "lease-2").is_err());
+        assert!(registry.unregister("ws-a", "agent-a", 2, "lease-2").unwrap());
+        assert!(!registry.probe(&json!({
+            "workspaceId": "ws-a",
             "agentId": "agent-a",
             "generation": 2,
             "lease": "lease-2"

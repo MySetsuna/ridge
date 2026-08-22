@@ -4,7 +4,8 @@
 //! inbound A2A messages become Hub entries through `call_tool_rpc`, and task
 //! reads/cancellation use the same fenced receipt path. Agent Card discovery
 //! is public and contains no secret; JSON-RPC operations require the host
-//! token.
+//! token; inbox/status/cancellation route through the same authenticated Hub
+//! call path.
 
 use std::sync::Arc;
 
@@ -211,7 +212,7 @@ fn send_message(ctx: &NativeA2aCtx, params: &Value) -> Result<Value, (i64, Strin
 fn get_task(ctx: &NativeA2aCtx, params: &Value) -> Result<Value, (i64, String)> {
     let task_id = bounded_string(params, "id", MAX_ID_BYTES)?;
     let target = target_from_params(ctx, params)?;
-    let args = target_args(&target, [("receipt_id", Value::String(task_id.clone()))])?;
+    let args = target_args(&target, [("delivery_id", Value::String(task_id.clone()))])?;
     let entry = call_tool_json("ridge_delivery_status", args, ctx)?;
     Ok(task_from_entry(&task_id, &entry, &Value::Null))
 }
@@ -301,17 +302,29 @@ fn target_args<const N: usize>(
         .get("paneId")
         .or_else(|| target.get("pane_id"))
         .cloned()
-        .ok_or_else(|| invalid_params("A2A target has no paneId"))?;
+        .filter(|value| !value.is_null());
+    let agent_id = target
+        .get("agentId")
+        .or_else(|| target.get("agent_id"))
+        .cloned()
+        .filter(|value| !value.is_null());
+    if pane_id.is_none() && agent_id.is_none() {
+        return Err(invalid_params("A2A target requires agentId or paneId"));
+    }
     let mut args = json!({
         "workspace_id": target.get("workspaceId").or_else(|| target.get("workspace_id")),
-        "target_pane_id": pane_id,
-        "agent_id": target.get("agentId").or_else(|| target.get("agent_id")),
         "generation": target.get("generation"),
         "lease": target.get("lease")
     });
     let object = args
         .as_object_mut()
         .ok_or_else(|| internal_error("A2A target args are not an object"))?;
+    if let Some(pane_id) = pane_id {
+        object.insert("target_pane_id".into(), pane_id);
+    }
+    if let Some(agent_id) = agent_id {
+        object.insert("agent_id".into(), agent_id);
+    }
     for (key, value) in extra {
         object.insert(key.into(), value);
     }
@@ -535,6 +548,24 @@ mod tests {
         ))
     }
 
+    #[test]
+    fn target_args_accepts_agent_id_without_pane_id() {
+        let args = target_args(
+            &json!({
+                "agentId": "agent-a",
+                "workspaceId": "workspace-a",
+                "generation": 2,
+                "lease": "lease-2"
+            }),
+            [("message", Value::String("hello".into()))],
+        )
+        .expect("agent_id-only A2A target");
+        assert_eq!(args["agent_id"], "agent-a");
+        assert!(args.get("target_pane_id").is_none());
+
+        assert!(target_args::<0>(&json!({}), []).is_err());
+    }
+
     async fn body(response: Response) -> Value {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice(&bytes).unwrap()
@@ -579,7 +610,7 @@ mod tests {
     async fn send_get_cancel_share_authenticated_fenced_hub_receipt() {
         let target = json!({
             "agentId": "agent-a", "sessionId": "session-a", "workspaceId": "workspace-a",
-            "paneId": "pane-a", "generation": 2, "lease": "lease-2"
+            "generation": 2, "lease": "lease-2"
         });
         let send = json!({
             "jsonrpc": "2.0", "id": 1, "method": "SendMessage",

@@ -774,10 +774,17 @@ mod tests {
         let state = test_state();
         let receiver = state
             .mcp_state
-            .register_delivery_endpoint(HubDeliveryAdapter::RuntimeApi, "agent-a", 2, "lease-2")
+            .register_delivery_endpoint(
+                HubDeliveryAdapter::RuntimeApi,
+                "ws-a",
+                "agent-a",
+                2,
+                "lease-2",
+            )
             .unwrap();
         let host = KernelMcpHost::new(state);
         let target = json!({
+            "workspaceId": "ws-a",
             "agentId": "agent-a",
             "generation": 2,
             "lease": "lease-2"

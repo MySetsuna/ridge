@@ -31,6 +31,13 @@ fn workspace_id_schema() -> serde_json::Value {
     })
 }
 
+fn target_selector_any_of() -> serde_json::Value {
+    serde_json::json!([
+        { "required": ["agent_id"] },
+        { "required": ["target_pane_id"] }
+    ])
+}
+
 // ─── ToolRegistry ────────────────────────────────────────────────────────────
 
 /// Ridge MCP 工具注册表。
@@ -91,13 +98,16 @@ impl Default for ToolRegistry {
             ToolSpec {
                 name: "ridge_send_to_teammate".to_string(),
                 description:
-                    "兼容入口：向指定 Agent Hub Inbox 排队消息；submit 仅作为意图元数据，不绕过安全门直接写 PTY。"
+                    "兼容入口：向指定 Agent Hub Inbox 排队消息；submit 默认 true，仅显式 false 保留草稿；它只是意图元数据，不绕过安全门直接写 PTY。"
                         .to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
+                        "agent_id": { "type": "string", "description": "目标 Agent identity；与 target_pane_id 二选一" },
+                        "generation": { "type": "integer", "minimum": 1 },
+                        "lease": { "type": "string" },
                         "message": {
                             "type": "string",
                             "description": "要发送的消息内容"
@@ -111,7 +121,8 @@ impl Default for ToolRegistry {
                             "description": "是否派发 Enter；默认 true，仅显式 false 时保留为草稿"
                         }
                     },
-                    "required": ["target_pane_id", "message"]
+                    "required": ["message"],
+                    "anyOf": target_selector_any_of()
                 }),
             },
             ToolSpec {
@@ -122,6 +133,9 @@ impl Default for ToolRegistry {
                     "properties": {
                         "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
+                        "agent_id": { "type": "string", "description": "目标 Agent identity；与 target_pane_id 二选一" },
+                        "generation": { "type": "integer", "minimum": 1 },
+                        "lease": { "type": "string" },
                         "objective": {
                             "type": "string",
                             "description": "任务目标描述"
@@ -131,34 +145,43 @@ impl Default for ToolRegistry {
                             "description": "允许的最大执行步骤数"
                         }
                     },
-                    "required": ["target_pane_id", "objective"]
+                    "required": ["objective"],
+                    "anyOf": target_selector_any_of()
                 }),
             },
             ToolSpec {
                 name: "ridge_send_and_submit".to_string(),
-                description: "兼容入口：将消息排入目标 Agent Hub Inbox；terminalAccepted=false，明确不代表已写入 PTY 或 Agent 已执行。".to_string(),
+                description: "兼容入口：将消息排入目标 Agent Hub Inbox，并强制 submit=true；明确不代表已写入 PTY 或 Agent 已执行。".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
+                        "agent_id": { "type": "string", "description": "目标 Agent identity；与 target_pane_id 二选一" },
+                        "generation": { "type": "integer", "minimum": 1 },
+                        "lease": { "type": "string" },
                         "message": { "type": "string", "description": "要写入并提交的文本" },
                         "from": { "type": "string", "description": "发送方标识" }
                     },
-                    "required": ["target_pane_id", "message"]
+                    "required": ["message"],
+                    "anyOf": target_selector_any_of()
                 }),
             },
             ToolSpec {
                 name: "ridge_delivery_status".to_string(),
-                description: "读取指定投递回执。submit_dispatched 只表示已派发 Enter；terminalAccepted 与 agentAcknowledged 分别独立报告。".to_string(),
+                description: "读取指定 deliveryId。submitRequested 只表示提交意图；terminalAccepted 与 agentAcknowledged 分别独立报告。".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
-                        "receipt_id": { "type": "string", "description": "发送工具返回的 receiptId" }
+                        "agent_id": { "type": "string", "description": "目标 Agent identity；与 target_pane_id 二选一" },
+                        "generation": { "type": "integer", "minimum": 1 },
+                        "lease": { "type": "string" },
+                        "delivery_id": { "type": "string", "description": "发送工具返回的 deliveryId" }
                     },
-                    "required": ["target_pane_id", "receipt_id"]
+                    "required": ["delivery_id"],
+                    "anyOf": target_selector_any_of()
                 }),
             },
             ToolSpec {
@@ -169,11 +192,15 @@ impl Default for ToolRegistry {
                     "properties": {
                         "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
-                        "receipt_id": { "type": "string", "description": "收到消息中的 receiptId" },
+                        "agent_id": { "type": "string", "description": "目标 Agent identity；与 target_pane_id 二选一" },
+                        "generation": { "type": "integer", "minimum": 1 },
+                        "lease": { "type": "string" },
+                        "delivery_id": { "type": "string", "description": "收到消息中的 deliveryId" },
                         "status": { "type": "string", "enum": ["agent_received", "agent_accepted", "agent_acknowledged", "agent_completed", "agent_rejected"] },
                         "detail": { "type": "string", "description": "可选的确认或拒绝原因" }
                     },
-                    "required": ["target_pane_id", "receipt_id", "status"]
+                    "required": ["delivery_id", "status"],
+                    "anyOf": target_selector_any_of()
                 }),
             },
             ToolSpec {
@@ -236,12 +263,14 @@ impl Default for ToolRegistry {
                     "properties": {
                         "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
+                        "agent_id": { "type": "string", "description": "目标 Agent identity；与 target_pane_id 二选一" },
                         "peek": {
                             "type": "boolean",
                             "description": "true 只窥视不清空（默认 false：取走即清空）"
                         }
                     },
-                    "required": ["target_pane_id"]
+                    "required": [],
+                    "anyOf": target_selector_any_of()
                 }),
             },
             ToolSpec {
@@ -353,7 +382,8 @@ fn communication_tool_specs() -> Vec<ToolSpec> {
                     "deadline_unix_ms": { "type": "integer" },
                     "cancellation_id": { "type": "string" }
                 },
-                "required": ["target_pane_id", "message", "idempotency_key"]
+                "required": ["message", "idempotency_key"],
+                "anyOf": target_selector_any_of()
             }),
         },
         ToolSpec {
@@ -377,7 +407,8 @@ fn communication_tool_specs() -> Vec<ToolSpec> {
                     "deadline_unix_ms": { "type": "integer" },
                     "cancellation_id": { "type": "string" }
                 },
-                "required": ["target_pane_id", "objective", "idempotency_key"]
+                "required": ["objective", "idempotency_key"],
+                "anyOf": target_selector_any_of()
             }),
         },
         ToolSpec {
@@ -402,7 +433,8 @@ fn communication_tool_specs() -> Vec<ToolSpec> {
                     "deadline_unix_ms": { "type": "integer" },
                     "cancellation_id": { "type": "string" }
                 },
-                "required": ["target_pane_id", "topic", "idempotency_key"]
+                "required": ["topic", "idempotency_key"],
+                "anyOf": target_selector_any_of()
             }),
         },
         ToolSpec {
@@ -421,7 +453,8 @@ fn communication_tool_specs() -> Vec<ToolSpec> {
                     "preferred_protocol_version": { "type": "string", "description": "Optional exact version, e.g. 1.0 or 0.3" },
                     "extensions": { "type": "array", "items": { "type": "string" } }
                 },
-                "required": ["target_pane_id", "agent_card_url"]
+                "required": ["agent_card_url"],
+                "anyOf": target_selector_any_of()
             }),
         },
         ToolSpec {
@@ -436,7 +469,8 @@ fn communication_tool_specs() -> Vec<ToolSpec> {
                     "generation": { "type": "integer", "minimum": 1 },
                     "lease": { "type": "string" }
                 },
-                "required": ["target_pane_id"]
+                "required": [],
+                "anyOf": target_selector_any_of()
             }),
         },
         ToolSpec {
@@ -456,7 +490,8 @@ fn communication_tool_specs() -> Vec<ToolSpec> {
                     "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
                     "cursor": { "type": "string" }
                 },
-                "required": ["target_pane_id"]
+                "required": [],
+                "anyOf": target_selector_any_of()
             }),
         },
         ToolSpec {
@@ -474,10 +509,13 @@ fn communication_tool_specs() -> Vec<ToolSpec> {
                     "cancellation_id": { "type": "string" },
                     "reason": { "type": "string" }
                 },
-                "required": ["target_pane_id"],
-                "anyOf": [
-                    { "required": ["delivery_id"] },
-                    { "required": ["cancellation_id"] }
+                "required": [],
+                "anyOf": target_selector_any_of(),
+                "allOf": [
+                    { "anyOf": [
+                        { "required": ["delivery_id"] },
+                        { "required": ["cancellation_id"] }
+                    ] }
                 ]
             }),
         },
@@ -496,7 +534,8 @@ fn communication_tool_specs() -> Vec<ToolSpec> {
                     "status": { "type": "string", "enum": ["assigned", "accepted", "running", "waiting", "blocked", "completed", "failed", "cancelled", "expired"] },
                     "detail": { "type": "string" }
                 },
-                "required": ["target_pane_id", "task_id", "status"]
+                "required": ["task_id", "status"],
+                "anyOf": target_selector_any_of()
             }),
         },
         ToolSpec {
@@ -650,13 +689,56 @@ mod tests {
     }
 
     #[test]
-    fn ridge_delegate_task_requires_target_and_objective() {
+    fn ridge_delegate_task_requires_objective_and_one_target() {
         let reg = ToolRegistry::default();
         let spec = reg.get("ridge_delegate_task").unwrap();
         let required = spec.input_schema["required"].as_array().unwrap();
         let names: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
-        assert!(names.contains(&"target_pane_id"));
         assert!(names.contains(&"objective"));
+        assert!(!names.contains(&"target_pane_id"));
+        assert_eq!(spec.input_schema["anyOf"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn communication_tools_advertise_agent_or_pane_selector() {
+        let reg = ToolRegistry::default();
+        for name in [
+            "ridge_send_to_teammate",
+            "ridge_delegate_task",
+            "ridge_send_and_submit",
+            "ridge_delivery_status",
+            "ridge_acknowledge_receipt",
+            "ridge_inbox_read",
+            "ridge_send_message",
+            "ridge_create_task",
+            "ridge_publish_event",
+            "ridge_register_a2a_endpoint",
+            "ridge_unregister_a2a_endpoint",
+            "ridge_fetch_inbox",
+            "ridge_cancel_delivery",
+            "ridge_task_update",
+        ] {
+            let schema = &reg.get(name).unwrap().input_schema;
+            assert!(schema["properties"].get("agent_id").is_some(), "{name}");
+            assert!(
+                schema["properties"].get("target_pane_id").is_some(),
+                "{name}"
+            );
+            assert!(
+                schema["anyOf"].is_array() || schema["allOf"].as_array().is_some(),
+                "{name} missing target selector anyOf"
+            );
+        }
+    }
+
+    #[test]
+    fn delivery_status_and_ack_use_delivery_id_wire_field() {
+        let reg = ToolRegistry::default();
+        for name in ["ridge_delivery_status", "ridge_acknowledge_receipt"] {
+            let properties = &reg.get(name).unwrap().input_schema["properties"];
+            assert!(properties.get("delivery_id").is_some(), "{name}");
+            assert!(properties.get("receipt_id").is_none(), "{name}");
+        }
     }
 
     #[test]

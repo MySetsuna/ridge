@@ -13,8 +13,7 @@
   import { emit, listen } from '@tauri-apps/api/event';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
-  import { writeText } from '@tauri-apps/plugin-clipboard-manager';
-  import { Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy, Users, MonitorUp } from 'lucide-svelte';
+  import { Bot, ZapOff, ShieldCheck, BookOpen, Users, MonitorUp } from 'lucide-svelte';
   import AgentMemberRow from './AgentMemberRow.svelte';
   import { settingsStore } from '$lib/stores/settings';
   import { fileEditorStore } from '$lib/stores/fileEditor';
@@ -558,24 +557,6 @@
     }
   }
 
-  // 「复制连接信息」：动态取 MCP 端点 + token 写入剪贴板。token 仅运行时返回（D6），
-  // binding 为 None（未开终端）时后端给出友好错误，直接展示。
-  async function copyConnectionInfo() {
-    try {
-      const info = await invoke<{ wsEndpoint: string; token: string }>('get_teammate_connection_info');
-      await writeText(`endpoint: ${info.wsEndpoint}\ntoken: ${info.token}`);
-      void alertDialog({
-        title: '复制连接信息',
-        message: 'MCP 连接信息（端点 + token）已复制到剪贴板。',
-      });
-    } catch (e) {
-      void alertDialog({
-        title: '复制连接信息',
-        message: typeof e === 'string' ? e : `获取连接信息失败：${e instanceof Error ? e.message : String(e)}`,
-      });
-    }
-  }
-
   function workspaceLabel(id?: string): string {
     if (!id) return '未关联工作区';
     const workspace = $workspacesList.find((item) => item.id === id);
@@ -700,16 +681,6 @@
         class="flex items-center justify-center rounded border border-[var(--rg-border)] p-1 text-[var(--rg-fg-muted)] transition-colors hover:text-[var(--rg-fg)]"
       >
         <BookOpen class="h-3.5 w-3.5" />
-      </button>
-      <!-- 复制连接信息：动态取 MCP 端点 + token -->
-      <button
-        type="button"
-        title="复制 MCP 连接信息（端点 + token）"
-        aria-label="复制 MCP 连接信息"
-        onclick={copyConnectionInfo}
-        class="flex items-center justify-center rounded border border-[var(--rg-border)] p-1 text-[var(--rg-fg-muted)] transition-colors hover:text-[var(--rg-fg)]"
-      >
-        <ClipboardCopy class="h-3.5 w-3.5" />
       </button>
       <button
         type="button"
