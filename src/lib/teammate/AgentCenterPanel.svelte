@@ -3,14 +3,12 @@
   //
   // 底座化瘦身后只保留「给人看的」两块：成员（Roster）+ 异常（熔断告警）。
   // 「目标 / 活动（TML 协作审计）」等 AI 自治协同的可视化已退场
-  // 数据来源：
-  //   - 轮询 `get_teammate_topology` → roster（成员名册 / 状态）
-  //   - 监听 `teammate://circuit-tripped` → 置顶异常告警
+  // 数据来源：全局 AgentPaneHighlightSync 的共享 topology + circuit 事件。
   // 后端未接线时优雅显示空态（不报错）。顶部带一个「审批」快捷开关（HITL），
   // 完整开关在设置面板「智能体」分区。
 
   import { onMount } from 'svelte';
-  import { emit, listen } from '@tauri-apps/api/event';
+  import { listen } from '@tauri-apps/api/event';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
   import { Bot, ZapOff, ShieldCheck, BookOpen, Users, MonitorUp } from 'lucide-svelte';
@@ -43,10 +41,8 @@
   import TeammateGroups from './TeammateGroupsSection.svelte';
   import { teammateGroupStore, groupOfAgent, parseGroupAddMember } from './teammateGroups.svelte';
   import {
-    parseTopologySnapshot,
     parseCircuitTripped,
     EMPTY_TOPOLOGY,
-    type TopologySnapshot,
     type TeammateProfile,
     type CircuitTrip,
   } from './teammateModel';
@@ -77,13 +73,15 @@
     shouldRefreshAgentHistory,
     type AgentCardStatus,
   } from './agentCommuneModel';
-  import { syncAgentPaneHighlight } from './agentPaneHighlightSync';
+  import {
+    agentHitlPendingStore,
+    agentTopologyStore,
+    refreshAgentPaneHighlight,
+  } from './agentPaneHighlightSync';
 
-  const TOPOLOGY_CMD = 'get_teammate_topology';
   const CIRCUIT_EVENT = 'teammate://circuit-tripped';
   // 后端 MCP `ridge_join_group` → 前端编组「加成员」事件桥（见 teammate/layout_event.rs）。
   const GROUP_ADD_MEMBER_EVENT = 'teammate://group-add-member';
-  const AGENT_ACTIVITY_EXPIRY_MS = 12_500;
   const TRIP_CAP = 20;
 
   interface Props {
@@ -92,14 +90,13 @@
   }
   let { workspaceId }: Props = $props();
 
-  let topologies = $state<Record<string, TopologySnapshot>>({});
   const topology = $derived(
-    workspaceId ? (topologies[workspaceId] ?? EMPTY_TOPOLOGY) : EMPTY_TOPOLOGY
+    workspaceId ? ($agentTopologyStore[workspaceId] ?? EMPTY_TOPOLOGY) : EMPTY_TOPOLOGY
   );
   const allMembers = $derived(
     sortMembersBySessionId(
       $workspacesList.flatMap((workspace) =>
-        (topologies[workspace.id]?.roster ?? []).map((profile) => ({
+        ($agentTopologyStore[workspace.id]?.roster ?? []).map((profile) => ({
           workspaceId: workspace.id,
           workspaceName: workspace.name?.trim() || `工作区 ${workspace.displaySeq}`,
           profile,
@@ -146,7 +143,6 @@
   let refreshQueuedHeavy = false;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let historyRefreshTimer: ReturnType<typeof setTimeout> | undefined;
-  let activityExpiryTimer: ReturnType<typeof setTimeout> | undefined;
   const agentProfilesByIdentity = $derived.by(() => {
     const profiles = new Map<string, TeammateProfile>();
     for (const member of allMembers) {
@@ -233,10 +229,6 @@
       }
     })();
     return historyRefreshInFlight;
-  }
-
-  function syncAgentAttention(): boolean {
-    return syncAgentPaneHighlight(allMembers, (member) => pendingFor(member.profile).length > 0);
   }
 
   function canResume(reply: AgentRecentReply): boolean {
@@ -372,8 +364,6 @@
     reason: string;
     createdAt: number;
   }
-  let hitlPending = $state<HitlPendingItem[]>([]);
-
   function parseHitlPending(raw: unknown): HitlPendingItem[] {
     if (!Array.isArray(raw)) return [];
     return raw.flatMap((v) => {
@@ -387,6 +377,7 @@
       }];
     });
   }
+  const hitlPending = $derived(parseHitlPending($agentHitlPendingStore));
 
   /** 某成员的待审批项（initiator 可能是 paneId / agent 名 / agent id）。 */
   function pendingFor(m: TeammateProfile): HitlPendingItem[] {
@@ -419,24 +410,6 @@
 
   async function refreshNow(opts?: { heavy?: boolean }): Promise<void> {
     const doHeavy = opts?.heavy ?? false;
-    const workspaceIds = $workspacesList.map((workspace) => workspace.id);
-    if (workspaceId && !workspaceIds.includes(workspaceId)) workspaceIds.push(workspaceId);
-    const snapshots = await Promise.all(
-      workspaceIds.map(async (id) => {
-        try {
-          return [id, parseTopologySnapshot(await invoke(TOPOLOGY_CMD, { workspaceId: id }))] as const;
-        } catch {
-          return [id, EMPTY_TOPOLOGY] as const;
-        }
-      })
-    );
-    topologies = Object.fromEntries(snapshots);
-    // Auto-discovery mutates the backend pane state while producing the topology
-    // snapshot. Promote that one-shot fact onto the existing layout SSOT event so
-    // RidgePane headers and the Agent tab refresh from the same backend state.
-    if (snapshots.some(([, snapshot]) => snapshot.rosterChanged)) {
-      await emit('teammate-layout-changed', { kind: 'state' });
-    }
     try {
       // OP-AGENT-CP: full control-plane snapshot (degraded/level/foreign/outbound).
       // Prefer this single call over separate get_pending_hitl_count when healthy.
@@ -468,15 +441,6 @@
         pendingHitl = 0;
       }
     }
-    // iter-61：待审批列表（进程内内存读，轻量）——驱动成员行「等待审批」徽标与行内裁决。
-    try {
-      hitlPending = parseHitlPending(await invoke('list_hitl_pending'));
-    } catch {
-      hitlPending = [];
-    }
-    const completionDetected = syncAgentAttention();
-    if (completionDetected) await refreshRecentReplies(true);
-    scheduleActivityExpiry();
     // Heavy: decisions / memory / git / audit — only on initial/layout refresh.
     if (doHeavy) {
       try {
@@ -505,16 +469,14 @@
     }
   }
 
-  // 随应用打包的 MCP 接入引导文档（见 tauri.conf.json bundle.resources）。
-  function scheduleActivityExpiry(): void {
-    if (activityExpiryTimer) clearTimeout(activityExpiryTimer);
-    if (!allMembers.some(({ profile }) => profile.activity === 'working')) return;
-    activityExpiryTimer = setTimeout(() => {
-      activityExpiryTimer = undefined;
-      scheduleRefresh();
-    }, AGENT_ACTIVITY_EXPIRY_MS);
+  async function refreshSharedState(): Promise<void> {
+    const workspaceIds = $workspacesList.map((workspace) => workspace.id);
+    if (workspaceId && !workspaceIds.includes(workspaceId)) workspaceIds.push(workspaceId);
+    await refreshAgentPaneHighlight({ workspaceIds, invoke });
+    await refresh();
   }
 
+  // 随应用打包的 MCP 接入引导文档（见 tauri.conf.json bundle.resources）。
   function scheduleHistoryRefresh(): void {
     if (historyRefreshTimer) clearTimeout(historyRefreshTimer);
     historyRefreshTimer = setTimeout(() => {
@@ -600,12 +562,8 @@
       scheduleRefresh({ heavy: true });
     });
     const unOutput = listen('pane-output-activity', (e) => {
-      scheduleRefresh();
       if (eventPaneIsAgent(e.payload)) scheduleHistoryRefresh();
     });
-    const unTree = listen('pane-tree-changed', () => scheduleRefresh());
-    const unClosed = listen('pane-pty-closed', () => scheduleRefresh());
-    const unMeta = listen('pane-meta-changed', () => scheduleRefresh());
     // Agent 自助拉入：后端 `ridge_join_group` emit → 落到该工作区的编组 store。
     // 后端 emit 的 workspaceId = MCP 的活动工作区，与本面板的 `workspaceId`(焦点工作区)
     // 常态一致；仅在两者短暂不同步时才 mismatch。失败一律 warn（勿静默吞——评审 HIGH）。
@@ -645,14 +603,10 @@
     return () => {
       if (refreshTimer) clearTimeout(refreshTimer);
       if (historyRefreshTimer) clearTimeout(historyRefreshTimer);
-      if (activityExpiryTimer) clearTimeout(activityExpiryTimer);
       unTrip.then((f) => f()).catch(() => {});
       unJoin.then((f) => f()).catch(() => {});
       unLayout.then((f) => f()).catch(() => {});
       unOutput.then((f) => f()).catch(() => {});
-      unTree.then((f) => f()).catch(() => {});
-      unClosed.then((f) => f()).catch(() => {});
-      unMeta.then((f) => f()).catch(() => {});
     };
   });
 </script>
@@ -661,15 +615,15 @@
   <!-- 标题栏仅承载标题；控制项属于面板内容，可随窄侧栏自然换行。 -->
   <header
     data-tauri-drag-region
-    class="flex h-11 shrink-0 items-center border-b border-[var(--rg-border)] px-3"
+    class="flex h-14 shrink-0 items-center border-b border-[var(--rg-border)] px-4"
   >
     <!-- iter-60 G5 品牌层改名：内置 MCP/控制面对外名 Agent's Commune（wire 方法名不动） -->
-    <span class="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-      <Bot class="h-3.5 w-3.5" /> Agent's Commune
+    <span class="flex items-center gap-2 text-sm font-semibold tracking-[-0.01em] text-[var(--rg-fg)]">
+      <Bot class="h-5 w-5 text-[var(--rg-accent)]" /> Agent's Commune
     </span>
   </header>
 
-  <div class="flex-1 overflow-y-auto rg-scroll flex flex-col gap-4 px-3 py-3">
+  <div class="rg-scroll flex flex-1 flex-col gap-5 overflow-y-auto px-4 py-4">
     {#snippet bottomControls()}
     <section class="flex flex-wrap items-center gap-1 rounded-md border border-[var(--rg-border)] p-2">
       <!-- MCP 接入引导：内置编辑器只读打开打包文档 -->
@@ -834,7 +788,7 @@
           <Bot class="h-3 w-3 text-[var(--rg-accent)]/70" /> 会话历史
           <span class="ml-auto font-mono">{recentReplies.length}</span>
         </h3>
-        <div class="mt-1 space-y-1">
+        <div class="mt-2 space-y-2.5">
           {#each recentReplyGroups as group (group.key)}
             {@const groupStatus = statusForGroup(group)}
             <section
@@ -842,7 +796,7 @@
               data-agent={group.key}
               data-status={groupStatus}
               aria-label={`${group.agent}: ${agentStatusLabel(groupStatus)}`}
-              class="rounded border border-[var(--rg-border)]/60 border-l-2 {groupStatus === 'waiting'
+              class="rounded-lg border border-[var(--rg-border)]/60 border-l-[3px] bg-[var(--rg-surface)]/30 {groupStatus === 'waiting'
                 ? 'border-l-amber-400'
                 : groupStatus === 'working'
                   ? 'border-l-emerald-400'
@@ -852,20 +806,24 @@
                       ? 'border-l-sky-400'
                       : 'border-l-[var(--rg-border-bright)]'}"
             >
-              <button type="button" class="flex w-full items-center gap-2 px-2 py-1 text-left text-[10px]" onclick={() => toggleHistoryGroup(group.key)}>
-                <span class="font-medium text-[var(--rg-accent)]">{group.agent}</span>
-                <span class="rounded px-1 text-[9px] {groupStatus === 'waiting'
+              <button
+                type="button"
+                class="flex w-full items-center gap-2 px-3 py-2.5 text-left text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--rg-accent)]/55"
+                onclick={() => toggleHistoryGroup(group.key)}
+              >
+                <span class="font-semibold text-[var(--rg-accent)]">{group.agent}</span>
+                <span class="rounded-md px-1.5 py-0.5 text-[10px] {groupStatus === 'waiting'
                   ? 'bg-amber-500/15 text-amber-300'
                   : groupStatus === 'working'
                     ? 'bg-emerald-500/15 text-emerald-300'
                     : groupStatus === 'stopped'
                       ? 'bg-red-500/15 text-red-300'
                       : 'bg-[var(--rg-surface)] text-[var(--rg-fg-muted)]'}">{agentStatusLabel(groupStatus)}</span>
-                <span class="font-mono text-[var(--rg-fg-muted)]">{group.replies.length}</span>
+                <span class="font-mono text-[11px] text-[var(--rg-fg-muted)]">{group.replies.length}</span>
                 <span class="ml-auto text-[var(--rg-fg-muted)]">{historyExpanded[group.key] ?? true ? '−' : '+'}</span>
               </button>
               {#if historyExpanded[group.key] ?? true}
-                <ul class="space-y-1 px-1 pb-1">
+                <ul class="space-y-2 px-2 pb-2">
                   {#each group.replies.slice(0, 12) as reply (reply.agent + ':' + reply.sessionId)}
                     {@const runningMember = runningMemberFor(reply)}
                     {#if runningMember}
@@ -880,16 +838,16 @@
                         pending={pendingFor(m)}
                         recentReply={recentReplyFor(m, runningMember.workspaceId)}
                         groupBadge={null}
-                        onRefresh={() => void refresh()}
+                        onRefresh={() => void refreshSharedState()}
                       />
                     {:else}
-                      <li class="rounded bg-[var(--rg-surface)]/50 px-2 py-1.5">
-                      <div class="flex items-center gap-1.5 text-[9px] text-[var(--rg-fg-muted)]">
-                        <span class="min-w-0 flex-1 truncate font-medium text-[var(--rg-fg)]" title={reply.title}>{reply.title}</span>
+                      <li class="min-h-32 rounded-md bg-[var(--rg-bg)]/60 px-3 py-2.5">
+                      <div class="flex items-center gap-2 text-[10px] text-[var(--rg-fg-muted)]">
+                        <span class="min-w-0 flex-1 truncate text-[13px] font-semibold text-[var(--rg-fg)]" title={reply.title}>{reply.title}</span>
                         <span class="shrink-0">{replyTime(reply.timestamp)}</span>
                         {#if canResume(reply)}
                           <label
-                            class="inline-flex shrink-0 items-center gap-0.5 text-[9px] text-[var(--rg-fg-muted)]"
+                            class="inline-flex shrink-0 items-center gap-1 text-[10px] text-[var(--rg-fg-muted)]"
                             title="开启后以该 agent 的 YOLO 参数启动（如 grok --always-approve）"
                           >
                             <input type="checkbox" class="h-3 w-3" bind:checked={resumeYolo} />
@@ -897,18 +855,14 @@
                           </label>
                           <button
                             type="button"
-                            class="shrink-0 rounded border border-[var(--rg-border)] px-1 text-[9px] text-[var(--rg-accent)] disabled:opacity-40"
+                            class="shrink-0 rounded-md border border-[var(--rg-border)] px-2 py-1 text-[10px] text-[var(--rg-accent)] disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60"
                             disabled={!workspaceId || !$activePaneId || !!resumeBusy}
                             title={!workspaceId || !$activePaneId ? '需先选中工作区与 pane' : `在新 pane 恢复 ${reply.agent} 会话（cwd+resume${resumeYolo ? '+yolo' : ''}）`}
                             onclick={() => void resumeAgentSession(reply)}
                           >恢复</button>
                         {/if}
                       </div>
-                      <p class="mt-0.5 truncate font-mono text-[9px] text-[var(--rg-fg-muted)]" title={reply.sessionId}>
-                        {reply.sessionId}
-                      </p>
-                      <p class="truncate text-[9px] text-[var(--rg-fg-muted)]" title={reply.cwd}>{reply.cwd}</p>
-                      <p class="mt-0.5 line-clamp-3 whitespace-pre-wrap text-[11px] leading-snug" title={reply.text}>{reply.text}</p>
+                      <p class="mt-2 line-clamp-6 whitespace-pre-wrap text-[13px] leading-5 text-[var(--rg-fg)]" title={reply.text}>{reply.text}</p>
                       </li>
                     {/if}
                   {/each}
@@ -928,49 +882,49 @@
     {/snippet}
 
     <!-- 成员 / 编组 / 历史：顶级三视图。 -->
-    <section class="flex flex-col gap-2">
-      <div class="flex items-center gap-1 rounded-md border border-[var(--rg-border)] p-0.5">
+    <section class="flex flex-col gap-3">
+      <div class="flex items-center gap-1 rounded-lg border border-[var(--rg-border)] bg-[var(--rg-bg)]/35 p-1">
         <button
           type="button"
           data-testid="commune-tab-members"
           onclick={() => (teamTab = 'members')}
-          class="flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors {teamTab ===
+          class="flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60 {teamTab ===
           'members'
             ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)]'
             : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
         >
           <Bot class="h-3.5 w-3.5" /> 成员
-          <span class="font-mono text-[10px] opacity-70">{allMembers.length}</span>
+          <span class="font-mono text-[11px] opacity-70">{allMembers.length}</span>
         </button>
         <button
           type="button"
           data-testid="commune-tab-groups"
           onclick={() => (teamTab = 'groups')}
-          class="flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors {teamTab ===
+          class="flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60 {teamTab ===
           'groups'
             ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)]'
             : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
         >
           <Users class="h-3.5 w-3.5" /> 编组
-          <span class="font-mono text-[10px] opacity-70">{groupStore.groups.length}</span>
+          <span class="font-mono text-[11px] opacity-70">{groupStore.groups.length}</span>
         </button>
         <button
           type="button"
           data-testid="commune-tab-history"
           onclick={() => (teamTab = 'history')}
-          class="flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors {teamTab ===
+          class="flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60 {teamTab ===
           'history'
             ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)]'
             : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
         >
           历史
-          <span class="font-mono text-[10px] opacity-70">{unmatchedHeadlessSessions.length + recentReplies.length}</span>
+          <span class="font-mono text-[11px] opacity-70">{unmatchedHeadlessSessions.length + recentReplies.length}</span>
         </button>
       </div>
 
       {#if teamTab === 'members'}
         <!-- 跨工作区聚合；成员行仍复用完整监控/干预组件。 -->
-        <ul class="space-y-1.5">
+        <ul class="space-y-3">
           {#each allMembers as member (member.workspaceId + ':' + member.profile.id)}
             {@const m = member.profile}
             {@const grp = member.workspaceId === workspaceId
@@ -986,11 +940,11 @@
               pending={pendingFor(m)}
               recentReply={recentReplyFor(m, member.workspaceId)}
               groupBadge={grp ? { name: grp.name, color: grp.color } : null}
-              onRefresh={() => void refresh()}
+              onRefresh={() => void refreshSharedState()}
             />
           {/each}
           {#if allMembers.length === 0}
-            <li class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">
+            <li class="rounded-lg border border-dashed border-[var(--rg-border)] px-3 py-8 text-center text-[12px] leading-5 text-[var(--rg-fg-muted)]">
               暂无成员——在任一分屏里启动 claude / codex 等 agent CLI，会自动入册。
             </li>
           {/if}
@@ -1003,7 +957,7 @@
           {filePath}
           {hitlPending}
           {recentReplyFor}
-          onRefresh={() => void refresh()}
+          onRefresh={() => void refreshSharedState()}
         />
       {:else}
         {@render historyContent()}

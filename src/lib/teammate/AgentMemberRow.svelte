@@ -59,7 +59,6 @@
   }: Props = $props();
 
   let input = $state('');
-  let answerOpen = $state(false);
 
   const present = $derived(profile !== null);
   const paneId = $derived(profile?.paneId ?? '');
@@ -161,7 +160,8 @@
   onpointerdown={acknowledgeAttention}
   data-agent-title={displayTitle}
   data-agent-attention={attention ?? ''}
-  class="group/mem rounded border border-l-2 px-1.5 py-1 hover:bg-[var(--rg-surface)]/60
+  class="group/mem min-h-52 rounded-lg border border-l-[3px] px-3 py-3 transition-colors duration-200
+    hover:bg-[var(--rg-surface)]/70 focus-within:ring-1 focus-within:ring-[var(--rg-accent)]/45
     {attention === 'waiting'
       ? 'border-amber-400/70 bg-amber-500/10'
       : attention === 'stopped'
@@ -171,138 +171,127 @@
         : `border-transparent ${status.rail}`}
     {present ? '' : 'opacity-60'}"
 >
-  <!-- 标题行：状态点 + 名字 + 状态词 + 来源/编组标注 + 操作 -->
-  <div class="flex items-center gap-2">
+  <div class="flex items-start gap-2.5">
     {#if present}
-      <span class="h-1.5 w-1.5 shrink-0 rounded-full {status.dot}" title={status.text}></span>
+      <span class="mt-1.5 h-2 w-2 shrink-0 rounded-full {status.dot}" title={status.text}></span>
     {:else}
-      <Ghost class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
+      <Ghost class="mt-0.5 h-4 w-4 shrink-0 text-[var(--rg-fg-muted)]" />
     {/if}
-    <button
-      type="button"
-      class="min-w-0 flex-1 truncate text-left text-[12px] hover:text-[var(--rg-accent)] disabled:cursor-default"
-      title={paneId ? `定位到 ${displayTitle}` : displayTitle}
-      aria-label={paneId ? `定位到 ${displayTitle} 的终端` : displayTitle}
-      disabled={!paneId || !workspaceId}
-      onclick={() => void activatePane()}
-    >{displayTitle}</button>
-    {#if sourceLabel}
-      <span class="max-w-24 shrink-0 truncate text-[9px] text-[var(--rg-fg-muted)]" title={sourceLabel}>
-        {sourceLabel}
-      </span>
-    {/if}
-    <span class="shrink-0 text-[9px] {status.cls}">{status.text}</span>
-    {#if attentionText}
-      <span class="shrink-0 rounded-full bg-sky-400/15 px-1.5 py-0.5 text-[9px] text-sky-300">{attentionText}</span>
-    {/if}
-
-    {#if profile?.isAuto}
-      <span
-        class="shrink-0 rounded-full border border-[var(--rg-border)] px-1 text-[9px] text-[var(--rg-fg-muted)]"
-        title="自动识别：该分屏下正跑着 agent CLI"
-      >自动</span>
-    {/if}
-
-    {#if groupBadge}
-      <span
-        class="flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-medium"
-        style="color:{groupBadge.color};background:color-mix(in srgb, {groupBadge.color} 16%, transparent)"
-        title="所属编组：{groupBadge.name}"
-      >
-        <span class="h-1.5 w-1.5 rounded-full" style="background:{groupBadge.color}"></span>
-        {groupBadge.name}
-      </span>
-    {/if}
-
-    {#if leader && present}
+    <div class="min-w-0 flex-1">
       <button
         type="button"
-        title={leader.isLeader ? '取消组长' : '设为组长'}
-        aria-label={leader.isLeader ? '取消组长' : '设为组长'}
-        onclick={leader.toggle}
-        class="shrink-0 transition {leader.isLeader
-          ? 'text-amber-400'
-          : 'text-[var(--rg-fg-muted)] opacity-0 hover:text-amber-400 group-hover/mem:opacity-100'}"
-      >
-        <Crown class="h-3 w-3" />
-      </button>
-    {/if}
+        class="block w-full truncate rounded-sm text-left text-[15px] font-semibold leading-5 tracking-[-0.01em]
+          hover:text-[var(--rg-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60
+          disabled:cursor-default"
+        title={paneId ? `定位到 ${displayTitle}` : displayTitle}
+        aria-label={paneId ? `定位到 ${displayTitle} 的终端` : displayTitle}
+        disabled={!paneId || !workspaceId}
+        onclick={() => void activatePane()}
+      >{displayTitle}</button>
+      <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] leading-4">
+        <span class="font-medium {status.cls}">{status.text}</span>
+        {#if sourceLabel}
+          <span class="max-w-36 truncate text-[var(--rg-fg-muted)]" title={sourceLabel}>{sourceLabel}</span>
+        {/if}
+        {#if attentionText}
+          <span class="rounded-md bg-sky-400/15 px-1.5 py-0.5 text-sky-300">{attentionText}</span>
+        {/if}
+        {#if profile?.isAuto}
+          <span class="rounded-md border border-[var(--rg-border)] px-1.5 py-0.5 text-[var(--rg-fg-muted)]" title="自动识别：该分屏下正跑着 agent CLI">自动识别</span>
+        {/if}
+        {#if groupBadge}
+          <span
+            class="flex items-center gap-1 rounded-md px-1.5 py-0.5 font-medium"
+            style="color:{groupBadge.color};background:color-mix(in srgb, {groupBadge.color} 16%, transparent)"
+            title="所属编组：{groupBadge.name}"
+          >
+            <span class="h-1.5 w-1.5 rounded-full" style="background:{groupBadge.color}"></span>
+            {groupBadge.name}
+          </span>
+        {/if}
+      </div>
+    </div>
 
-    {#if present && paneId}
-      <button
-        type="button"
-        title={profile?.status === 'Suspended'
-          ? '恢复 agent 输入'
-          : '暂停 agent 输入（人类输入不受限）'}
-        aria-label="暂停或恢复 agent"
-        onclick={toggleSuspend}
-        class="shrink-0 text-[var(--rg-fg-muted)] opacity-0 transition hover:text-[var(--rg-fg)] group-hover/mem:opacity-100"
-      >
-        {#if profile?.status === 'Suspended'}<Play class="h-3 w-3" />{:else}<Pause class="h-3 w-3" />{/if}
-      </button>
-    {/if}
-
-    {#if leader && !present}
-      <button
-        type="button"
-        title="从组移除失联成员"
-        aria-label="从组移除失联成员"
-        onclick={leader.remove}
-        class="shrink-0 text-[var(--rg-fg-muted)] hover:text-red-400"
-      >
-        <X class="h-3 w-3" />
-      </button>
-    {/if}
+    <div class="flex shrink-0 items-center gap-1">
+      {#if leader && present}
+        <button
+          type="button"
+          title={leader.isLeader ? '取消组长' : '设为组长'}
+          aria-label={leader.isLeader ? '取消组长' : '设为组长'}
+          onclick={leader.toggle}
+          class="rounded-md p-1.5 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60 {leader.isLeader
+            ? 'text-amber-400'
+            : 'text-[var(--rg-fg-muted)] opacity-0 hover:bg-[var(--rg-surface)] hover:text-amber-400 group-hover/mem:opacity-100 focus-visible:opacity-100'}"
+        >
+          <Crown class="h-4 w-4" />
+        </button>
+      {/if}
+      {#if present && paneId}
+        <button
+          type="button"
+          title={profile?.status === 'Suspended' ? '恢复 agent 输入' : '暂停 agent 输入（人类输入不受限）'}
+          aria-label="暂停或恢复 agent"
+          onclick={toggleSuspend}
+          class="rounded-md p-1.5 text-[var(--rg-fg-muted)] opacity-0 transition hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)]
+            group-hover/mem:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60"
+        >
+          {#if profile?.status === 'Suspended'}<Play class="h-4 w-4" />{:else}<Pause class="h-4 w-4" />{/if}
+        </button>
+      {/if}
+      {#if leader && !present}
+        <button
+          type="button"
+          title="从组移除失联成员"
+          aria-label="从组移除失联成员"
+          onclick={leader.remove}
+          class="rounded-md p-1.5 text-[var(--rg-fg-muted)] hover:bg-red-500/10 hover:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/60"
+        >
+          <X class="h-4 w-4" />
+        </button>
+      {/if}
+    </div>
   </div>
 
-  <!-- 最近任务 -->
   {#if lastTask}
-    <p class="mt-0.5 truncate pl-3.5 text-[10px] text-[var(--rg-fg-muted)]" title={lastTask.text}>
-      任务：{lastTask.text}
+    <p class="mt-2 truncate rounded-md bg-[var(--rg-surface)]/55 px-2 py-1.5 text-[11px] leading-4 text-[var(--rg-fg-muted)]" title={lastTask.text}>
+      <span class="font-medium text-[var(--rg-fg)]/80">当前任务</span> · {lastTask.text}
     </p>
   {/if}
 
-  <!-- 待审批：行内裁决 -->
   {#each pending as p (p.id)}
-    <div class="mt-0.5 flex items-center gap-1.5 pl-3.5 text-[10px] text-amber-300">
+    <div class="mt-2 flex items-center gap-2 rounded-md border border-amber-400/25 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-300">
       <span class="min-w-0 flex-1 truncate" title={p.reason}>审批：{p.reason || '高危操作待裁决'}</span>
       <button
-        class="shrink-0 rounded border border-emerald-400/40 px-1.5 py-0.5 text-[9px] text-emerald-300 hover:bg-emerald-500/15"
+        class="shrink-0 rounded-md border border-emerald-400/40 px-2 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/60"
         onclick={() => decide(p.id, 'approve')}
       >批准</button>
       <button
-        class="shrink-0 rounded border border-red-400/40 px-1.5 py-0.5 text-[9px] text-red-300 hover:bg-red-500/15"
+        class="shrink-0 rounded-md border border-red-400/40 px-2 py-1 text-[10px] text-red-300 hover:bg-red-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/60"
         onclick={() => decide(p.id, 'reject')}
       >驳回</button>
     </div>
   {/each}
 
   {#if present && paneId}
-    <div class="mt-0.5 pl-3.5">
+    <section class="mt-3" aria-label="最近回复">
+      <div class="flex items-center gap-2">
+        <h3 class="text-[11px] font-semibold tracking-wide text-[var(--rg-fg-muted)]">最近回复</h3>
+        <span class="h-px flex-1 bg-[var(--rg-border)]/70"></span>
+      </div>
       <!-- JSONL is the reply SSOT. PTY tail is diagnostic output, not an answer. -->
       {#if recentReply}
-        <button
-          class="flex w-full items-center gap-1 text-left text-[10px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
-          onclick={() => (answerOpen = !answerOpen)}
-        >
-          <span class="shrink-0">最近回复 {answerOpen ? '▾' : '▸'}</span>
-          {#if !answerOpen}
-            <span class="min-w-0 flex-1 truncate opacity-70">
-              {recentReply.split('\n').at(-1) ?? ''}
-            </span>
-          {/if}
-        </button>
-        {#if answerOpen}
-          <pre
-            class="rg-scroll mt-0.5 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded bg-[var(--rg-bg)] px-1.5 py-1 font-mono text-[10px] leading-snug text-[var(--rg-fg-muted)]"
-          >{recentReply}</pre>
-        {/if}
+        <pre
+          aria-live="polite"
+          class="rg-scroll mt-1.5 min-h-20 max-h-44 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-[var(--rg-bg)]/80 px-2.5 py-2
+            font-sans text-[13px] leading-5 text-[var(--rg-fg)]"
+        >{recentReply}</pre>
       {:else}
-        <p class="text-[10px] text-[var(--rg-fg-muted)]/60">最近回复：（暂无输出）</p>
+        <p class="mt-1.5 flex min-h-20 items-center rounded-md bg-[var(--rg-bg)]/55 px-2.5 py-2 text-[12px] text-[var(--rg-fg-muted)]/70">
+          尚无可显示的回复
+        </p>
       {/if}
 
-      <!-- 给该成员发消息（Enter 发送 / Shift+Enter 换行 / 输入法拼字中的 Enter 选词） -->
-      <div class="mt-1 flex items-end gap-1">
+      <div class="mt-3 flex items-end gap-2 border-t border-[var(--rg-border)]/70 pt-2.5">
         <textarea
           rows="1"
           use:autoGrow={{ maxRows: 3, value: input }}
@@ -314,18 +303,23 @@
             }
           }}
           placeholder="给 {name} 发消息…（Enter 发送）"
-          class="min-w-0 flex-1 resize-none rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] px-1.5 py-0.5 text-[11px] leading-snug text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)]"
+          aria-label={`给 ${name} 发消息`}
+          class="min-w-0 flex-1 resize-none rounded-md border border-[var(--rg-border)] bg-[var(--rg-bg)] px-2.5 py-2 text-[12px] leading-5 text-[var(--rg-fg)]
+            outline-none transition-colors placeholder:text-[var(--rg-fg-muted)]/65 focus:border-[var(--rg-accent)] focus:ring-1 focus:ring-[var(--rg-accent)]/35"
         ></textarea>
         <button
           type="button"
           title="发送给该成员"
           aria-label="发送给该成员"
           onclick={send}
-          class="flex items-center justify-center rounded border border-[var(--rg-border)] p-1 text-[var(--rg-fg-muted)] transition-colors hover:text-[var(--rg-accent)]"
+          disabled={!input.trim()}
+          class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--rg-accent)]/14 text-[var(--rg-accent)] transition
+            hover:bg-[var(--rg-accent)]/24 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-35
+            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60"
         >
-          <Send class="h-3 w-3" />
+          <Send class="h-4 w-4" />
         </button>
       </div>
-    </div>
+    </section>
   {/if}
 </li>

@@ -77,6 +77,10 @@ scripts/tmp-*.mjs
 /static/remote/
 /web-remote-dist/
 
+# SpecTree's Obsidian view is deterministic generated output; specs/changes are authoritative.
+/obsidian-vault/
+/.spectree/obsidian-vault/
+
 # Separate ridge-code checkout used for local reference work; it is not part
 # of this repository's release graph.
 /ridge-code/

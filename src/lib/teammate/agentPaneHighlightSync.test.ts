@@ -8,6 +8,9 @@ import {
 } from '$lib/stores/paneTree';
 import {
   refreshAgentPaneHighlight,
+  agentHitlPendingStore,
+  agentTopologyStore,
+  pruneAgentPaneHighlightWorkspaces,
   resetAgentPaneHighlightSync,
   syncAgentPaneHighlight,
 } from './agentPaneHighlightSync';
@@ -36,6 +39,7 @@ describe('agent pane highlight data plane', () => {
     const invoke = async (cmd: string) => {
       if (cmd === 'get_teammate_topology') {
         return {
+          rosterChanged: true,
           roster: [{
             id: 'agent-1',
             name: 'Claude',
@@ -52,10 +56,14 @@ describe('agent pane highlight data plane', () => {
       throw new Error(`unexpected ${cmd}`);
     };
 
-    await refreshAgentPaneHighlight({ workspaceIds: ['ws-1'], invoke });
+    const result = await refreshAgentPaneHighlight({ workspaceIds: ['ws-1'], invoke });
 
     expect(get(agentPaneAttentionStore)).toEqual({ 'ws-1:pane-a': 'waiting' });
     expect(get(agentPaneStatusStore)).toEqual({ 'ws-1:pane-a': 'waiting' });
+    expect(get(agentTopologyStore)['ws-1']?.roster[0]?.paneId).toBe('pane-a');
+    expect(get(agentHitlPendingStore)).toEqual(result.pending);
+    expect(result.pending).toEqual([{ id: 'hitl-1', initiator: 'pane-a', reason: 'rm -rf' }]);
+    expect(result.rosterChanged).toBe(true);
   });
 
   it('does not stroke a merely working or idle pane', () => {
@@ -109,5 +117,67 @@ describe('agent pane highlight data plane', () => {
 
     syncAgentPaneHighlight([{ ...member, profile: { ...member.profile, activity: 'idle', outputSeq: 4 } }], () => false);
     expect(get(agentPaneAttentionStore)).toEqual({ 'ws-1:pane-a': 'idle' });
+  });
+
+  it('keeps unrefreshed workspace status and transition history intact', () => {
+    const wsA = {
+      workspaceId: 'ws-a',
+      profile: profile({ id: 'agent-a', paneId: 'pane-a', status: 'Working', outputSeq: 1 }),
+    };
+    const wsB = {
+      workspaceId: 'ws-b',
+      profile: profile({ id: 'agent-b', paneId: 'pane-b', status: 'Working', outputSeq: 4 }),
+    };
+    syncAgentPaneHighlight([wsA, wsB], () => false);
+
+    syncAgentPaneHighlight(
+      [{ ...wsA, profile: { ...wsA.profile, activity: 'idle', outputSeq: 2 } }],
+      () => false,
+      ['ws-a'],
+    );
+
+    expect(get(agentPaneStatusStore)).toEqual({
+      'ws-a:pane-a': 'idle',
+      'ws-b:pane-b': 'working',
+    });
+    expect(get(agentPaneAttentionStore)).toEqual({ 'ws-a:pane-a': 'idle' });
+
+    syncAgentPaneHighlight(
+      [{ ...wsB, profile: { ...wsB.profile, activity: 'idle', outputSeq: 5 } }],
+      () => false,
+      ['ws-b'],
+    );
+    expect(get(agentPaneAttentionStore)).toEqual({
+      'ws-a:pane-a': 'idle',
+      'ws-b:pane-b': 'idle',
+    });
+  });
+
+  it('prunes every pane runtime record when a workspace closes', () => {
+    const wsA = {
+      workspaceId: 'ws-a',
+      profile: profile({ id: 'agent-a', paneId: 'pane-a', status: 'Working', outputSeq: 1 }),
+    };
+    const wsB = {
+      workspaceId: 'ws-b',
+      profile: profile({ id: 'agent-b', paneId: 'pane-b', status: 'Working', outputSeq: 2 }),
+    };
+    syncAgentPaneHighlight([wsA, wsB], () => false);
+    agentPaneAttentionStore.set({ 'ws-a:pane-a': 'idle', 'ws-b:pane-b': 'waiting' });
+    agentPaneAttentionPollingStoppedStore.set({ 'ws-a:pane-a': 'working', 'ws-b:pane-b': 'working' });
+
+    pruneAgentPaneHighlightWorkspaces(['ws-b']);
+
+    expect(get(agentPaneStatusStore)).toEqual({ 'ws-b:pane-b': 'working' });
+    expect(get(agentPaneAttentionStore)).toEqual({ 'ws-b:pane-b': 'waiting' });
+    expect(get(agentPaneAttentionPollingStoppedStore)).toEqual({ 'ws-b:pane-b': 'working' });
+
+    // Reusing an old workspace/pane id starts fresh instead of latching its prior transition.
+    syncAgentPaneHighlight(
+      [{ ...wsA, profile: { ...wsA.profile, activity: 'idle', outputSeq: 0 } }],
+      () => false,
+      ['ws-a'],
+    );
+    expect(get(agentPaneAttentionStore)).toEqual({ 'ws-b:pane-b': 'waiting' });
   });
 });

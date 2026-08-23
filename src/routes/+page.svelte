@@ -3,7 +3,7 @@
   import { t, tr } from '$lib/i18n';
   import { focusActiveTerminal, focusTerminalPane, ownsTabKey } from '@ridge/remote/shared/terminal/terminalFocus';
   import SplitContainer from '$lib/components/SplitContainer.svelte';
-  import SourceControl from '$lib/components/SourceControl.svelte';
+  const loadSourceControl = () => import('$lib/components/SourceControl.svelte');
   import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
   import Explorer from '$lib/components/Explorer.svelte';
   // §perf FileEditor 改为懒挂载（见下方 $effect + 模板 {#if FileEditorComp}），
@@ -12,12 +12,12 @@
   import WindDialog from '$lib/components/RidgeDialog.svelte';
   import WindToast from '$lib/components/WindToast.svelte';
   import { settingsStore, initSettingsBoot, setSetting } from '$lib/stores/settings';
-  import RemotePanel from '$lib/remote/RemotePanel.svelte';
-  import AgentCenterPanel from '$lib/teammate/AgentCenterPanel.svelte';
+  const loadRemotePanel = () => import('$lib/remote/RemotePanel.svelte');
+  const loadAgentCenterPanel = () => import('$lib/teammate/AgentCenterPanel.svelte');
   import AgentPaneHighlightSync from '$lib/teammate/AgentPaneHighlightSync.svelte';
-  import HostsPanel from '$lib/components/hosts/HostsPanel.svelte';
-  import SharedWorkspaceSurface from '$lib/components/hosts/SharedWorkspaceSurface.svelte';
-  import SharedWorkspaceResourcePanel from '$lib/components/hosts/SharedWorkspaceResourcePanel.svelte';
+  const loadHostsPanel = () => import('$lib/components/hosts/HostsPanel.svelte');
+  const loadSharedWorkspaceSurface = () => import('$lib/components/hosts/SharedWorkspaceSurface.svelte');
+  const loadSharedWorkspaceResourcePanel = () => import('$lib/components/hosts/SharedWorkspaceResourcePanel.svelte');
   import { activeSharedWorkspaceProjection } from '$lib/remote/cloud/sharedWorkspaceProjection';
   import DockRegionPicker from '$lib/components/hosts/DockRegionPicker.svelte';
   import { initTeammateBoot } from '$lib/teammate/teammateSettings';
@@ -25,7 +25,7 @@
   // 云端登录态：侧栏头像 + 账户气泡。
   import { cloudAuth, logout as cloudLogout } from '@ridge/remote/shared/cloud/auth';
   import { shareWorkspaceWithAccount } from '$lib/workspace/shareWorkspace';
-  import SearchSidebar from '$lib/components/SearchSidebar.svelte';
+  const loadSearchSidebar = () => import('$lib/components/SearchSidebar.svelte');
   import SaveWorkspaceDialog from '$lib/components/SaveWorkspaceDialog.svelte';
   import QuickOpen from '$lib/components/QuickOpen.svelte';
   import SidebarPluginRegion from '$lib/components/SidebarPluginRegion.svelte';
@@ -403,6 +403,7 @@
   // localStorage 键名
   const SIDEBAR_WIDTH_KEY = 'ridge-sidebar-width';
   const SIDEBAR_COLLAPSED_KEY = 'ridge-sidebar-collapsed';
+  const AGENT_SIDEBAR_MIN_WIDTH = 360;
 
   // 侧边栏宽度状态（用于可拖拽调整大小）
   let sidebarWidth = $state(288); // 默认 w-72 = 288px
@@ -1734,7 +1735,7 @@ function expandSidebar(minWidth = 0) {
       onclick={() => {
         if (!teammateEnabled) setSetting('teammateEnabled', true);
         sidebarTab = 'agents';
-        expandSidebar(288);
+        expandSidebar(AGENT_SIDEBAR_MIN_WIDTH);
       }}
     >
       <Bot class="h-5 w-5" />
@@ -1821,9 +1822,13 @@ function expandSidebar(minWidth = 0) {
           </div>
           <div class="flex-1 min-h-0 overflow-hidden">
             {#if $activeSharedWorkspaceProjection}
-              <SharedWorkspaceResourcePanel mode="git" />
+              {#await loadSharedWorkspaceResourcePanel() then module}
+                <module.default mode="git" />
+              {/await}
             {:else}
-              <SourceControl />
+              {#await loadSourceControl() then module}
+                <module.default />
+              {/await}
             {/if}
           </div>
         </div>
@@ -1834,9 +1839,13 @@ function expandSidebar(minWidth = 0) {
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'search' ? '' : 'hidden'}">
           <div class="flex-1 min-h-0 overflow-hidden">
             {#if $activeSharedWorkspaceProjection}
-              <SharedWorkspaceResourcePanel mode="search" />
+              {#await loadSharedWorkspaceResourcePanel() then module}
+                <module.default mode="search" />
+              {/await}
             {:else}
-              <SearchSidebar active={sidebarTab === 'search'} />
+              {#await loadSearchSidebar() then module}
+                <module.default active={sidebarTab === 'search'} />
+              {/await}
             {/if}
           </div>
         </div>
@@ -1845,7 +1854,9 @@ function expandSidebar(minWidth = 0) {
         <!-- Remote tab -->
         {#if !webRemote && sidebarVisited.has('remote')}
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'remote' ? '' : 'hidden'}">
-          <RemotePanel />
+          {#await loadRemotePanel() then module}
+            <module.default />
+          {/await}
         </div>
         {/if}
 
@@ -1853,9 +1864,13 @@ function expandSidebar(minWidth = 0) {
         {#if (teammateEnabled || $activeSharedWorkspaceProjection) && sidebarVisited.has('agents')}
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'agents' ? '' : 'hidden'}">
           {#if $activeSharedWorkspaceProjection}
-            <SharedWorkspaceResourcePanel mode="team" />
+            {#await loadSharedWorkspaceResourcePanel() then module}
+              <module.default mode="team" />
+            {/await}
           {:else}
-            <AgentCenterPanel workspaceId={$activeWorkspaceId} />
+            {#await loadAgentCenterPanel() then module}
+              <module.default workspaceId={$activeWorkspaceId} />
+            {/await}
           {/if}
         </div>
         {/if}
@@ -1863,7 +1878,9 @@ function expandSidebar(minWidth = 0) {
         <!-- 接入 tab：本机无头、远端 ridge/rdg、跨账号共享工作区。 -->
         {#if sidebarVisited.has('hosts')}
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'hosts' ? '' : 'hidden'}">
-          <HostsPanel />
+          {#await loadHostsPanel() then module}
+            <module.default />
+          {/await}
         </div>
         {/if}
 
@@ -1878,7 +1895,9 @@ function expandSidebar(minWidth = 0) {
           </div>
           <div class="flex-1 min-h-0 overflow-hidden">
             {#if $activeSharedWorkspaceProjection}
-              <SharedWorkspaceResourcePanel mode="files" />
+              {#await loadSharedWorkspaceResourcePanel() then module}
+                <module.default mode="files" />
+              {/await}
             {:else if $activeWorkspaceId}
               <Explorer workspaceId={$activeWorkspaceId} onShare={handleTabShare} />
             {:else}
@@ -2201,7 +2220,11 @@ function expandSidebar(minWidth = 0) {
     <div
       class="relative flex-1 min-h-0 min-w-0 overflow-hidden flex flex-row bg-[var(--rg-bg-raised)]"
     >
-      <SharedWorkspaceSurface />
+      {#if $activeSharedWorkspaceProjection}
+        {#await loadSharedWorkspaceSurface() then module}
+          <module.default />
+        {/await}
+      {/if}
       <div class="relative flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
         {#if $activeWorkspaceId && hasPaneLayout}
           {#each $workspacesList as ws (ws.id)}

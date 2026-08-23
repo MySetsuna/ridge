@@ -1,33 +1,34 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const SETTINGS_MODULE_URL = '/src/lib/stores/settings.ts';
+const requestedBootTimeout = Number(process.env.RIDGE_E2E_BOOT_TIMEOUT_MS);
+const BOOT_TIMEOUT_MS = Number.isFinite(requestedBootTimeout) && requestedBootTimeout >= 5_000
+  ? requestedBootTimeout
+  : 30_000;
 
 async function bootSpa(page: Page, teammateEnabled: boolean): Promise<void> {
   await page.addInitScript((enabled) => {
     localStorage.setItem('ridge-settings', JSON.stringify({ teammateEnabled: enabled }));
   }, teammateEnabled);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    await page.goto('/?e2e=1');
-    await page.waitForLoadState('domcontentloaded');
-    await page.waitForFunction(
-      () => {
-        const loader = document.getElementById('brand-loader');
-        return !loader || getComputedStyle(loader).display === 'none';
-      },
-      null,
-      { timeout: 6_000 },
-    );
-    // Cold Vite dependency optimization can reload after the splash disappears.
-    // The rail is the first stable hydrated contract; one bounded reload absorbs it.
-    try {
-      await expect(
-        page.getByRole('complementary', { name: 'Primary navigation' }),
-      ).toBeVisible({ timeout: 6_000 });
-      return;
-    } catch (error) {
-      if (attempt === 1) throw error;
-    }
+  try {
+    await page.goto('/?e2e=1', { waitUntil: 'domcontentloaded' });
+  } catch (error) {
+    // A cold Vite optimize pass reloads the page and aborts the original
+    // navigation. The browser is already following that reload; a second goto
+    // races it and can keep the app blank indefinitely.
+    if (!String(error).includes('net::ERR_ABORTED')) throw error;
   }
+  await expect(
+    page.getByRole('complementary', { name: 'Primary navigation' }),
+  ).toBeVisible({ timeout: BOOT_TIMEOUT_MS });
+  await page.waitForFunction(
+    () => {
+      const loader = document.getElementById('brand-loader');
+      return !loader || getComputedStyle(loader).display === 'none';
+    },
+    null,
+    { timeout: BOOT_TIMEOUT_MS },
+  );
 }
 
 async function setTeammateEnabled(page: Page, enabled: boolean): Promise<void> {
@@ -50,6 +51,8 @@ test.describe("Agent's Commune visibility", () => {
 
     const panel = page.getByTestId('commune-panel');
     await expect(panel).toBeVisible();
+    await expect.poll(() => panel.evaluate((element) => element.getBoundingClientRect().width))
+      .toBeGreaterThanOrEqual(360);
     await expect(panel).toContainText("Agent's Commune");
     await expect(panel).toContainText('暂无成员');
     await expect.poll(() => page.evaluate(() => {

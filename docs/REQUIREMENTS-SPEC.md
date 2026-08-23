@@ -1177,22 +1177,24 @@
 ### REQ-NLM-ITERATION-01 · NLM 愿景与未修复问题迭代闭环
 
 - Approval evidence:`批准`
-- Status:`ACTIVE`
+- Status:`RETIRED`
 - Version:`v1`
 - Behavior:`从 NLM 对话/愿景提取候选项，经本地代码、CodeGraph、运行测试核验后，逐项完成已批准的实现与 bug 修复；当前范围覆盖 pane、ridge-term、workspace、Remote 接入及其测试/质量工作流。`
 - Boundary:`NLM transcript 仅作候选假设，不作需求或验收；保留当前 dirty worktree；不写入/删除/上传 NLM source/note；不执行 git push、tag、Release、Remote/Cloud 激活；不代替用户完成物理设备、公网 TURN、双真实窗口等用户轨验证；现有 Active REQ、协议/E2EE/TOTP 与发布授权闸不擅改。`
 - Acceptance:`request/intake 通过 requirements_gate；每个实现项有对应 CodeGraph trace、测试命令与退出码；全量测试/check、Sonar 新问题为 0/Quality Gate OK、适用 E2E 通过；未满足项进入本地下一轮证据清单。`
 - Traceability:`REQ-NLM-ITERATION-01 → NLM read-only candidate → local symbol/path → unit/integration/E2E evidence → iteration archive`
+- Retirement:`2026-08-23 用户要求退役 NotebookLM 迭代；后续语义变更由 specs/、changes/ 与 CodeGraph/运行测试闭环。`
 
 ### REQ-NLM-CLOSURE-20260809 · 现场验收与下一轮 NLM 愿景闭环
 
 - Approval evidence:`用户明确要求将 Sonar 测试覆盖率提升到 80% 以上并纳入下一迭代目标。`
-- Status:`ACTIVE`
+- Status:`RETIRED`
 - Version:`v1`
 - Behavior:`闭环 Cloud/Postgres 真实 E2E、物理 DPR 验收、Windows 跨卷权限现场、移动端新 profile 问题与 Sonar 覆盖率基线；随后从 NotebookLM 来源、Note、近期及新发起对话提取下一批候选愿景/bug，经本地代码与运行证据核验后落地，并完成对应测试与质量流程。`
 - Boundary:`不执行 git push、tag、Release、Remote/Cloud 发布或激活；不向 NotebookLM 写入/删除/上传 source/note；保留用户既有 dirty worktree；真实现场项必须有运行产物或明确阻塞证据，不以单测替代物理验收。`
 - Acceptance:`request/intake 与 requirements_gate 通过；Cloud/Postgres、DPR、跨卷权限、mobile profile、Sonar baseline 各有匹配的运行/扫描证据；下一批 NLM 候选有来源或明确无来源记录、CodeGraph trace、实现 diff、目标测试；全量测试/check、CodeGraph 复核、Sonar 复扫与迭代归档完成。
 - Traceability:`REQ-NLM-CLOSURE-20260809 → local intake → NLM read-only candidate → runtime/CodeGraph evidence → implementation → test/quality evidence → iteration archive`
+- Retirement:`2026-08-23 随 NLM 工作流退役；未完成现场项转由 L3-REMOTE-SMOOTHNESS-001 及现场验收闸追踪。`
 
 ### REQ-SCM-GIT-SCAN-DEPTH-01 · Git discovery hard cap
 

@@ -23,7 +23,9 @@ const TTL: Duration = Duration::from_millis(500);
 /// 沿进程树向下找 agent 的最大深度，覆盖 shell → 包装器 → agent 本体。
 const MAX_DEPTH: usize = 6;
 
-type ScanCache = Option<(Instant, Vec<(Uuid, u32)>, Vec<PaneAgent>)>;
+type ProcessSnapshotRow = (u32, Option<u32>, String, Vec<String>, Option<String>);
+type ProcessSnapshot = Vec<ProcessSnapshotRow>;
+type ScanCache = Option<(Instant, ProcessSnapshot)>;
 /// 与 `scan_cached` / `invalidate_cache` 共享，覆盖 processNames 后必须清空。
 static SCAN_CACHE: Mutex<ScanCache> = Mutex::new(None);
 
@@ -227,25 +229,36 @@ fn agent_session_id_from_command(argv: &[String]) -> Option<String> {
 
 /// TTL 缓存的真实扫描：一次进程表刷新 → 对本次传入的 pane 集合做匹配。
 ///
-/// 缓存键含 pane 集合，pane 增删（split/close）会立即失效重扫，不会因为窗口内
-/// 复用而漏掉新 pane。
+/// 全局进程快照按 TTL 复用；pane 增删只重做内存匹配，无需重扫宿主进程表。
 pub fn scan_cached(panes: &[(Uuid, u32)]) -> Vec<PaneAgent> {
     if panes.is_empty() {
         return Vec::new();
     }
-    let mut key = panes.to_vec();
-    key.sort();
-    let mut guard = SCAN_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, cached_key, cached)) = guard.as_ref() {
-        if at.elapsed() < TTL && cached_key == &key {
-            return cached.clone();
-        }
-    }
     let overrides = super::agent_catalog::load_profile_overrides();
     let names = super::discover::known_agent_names_runtime(&overrides);
-    let found = match_agent_panes_with_commands(panes, &list_processes(), &names);
-    *guard = Some((Instant::now(), key, found.clone()));
-    found
+    let mut guard = SCAN_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    use_process_snapshot(&mut guard, Instant::now(), list_processes, |processes| {
+        match_agent_panes_with_commands(panes, processes, &names)
+    })
+}
+
+/// Cache the expensive host-wide process table, not one workspace's match.
+/// Different workspaces commonly refresh in the same 250 ms activity burst;
+/// keying this cache by their pane lists would force one sysinfo scan per
+/// workspace and defeat the intended shared TTL.
+fn use_process_snapshot<T>(
+    cache: &mut ScanCache,
+    now: Instant,
+    load: impl FnOnce() -> ProcessSnapshot,
+    consume: impl FnOnce(&ProcessSnapshot) -> T,
+) -> T {
+    let stale = cache
+        .as_ref()
+        .is_none_or(|(at, _)| now.saturating_duration_since(*at) >= TTL);
+    if stale {
+        *cache = Some((now, load()));
+    }
+    consume(&cache.as_ref().expect("process snapshot initialized").1)
 }
 
 /// 设置覆盖变更后丢弃 TTL，下一轮轮询立刻按新 processNames 识别。
@@ -256,7 +269,7 @@ pub fn invalidate_cache() {
 
 /// 进程内枚举 (pid, ppid, image name, argv, cwd)。仅刷新进程表、命令行与 cwd，
 /// 不取 CPU/内存/exe 路径；同一轮仍只建一份全局快照。
-fn list_processes() -> Vec<(u32, Option<u32>, String, Vec<String>, Option<String>)> {
+fn list_processes() -> ProcessSnapshot {
     use sysinfo::{ProcessRefreshKind, RefreshKind, System, UpdateKind};
     let sys = System::new_with_specifics(
         RefreshKind::new().with_processes(
@@ -286,9 +299,51 @@ fn list_processes() -> Vec<(u32, Option<u32>, String, Vec<String>, Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     fn ws_pane(n: u8) -> Uuid {
         Uuid::from_bytes([n; 16])
+    }
+
+    #[test]
+    fn process_snapshot_cache_is_shared_across_workspace_queries() {
+        let now = Instant::now();
+        let loads = Cell::new(0);
+        let mut cache = None;
+        let load = || {
+            loads.set(loads.get() + 1);
+            vec![(100, None, "pwsh.exe".into(), vec![], None)]
+        };
+
+        assert_eq!(use_process_snapshot(&mut cache, now, load, Vec::len), 1);
+        assert_eq!(
+            use_process_snapshot(
+                &mut cache,
+                now + TTL / 2,
+                || {
+                    loads.set(loads.get() + 1);
+                    vec![]
+                },
+                |processes| processes[0].0,
+            ),
+            100,
+        );
+        assert_eq!(
+            loads.get(),
+            1,
+            "different pane queries must reuse one host scan"
+        );
+
+        let _ = use_process_snapshot(
+            &mut cache,
+            now + TTL,
+            || {
+                loads.set(loads.get() + 1);
+                vec![]
+            },
+            Vec::len,
+        );
+        assert_eq!(loads.get(), 2, "expired snapshots must refresh");
     }
 
     #[test]

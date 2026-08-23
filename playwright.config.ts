@@ -21,9 +21,12 @@ process.env.NO_PROXY = [process.env.NO_PROXY, 'localhost,127.0.0.1,::1']
   .filter(Boolean)
   .join(',');
 
+const e2ePort = process.env.RIDGE_E2E_PORT || '5173';
+const e2eOrigin = `http://127.0.0.1:${e2ePort}`;
+
 export default defineConfig({
   testDir: './tests/e2e',
-  timeout: 30_000,
+  timeout: 60_000,
   expect: { timeout: 5_000 },
   // Smoke tier is small and shares a single webServer. Parallel workers race
   // each other on hydration timing of the dev server; serial is deterministic
@@ -36,15 +39,20 @@ export default defineConfig({
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
   ],
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: e2eOrigin,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
   },
   webServer: {
-    command: 'pnpm dev',
-    url: 'http://localhost:5173',
-    reuseExistingServer: !process.env.CI,
+    command: `pnpm exec vite dev --host 127.0.0.1 --port ${e2ePort} --strictPort`,
+    // Probe only server readiness. The tests own full-page boot assertions;
+    // probing `/` here duplicates the entire cold SSR compile before a page
+    // even exists and misreports app failures as webServer timeouts.
+    url: `${e2eOrigin}/@vite/client`,
+    // Opt in only when the caller owns that server. Blind reuse can test an
+    // unrelated Vite app already listening on the common development port.
+    reuseExistingServer: process.env.RIDGE_E2E_REUSE_SERVER === '1',
     timeout: 120_000,
     stdout: 'pipe',
     stderr: 'pipe',

@@ -95,11 +95,16 @@
     }
     stopConnection?.();
     stopConnection = null;
-    for (const timer of feedResyncTimers.values()) clearTimeout(timer);
-    feedResyncTimers.clear();
-    feedResyncPending.clear();
+    const ownedPanes = [...attachedPanes.values()];
+    for (const pane of ownedPanes) releasePaneRuntime(pane);
+    void detachPaneKernels(ownedPanes);
+    ws.pruneOutputs(new Set());
+    clearAllFeedResync();
     paneFeedScheduler.dispose();
     pendingRawFrames.clear();
+    paneSwitchPerf.clear();
+    replayedPanes.clear();
+    attachedPanes.clear();
     scrollbackDecoder.dispose();
   });
   const workspacesQuery = createQuery(() => ({
@@ -442,6 +447,19 @@
   const feedResyncPending = new Set<string>();
   const feedResyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  function clearFeedResync(key: string): void {
+    const timer = feedResyncTimers.get(key);
+    if (timer !== undefined) clearTimeout(timer);
+    feedResyncTimers.delete(key);
+    feedResyncPending.delete(key);
+  }
+
+  function clearAllFeedResync(): void {
+    for (const timer of feedResyncTimers.values()) clearTimeout(timer);
+    feedResyncTimers.clear();
+    feedResyncPending.clear();
+  }
+
   function requestFeedResync(key: string): void {
     if (feedResyncPending.has(key)) return;
     const separator = key.indexOf(':');
@@ -451,6 +469,7 @@
     if (!pane || wsState !== 'connected') return;
     feedResyncPending.add(key);
     queueMicrotask(() => {
+      if (!remoteAppAlive || !feedResyncPending.has(key)) return;
       try {
         ws.resyncPane?.(pane);
       } finally {
@@ -490,7 +509,18 @@
     onDrop: (key) => requestFeedResync(key),
   });
 
-  // Free the kernels of truly-closed panes. Dynamic import keeps the (large)
+  function releasePaneRuntime(pane: PaneRef): void {
+    const key = paneRefKey(pane);
+    attachedPanes.delete(key);
+    paneFeedScheduler.clear(key);
+    pendingRawFrames.drop(key);
+    paneSwitchPerf.delete(key);
+    replayedPanes.delete(key);
+    clearFeedResync(key);
+    canvasRef?.clearPendingFeed(key);
+  }
+
+  // Free kernels no longer owned by this Remote view. Dynamic import keeps the (large)
   // manager out of the mobile entry bundle — the lazy TerminalCanvas already
   // loaded it by the time any pane exists, so this resolves instantly.
   async function detachPaneKernels(refs: PaneRef[]) {
@@ -558,14 +588,13 @@
   function pruneDeadPanes(activeWsId: string, liveIds: string[]) {
     const live = new Set(liveIds);
     const dead: PaneRef[] = [];
-    for (const [key, pane] of attachedPanes) {
+    for (const pane of attachedPanes.values()) {
       if (pane.workspaceId === activeWsId && !live.has(pane.paneId)) {
         dead.push(pane);
-        attachedPanes.delete(key);
       }
     }
     if (dead.length > 0) {
-      for (const pane of dead) paneFeedScheduler.clear(paneRefKey(pane));
+      for (const pane of dead) releasePaneRuntime(pane);
       void detachPaneKernels(dead);
       ws.pruneOutputs(new Set(attachedPanes.keys()));
     }
@@ -577,14 +606,13 @@
   function pruneCachesForClosedWorkspaces(liveWorkspaceIds: string[]) {
     const liveWs = new Set(liveWorkspaceIds);
     const dead: PaneRef[] = [];
-    for (const [key, pane] of attachedPanes) {
+    for (const pane of attachedPanes.values()) {
       if (!liveWs.has(pane.workspaceId)) {
         dead.push(pane);
-        attachedPanes.delete(key);
       }
     }
     if (dead.length > 0) {
-      for (const pane of dead) paneFeedScheduler.clear(paneRefKey(pane));
+      for (const pane of dead) releasePaneRuntime(pane);
       void detachPaneKernels(dead);
       ws.pruneOutputs(new Set(attachedPanes.keys()));
     }
@@ -956,6 +984,7 @@
     // at the 80x24 default. The host's replay is absorbed by the alive kernel.
     stops.push(ws.onReconnect(() => {
       const pid = ui.activePaneId;
+      clearAllFeedResync();
       paneFeedScheduler.clearAll();
       pendingRawFrames.clear();
       // §keep-alive after reconnect: a disconnect leaves a gap in every mirror kernel,
