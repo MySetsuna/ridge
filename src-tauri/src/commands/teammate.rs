@@ -547,6 +547,9 @@ fn inject_identity_fields(
 const RECENT_TAIL_BYTES: usize = 6 * 1024;
 /// 输出流水号/PTY 标题多久没动就算「空闲」。前端由 PTY 输出事件触发快照，超时后自清醒。
 const ACTIVE_WINDOW_MS: u128 = 12_000;
+type RosterSignalKey = (Uuid, Uuid);
+type RosterSignalSeen =
+    std::collections::HashMap<RosterSignalKey, (u64, String, std::time::Instant)>;
 
 /// seq 或 OSC 标题变化都算 busy；两者都稳过窗口才 idle。进程仍活不算 working。
 pub(crate) fn roster_activity(
@@ -569,30 +572,28 @@ pub(crate) fn roster_activity(
 /// - `recentOutput`：scrollback 末尾剥 ANSI 后的最后几行（「最近回复」直接可见，
 ///   免去每个成员一次额外 IPC —— 手机端尤其吃这份省）。
 fn inject_roster_runtime(topology: &mut Value, state: &AppState, wid: Uuid) {
-    use std::collections::HashMap;
     use std::sync::Mutex;
-    use std::time::Instant;
-    /// pane → (流水号, OSC 标题, 二者同时稳定的起始时刻)。进程内，无需持久化。
-    static SEEN: Mutex<Option<HashMap<Uuid, (u64, String, Instant)>>> = Mutex::new(None);
+    /// (workspace, pane) → (流水号, OSC 标题, 二者同时稳定的起始时刻)。
+    static SEEN: Mutex<Option<RosterSignalSeen>> = Mutex::new(None);
 
     let Some(roster) = topology.get_mut("roster").and_then(|r| r.as_array_mut()) else {
         return;
     };
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
-    let seen = seen.get_or_insert_with(HashMap::new);
+    let seen = seen.get_or_insert_with(RosterSignalSeen::new);
     for entry in roster.iter_mut() {
         update_runtime_entry(entry, state, wid, seen);
     }
-    // 已消失的 pane 不再累积。
+    // 仅清本工作区已消失的 pane；另一工作区的并发快照不得逐出其稳定计时。
     let live = live_roster_panes(topology);
-    seen.retain(|p, _| live.contains(p));
+    retain_workspace_roster_signals(seen, wid, &live);
 }
 
 fn update_runtime_entry(
     entry: &mut Value,
     state: &AppState,
     workspace_id: Uuid,
-    seen: &mut std::collections::HashMap<Uuid, (u64, String, std::time::Instant)>,
+    seen: &mut RosterSignalSeen,
 ) {
     let Some(pane) = entry
         .get("paneId")
@@ -607,16 +608,14 @@ fn update_runtime_entry(
         .unwrap_or("")
         .to_string();
     let chunk = state.get_pty_scrollback_tail(workspace_id, pane, RECENT_TAIL_BYTES);
-    let now = std::time::Instant::now();
-    let (since, changed) = match seen.get(&pane) {
-        Some((sequence, prev_title, at)) if *sequence == chunk.head_seq && prev_title == &title => {
-            (at.elapsed().as_millis(), false)
-        }
-        _ => {
-            seen.insert(pane, (chunk.head_seq, title, now));
-            (0, true)
-        }
-    };
+    let (since, changed) = observe_roster_signal(
+        seen,
+        workspace_id,
+        pane,
+        chunk.head_seq,
+        &title,
+        std::time::Instant::now(),
+    );
     let Some(object) = entry.as_object_mut() else {
         return;
     };
@@ -627,6 +626,36 @@ fn update_runtime_entry(
     );
     object.insert("outputSeq".into(), json!(chunk.head_seq));
     object.insert("recentOutput".into(), json!(tail_lines(&chunk.bytes, 6)));
+}
+
+fn observe_roster_signal(
+    seen: &mut RosterSignalSeen,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    sequence: u64,
+    title: &str,
+    now: std::time::Instant,
+) -> (u128, bool) {
+    let key = (workspace_id, pane_id);
+    match seen.get(&key) {
+        Some((previous_sequence, previous_title, at))
+            if *previous_sequence == sequence && previous_title == title =>
+        {
+            (now.saturating_duration_since(*at).as_millis(), false)
+        }
+        _ => {
+            seen.insert(key, (sequence, title.to_string(), now));
+            (0, true)
+        }
+    }
+}
+
+fn retain_workspace_roster_signals(
+    seen: &mut RosterSignalSeen,
+    workspace_id: Uuid,
+    live_panes: &std::collections::HashSet<Uuid>,
+) {
+    seen.retain(|(owner, pane), _| *owner != workspace_id || live_panes.contains(pane));
 }
 
 fn live_roster_panes(topology: &Value) -> std::collections::HashSet<Uuid> {
@@ -1148,6 +1177,96 @@ mod tests {
         assert_eq!(super::roster_activity(false, false, 11_999), "working");
         // Frozen title + idle seq past the window ⇒ idle.
         assert_eq!(super::roster_activity(false, false, 12_000), "idle");
+    }
+
+    #[test]
+    fn roster_signal_stability_is_isolated_per_workspace() {
+        let ws_a = Uuid::new_v4();
+        let ws_b = Uuid::new_v4();
+        let pane_a = Uuid::new_v4();
+        let pane_b = Uuid::new_v4();
+        let now = std::time::Instant::now();
+        let mut seen = RosterSignalSeen::new();
+
+        assert_eq!(
+            observe_roster_signal(&mut seen, ws_a, pane_a, 1, "thinking", now),
+            (0, true)
+        );
+        assert_eq!(
+            observe_roster_signal(&mut seen, ws_b, pane_b, 8, "working", now),
+            (0, true)
+        );
+        assert_eq!(
+            observe_roster_signal(
+                &mut seen,
+                ws_a,
+                pane_a,
+                1,
+                "thinking",
+                now + std::time::Duration::from_millis(12_000),
+            ),
+            (12_000, false),
+        );
+
+        retain_workspace_roster_signals(
+            &mut seen,
+            ws_a,
+            &std::collections::HashSet::from([pane_a]),
+        );
+        assert!(
+            seen.contains_key(&(ws_b, pane_b)),
+            "refreshing ws-a must retain ws-b timing"
+        );
+
+        retain_workspace_roster_signals(&mut seen, ws_a, &std::collections::HashSet::new());
+        assert!(!seen.contains_key(&(ws_a, pane_a)));
+        assert!(seen.contains_key(&(ws_b, pane_b)));
+    }
+
+    #[test]
+    fn roster_signal_title_or_output_change_restarts_idle_window() {
+        let workspace = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let now = std::time::Instant::now();
+        let mut seen = RosterSignalSeen::new();
+
+        assert_eq!(
+            observe_roster_signal(&mut seen, workspace, pane, 1, "thinking", now),
+            (0, true)
+        );
+        assert_eq!(
+            observe_roster_signal(
+                &mut seen,
+                workspace,
+                pane,
+                1,
+                "thinking",
+                now + std::time::Duration::from_millis(12_000),
+            ),
+            (12_000, false),
+        );
+        assert_eq!(
+            observe_roster_signal(
+                &mut seen,
+                workspace,
+                pane,
+                1,
+                "tool call",
+                now + std::time::Duration::from_millis(13_000),
+            ),
+            (0, true),
+        );
+        assert_eq!(
+            observe_roster_signal(
+                &mut seen,
+                workspace,
+                pane,
+                2,
+                "tool call",
+                now + std::time::Duration::from_millis(26_000),
+            ),
+            (0, true),
+        );
     }
 
     #[test]

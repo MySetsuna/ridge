@@ -58,6 +58,16 @@ export class PaneSwitchBuffer {
     return { frames, needsResync: this.overflowed.delete(key) };
   }
 
+  /** Forget one retired pane without disturbing other in-flight switches. */
+  drop(key: string): void {
+    const frames = this.frames.get(key);
+    if (frames) {
+      for (const frame of frames) this.retainedBytes -= frame.byteLength;
+      this.frames.delete(key);
+    }
+    this.overflowed.delete(key);
+  }
+
   clear(): void {
     this.frames.clear();
     this.overflowed.clear();

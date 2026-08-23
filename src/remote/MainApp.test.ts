@@ -24,4 +24,21 @@ describe('remote Agent attention monitor', () => {
     expect(source).toContain('paneFeedScheduler.setActive(subscriptionKey);');
     expect(source).toContain('paneFeedScheduler.clearAll();');
   });
+
+  it('releases every pane-owned queue, timer, trace, transport, and kernel', () => {
+    const start = source.indexOf('function releasePaneRuntime');
+    const end = source.indexOf('\n  }\n\n  // Free kernels', start);
+    const release = source.slice(start, end);
+    expect(release).toContain('attachedPanes.delete(key);');
+    expect(release).toContain('paneFeedScheduler.clear(key);');
+    expect(release).toContain('pendingRawFrames.drop(key);');
+    expect(release).toContain('paneSwitchPerf.delete(key);');
+    expect(release).toContain('replayedPanes.delete(key);');
+    expect(release).toContain('clearFeedResync(key);');
+    expect(release).toContain('canvasRef?.clearPendingFeed(key);');
+    expect(source).toContain('if (!remoteAppAlive || !feedResyncPending.has(key)) return;');
+    expect(source).toContain('for (const pane of ownedPanes) releasePaneRuntime(pane);');
+    expect(source).toContain('ws.pruneOutputs(new Set());');
+    expect(source).toContain('void detachPaneKernels(ownedPanes);');
+  });
 });

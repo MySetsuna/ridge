@@ -5,7 +5,12 @@ const source = readFileSync(new URL('./SplitContainer.svelte', import.meta.url),
 const paneSource = readFileSync(new URL('./RidgePane.svelte', import.meta.url), 'utf8');
 const communeSource = readFileSync(new URL('../teammate/AgentCenterPanel.svelte', import.meta.url), 'utf8');
 const highlightSource = readFileSync(new URL('../teammate/agentPaneHighlightSync.ts', import.meta.url), 'utf8');
+const highlightComponentSource = readFileSync(
+  new URL('../teammate/AgentPaneHighlightSync.svelte', import.meta.url),
+  'utf8',
+);
 const memberSource = readFileSync(new URL('../teammate/AgentMemberRow.svelte', import.meta.url), 'utf8');
+const pageSource = readFileSync(new URL('../../routes/+page.svelte', import.meta.url), 'utf8');
 
 describe('desktop Pane Agent border contract', () => {
   it('scopes Git polling to the active workspace', () => {
@@ -56,12 +61,39 @@ describe('desktop Pane Agent border contract', () => {
   });
 
   it('only arms idle attention after a working-to-idle transition', () => {
-    expect(communeSource).toContain('syncAgentPaneHighlight');
+    expect(communeSource).toContain('refreshAgentPaneHighlight');
+    expect(communeSource).toContain('agentTopologyStore');
     expect(communeSource).toContain('sortMembersBySessionId');
     expect(communeSource).toContain('resume_agent_session');
     expect(communeSource).not.toContain('launch_agent_session');
     expect(highlightSource).toContain('latchAgentAttention');
     expect(highlightSource).toContain('get(agentPaneAttentionStore)[key]');
     expect(highlightSource).not.toContain('setAgentPaneAttention(oldWorkspaceId, oldPaneId, null)');
+  });
+
+  it('rechecks activity expiry and keeps the latest reply primary', () => {
+    expect(highlightComponentSource).toContain('AGENT_ACTIVITY_EXPIRY_MS');
+    expect(highlightComponentSource).toContain('expiryTimers');
+    expect(highlightComponentSource).toContain('schedule([workspaceId])');
+    expect(highlightComponentSource).toContain("typeof event?.workspaceId === 'string'");
+    expect(highlightComponentSource).toContain('disposed = true');
+    expect(memberSource).toContain('min-h-52');
+    expect(memberSource).toContain('text-[15px]');
+    expect(memberSource).toContain('aria-label="最近回复"');
+    expect(memberSource).toContain('aria-live="polite"');
+    expect(memberSource).not.toContain('answerOpen');
+    expect(pageSource).toContain('const AGENT_SIDEBAR_MIN_WIDTH = 360');
+    expect(pageSource).toContain('expandSidebar(AGENT_SIDEBAR_MIN_WIDTH)');
+  });
+
+  it('keeps routine topology refresh in the global data plane', () => {
+    const refreshNow = communeSource.slice(
+      communeSource.indexOf('async function refreshNow'),
+      communeSource.indexOf('async function refreshSharedState'),
+    );
+    expect(refreshNow).not.toContain('refreshAgentPaneHighlight');
+    expect(communeSource).toContain('async function refreshSharedState');
+    expect(highlightComponentSource).toContain('rosterChanged');
+    expect(highlightComponentSource).toContain("emit('teammate-layout-changed'");
   });
 });

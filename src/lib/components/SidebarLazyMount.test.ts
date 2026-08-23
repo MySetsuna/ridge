@@ -18,6 +18,26 @@ describe('desktop sidebar mount guards', () => {
     expect(pageSource).toContain("sidebarTab === 'files' ? '' : 'hidden'");
   });
 
+  it('code-splits hidden heavy panels until their visit or projection gate opens', () => {
+    for (const loader of [
+      'loadSourceControl',
+      'loadSearchSidebar',
+      'loadRemotePanel',
+      'loadAgentCenterPanel',
+      'loadHostsPanel',
+      'loadSharedWorkspaceSurface',
+      'loadSharedWorkspaceResourcePanel',
+    ]) {
+      expect(pageSource).toContain(`{#await ${loader}() then module}`);
+    }
+    expect(pageSource).not.toContain("import SourceControl from '$lib/components/SourceControl.svelte'");
+    expect(pageSource).not.toContain("import AgentCenterPanel from '$lib/teammate/AgentCenterPanel.svelte'");
+    expect(pageSource).not.toContain("import SharedWorkspaceSurface from '$lib/components/hosts/SharedWorkspaceSurface.svelte'");
+    expect(pageSource).toMatch(
+      /\{#if \$activeSharedWorkspaceProjection\}\s*\{#await loadSharedWorkspaceSurface\(\) then module\}/,
+    );
+  });
+
   it('starts pane highlight sync when teammate is enabled without visiting the Agent tab', () => {
     expect(pageSource).toContain("import AgentPaneHighlightSync from '$lib/teammate/AgentPaneHighlightSync.svelte'");
     expect(pageSource).toContain('{#if teammateEnabled}');

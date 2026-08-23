@@ -31,4 +31,17 @@ describe('PaneSwitchBuffer', () => {
     );
     expect(drained.needsResync).toBe(true);
   });
+
+  it('drops one retired pane including its overflow marker and byte accounting', () => {
+    const buffer = new PaneSwitchBuffer(3);
+    buffer.enqueue('ws:retired', new Uint8Array([1, 2]));
+    buffer.enqueue('ws:retired', new Uint8Array([3, 4]));
+    buffer.enqueue('ws:live', new Uint8Array([5]));
+
+    buffer.drop('ws:retired');
+
+    expect(buffer.bytes).toBe(1);
+    expect(buffer.drain('ws:retired')).toEqual({ frames: [], needsResync: false });
+    expect([...buffer.drain('ws:live').frames[0]]).toEqual([5]);
+  });
 });

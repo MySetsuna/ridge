@@ -12,6 +12,17 @@
       "type": "stdio",
       "command": "ridge-mcp",
       "args": []
+    },
+    "spectree": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "--no-install",
+        "@jackjiang18/spectree",
+        "mcp-stdio",
+        "--root",
+        "C:\\code\\wind"
+      ]
     }
   }
 }
