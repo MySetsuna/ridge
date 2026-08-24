@@ -3,7 +3,7 @@ import type { HostTopologyLink } from './hostForest';
 
 const { feed } = vi.hoisted(() => ({ feed: vi.fn() }));
 vi.mock('@ridge/remote/shared/terminal/manager', () => ({
-  TerminalManager: { instance: vi.fn(() => ({ feed })) },
+  TerminalManager: { instance: vi.fn(() => ({ feed, enqueueFeed: feed })) },
 }));
 
 import {

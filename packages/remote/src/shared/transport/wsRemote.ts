@@ -653,6 +653,8 @@ export class RemoteConnection implements RemoteLink {
   private readonly scrollbackCursor = new Map<string, { oldestSeq: number; atOldest: boolean }>();
   /** Binary pane frames carry paneId; bind them to an explicit composite ref. */
   private readonly paneRefs = new Map<string, PaneRef>();
+  /** Reverse index keeps binary PTY dispatch O(1) in the number of refs. */
+  private readonly paneKeysById = new Map<string, Set<string>>();
   // 正在拉取更旧历史的 pane（去重快速连续的滚顶加载）。
   private readonly fetchingOlder = new Set<string>();
 
@@ -677,6 +679,31 @@ export class RemoteConnection implements RemoteLink {
     this.capabilityListeners.add(fn);
     fn();
     return () => this.capabilityListeners.delete(fn);
+  }
+
+  private _setPaneRef(pane: PaneRef): void {
+    const key = paneRefKey(pane);
+    if (this.paneRefs.has(key)) {
+      this.paneRefs.set(key, pane);
+      return;
+    }
+    this.paneRefs.set(key, pane);
+    let keys = this.paneKeysById.get(pane.paneId);
+    if (!keys) {
+      keys = new Set<string>();
+      this.paneKeysById.set(pane.paneId, keys);
+    }
+    keys.add(key);
+  }
+
+  private _deletePaneRef(key: string): void {
+    const pane = this.paneRefs.get(key);
+    if (!pane) return;
+    this.paneRefs.delete(key);
+    const keys = this.paneKeysById.get(pane.paneId);
+    if (!keys) return;
+    keys.delete(key);
+    if (keys.size === 0) this.paneKeysById.delete(pane.paneId);
   }
 
   private notifyCapabilitiesChanged() {
@@ -895,8 +922,11 @@ export class RemoteConnection implements RemoteLink {
         firstPtyBytesMs: p.connectStart != null ? Math.round(now - p.connectStart) : null,
       });
     }
-    const matches = Array.from(this.paneRefs.values()).filter((pane) => pane.paneId === paneId);
-    if (matches.length === 1) this.rawByteListeners.forEach((fn) => fn(matches[0], rawBytes));
+    const keys = this.paneKeysById.get(paneId);
+    if (keys?.size !== 1) return;
+    const key = keys.values().next().value as string | undefined;
+    const pane = key ? this.paneRefs.get(key) : undefined;
+    if (pane) this.rawByteListeners.forEach((fn) => fn(pane, rawBytes));
   }
 
   private _handlePtyEvent(msg: WsMessage, type: string, rec: Record<string, unknown>): boolean {
@@ -1166,7 +1196,7 @@ export class RemoteConnection implements RemoteLink {
       if (!liveIds.has(id)) this.paneOutputs.delete(id);
     }
     for (const [key, pane] of this.paneRefs) {
-      if (!liveIds.has(paneRefKey(pane))) this.paneRefs.delete(key);
+      if (!liveIds.has(paneRefKey(pane))) this._deletePaneRef(key);
     }
   }
 
@@ -1365,7 +1395,7 @@ export class RemoteConnection implements RemoteLink {
     const { paneId, workspaceId } = pane;
     if (!paneId || !workspaceId) return;
     const msg: Record<string, unknown> = { type: 'subscribe-pane', paneId, workspaceId };
-    this.paneRefs.set(paneRefKey(pane), pane);
+    this._setPaneRef(pane);
     if (opts?.resume) msg.resume = true;
     if (opts?.sinceSeq !== undefined) msg.sinceSeq = opts.sinceSeq;
     if (opts?.active !== undefined) msg.active = opts.active;
@@ -1834,7 +1864,7 @@ export class RemoteConnection implements RemoteLink {
     const closed = (data as Record<string, unknown>).success === true;
     if (closed) {
       this.paneOutputs.delete(key);
-      this.paneRefs.delete(key);
+      this._deletePaneRef(key);
       this.scrollbackCursor.delete(key);
       this.fetchingOlder.delete(key);
     }
@@ -1907,6 +1937,7 @@ export class RemoteConnection implements RemoteLink {
     // transport re-seeds from the host's next `scrollback-meta`.
     this.scrollbackCursor.clear();
     this.paneRefs.clear();
+    this.paneKeysById.clear();
     this.fetchingOlder.clear();
   }
 

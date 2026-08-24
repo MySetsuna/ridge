@@ -206,6 +206,10 @@ pub struct WebGpuPaneBackend {
     /// `draw_row` / `draw_cursor` / `draw_*_overlay` push, `end_frame`
     /// uploads via `queue.write_buffer` and forwards to host.
     pending_instances: Vec<CellInstance>,
+    /// Same-frame glyph admission cache. The shared atlas remains the source
+    /// of truth; this only avoids repeating RefCell/HashMap lookups for a
+    /// glyph repeated across rows in one pane frame.
+    glyph_frame_cache: std::collections::HashMap<GlyphKey, Option<GlyphEntry>>,
     /// Visible kernel rows redrawn in this pane frame. Used only to restore
     /// wallpaper pixels beneath transparent default cells before cell draws.
     damaged_rows: Vec<u32>,
@@ -371,6 +375,7 @@ impl WebGpuPaneBackend {
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             bind_group,
             pending_instances: Vec::with_capacity(INITIAL_INSTANCE_CAPACITY as usize),
+            glyph_frame_cache: std::collections::HashMap::new(),
             damaged_rows: Vec::new(),
             frame_pinned,
             metrics: FrameMetrics {
@@ -537,6 +542,7 @@ impl WebGpuPaneBackend {
         self.metrics = metrics;
         self.theme = theme.clone();
         self.pending_instances.clear();
+        self.glyph_frame_cache.clear();
         self.damaged_rows.clear();
 
         // Compute slot dims from current metrics BEFORE taking ctx
@@ -631,9 +637,7 @@ impl WebGpuPaneBackend {
         let (pixel_y, pixel_y_bot) = self.row_pixel_bounds(row_idx);
         let row_h_int = pixel_y_bot - pixel_y;
         let tui_mode = self.metrics.tui_mode;
-        let theme = self.theme.clone();
-
-        let mut row_bg_instances: Vec<CellInstance> = Vec::new();
+        let theme = &self.theme;
 
         // Consume tracking: columns consumed by a preceding wide cell's
         // grid allocation have their bg covered — we skip them to
@@ -659,21 +663,25 @@ impl WebGpuPaneBackend {
             let pixel_x_right = ((col + cell_span) as f32 * cell_w + 0.5).floor();
             let cell_w_px = pixel_x_right - pixel_x;
 
-            row_bg_instances.push(CellInstance {
-                cell_xy: [pixel_x, pixel_y],
-                cell_size: [cell_w_px, row_h_int],
-                atlas_uv: [0.0, 0.0, 0.0, 0.0],
-                atlas_layer: 0,
-                fg_rgba: rgba_u8_to_f32(fg),
-                bg_rgba: rgba_u8_to_f32(bg),
-                is_color: 0,
-            });
+            // Normal shell default backgrounds are transparent: the damaged
+            // row was already repaired by SurfaceHost, so emitting one quad
+            // per cell only burns CPU and instance bandwidth.
+            if tui_mode || bg[3] != 0 {
+                self.pending_instances.push(CellInstance {
+                    cell_xy: [pixel_x, pixel_y],
+                    cell_size: [cell_w_px, row_h_int],
+                    atlas_uv: [0.0, 0.0, 0.0, 0.0],
+                    atlas_layer: 0,
+                    fg_rgba: rgba_u8_to_f32(fg),
+                    bg_rgba: rgba_u8_to_f32(bg),
+                    is_color: 0,
+                });
+            }
 
             if render_path == RenderPath::Slow && cell_span > 1 {
                 consume_until = col + cell_span;
             }
         }
-        self.pending_instances.append(&mut row_bg_instances);
     }
 
     fn admit_glyph(
@@ -684,12 +692,7 @@ impl WebGpuPaneBackend {
     ) -> Option<GlyphEntry> {
         let mut ctx = self.ctx.borrow_mut();
         let entry = match ctx.atlas.lookup(&key) {
-            Some(entry) => {
-                if (entry.layer as usize) < ctx.frame_written.len() {
-                    ctx.frame_written[entry.layer as usize] = true;
-                }
-                Some(entry)
-            }
+            Some(entry) => Some(entry),
             None => ctx
                 .rasterize_and_admit(
                     key,
@@ -701,7 +704,31 @@ impl WebGpuPaneBackend {
                 .ok(),
         }?;
         self.frame_pinned[entry.layer as usize] = true;
+        if (entry.layer as usize) < ctx.frame_written.len() {
+            ctx.frame_written[entry.layer as usize] = true;
+        }
         Some(entry)
+    }
+
+    fn admit_cached_glyph(
+        &mut self,
+        key: GlyphKey,
+        glyph_text: &str,
+        style_flags: u8,
+    ) -> Option<GlyphEntry> {
+        if let Some(entry) = self.glyph_frame_cache.get(&key).copied() {
+            if let Some(entry) = entry {
+                self.frame_pinned[entry.layer as usize] = true;
+                let mut ctx = self.ctx.borrow_mut();
+                if (entry.layer as usize) < ctx.frame_written.len() {
+                    ctx.frame_written[entry.layer as usize] = true;
+                }
+            }
+            return entry;
+        }
+        let entry = self.admit_glyph(key, glyph_text, style_flags);
+        self.glyph_frame_cache.insert(key, entry);
+        entry
     }
 
     fn should_skip_cell(cell: &crate::term::cell::Cell) -> bool {
@@ -771,9 +798,8 @@ impl WebGpuPaneBackend {
         let (pixel_y, pixel_y_bot) = self.row_pixel_bounds(row_idx);
         let row_h_int = pixel_y_bot - pixel_y;
         let tui_mode = self.metrics.tui_mode;
-        let theme = self.theme.clone();
-
-        let mut row_glyph_instances: Vec<CellInstance> = Vec::new();
+        let theme = &self.theme;
+        let (font_family_hash, font_size_q) = self.font_key();
 
         let render_path = scan_line_path(row.cells, row.clusters);
 
@@ -807,7 +833,7 @@ impl WebGpuPaneBackend {
             // this before atlas admission so a browser glyph-source failure
             // cannot turn a deterministic line into a blank/missing-glyph path.
             let drawn_procedurally = append_procedural_glyph(
-                &mut row_glyph_instances,
+                &mut self.pending_instances,
                 glyph_text,
                 fg,
                 pixel_x,
@@ -820,15 +846,6 @@ impl WebGpuPaneBackend {
                 continue;
             }
 
-            let (font_family_hash, font_size_q) = {
-                let ctx = self.ctx.borrow();
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                std::hash::Hash::hash(&ctx.font_family, &mut h);
-                (
-                    std::hash::Hasher::finish(&h),
-                    (ctx.font_size_px * 100.0).round() as u16,
-                )
-            };
             let style_flags = Self::glyph_style_flags(attrs.flags);
             let glyph_id = glyph_id_for(cluster_text, cell.ch);
             let key = GlyphKey::new(
@@ -838,9 +855,9 @@ impl WebGpuPaneBackend {
                 style_flags,
                 self.metrics.dpr * ATLAS_SUPERSAMPLE as f32,
             );
-            let entry = self.admit_glyph(key, glyph_text, style_flags);
+            let entry = self.admit_cached_glyph(key, glyph_text, style_flags);
             Self::append_atlas_glyph(
-                &mut row_glyph_instances,
+                &mut self.pending_instances,
                 entry,
                 pixel_x,
                 pixel_y,
@@ -850,7 +867,6 @@ impl WebGpuPaneBackend {
                 fg,
             );
         }
-        self.pending_instances.append(&mut row_glyph_instances);
     }
 
     fn draw_cursor(&mut self, cursor: &CursorDraw, _attrs_table: &AttrTable) {

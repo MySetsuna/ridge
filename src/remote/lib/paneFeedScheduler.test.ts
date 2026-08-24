@@ -128,6 +128,28 @@ describe('PaneFeedScheduler', () => {
     expect(scheduler.queuedBytes('background')).toBe(2);
   });
 
+  it('rotates background panes instead of starving later splits', () => {
+    const delivered: string[] = [];
+    const scheduler = new PaneFeedScheduler((key) => {
+      delivered.push(key);
+      return { accepted: true };
+    }, {
+      maxBytesPerFrame: 2,
+      stepBytes: 2,
+      schedule: () => {},
+    });
+
+    scheduler.enqueue('active', new Uint8Array([1, 2]));
+    scheduler.setActive('active');
+    for (let index = 0; index < 4; index += 1) {
+      scheduler.enqueue(`split-${index}`, new Uint8Array([index, index + 1]));
+    }
+
+    for (let turn = 0; turn < 5; turn += 1) scheduler.drainNow();
+
+    expect(delivered).toEqual(['active', 'split-0', 'split-1', 'split-2', 'split-3']);
+  });
+
   it('drops oldest bytes at the per-pane cap and reports resync pressure', () => {
     const dropped = vi.fn();
     const scheduler = new PaneFeedScheduler(() => ({ accepted: true }), {

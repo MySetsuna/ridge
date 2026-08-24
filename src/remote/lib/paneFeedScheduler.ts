@@ -52,6 +52,9 @@ export class PaneFeedScheduler {
   private readonly cancelFrame: (handle: unknown) => void;
   private readonly onDrop?: (paneKey: string, bytes: number) => void;
   private readonly queues = new Map<string, FeedQueue>();
+  private paneOrder: string[] = [];
+  private paneOrderKnown = new Set<string>();
+  private paneOrderCursor = 0;
   private activePaneKey: string | null = null;
   private scheduled = false;
   private scheduledHandle: unknown = null;
@@ -101,6 +104,10 @@ export class PaneFeedScheduler {
     if (!queue) {
       queue = { frames: [], bytes: 0 };
       this.queues.set(paneKey, queue);
+      if (!this.paneOrderKnown.has(paneKey)) {
+        this.paneOrderKnown.add(paneKey);
+        this.paneOrder.push(paneKey);
+      }
     }
     let frame = bytes.slice(Math.max(0, bytes.byteLength - this.maxBytesPerPane));
     if (frame.byteLength < bytes.byteLength) {
@@ -140,6 +147,7 @@ export class PaneFeedScheduler {
       if (delivered < 0) break;
       processed += delivered;
     }
+    this.compactPaneOrder();
     if (this.hasQueued()) this.schedule();
   }
 
@@ -193,6 +201,7 @@ export class PaneFeedScheduler {
 
   clear(paneKey: string): void {
     this.queues.delete(paneKey);
+    this.compactPaneOrder();
     if (!this.hasQueued()) {
       this.scheduled = false;
       this.cancelScheduledFrame();
@@ -201,6 +210,9 @@ export class PaneFeedScheduler {
 
   clearAll(): void {
     this.queues.clear();
+    this.paneOrder = [];
+    this.paneOrderKnown.clear();
+    this.paneOrderCursor = 0;
     this.scheduled = false;
     this.cancelScheduledFrame();
   }
@@ -209,6 +221,9 @@ export class PaneFeedScheduler {
     this.disposed = true;
     this.scheduled = false;
     this.queues.clear();
+    this.paneOrder = [];
+    this.paneOrderKnown.clear();
+    this.paneOrderCursor = 0;
     this.cancelScheduledFrame();
   }
 
@@ -241,18 +256,38 @@ export class PaneFeedScheduler {
   }
 
   private nextPaneKey(): string | null {
-    const active = this.activePaneKey;
-    if (active && (this.queues.get(active)?.bytes ?? 0) > 0) return active;
-    for (const [key, queue] of this.queues) {
-      if (queue.bytes > 0) return key;
+    return this.nextReadyPane(false);
+  }
+
+  private nextNonActivePaneKey(): string | null {
+    return this.nextReadyPane(true);
+  }
+
+  /** Keep background output round-robin across RAF turns. A Map scan from its
+   * insertion point lets the first noisy pane consume every frame and starve
+   * later split panes indefinitely. */
+  private nextReadyPane(skipActive: boolean): string | null {
+    const count = this.paneOrder.length;
+    if (count === 0) return null;
+    const start = this.paneOrderCursor % count;
+    for (let step = 0; step < count; step += 1) {
+      const index = (start + step) % count;
+      const key = this.paneOrder[index];
+      if (skipActive && key === this.activePaneKey) continue;
+      if ((this.queues.get(key)?.bytes ?? 0) <= 0) continue;
+      this.paneOrderCursor = (index + 1) % count;
+      return key;
     }
     return null;
   }
 
-  private nextNonActivePaneKey(): string | null {
-    for (const [key, queue] of this.queues) {
-      if (key !== this.activePaneKey && queue.bytes > 0) return key;
-    }
-    return null;
+  private compactPaneOrder(): void {
+    if (this.paneOrder.length <= this.queues.size * 2 + 64) return;
+    const live = new Set(this.queues.keys());
+    this.paneOrder = this.paneOrder.filter((key) => live.has(key));
+    this.paneOrderKnown = live;
+    this.paneOrderCursor = this.paneOrder.length === 0
+      ? 0
+      : this.paneOrderCursor % this.paneOrder.length;
   }
 }
