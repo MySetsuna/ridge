@@ -129,10 +129,16 @@
     resume?: { executable: string; argv: string[]; cwd: string; sessionId: string };
   }
   let recentReplies = $state<AgentRecentReply[]>([]);
+  const HISTORY_PAGE_SIZE = 100;
   let wakingSession = $state('');
   /** One resume plan/PTY launch per history session; double taps must not split two panes. */
   let resumeBusy = $state('');
   let historyExpanded = $state<Record<string, boolean>>({});
+  let historySearch = $state('');
+  let historyOffset = 0;
+  let historyHasMore = $state(false);
+  let historyLoadingMore = $state(false);
+  let historySearchTimer: ReturnType<typeof setTimeout> | undefined;
   /** 恢复时以 YOLO 模式启动（按 agent 配置表注入 yolo 参数）。 */
   let resumeYolo = $state(false);
   const recentReplyGroups = $derived(buildAgentHistoryGroups(recentReplies));
@@ -181,7 +187,7 @@
   });
 
   function toggleHistoryGroup(key: string): void {
-    historyExpanded = { ...historyExpanded, [key]: !(historyExpanded[key] ?? true) };
+    historyExpanded = { ...historyExpanded, [key]: !(historyExpanded[key] ?? false) };
   }
 
   function statusForReply(reply: AgentRecentReply): AgentCardStatus {
@@ -217,10 +223,15 @@
     if (historyRefreshInFlight) return historyRefreshInFlight;
     historyRefreshInFlight = (async () => {
       try {
-        recentReplies = await invoke<AgentRecentReply[]>('read_agent_recent_replies', {
+        const page = await invoke<AgentRecentReply[]>('read_agent_recent_replies', {
           projectPaths: [],
-          limit: 100,
+          limit: HISTORY_PAGE_SIZE,
+          offset: 0,
+          query: historySearch.trim(),
         });
+        recentReplies = Array.isArray(page) ? page : [];
+        historyOffset = recentReplies.length;
+        historyHasMore = recentReplies.length === HISTORY_PAGE_SIZE;
         historyLoadedAt = Date.now();
       } catch {
         // Keep the last good JSONL snapshot; PTY tail is not an answer fallback.
@@ -229,6 +240,39 @@
       }
     })();
     return historyRefreshInFlight;
+  }
+
+  async function loadMoreHistory(): Promise<void> {
+    if (!historyHasMore || historyLoadingMore || historyRefreshInFlight) return;
+    historyLoadingMore = true;
+    try {
+      const page = await invoke<AgentRecentReply[]>('read_agent_recent_replies', {
+        projectPaths: [],
+        limit: HISTORY_PAGE_SIZE,
+        offset: historyOffset,
+        query: historySearch.trim(),
+      });
+      const rows = Array.isArray(page) ? page : [];
+      const existing = new Set(recentReplies.map((reply) => `${reply.agent}:${reply.sessionId}:${reply.timestamp}`));
+      const next = rows.filter(
+        (reply) => !existing.has(`${reply.agent}:${reply.sessionId}:${reply.timestamp}`),
+      );
+      recentReplies = [...recentReplies, ...next];
+      historyOffset += rows.length;
+      historyHasMore = rows.length === HISTORY_PAGE_SIZE;
+    } catch {
+      // Keep already loaded pages usable when an incremental read fails.
+    } finally {
+      historyLoadingMore = false;
+    }
+  }
+
+  function scheduleHistorySearch(): void {
+    if (historySearchTimer) clearTimeout(historySearchTimer);
+    historySearchTimer = setTimeout(() => {
+      historySearchTimer = undefined;
+      void refreshRecentReplies(true);
+    }, 220);
   }
 
   function canResume(reply: AgentRecentReply): boolean {
@@ -603,6 +647,7 @@
     return () => {
       if (refreshTimer) clearTimeout(refreshTimer);
       if (historyRefreshTimer) clearTimeout(historyRefreshTimer);
+      if (historySearchTimer) clearTimeout(historySearchTimer);
       unTrip.then((f) => f()).catch(() => {});
       unJoin.then((f) => f()).catch(() => {});
       unLayout.then((f) => f()).catch(() => {});
@@ -752,6 +797,19 @@
     {/snippet}
 
     {#snippet historyContent()}
+    <div class="flex items-center gap-2 rounded-md border border-[var(--rg-border)] bg-[var(--rg-bg)]/35 px-2 py-1.5">
+      <input
+        type="search"
+        value={historySearch}
+        placeholder="搜索 agent、session 或内容"
+        aria-label="搜索 Agent 历史会话"
+        oninput={(event) => {
+          historySearch = event.currentTarget.value;
+          scheduleHistorySearch();
+        }}
+        class="min-w-0 flex-1 bg-transparent text-[12px] text-[var(--rg-fg)] outline-none placeholder:text-[var(--rg-fg-muted)]"
+      />
+    </div>
     {#if unmatchedHeadlessSessions.length > 0}
       <section>
         <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
@@ -820,11 +878,11 @@
                       ? 'bg-red-500/15 text-red-300'
                       : 'bg-[var(--rg-surface)] text-[var(--rg-fg-muted)]'}">{agentStatusLabel(groupStatus)}</span>
                 <span class="font-mono text-[11px] text-[var(--rg-fg-muted)]">{group.replies.length}</span>
-                <span class="ml-auto text-[var(--rg-fg-muted)]">{historyExpanded[group.key] ?? true ? '−' : '+'}</span>
+                <span class="ml-auto text-[var(--rg-fg-muted)]">{historyExpanded[group.key] ?? false ? '−' : '+'}</span>
               </button>
-              {#if historyExpanded[group.key] ?? true}
+              {#if historyExpanded[group.key] ?? false}
                 <ul class="space-y-2 px-2 pb-2">
-                  {#each group.replies.slice(0, 12) as reply (reply.agent + ':' + reply.sessionId)}
+                  {#each group.replies as reply (reply.agent + ':' + reply.sessionId + ':' + reply.timestamp)}
                     {@const runningMember = runningMemberFor(reply)}
                     {#if runningMember}
                       {@const m = runningMember.profile}
@@ -871,7 +929,15 @@
             </section>
           {/each}
         </div>
-      </section>
+    </section>
+    {/if}
+    {#if historyHasMore}
+      <button
+        type="button"
+        disabled={historyLoadingMore}
+        onclick={() => void loadMoreHistory()}
+        class="self-center rounded-md border border-[var(--rg-border)] px-3 py-1.5 text-[11px] text-[var(--rg-accent)] disabled:opacity-50"
+      >{historyLoadingMore ? '加载中…' : '加载更多历史'}</button>
     {/if}
     <p class="px-1.5 py-1 text-[9px] text-[var(--rg-fg-muted)]">
       识别/恢复以设置 → 智能体 → Agent 启动表为准（内置 claude/codex/grok…，可增改进程名与 YOLO 参数）。

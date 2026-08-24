@@ -67,7 +67,14 @@
   // 成员 / 编组 / 历史三视图；核心监控徽章 + 待审批始终在子 Tab 之上。
   let subTab = $state<'members' | 'groups' | 'history'>('members');
   let history = $state<AgentHistoryReply[]>([]);
+  const HISTORY_PAGE_SIZE = 100;
   let historyLoadedAt = 0;
+  let historyOffset = 0;
+  let historyHasMore = $state(false);
+  let historyLoadingMore = $state(false);
+  let historySearch = $state('');
+  let historySearchTimer: ReturnType<typeof setTimeout> | undefined;
+  let historyExpanded = $state<Record<string, boolean>>({});
   let historyUnavailable = false;
   let resumeBusy = $state<string | null>(null);
   let historyNote = $state('');
@@ -86,12 +93,24 @@
   /** Previous live status; completion attention is a working→idle edge. */
   let observedAgentStatuses = new Map<string, AgentPaneStatus>();
 
+  function toggleHistoryGroup(key: string): void {
+    historyExpanded = { ...historyExpanded, [key]: !(historyExpanded[key] ?? false) };
+  }
+
   function scheduleLiveRefresh(): void {
     if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
     liveRefreshTimer = setTimeout(() => {
       liveRefreshTimer = undefined;
       void startRefresh();
     }, 250);
+  }
+
+  function scheduleHistorySearch(): void {
+    if (historySearchTimer) clearTimeout(historySearchTimer);
+    historySearchTimer = setTimeout(() => {
+      historySearchTimer = undefined;
+      void startRefresh(true);
+    }, 220);
   }
 
   /** 防御式解析后端下发的编组条目（外部数据不信任；无 id 则丢弃）。 */
@@ -203,6 +222,29 @@
   /** 组员 agent_id → 花名册条目（供编组视图渲染名字 / 状态 / 组长冠）。 */
   function memberOf(agentId: string) {
     return topo.roster.find((m) => m.id === agentId);
+  }
+
+  function sessionSortKey(member: TeammateRosterMember | undefined, fallback: string): string {
+    return member?.sessionId?.trim() || member?.paneId || member?.id || fallback;
+  }
+
+  function sortedMemberIds(group: TeammateGroup): string[] {
+    return [...group.memberAgentIds].sort((left, right) => {
+      const bySession = sessionSortKey(memberOf(left), left)
+        .localeCompare(sessionSortKey(memberOf(right), right));
+      return bySession || left.localeCompare(right);
+    });
+  }
+
+  function sortedRosterMembers(members: readonly TeammateRosterMember[] = topo.roster): TeammateRosterMember[] {
+    return [...members].sort((left, right) => {
+      const bySession = sessionSortKey(left, left.id).localeCompare(sessionSortKey(right, right.id));
+      return bySession || left.id.localeCompare(right.id);
+    });
+  }
+
+  function sortedGroupCandidates(group: TeammateGroup): TeammateRosterMember[] {
+    return sortedRosterMembers(topo.roster.filter((m) => !group.memberAgentIds.includes(m.id)));
   }
 
   // iter-62：手机端也要能分别监控/干预每个 agent（此前只有一行只读名字）。
@@ -330,7 +372,15 @@
       const [snapshot, recent] = await Promise.all([
         fetchRemoteTeamRoster(ws, queryClient, sessionId, rosterWorkspaceId, signal),
         loadHistory
-          ? fetchRemoteAgentHistory(ws, queryClient, sessionId, 100, signal).catch(() => {
+          ? fetchRemoteAgentHistory(
+              ws,
+              queryClient,
+              sessionId,
+              HISTORY_PAGE_SIZE,
+              signal,
+              0,
+              historySearch.trim(),
+            ).catch(() => {
               if (!signal.aborted && scopeGuard.isCurrent(generation)) historyUnavailable = true;
               return null;
             })
@@ -352,6 +402,8 @@
       onAttentionChange?.(attentionEvents(t.roster, p));
       if (recent) {
         history = recent;
+        historyOffset = recent.length;
+        historyHasMore = recent.length === HISTORY_PAGE_SIZE;
         historyLoadedAt = Date.now();
         historyUnavailable = false;
       }
@@ -365,10 +417,41 @@
     }
   }
 
+  async function loadMoreHistory(): Promise<void> {
+    if (!historyHasMore || historyLoadingMore || historyUnavailable) return;
+    const token = refreshToken;
+    historyLoadingMore = true;
+    try {
+      const page = await fetchRemoteAgentHistory(
+        ws,
+        queryClient,
+        remoteSessionId(ws),
+        HISTORY_PAGE_SIZE,
+        undefined,
+        historyOffset,
+        historySearch.trim(),
+      );
+      if (token !== refreshToken || disposed) return;
+      const existing = new Set(history.map((reply) => `${reply.agent}:${reply.sessionId}:${reply.timestamp}`));
+      const next = page.filter(
+        (reply) => !existing.has(`${reply.agent}:${reply.sessionId}:${reply.timestamp}`),
+      );
+      history = [...history, ...next];
+      historyOffset += page.length;
+      historyHasMore = page.length === HISTORY_PAGE_SIZE;
+    } catch {
+      // Keep the loaded history visible when an incremental page fails.
+    } finally {
+      historyLoadingMore = false;
+    }
+  }
+
   function startRefresh(resetScope = false): Promise<void> {
     if (disposed) return Promise.resolve();
     if (resetScope) {
       historyLoadedAt = 0;
+      historyOffset = 0;
+      historyHasMore = false;
       historyUnavailable = false;
       observedAgentStatuses.clear();
       onAttentionChange?.([]);
@@ -402,6 +485,7 @@
       scopeGuard.invalidate();
       refreshToken += 1;
       if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
+      if (historySearchTimer) clearTimeout(historySearchTimer);
       onAttentionChange?.([]);
       offMessage();
       offRaw();
@@ -458,7 +542,7 @@
     {#if topo.roster.length === 0}
       <p class="empty">{failed ? '—' : '本工作区暂无 agent'}</p>
     {:else}
-      {#each topo.roster as m (m.id)}
+      {#each sortedRosterMembers() as m (m.id)}
         {@render memberCard(m, topo.leaderId === m.id)}
       {/each}
     {/if}
@@ -524,7 +608,7 @@
           {#if g.memberAgentIds.length === 0}
             <p class="empty-group">空组</p>
           {:else}
-            {#each g.memberAgentIds as aid (aid)}
+            {#each sortedMemberIds(g) as aid (aid)}
               {@const m = memberOf(aid)}
               {#if m}
                 <div class="group-member">
@@ -547,7 +631,7 @@
               {/if}
             {/each}
           {/if}
-          {#each topo.roster.filter((m) => !g.memberAgentIds.includes(m.id)) as m (m.id)}
+          {#each sortedGroupCandidates(g) as m (m.id)}
             <button class="member-add" onclick={() => toggleMember(g, m.id)}>+ {m.name}</button>
           {/each}
         </div>
@@ -555,17 +639,31 @@
     {/if}
   {:else}
     <!-- 历史来自宿主真实会话文件；按 Agent 聚合，不按当前 cwd 丢弃。 -->
+    <div class="history-search">
+      <input
+        type="search"
+        value={historySearch}
+        placeholder="搜索 agent、session 或内容"
+        aria-label="搜索 Agent 历史会话"
+        oninput={(event) => {
+          historySearch = event.currentTarget.value;
+          scheduleHistorySearch();
+        }}
+      />
+    </div>
     {#if historyGroups.length === 0}
       <p class="empty">暂无 Agent 历史</p>
     {:else}
       {#if historyNote}<p class="note" role="status">{historyNote}</p>{/if}
       {#each historyGroups as group (group.key)}
         <section class="history-group">
-          <div class="group-head">
+          <button class="group-head history-toggle" type="button" onclick={() => toggleHistoryGroup(group.key)}>
             <span class="name">{group.agent}</span>
             <span class="role">{group.replies.length}</span>
-          </div>
-          {#each group.replies.slice(0, 12) as reply (reply.sessionId + ':' + reply.timestamp)}
+            <span class="role">{historyExpanded[group.key] ?? false ? '−' : '+'}</span>
+          </button>
+          {#if historyExpanded[group.key] ?? false}
+          {#each group.replies as reply (reply.sessionId + ':' + reply.timestamp)}
             <article class="history-item">
               <div class="history-head">
                 <div class="history-title" title={reply.title}>{reply.title || 'Agent reply'}</div>
@@ -584,8 +682,14 @@
               <p>{reply.text}</p>
             </article>
           {/each}
+          {/if}
         </section>
       {/each}
+      {#if historyHasMore}
+        <button class="history-more" type="button" disabled={historyLoadingMore} onclick={() => void loadMoreHistory()}>
+          {historyLoadingMore ? '加载中…' : '加载更多历史'}
+        </button>
+      {/if}
     {/if}
   {/if}
 </div>
@@ -734,6 +838,13 @@
   .member-add{display:block;width:calc(100% - 16px);margin:4px 8px 7px;padding:3px 6px;border:1px dashed var(--rg-border);border-radius:5px;background:transparent;color:var(--rg-fg-muted);font-size:10px;text-align:left;cursor:pointer}
   .member-add:active,.member-leader:active,.member-remove:active{color:var(--rg-accent)}
   .history-group{border:1px solid var(--rg-border);border-radius:8px;overflow:hidden;margin:2px 0}
+  .history-toggle{width:100%;border:0;background:transparent;color:var(--rg-fg);text-align:left;cursor:pointer}
+  .history-toggle:active{background:var(--rg-surface-2)}
+  .history-search{display:flex;margin:2px 0 6px;padding:5px 8px;border:1px solid var(--rg-border);border-radius:6px;background:var(--rg-bg)}
+  .history-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--rg-fg);font-size:12px}
+  .history-search input::placeholder{color:var(--rg-fg-muted)}
+  .history-more{display:block;margin:8px auto;padding:5px 10px;border:1px solid var(--rg-border);border-radius:6px;background:transparent;color:var(--rg-accent);font-size:11px;cursor:pointer}
+  .history-more:disabled{opacity:.5;cursor:default}
   .history-item{padding:7px 9px;border-top:1px solid var(--rg-border);font-size:11px;line-height:1.35}
   .history-head{display:flex;align-items:center;gap:6px;min-width:0}
   .history-title{font-weight:600;color:var(--rg-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

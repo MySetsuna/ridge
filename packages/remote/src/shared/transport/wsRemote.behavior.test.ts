@@ -98,14 +98,14 @@ describe('RemoteConnection public communication contract', () => {
 		conn.onMessage((message) => messages.push(message));
 		conn.onRawBytes((ref, bytes) => raw.push(`${ref.workspaceId}:${ref.paneId}:${bytes[0]}`));
 		conn.onMetadata((ref, title, cwd) => metadata.push([ref, title, cwd]));
-		conn.onPtyResize((ref, rows, cols) => resized.push([ref, rows, cols]));
+    conn.onPtyResize((ref, rows, cols, owner) => resized.push([ref, rows, cols, owner]));
 		conn.onTheme((colors, type) => themes.push([colors, type]));
 		const capabilityChanges = vi.fn();
 		conn.onCapabilitiesChanged(capabilityChanges);
 
 		ws.receive({ type: 'hello', capabilities: ['pane', 'fs'] });
 		ws.receive({ type: 'pty-meta', workspaceId: 'workspace-a', paneId: 'pane-a', title: 'Shell', cwd: 'C:/repo' });
-		ws.receive({ type: 'pty-resized', workspaceId: 'workspace-a', paneId: 'pane-a', rows: 24, cols: 80 });
+    ws.receive({ type: 'pty-resized', workspaceId: 'workspace-a', paneId: 'pane-a', rows: 24, cols: 80, owner: 'remote' });
 		ws.receive({ type: 'theme', id: 'dark', themeType: 'dark', colors: { background: '#000' } });
 		ws.receive({ type: 'output', workspaceId: 'workspace-a', paneId: 'pane-a', data: 'one\ntwo' });
 		ws.receive({ type: 'delta', workspaceId: 'workspace-a', paneId: 'pane-a', data: 'delta' });
@@ -125,7 +125,7 @@ describe('RemoteConnection public communication contract', () => {
 		expect(messages.map((message) => message.type)).toEqual(['hello', 'output', 'delta']);
 		expect(raw).toEqual([`workspace-a:${paneId}:7`]);
 		expect(metadata[0]).toEqual([{ workspaceId: 'workspace-a', paneId: 'pane-a' }, 'Shell', 'C:/repo']);
-		expect(resized[0]).toEqual([{ workspaceId: 'workspace-a', paneId: 'pane-a' }, 24, 80]);
+    expect(resized[0]).toEqual([{ workspaceId: 'workspace-a', paneId: 'pane-a' }, 24, 80, 'remote']);
 		expect(themes).toEqual([[{ background: '#000' }, 'dark']]);
 		expect(capabilityChanges).toHaveBeenCalledTimes(2);
 		conn.disconnect();

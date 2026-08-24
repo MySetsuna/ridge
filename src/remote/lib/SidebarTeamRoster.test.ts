@@ -82,4 +82,11 @@ describe('remote Agent drawer alignment contract', () => {
     expect(source).toContain('class:leader-active={g.leaderAgentId === aid}');
     expect(source).toContain('.member-actions{position:absolute');
   });
+
+  it('sorts group cards by session identity before pane/id fallbacks', () => {
+    expect(source).toContain('function sortedMemberIds(group: TeammateGroup): string[]');
+    expect(source).toContain('sessionSortKey(memberOf(left), left)');
+    expect(source).toContain('{#each sortedMemberIds(g) as aid (aid)}');
+    expect(source).toContain('function sortedGroupCandidates(group: TeammateGroup)');
+  });
 });

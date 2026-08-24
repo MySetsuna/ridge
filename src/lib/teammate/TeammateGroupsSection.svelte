@@ -28,6 +28,7 @@
     type TeammateGroup,
     type ResolvedGroupMember,
   } from './teammateGroups.svelte';
+  import { sortMembersBySessionId } from './agentCommuneModel';
 
   interface Props {
     /** 当前工作区的实时花名册（成员来源 + 失联对齐基准）。 */
@@ -85,15 +86,18 @@
 
   // 每组成员的失联对齐视图（roster 变化即重算）。
   const groupViews = $derived(
-    store.groups.map((g) => ({ group: g, members: resolveMembers(g.memberAgentIds, roster) }))
+    store.groups.map((g) => ({
+      group: g,
+      members: sortMembersBySessionId(resolveMembers(g.memberAgentIds, roster)),
+    }))
   );
 
   // 未分组：roster 中不属于任何编组的成员（入组后自动从这里消失）。全在线，无组长/不接任务。
   const ungrouped = $derived(
-    resolveMembers(
+    sortMembersBySessionId(resolveMembers(
       roster.filter((m) => !groupOfAgent(store.groups, m.id)).map((m) => m.id),
-      roster
-    )
+      roster,
+    ))
   );
 
   // ── 组卡片操作 ──

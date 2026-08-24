@@ -19,7 +19,7 @@
 //   - invoke(...)                 → bridge.invoke → rpc.request (allow-list gated)
 //   - register_pane_delta_channel → core.ts special-cases to bridge.subscribePane
 //                                   → 'subscribe-pane' notify → host streams 0x10 pane bytes
-//   - listen('pty-output-{ws}-{pane}') → bridge fans the pane bytes (decoded) here
+//   - listen('pty-output-{ws}-{pane}') → bridge fans the pane bytes here
 //
 // Auth/boot lives in App.svelte (cookie bootstrap → cloudControllerBoot → TOTP gate);
 // this class is constructed AFTER the bridge is connected + TOTP-verified, so invoke/
@@ -47,6 +47,7 @@ import {
   type RawByteListener,
   type MetaListener,
   type PtyResizeListener,
+  type PaneRenderOwner,
   type ThemeListener,
   type ThemeSnapshot,
   type TeammateTopology,
@@ -108,6 +109,7 @@ const REMOTE_OLDER_SCROLLBACK_BYTES = 64 * 1024;
  * discarded as stale instead of retaining unbounded output or blocking input.
  */
 const REMOTE_SEED_REPLAY_MAX_BYTES = 2 * 1024 * 1024;
+const PTY_ENCODER = new TextEncoder();
 
 // A transient listen/subscribe failure must not strand a Pane after the UI has
 // recorded its subscription intent. Keep retries bounded and cancel them on
@@ -151,6 +153,13 @@ interface LiveSeedState {
   pendingLive: Uint8Array[];
   pendingLiveBytes: number;
   seedReplayOverflow: boolean;
+}
+
+interface RawPtyEventPayload {
+  /** Compatibility fallback for older Tauri/event bridges. */
+  data?: string;
+  /** Exact bytes from the authenticated binary transport. */
+  bytes?: Uint8Array;
 }
 
 /** Flatten a host pane-tree to the mobile's flat leaf list (server.rs's downgrade). */
@@ -252,9 +261,7 @@ export class CloudRemoteConnection implements RemoteLink {
   private treeUnlisten: UnlistenFn | null = null;
   /** iter-60 G9：pane-meta-changed 退订句柄。 */
   private metaUnlisten: UnlistenFn | null = null;
-  // Per-pane decoders are unnecessary: the bridge already decodes bytes→string with a
-  // streaming TextDecoder; we re-encode here to feed the byte-oriented mobile canvas.
-  private readonly encoder = new TextEncoder();
+  private resizeUnlisten: UnlistenFn | null = null;
   private _lastTheme: ThemeSnapshot | null = null;
   // True once we've reached 'connected' at least once — gates reconnect handling
   // so the initial connect isn't treated as a reconnect.
@@ -408,6 +415,33 @@ export class CloudRemoteConnection implements RemoteLink {
       );
     } catch {
       /* non-fatal — layout-poll fallback below still refreshes meta */
+    }
+    try {
+      this.resizeUnlisten = await this.bridge.listen<{
+        workspaceId?: string;
+        paneId?: string;
+        rows?: number;
+        cols?: number;
+        owner?: PaneRenderOwner;
+      }>('pty-resized', (e) => {
+        const payload = e.payload;
+        if (!payload || typeof payload.paneId !== 'string') return;
+        const paneId = payload.paneId;
+        if (payload.workspaceId && payload.workspaceId !== this._activeWorkspaceId) return;
+        if (typeof payload.rows !== 'number' || typeof payload.cols !== 'number') return;
+        if (!Number.isFinite(payload.rows) || !Number.isFinite(payload.cols)) return;
+        this.resizeListeners.forEach((fn) => fn(
+          {
+            workspaceId: payload.workspaceId ?? this._activeWorkspaceId,
+            paneId,
+          },
+          payload.rows!,
+          payload.cols!,
+          payload.owner === 'remote' ? 'remote' : 'host',
+        ));
+      });
+    } catch {
+      /* non-fatal 鈥?manual refresh remains available when event forwarding is absent */
     }
     // Read the host's active theme so the mobile chrome + terminal match the desktop
     // (MainApp.onMount reads lastTheme() and applies it). Best-effort: an older host
@@ -577,8 +611,9 @@ export class CloudRemoteConnection implements RemoteLink {
     return () => this.metaListeners.delete(fn);
   }
   onPtyResize(fn: PtyResizeListener): () => void {
-    // The cloud host doesn't push host→controller pty-resized; the mobile drives
-    // its own size via resize_pane. Registered for parity; effectively unused.
+    // Host and controller both publish canonical pty-resized events over the
+    // bridge. The owner field identifies who initiated the refresh; receivers
+    // only apply the announced grid and do not echo it.
     this.resizeListeners.add(fn);
     return () => this.resizeListeners.delete(fn);
   }
@@ -706,7 +741,7 @@ export class CloudRemoteConnection implements RemoteLink {
         beforeSeq: cursor.oldestSeq,
         maxBytes: REMOTE_OLDER_SCROLLBACK_BYTES,
       });
-      const bytes = chunk.bytes ? this.encoder.encode(chunk.bytes) : new Uint8Array();
+      const bytes = chunk.bytes ? PTY_ENCODER.encode(chunk.bytes) : new Uint8Array();
       if (chunk.start_seq >= chunk.end_seq
           || chunk.end_seq !== cursor.oldestSeq
           || bytes.length === 0) {
@@ -765,10 +800,12 @@ export class CloudRemoteConnection implements RemoteLink {
 
   private listenPane(pane: PaneRef, key: string, state: LiveSeedState): Promise<UnlistenFn> | UnlistenFn {
     const { paneId, workspaceId } = pane;
-    return this.bridge.listen<{ data: string }>(
+    return this.bridge.listen<RawPtyEventPayload>(
       `pty-output-${workspaceId}-${paneId}`,
       (event) => {
-        const bytes = this.encoder.encode(event.payload?.data ?? '');
+        const bytes = event.payload?.bytes instanceof Uint8Array
+          ? event.payload.bytes
+          : PTY_ENCODER.encode(event.payload?.data ?? '');
         if (bytes.length) this.emitSeededLive(pane, key, state, bytes);
       },
     );
@@ -776,7 +813,7 @@ export class CloudRemoteConnection implements RemoteLink {
 
   private replaySeed(pane: PaneRef, state: LiveSeedState, frame: string): void {
     if (state.seedReplayOverflow) return;
-    this.emitRaw(pane, this.encoder.encode(frame));
+    this.emitRaw(pane, PTY_ENCODER.encode(frame));
     for (const bytes of state.pendingLive) this.emitRaw(pane, bytes);
     state.pendingLive.length = 0;
     state.pendingLiveBytes = 0;
@@ -970,18 +1007,33 @@ export class CloudRemoteConnection implements RemoteLink {
     });
   }
 
-  refreshPane(pane: PaneRef, rows: number, cols: number, _pixelWidth?: number, _pixelHeight?: number): void {
-    this._resize(pane, rows, cols);
+  refreshPane(
+    pane: PaneRef,
+    rows: number,
+    cols: number,
+    _pixelWidth?: number,
+    _pixelHeight?: number,
+    owner?: PaneRenderOwner,
+  ): void {
+    this._resize(pane, rows, cols, owner);
   }
-  claimPane(pane: PaneRef, rows: number, cols: number, _pixelWidth?: number, _pixelHeight?: number): void {
+  claimPane(
+    pane: PaneRef,
+    rows: number,
+    cols: number,
+    _pixelWidth?: number,
+    _pixelHeight?: number,
+    owner?: PaneRenderOwner,
+  ): void {
     this.paneScheduler.resume(pane);
-    this._resize(pane, rows, cols);
+    this._resize(pane, rows, cols, owner);
   }
-  private _resize(pane: PaneRef, rows: number, cols: number): void {
+  private _resize(pane: PaneRef, rows: number, cols: number, owner?: PaneRenderOwner): void {
     if (!pane.paneId || rows <= 0 || cols <= 0) return;
     const key = paneRefKey(pane);
     if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
-    if (this.paneScheduler.scheduleResize(pane, rows, cols, undefined, { force: true })) this._refreshSeq++;
+    const params = owner ? { owner } : undefined;
+    if (this.paneScheduler.scheduleResize(pane, rows, cols, params, { force: true })) this._refreshSeq++;
   }
   lastRefreshSeq(): number {
     return this._refreshSeq;
@@ -1134,10 +1186,12 @@ export class CloudRemoteConnection implements RemoteLink {
     });
   }
 
-  async listAgentHistory(limit = 24): Promise<AgentHistoryReply[]> {
+  async listAgentHistory(limit = 24, offset = 0, query = ''): Promise<AgentHistoryReply[]> {
     const result = await this.bridge.invoke<unknown>('read_agent_recent_replies', {
       projectPaths: [],
       limit: Math.max(1, Math.min(100, Math.floor(limit))),
+      offset: Math.max(0, Math.floor(offset)),
+      query: query.trim(),
     });
     return Array.isArray(result) ? result as AgentHistoryReply[] : [];
   }
@@ -1335,6 +1389,10 @@ export class CloudRemoteConnection implements RemoteLink {
     if (this.metaUnlisten) {
       try { this.metaUnlisten(); } catch { /* already gone */ }
       this.metaUnlisten = null;
+    }
+    if (this.resizeUnlisten) {
+      try { this.resizeUnlisten(); } catch { /* already gone */ }
+      this.resizeUnlisten = null;
     }
     // Tear down the WebRTC / E2EE session (idempotent).
     try { this.handle.disconnect(); } catch { /* already torn down */ }
