@@ -41,6 +41,11 @@ import { unknownText } from '../transport/unknownText';
  */
 type DeltaPayload = ArrayBuffer | Uint8Array | number[];
 
+type PtyOutputPayload = { data: string; bytes?: Uint8Array };
+
+const ptyTextEncoder = new TextEncoder();
+const ptyTextDecoder = new TextDecoder();
+
 interface Bridge {
 	outUnlisten: UnlistenFn;
 	closedUnlisten: UnlistenFn;
@@ -110,9 +115,12 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 
 	const manager = TerminalManager.instance();
 
-	const outUnlisten = await listen<{ data: string }>(
+	const outUnlisten = await listen<PtyOutputPayload>(
 		`pty-output-${workspaceId}-${paneId}`,
 		(e) => {
+			const bytes = e.payload.bytes instanceof Uint8Array
+				? e.payload.bytes
+				: ptyTextEncoder.encode(e.payload.data);
 			// §B.6 (2026-05-08) — opt-in PTY byte trace. When
 			// `localStorage.RIDGE_PTY_TRACE === '1'`, log every chunk
 			// the shell sends, formatted as the printable string +
@@ -126,8 +134,7 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 			if (typeof localStorage !== 'undefined') {
 				try {
 					if (localStorage.getItem('RIDGE_PTY_TRACE') === '1') {
-						const data = e.payload.data;
-						const bytes = new TextEncoder().encode(data);
+						const data = e.payload.data ?? ptyTextDecoder.decode(bytes);
 						const hex = Array.from(bytes)
 							.map((b) => b.toString(16).padStart(2, '0'))
 							.join(' ');
@@ -143,11 +150,11 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 					/* localStorage denied / SSR — silently skip */
 				}
 			}
-			// §P4 attribution — wrap the JSON-event-path feed so the
-			// `frame-time-attribution` spec can measure how much of a
-			// stressed frame the base64 + JSON-wrap path costs vs the
-			// binary Channel path below.
-			perfMark('rg.ptyText.feed', () => manager.feed(paneId, e.payload.data));
+			// Preserve the binary transport path through the browser shim. This
+			// avoids a UTF-8 decode/re-encode round trip and keeps arbitrary PTY
+			// bytes intact for the VTE parser.
+			// Keep the existing attribution label for dashboards and perf specs.
+			perfMark('rg.ptyText.feed', () => manager.feed(paneId, bytes));
 			// History popup close is driven by the user's Enter keystroke
 			// inside the active pane (RidgePane.dispatchBufferEvent 'clear'
 			// case) — NOT by `\n`/`\r` in PTY output. Per-byte detection

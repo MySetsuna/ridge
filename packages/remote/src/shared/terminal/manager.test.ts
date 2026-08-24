@@ -524,14 +524,30 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 
 	it('keeps TUI gates, IME anchors, redraw invalidation, and theme state coherent', async () => {
 		const { manager, fixture, internal } = makeManager();
+		const anchors: Array<{ row: number; col: number } | null> = [];
+		const unsubscribeIme = manager.onImeAnchor(PANE, (anchor) => anchors.push(anchor));
+		expect(anchors).toEqual([null]);
 		manager.markInputStart(PANE);
 		expect(manager.readShellInputSnapshot(PANE)).toEqual(expect.objectContaining({ text: 'A', cursorCol: 0 }));
 		expect(manager.inputAnchorCell(PANE)).toEqual({ row: 3, col: 4 });
 		expect(manager.inputAnchorResolved(PANE)).toMatchObject({ row: 3, col: 4, x: 40, y: 60 });
+		fixture.setAltScreen(true);
+		fixture.kernel.lastAbsCsiPosition.mockReturnValue({ row: 5, col: 6, atMs: Date.now() });
+		manager.beginImeComposition(PANE);
+		fixture.kernel.cursorRow.mockReturnValue(7);
+		fixture.kernel.cursorCol.mockReturnValue(8);
+		expect(manager.inputAnchorCell(PANE)).toEqual({ row: 3, col: 4 });
+		manager.endImeComposition(PANE);
+		expect(manager.inputAnchorCell(PANE)).toEqual({ row: 7, col: 8 });
+		expect(anchors.slice(-1)).toEqual([{ row: 7, col: 8 }]);
 		expect(manager.pixelPositionFromCell(PANE, 2, 3)).toMatchObject({ x: 30, y: 40 });
+		fixture.kernel.cursorRow.mockReturnValue(3);
+		fixture.kernel.cursorCol.mockReturnValue(4);
 		expect(manager.cursorPixelPosition(PANE)).toMatchObject({ x: 40, y: 60, fontSizePx: 14 });
 		manager.clearInputStart(PANE);
 		expect(manager.readShellInputSnapshot(PANE)).toBeNull();
+		expect(anchors.slice(-1)).toEqual([null]);
+		unsubscribeIme();
 
 		expect(manager.shouldAllowShellHistory(PANE)).toBe(true);
 		expect(manager.isMouseReporting(PANE)).toBe(false);
@@ -1019,6 +1035,21 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(internal.globalHost).toBeNull();
 	});
 
+	it('follows the live shell cursor but locks TUI composition to its start cell', () => {
+		const { manager, fixture } = makeManager();
+		fixture.kernel.cursorRow.mockReturnValue(3);
+		fixture.kernel.cursorCol.mockReturnValue(4);
+		manager.beginImeComposition(PANE);
+
+		fixture.kernel.cursorRow.mockReturnValue(9);
+		fixture.kernel.cursorCol.mockReturnValue(10);
+		expect(manager.inputAnchorCell(PANE)).toEqual({ row: 9, col: 10 });
+
+		fixture.setAltScreen(true);
+		expect(manager.inputAnchorCell(PANE)).toEqual({ row: 3, col: 4 });
+		manager.endImeComposition(PANE);
+	});
+
 	it('rejects invalid shell snapshots and resolves recent TUI cursor anchors', () => {
 		const { manager, fixture } = makeManager();
 		expect(manager.readShellInputSnapshot('missing')).toBeNull();
@@ -1480,6 +1511,22 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(host.beginFrame).toHaveBeenCalledOnce();
 		expect(host.endFrame).toHaveBeenCalledOnce();
 	});
+
+	it('backs off after a failed host frame instead of spinning RAF', async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager } = makeManager();
+			const startRaf = vi.spyOn(manager as any, 'startRafLoop').mockImplementation(() => undefined);
+			(manager as any)._scheduleNextFrame({ frameFailed: true }, vi.fn());
+			expect(startRaf).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(49);
+			expect(startRaf).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			expect(startRaf).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 describe('TerminalManager explicit claim remount', () => {
@@ -1502,6 +1549,20 @@ describe('TerminalManager explicit claim remount', () => {
 		expect(resizeHandler).toHaveBeenCalledTimes(1);
 		expect(resizeHandler).toHaveBeenCalledWith(20, 80, false, false);
 		expect(resizeHandler.mock.calls[0][0]).not.toBe(24);
+		expect(fixture.handle.invalidateAll).toHaveBeenCalled();
+	});
+
+	it('applies an external canonical grid without issuing a resize claim', () => {
+		const { manager, fixture } = makeManager();
+		const resizeHandler = vi.fn();
+		manager.onResize(PANE, resizeHandler);
+
+		manager.applyPaneResize(PANE, 31, 101);
+
+		expect(fixture.kernel.resize).toHaveBeenCalledWith(31, 101);
+		expect(fixture.pane.lastReportedRows).toBe(31);
+		expect(fixture.pane.lastReportedCols).toBe(101);
+		expect(resizeHandler).not.toHaveBeenCalled();
 		expect(fixture.handle.invalidateAll).toHaveBeenCalled();
 	});
 });

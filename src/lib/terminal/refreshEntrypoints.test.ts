@@ -33,7 +33,7 @@ describe('remote refresh entrypoints share one forced remount path', () => {
   });
 
   it('pty-resized recovery still consumes a full local redraw', () => {
-    expect(canvas).toContain('export function resizeKernel(_rows: number, _cols: number)');
+    expect(canvas).toContain('export function resizeKernel(rows: number, cols: number)');
     expect(canvas).toContain('manager.forceFullRedraw(paneId)');
     expect(mobileApp).toContain('canvasRef?.resizeKernel(rows, cols)');
   });

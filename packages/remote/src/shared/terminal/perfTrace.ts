@@ -13,7 +13,7 @@
  * lets us break apart the frame-time bottleneck into its real
  * contributors:
  *
- *   - `rg.ptyText.feed`     — base64+JSON event path (ptyBridge.ts)
+ *   - `rg.ptyText.feed`     — legacy PTY event path (raw bytes when available)
  *   - `rg.ptyDelta.apply`   — binary IPC channel path (ptyBridge.ts)
  *   - `rg.frame.tick`       — main-thread render loop (manager.ts)
  *
