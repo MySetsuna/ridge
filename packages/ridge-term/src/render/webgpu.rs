@@ -23,10 +23,9 @@
 //! 2. For each dirty pane, the renderer drives `begin_frame` /
 //!    `draw_row` / overlays / `end_frame` against THIS struct.
 //! 3. `end_frame` here uploads its uniform + instance buffer, then
-//!    invokes `host.record_pane(viewport, &pipeline, |pass| draw)` —
-//!    the host opens the render pass on its shared encoder, sets
-//!    viewport + scissor to clip the pane's draw to its rect on the
-//!    host canvas, and lets the closure record the actual draw call.
+//!    queues pane draw handles for the host's shared frame pass; the host
+//!    records viewport, scissor, bind group, vertex buffer, and draw calls
+//!    after all panes have uploaded their frame data.
 //! 4. JS calls `SurfaceHostHandle::endFrame()` after all panes; one
 //!    `queue.submit` + one `present` for the entire window.
 //!
@@ -209,10 +208,10 @@ pub struct WebGpuPaneBackend {
     /// separate borrows.
     ctx: Rc<RefCell<GpuContext>>,
     /// Shared swap-chain host. `end_frame` calls
-    /// `host.record_pane(viewport, &pipeline, |pass| draw)` so all panes
+    /// `host.queue_pane(viewport, ...)` so all panes
     /// composite into one render pass per frame on the global host
-    /// canvas. Never `borrow_mut`'d while `ctx` is borrowed (host's
-    /// `record_pane` itself takes a fresh `ctx.borrow()` inside).
+    /// canvas. The host takes its `ctx.borrow()` only when recording
+    /// that shared pass.
     host: Rc<RefCell<SurfaceHost>>,
     /// Last `ctx.atlas_generation` this pane built `bind_group` against.
     /// When `begin_frame` sees a higher value it rebuilds the bind
@@ -220,26 +219,26 @@ pub struct WebGpuPaneBackend {
     atlas_generation_seen: u64,
     /// Pane's rectangle on the host canvas in **device pixels**.
     /// `resize_surface` records the new value; `end_frame` passes it to
-    /// `host.record_pane` which sets viewport + scissor on the shared
+    /// `host.queue_pane` which sets viewport + scissor on the shared
     /// pass. Empty rects (`w == 0 || h == 0`) skip drawing entirely
     /// (parked-by-clip — pane dragged to zero width or off-canvas).
     viewport: ScissorRect,
     /// 16-byte uniform buffer holding `FrameUniform { viewport, _pad }`.
     /// Per-pane because the vertex shader's NDC conversion divides
     /// `cell_xy` by this `viewport` (= pane-local device-pixel size).
-    /// `record_pane` then maps the resulting NDC into the pane's rect
+    /// `queue_pane` then maps the resulting NDC into the pane's rect
     /// on the host canvas via `pass.set_viewport(scissor.x, scissor.y,
     /// scissor.w, scissor.h, 0, 1)`.
     frame_uniform: wgpu::Buffer,
     /// Per-cell instance buffer. Initial capacity =
     /// `INITIAL_INSTANCE_CAPACITY`; doubles on overflow inside `end_frame`.
-    instance_buffer: wgpu::Buffer,
+    instance_buffer: Rc<wgpu::Buffer>,
     instance_capacity: u32,
     /// Bind group instance against `ctx.cell_bind_group_layout`. Holds
     /// references to `frame_uniform` (per-pane) + `ctx.atlas_view` +
     /// `ctx.sampler` (shared). Rebuilt when `ctx.atlas_generation`
     /// advances (atlas reallocated) — see `begin_frame`.
-    bind_group: wgpu::BindGroup,
+    bind_group: Rc<wgpu::BindGroup>,
     /// Per-frame CellInstance accumulator. `begin_frame` clears it,
     /// `draw_row` / `draw_cursor` / `draw_*_overlay` push, `end_frame`
     /// uploads via `queue.write_buffer` and forwards to host.
@@ -400,8 +399,8 @@ impl WebGpuPaneBackend {
 
             (
                 frame_uniform,
-                instance_buffer,
-                bind_group,
+                Rc::new(instance_buffer),
+                Rc::new(bind_group),
                 atlas_generation_seen,
                 frame_pinned,
             )
@@ -619,7 +618,7 @@ impl WebGpuPaneBackend {
         //    `bind_group` referencing the old `atlas_view`. Rebuild
         //    against the new view before `draw_row` touches anything.
         if ctx.atlas_generation != self.atlas_generation_seen {
-            self.bind_group = ctx.build_bind_group(&self.frame_uniform);
+            self.bind_group = Rc::new(ctx.build_bind_group(&self.frame_uniform));
             self.atlas_generation_seen = ctx.atlas_generation;
             // Cross-pane safety: another pane just reallocated the
             // shared atlas. Our prior cached pixels reference glyph UVs
@@ -1656,11 +1655,9 @@ impl WebGpuPaneBackend {
         //   1. Upload frame uniform (pane-local viewport size in pixels).
         //   2. Grow instance buffer if the frame exceeded current capacity.
         //   3. Upload pending CellInstance bytes.
-        //   4. Forward to `host.record_pane(viewport, &cell_pipeline,
-        //      |pass| draw)` — host opens RenderPass on its shared
-        //      encoder, sets viewport + scissor to clip the pane's draw
-        //      to its rect on the host canvas, and lets the closure
-        //      record `set_bind_group` / `set_vertex_buffer` / `draw`.
+        //   4. Queue the pane's draw handles for the host's shared pass;
+        //      the host records viewport, scissor, bind group, vertex
+        //      buffer, and draw calls after all panes have uploaded data.
         //
         // No `surface.get_current_texture` / `queue.submit` /
         // `frame.present` here in Phase B — those happen once per frame
@@ -1672,7 +1669,7 @@ impl WebGpuPaneBackend {
         // The vertex shader divides `cell_xy` by `frame.viewport` to
         // produce NDC. With single-canvas + scissor, `cell_xy` is
         // pane-local device-pixel coords, so the uniform must hold the
-        // pane's own viewport size — `host.record_pane` then maps that
+        // pane's own viewport size — `host.queue_pane` then maps that
         // NDC into the pane's rect on the host canvas via
         // `pass.set_viewport(scissor)`.
         let viewport_uniform: [f32; 4] = [self.viewport.w as f32, self.viewport.h as f32, 0.0, 0.0];
@@ -1692,7 +1689,7 @@ impl WebGpuPaneBackend {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
-            self.instance_buffer = new_buffer;
+            self.instance_buffer = Rc::new(new_buffer);
             self.instance_capacity = new_capacity;
             // bind_group references frame_uniform + atlas_view +
             // sampler — instance buffer is bound per-frame via
@@ -1724,7 +1721,7 @@ impl WebGpuPaneBackend {
         }
 
         // Empty viewport (parked-by-clip) or no draws → skip the host
-        // record entirely. `host.record_pane` itself short-circuits on
+        // queue entirely. `host.queue_pane` itself short-circuits on
         // empty rect, but bailing here also avoids the `ctx.borrow()`
         // round-trip + closure capture.
         if self.viewport.is_empty() || n_cells == 0 {
@@ -1737,28 +1734,21 @@ impl WebGpuPaneBackend {
             return;
         }
 
-        // Step 4: hand off to host. `&ctx.cell_pipeline` is borrowed
-        // through the `Ref<GpuContext>` guard for the entire
-        // `record_pane` call; the closure additionally captures
-        // `&self.bind_group` and `&self.instance_buffer` (lifetimes
-        // bounded by `&mut self`).
+        // Step 4: hand off the pane's buffer handles to the host. The shared
+        // cell pipeline stays owned by GpuContext and is bound once per pane
+        // draw inside the host's single frame pass.
         let viewport = self.viewport;
-        let bind_group = &self.bind_group;
-        let instance_buffer = &self.instance_buffer;
-        let ctx = self.ctx.borrow();
-        self.host
-            .borrow_mut()
-            .record_pane(viewport, &ctx.cell_pipeline, |pass| {
-                pass.set_bind_group(0, bind_group, &[]);
-                pass.set_vertex_buffer(0, instance_buffer.slice(..));
-                pass.draw(0..4, 0..n_cells);
-            });
+        self.host.borrow_mut().queue_pane(
+            viewport,
+            &self.bind_group,
+            &self.instance_buffer,
+            n_cells,
+        );
 
         // Seed-equivalent flag consumed — `requires_full_frame` returns
         // false next tick so the row-hash diff in Renderer::tick can
         // skip non-dirty rows.
         self.needs_initial_clear = false;
-        drop(ctx);
         // This pane's draw is now recorded in the unsubmitted host encoder.
         // Mark every cited glyph layer committed so a sibling cannot overwrite
         // it later in the same frame. Repeated marks are intentionally cheaper

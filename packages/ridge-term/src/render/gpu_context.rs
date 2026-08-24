@@ -788,7 +788,7 @@ impl GpuContext {
 
     /// §atlas-race detector: mark `layer` as cited by a draw that has already
     /// been RECORDED into the host encoder this frame. Called from the
-    /// per-pane `end_frame` right after `record_pane`.
+    /// per-pane `end_frame` right after `queue_pane`.
     /// See [`Self::frame_committed`].
     pub fn mark_committed(&mut self, layer: u16) {
         let idx = layer as usize;
