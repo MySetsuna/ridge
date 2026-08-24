@@ -201,6 +201,18 @@ describe('CloudRemoteConnection.init', () => {
 
     expect(seen).toEqual([[{ workspaceId: 'ws1', paneId: 'pane-a' }, 'new', '/new']]);
   });
+
+  it('forwards the canonical grid and refresh owner from host events', async () => {
+    const conn = await connected();
+    const seen: unknown[] = [];
+    conn.onPtyResize((pane, rows, cols, owner) => seen.push([pane, rows, cols, owner]));
+
+    handlers['pty-resized']({ payload: { paneId: 'pane-a', rows: 31, cols: 101, owner: 'remote' } });
+    handlers['pty-resized']({ payload: { workspaceId: 'ws2', paneId: 'pane-a', rows: 40, cols: 120 } });
+
+    expect(seen).toEqual([[{ workspaceId: 'ws1', paneId: 'pane-a' }, 31, 101, 'remote']]);
+    conn.disconnect();
+  });
 });
 
 describe('CloudRemoteConnection panes', () => {
@@ -302,6 +314,20 @@ describe('CloudRemoteConnection panes', () => {
     releaseSeed({ frame: '\x1bcSEED', start_seq: 10, at_oldest: false, head_seq: 14 });
     await flush();
     expect(got.map((bytes) => new TextDecoder().decode(bytes))).toEqual(['LIVE', '\x1bcSEED', 'LIVE']);
+  });
+
+  it('passes cloud raw bytes through without UTF-8 replacement', async () => {
+    const conn = await connected();
+    const got: Uint8Array[] = [];
+    conn.onRawBytes((_pane, bytes) => got.push(bytes));
+
+    conn.subscribePane(PANE);
+    await flush();
+
+    const binary = new Uint8Array([0xff, 0x00, 0xe2, 0x28, 0xa1]);
+    handlers['pty-output-ws1-pane-a']({ payload: { bytes: binary } });
+
+    expect(got.at(-1)).toBe(binary);
   });
 
   it('requests host resync without replacing the live listener', async () => {

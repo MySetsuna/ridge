@@ -218,13 +218,26 @@ export function agentAttentionPriority(attention: AgentAttention): number {
   return 1;
 }
 
-export function sortMembersBySessionId<T extends { profile: { sessionId?: string; paneId?: string; id: string } }>(
+export function sortMembersBySessionId<T extends {
+  profile: { sessionId?: string; paneId?: string; id?: string } | null;
+  agentId?: string;
+  id?: string;
+}>(
   members: readonly T[],
 ): T[] {
+  const sortKey = (member: T): string => {
+    const profile = member.profile;
+    return profile?.sessionId?.trim()
+      || profile?.paneId
+      || profile?.id
+      || member.agentId
+      || member.id
+      || '';
+  };
   return [...members].sort((a, b) => {
-    const left = a.profile.sessionId?.trim() || a.profile.paneId || a.profile.id;
-    const right = b.profile.sessionId?.trim() || b.profile.paneId || b.profile.id;
-    return left.localeCompare(right);
+    const bySession = sortKey(a).localeCompare(sortKey(b));
+    if (bySession !== 0) return bySession;
+    return (a.agentId || a.id || '').localeCompare(b.agentId || b.id || '');
   });
 }
 

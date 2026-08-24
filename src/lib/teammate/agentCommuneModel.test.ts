@@ -114,6 +114,16 @@ describe('agent commune view model', () => {
       .toEqual(sortMembersBySessionId([...members].reverse()).map((m) => m.profile.sessionId));
   });
 
+  it('sorts offline group placeholders with the same session fallback chain', () => {
+    const members = [
+      { agentId: 'offline-b', profile: null },
+      { agentId: 'online', profile: { id: 'online', paneId: 'pane-z', sessionId: 'session-a' } },
+      { agentId: 'offline-a', profile: null },
+    ];
+    expect(sortMembersBySessionId(members).map((m) => m.agentId))
+      .toEqual(['offline-a', 'offline-b', 'online']);
+  });
+
   it('latches unread attention across remount and does not downgrade', () => {
     const latched = latchAgentAttention({
       previousStatus: 'working',

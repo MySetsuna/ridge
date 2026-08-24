@@ -39,8 +39,10 @@ export const remoteQueryKeys = {
   teamRoster: (sessionId: number, workspaceId?: string) =>
     ['remote', sessionId, 'team', workspaceId ?? ''] as const,
   /** Agent history is host-wide; CWD grouping happens in the sidebar. */
-  agentHistory: (sessionId: number, limit = 24) =>
-    ['remote', sessionId, 'team', 'history', limit] as const,
+  agentHistory: (sessionId: number, limit = 24, offset = 0, query = '') =>
+    offset === 0 && !query
+      ? ['remote', sessionId, 'team', 'history', limit] as const
+      : ['remote', sessionId, 'team', 'history', limit, offset, query] as const,
   /**
    * Sidebar reads use the same TanStack Query cache as workspace/pane reads.
    * Keep cwd and target in every key: two panes can point at the same path
@@ -164,11 +166,18 @@ export function fetchRemoteAgentHistory(
   sessionId: number,
   limit = 24,
   signal?: AbortSignal,
+  offset = 0,
+  query = '',
 ): Promise<AgentHistoryReply[]> {
   return fetchRemoteQuery(
     queryClient,
-    remoteQueryKeys.agentHistory(sessionId, limit),
-    (context) => abortable(link.listAgentHistory(limit), [signal, context?.signal]),
+    remoteQueryKeys.agentHistory(sessionId, limit, offset, query),
+    (context) => abortable(
+      offset === 0 && !query
+        ? link.listAgentHistory(limit)
+        : link.listAgentHistory(limit, offset, query),
+      [signal, context?.signal],
+    ),
     REMOTE_SIDEBAR_STALE_TIME_MS,
   );
 }

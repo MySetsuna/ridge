@@ -1,7 +1,7 @@
 import { getRemoteDeviceId } from './deviceId';
 import { PaneRpcScheduler } from './paneRpcScheduler';
 import { remotePerfMark } from './remotePerfTrace';
-import { paneRefKey, type PaneRef } from './paneRef';
+import { paneRefKey, type PaneRef, type PaneRenderOwner } from './paneRef';
 import {
   tryEnqueuePaneInput,
   tryEnqueuePaneInputImmediate,
@@ -37,7 +37,7 @@ function normalizeInvokeResultFrame(value: unknown): unknown {
 }
 
 export { paneRefKey } from './paneRef';
-export type { PaneRef } from './paneRef';
+export type { PaneRef, PaneRenderOwner } from './paneRef';
 
 // ── 连接失败分级（任务 A）───────────────────────────────────────────────────
 // 服务端 WS 在「已认证但无权」时会先升级、下发一帧 `{t:"error",code,message}`，再以
@@ -97,7 +97,12 @@ function uuidFromBytes(bytes: Uint8Array, offset: number = 0): string {
 
 export type RawByteListener = (pane: PaneRef, data: Uint8Array) => void;
 export type MetaListener = (pane: PaneRef, title: string | null, cwd: string | null) => void;
-export type PtyResizeListener = (pane: PaneRef, rows: number, cols: number) => void;
+export type PtyResizeListener = (
+  pane: PaneRef,
+  rows: number,
+  cols: number,
+  owner?: PaneRenderOwner,
+) => void;
 export type ThemeListener = (colors: Record<string, string>, themeType: 'dark' | 'light') => void;
 
 // Keep for backward compat — consumers should migrate to onRawBytes.
@@ -232,6 +237,7 @@ export type WsMessage = {
   paneId: string;
   rows: number;
   cols: number;
+  owner?: PaneRenderOwner;
 } | {
   type: 'files';
   path: string;
@@ -491,14 +497,28 @@ export interface RemoteLink {
   sendAgentMessage(target: AgentMessageTarget, message: string): Promise<AgentMessageReceipt>;
   /** Reserve input order before an asynchronous source resolves. */
   enqueueStdinTask?(pane: PaneRef, task: () => Promise<string | null> | string | null): boolean;
-  refreshPane(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
-  claimPane(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
+  refreshPane(
+    pane: PaneRef,
+    rows: number,
+    cols: number,
+    pixelWidth: number,
+    pixelHeight: number,
+    owner?: PaneRenderOwner,
+  ): void;
+  claimPane(
+    pane: PaneRef,
+    rows: number,
+    cols: number,
+    pixelWidth: number,
+    pixelHeight: number,
+    owner?: PaneRenderOwner,
+  ): void;
   lastRefreshSeq(): number;
   listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }>;
   /** P1 roster：只读拓扑快照（capability `teammate` 协商后可用；UI 轮询取数）。 */
   getTeammateTopology(workspaceId?: string): Promise<TeammateTopology>;
-  /** Real session-file history, grouped by Agent on the client. */
-  listAgentHistory(limit?: number): Promise<AgentHistoryReply[]>;
+  /** Real session-file history, paged and searchable by the client. */
+  listAgentHistory(limit?: number, offset?: number, query?: string): Promise<AgentHistoryReply[]>;
   /** Persist the current workspace's Agent groups for Remote/desktop parity. */
   setTeammateGroups(workspaceId: string, groups: readonly TeammateGroup[]): Promise<void>;
   /** Create a new pane and resume a recorded Agent session in its CWD. */
@@ -895,6 +915,7 @@ export class RemoteConnection implements RemoteLink {
         { workspaceId: rec.workspaceId as string, paneId: rec.paneId as string },
         (msg as { rows: number }).rows,
         (msg as { cols: number }).cols,
+        (msg as { owner?: PaneRenderOwner }).owner === 'remote' ? 'remote' : 'host',
       ));
       return true;
     }
@@ -1451,8 +1472,18 @@ export class RemoteConnection implements RemoteLink {
    *
    *  Each call increments a monotonic sequence counter so the backend can
    *  ignore stale requests when multiple remotes contend for the size lock. */
-  refreshPane(pane: PaneRef, rows: number, cols: number, _pixelWidth: number, _pixelHeight: number) {
-    if (this.paneScheduler.scheduleResize(pane, rows, cols, undefined, { force: true })) this._refreshSeq++;
+  refreshPane(
+    pane: PaneRef,
+    rows: number,
+    cols: number,
+    _pixelWidth: number,
+    _pixelHeight: number,
+    owner?: PaneRenderOwner,
+  ) {
+    const accepted = owner
+      ? this.paneScheduler.scheduleResize(pane, rows, cols, { owner }, { force: true })
+      : this.paneScheduler.scheduleResize(pane, rows, cols, undefined, { force: true });
+    if (accepted) this._refreshSeq++;
   }
   /** Implicit "I just interacted / my viewport changed" size claim. Same host
    *  effect as refreshPane (resizes the real PTY + canonical parser and
@@ -1460,9 +1491,19 @@ export class RemoteConnection implements RemoteLink {
    *  automatic viewport-driven resize path so a genuine layout change reflows
    *  the host PTY — `resize` alone is host-side bookkeeping that never reflows.
    *  Shares the monotonic seq counter so the host can drop stale claims. */
-  claimPane(pane: PaneRef, rows: number, cols: number, _pixelWidth: number, _pixelHeight: number) {
+  claimPane(
+    pane: PaneRef,
+    rows: number,
+    cols: number,
+    _pixelWidth: number,
+    _pixelHeight: number,
+    owner?: PaneRenderOwner,
+  ) {
     this.paneScheduler.resume(pane);
-    if (this.paneScheduler.scheduleResize(pane, rows, cols, undefined, { force: true })) this._refreshSeq++;
+    const accepted = owner
+      ? this.paneScheduler.scheduleResize(pane, rows, cols, { owner }, { force: true })
+      : this.paneScheduler.scheduleResize(pane, rows, cols, undefined, { force: true });
+    if (accepted) this._refreshSeq++;
   }
   lastRefreshSeq(): number { return this._refreshSeq; }
 
@@ -1529,12 +1570,17 @@ export class RemoteConnection implements RemoteLink {
     return data._result as AgentMessageReceipt;
   }
 
-  async listAgentHistory(limit = 24): Promise<AgentHistoryReply[]> {
+  async listAgentHistory(limit = 24, offset = 0, query = ''): Promise<AgentHistoryReply[]> {
     const data = (await this._sendAndWait(
       {
         type: 'invoke-request',
         cmd: 'read_agent_recent_replies',
-        args: { projectPaths: [], limit: Math.max(1, Math.min(100, Math.floor(limit))) },
+        args: {
+          projectPaths: [],
+          limit: Math.max(1, Math.min(100, Math.floor(limit))),
+          offset: Math.max(0, Math.floor(offset)),
+          query: query.trim(),
+        },
         _reqId: ++this._reqCounter,
       },
       'invoke-result',

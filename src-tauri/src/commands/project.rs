@@ -791,18 +791,27 @@ pub struct AgentRecentReply {
 
 /// Read one latest-assistant row per supported local Agent session.
 /// Native Claude Code/Codex JSONL and Cursor Agent transcript JSONL use
-/// bounded discovery plus prefix/tail reads; Grok has its own session adapter.
-/// Files are bounded newest-first and only their metadata prefix + tail are read.
+/// complete discovery plus prefix/tail reads; Grok has its own session adapter.
+/// Only each file's metadata prefix + tail are read, so history enumeration does
+/// not load complete transcripts into memory.
 #[tauri::command]
 pub async fn read_agent_recent_replies(
     project_paths: Vec<String>,
     limit: Option<usize>,
+    offset: Option<usize>,
+    query: Option<String>,
 ) -> Vec<AgentRecentReply> {
     tokio::task::spawn_blocking(move || {
         let Some(home) = dirs::home_dir() else {
             return Vec::new();
         };
-        read_agent_recent_replies_sync(&home, project_paths, limit.unwrap_or(40))
+        read_agent_recent_replies_page_sync(
+            &home,
+            project_paths,
+            limit.unwrap_or(40),
+            offset.unwrap_or(0),
+            query.as_deref(),
+        )
     })
     .await
     .unwrap_or_default()
@@ -818,6 +827,16 @@ fn read_agent_recent_replies_sync(
     home: &Path,
     project_paths: Vec<String>,
     limit: usize,
+) -> Vec<AgentRecentReply> {
+    read_agent_recent_replies_page_sync(home, project_paths, limit, 0, None)
+}
+
+fn read_agent_recent_replies_page_sync(
+    home: &Path,
+    project_paths: Vec<String>,
+    limit: usize,
+    offset: usize,
+    query: Option<&str>,
 ) -> Vec<AgentRecentReply> {
     let filters = normalized_paths(&project_paths);
     let sources = [
@@ -837,8 +856,9 @@ fn read_agent_recent_replies_sync(
             AgentHistoryFileKind::CursorTranscript,
         ),
     ];
-    // Keep one bounded discovery pass per source. A busy Claude tree must not
-    // consume the shared cap and hide Codex or Cursor history before sorting.
+    // Discover each source independently before sorting. Do not cap file counts:
+    // paging belongs after session deduplication, otherwise older sessions can
+    // disappear permanently behind a busy provider's newest files.
     let mut files = Vec::new();
     for (agent, root, kind) in sources {
         let mut source_files = Vec::new();
@@ -851,7 +871,6 @@ fn read_agent_recent_replies_sync(
             }
         }
         source_files.sort_by(|a, b| b.2.cmp(&a.2));
-        source_files.truncate(200);
         files.extend(
             source_files
                 .into_iter()
@@ -908,11 +927,61 @@ fn read_agent_recent_replies_sync(
                 .iter()
                 .any(|path| same_or_child_path(&reply.cwd, path))
     });
+    let query = query.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(query) = query {
+        replies.retain(|reply| history_reply_matches_query(reply, query));
+    }
     replies.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    // `usize::MAX` is an internal exact-session lookup sentinel.  UI callers
-    // remain capped at 100; the resume authority must not reject an older
-    // valid session merely because it fell outside that presentation window.
-    limit_history_replies(replies, limit)
+    page_history_replies(replies, limit, offset)
+}
+
+fn history_reply_matches_query(reply: &AgentRecentReply, query: &str) -> bool {
+    let query = query.to_lowercase();
+    [
+        &reply.agent,
+        &reply.title,
+        &reply.text,
+        &reply.cwd,
+        &reply.session_id,
+    ]
+    .iter()
+    .any(|value| value.to_lowercase().contains(&query))
+}
+
+fn page_history_replies(
+    replies: Vec<AgentRecentReply>,
+    limit: usize,
+    offset: usize,
+) -> Vec<AgentRecentReply> {
+    // `usize::MAX` is an internal exact-session lookup sentinel. UI pages stay
+    // bounded, but offset lets the UI enumerate every discovered session.
+    if limit == usize::MAX {
+        return replies;
+    }
+    let page_limit = limit.min(100);
+    if page_limit == 0 {
+        return Vec::new();
+    }
+
+    // Put one newest reply from each agent ahead of the remaining recency
+    // stream. The first page therefore exposes every agent type even when one
+    // provider has many more sessions than the others.
+    let mut first_by_agent = Vec::new();
+    let mut remaining = Vec::new();
+    let mut seen_agents = HashSet::new();
+    for reply in replies {
+        if seen_agents.insert(reply.agent.to_ascii_lowercase()) {
+            first_by_agent.push(reply);
+        } else {
+            remaining.push(reply);
+        }
+    }
+    first_by_agent.extend(remaining);
+    first_by_agent
+        .into_iter()
+        .skip(offset)
+        .take(page_limit)
+        .collect()
 }
 
 fn limit_history_replies(replies: Vec<AgentRecentReply>, limit: usize) -> Vec<AgentRecentReply> {
@@ -996,15 +1065,15 @@ fn collect_grok_sessions(home: &Path) -> Vec<AgentRecentReply> {
 }
 
 fn collect_grok_session_dirs(dir: &Path, depth: usize, out: &mut Vec<AgentRecentReply>) {
-    if depth > 10 || out.len() >= 200 {
-        return;
-    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() || !file_type.is_dir() {
             continue;
         }
         let summary = path.join("summary.json");
@@ -1015,9 +1084,6 @@ fn collect_grok_session_dirs(dir: &Path, depth: usize, out: &mut Vec<AgentRecent
             continue;
         }
         collect_grok_session_dirs(&path, depth + 1, out);
-        if out.len() >= 200 {
-            break;
-        }
     }
 }
 
@@ -1144,17 +1210,22 @@ fn collect_jsonl_files(
     depth: usize,
     out: &mut Vec<(&'static str, PathBuf, u64)>,
 ) {
-    if depth > 8 || out.len() >= 400 {
-        return;
-    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             collect_jsonl_files(&path, agent, depth + 1, out);
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+        } else if file_type.is_file()
+            && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+        {
             let modified = entry
                 .metadata()
                 .ok()
@@ -1163,9 +1234,6 @@ fn collect_jsonl_files(
                 .map(|duration| duration.as_millis() as u64)
                 .unwrap_or_default();
             out.push((agent, path, modified));
-        }
-        if out.len() >= 400 {
-            break;
         }
     }
 }
@@ -1179,24 +1247,21 @@ fn collect_cursor_transcript_files(
     depth: usize,
     out: &mut Vec<(&'static str, PathBuf, u64)>,
 ) {
-    if depth > 10 || out.len() >= 400 {
-        return;
-    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() || !file_type.is_dir() {
             continue;
         }
         if path.file_name().and_then(|name| name.to_str()) == Some("agent-transcripts") {
             collect_jsonl_files(&path, agent, 0, out);
         } else {
             collect_cursor_transcript_files(&path, agent, depth + 1, out);
-        }
-        if out.len() >= 400 {
-            break;
         }
     }
 }
@@ -1911,6 +1976,60 @@ mod tests {
                 .map(|reply| reply.agent.as_str())
                 .collect::<Vec<_>>(),
             vec!["Claude", "Codex", "Cursor Agent"]
+        );
+    }
+
+    #[test]
+    fn history_pages_keep_agent_types_visible_and_match_search_fields() {
+        let replies = vec![
+            AgentRecentReply {
+                agent: "Claude".into(),
+                title: "Build docs".into(),
+                text: "session output".into(),
+                timestamp: 300,
+                cwd: r"C:\repo".into(),
+                session_id: "claude-1".into(),
+                resume: None,
+            },
+            AgentRecentReply {
+                agent: "Codex".into(),
+                title: "Fix parser".into(),
+                text: "other output".into(),
+                timestamp: 200,
+                cwd: r"D:\repo".into(),
+                session_id: "codex-1".into(),
+                resume: None,
+            },
+            AgentRecentReply {
+                agent: "Claude".into(),
+                title: "Old task".into(),
+                text: "older output".into(),
+                timestamp: 100,
+                cwd: r"C:\repo".into(),
+                session_id: "claude-2".into(),
+                resume: None,
+            },
+        ];
+        expect_agents(&page_history_replies(replies.clone(), 2, 0), &["Claude", "Codex"]);
+        expect_agents(&page_history_replies(replies, 2, 2), &["Claude"]);
+        assert!(history_reply_matches_query(
+            &AgentRecentReply {
+                agent: "Codex".into(),
+                title: "Fix parser".into(),
+                text: "output".into(),
+                timestamp: 1,
+                cwd: r"D:\repo".into(),
+                session_id: "session-codex".into(),
+                resume: None,
+            },
+            "session-codex",
+        ));
+    }
+
+    fn expect_agents(replies: &[AgentRecentReply], expected: &[&str]) {
+        assert_eq!(
+            replies.iter().map(|reply| reply.agent.as_str()).collect::<Vec<_>>(),
+            expected,
         );
     }
 
