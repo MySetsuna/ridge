@@ -14,8 +14,9 @@ const pageSource = readFileSync(new URL('../../routes/+page.svelte', import.meta
 
 describe('desktop Pane Agent border contract', () => {
   it('scopes Git polling to the active workspace', () => {
-    expect(source).toContain('workspaceId === $activeWorkspaceId');
+    expect(source).toContain('if (workspaceId !== $activeWorkspaceId) return;');
     expect(source).toContain('trackPaneGitStatus(node.id, cwd || null)');
+    expect(source).not.toContain("const cwd = workspaceId === $activeWorkspaceId");
   });
 
   it('paints a high-stack status highlight without stealing pane input', () => {
