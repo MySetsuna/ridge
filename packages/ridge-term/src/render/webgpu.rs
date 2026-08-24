@@ -458,8 +458,8 @@ impl WebGpuPaneBackend {
     }
 
     fn measure_font(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
-        // Delegate to the shared selected-system-font rasterizer used by the
-        // WebGPU glyph atlas; the host uses these metrics to fit the pane.
+        // Delegate to the browser Canvas2D CSS font stack used by the WebGPU
+        // glyph atlas; the same metrics drive pane fitting.
         self.ctx
             .borrow_mut()
             .rasterizer
@@ -804,8 +804,8 @@ impl WebGpuPaneBackend {
             };
 
             // Geometry characters are independent of the selected font. Do
-            // this before atlas admission so unsupported font data cannot
-            // turn a deterministic line into a blank/missing-glyph path.
+            // this before atlas admission so a browser glyph-source failure
+            // cannot turn a deterministic line into a blank/missing-glyph path.
             let drawn_procedurally = append_procedural_glyph(
                 &mut row_glyph_instances,
                 glyph_text,

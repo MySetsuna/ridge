@@ -72,7 +72,6 @@ let webgpuInitError = $state<string | null>(null);
 
 function formatWebgpuInitError(error: unknown): string {
 	const detail = error instanceof Error ? error.message : String(error);
-	if (detail.includes('FONT_ACCESS_') || detail.includes('FONT_DATA_')) return detail;
 	const prefix = detail.includes('WEBGPU_INIT_FAILED') ? detail : `WEBGPU_INIT_FAILED: ${detail}`;
 	return `${prefix}. Enable WebGPU or update graphics drivers, then reload.`;
 }

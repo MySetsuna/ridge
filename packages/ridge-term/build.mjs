@@ -12,7 +12,8 @@
 //   node build.mjs --dev             # dev (faster compile, larger wasm)
 //
 // Note: `--webgpu` (legacy flag from round 4.5) is still accepted but is
-// now a no-op — WebGPU and the pure-Rust glyph rasterizer ship by default.
+// now a no-op — WebGPU presentation and browser system-font glyph sourcing
+// ship by default.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';

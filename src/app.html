@@ -14,7 +14,7 @@
   <link
     href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,400..600;1,14..32,400..600&family=JetBrains+Mono:ital,wght@0,400..600;1,400..600&display=swap"
     rel="stylesheet" />
-  <!-- Terminal glyphs use selected installed system-font data in Wasm. -->
+  <!-- Terminal glyphs resolve through the browser system-font fallback chain. -->
   %sveltekit.head%
   <style id="ridge-bootstrap-style">
     :root { --ridge-bootstrap-ready: 1; }
