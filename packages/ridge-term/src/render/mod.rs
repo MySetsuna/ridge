@@ -7,7 +7,7 @@
 
 pub mod backend;
 pub mod glyph_atlas;
-#[cfg(feature = "webgpu")]
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod glyph_rasterizer;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod gpu_context;
