@@ -259,6 +259,10 @@ pub struct WebGpuPaneBackend {
     frame_pinned: Vec<bool>,
     metrics: FrameMetrics,
     theme: Theme,
+    /// Font identity copied once at `begin_frame`; row rendering must not
+    /// borrow/hash the shared context for every dirty row.
+    font_family_hash: u64,
+    font_size_q: u16,
     /// Set when the renderer must re-encode every visible row on the
     /// next frame. Drives `requires_full_frame()` (consumed by
     /// `Renderer::tick` to mark all rows dirty so the row-hash diff
@@ -423,6 +427,8 @@ impl WebGpuPaneBackend {
                 tui_mode: false,
             },
             theme: Theme::default_dark(),
+            font_family_hash: 0,
+            font_size_q: 0,
             // First frame must re-encode every row — viewport rect just
             // assigned by JS is fresh and the pane has never drawn.
             needs_initial_clear: true,
@@ -589,6 +595,11 @@ impl WebGpuPaneBackend {
             GpuContext::slot_dims_for(self.metrics.cell_w, self.metrics.cell_h, self.metrics.dpr);
 
         let mut ctx = self.ctx.borrow_mut();
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&ctx.font_family, &mut hasher);
+        self.font_family_hash = std::hash::Hasher::finish(&hasher);
+        self.font_size_q = (ctx.font_size_px * 100.0).round() as u16;
 
         // 1) Atlas slot growth — only ever grows. Shrinking on small
         //    metric jiggles would thrash the rasterizer's hidden DOM canvas
@@ -905,7 +916,6 @@ impl WebGpuPaneBackend {
         let (pixel_y, pixel_y_bot) = self.row_pixel_bounds(row_idx);
         let row_h_int = pixel_y_bot - pixel_y;
         let tui_mode = self.metrics.tui_mode;
-        let theme = &self.theme;
         let (font_family_hash, font_size_q) = self.font_key();
 
         let render_path = scan_line_path(row.cells, row.clusters);
@@ -916,8 +926,10 @@ impl WebGpuPaneBackend {
             }
 
             let attrs = attrs_table.get(cell.attr);
-            let (_attrs, fg, _bg) =
-                crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme, tui_mode);
+            let (_attrs, fg, _bg) = {
+                let theme = &self.theme;
+                crate::render::backend::resolve_cell_colors(cell, attrs_table, theme, tui_mode)
+            };
 
             let cell_span = cell.width.max(1) as usize;
 
@@ -1096,13 +1108,7 @@ impl WebGpuPaneBackend {
     }
 
     fn font_key(&self) -> (u64, u16) {
-        let ctx = self.ctx.borrow();
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&ctx.font_family, &mut hasher);
-        (
-            std::hash::Hasher::finish(&hasher),
-            (ctx.font_size_px * 100.0).round() as u16,
-        )
+        (self.font_family_hash, self.font_size_q)
     }
 
     fn lookup_cursor_glyph(&mut self, key: &GlyphKey) -> Option<GlyphEntry> {

@@ -15,7 +15,8 @@ use super::glyph_atlas::GlyphKey;
 
 #[derive(Debug, Clone)]
 pub struct RasterizedGlyph {
-    /// Full atlas-slot premultiplied RGBA8 pixels, row-major.
+    /// Tightly packed premultiplied RGBA8 pixels for the painted bitmap,
+    /// row-major. The GPU upload adds only the row padding required by wgpu.
     pub rgba: Vec<u8>,
     /// Painted bounds inside the slot.
     pub width: u16,
@@ -134,9 +135,10 @@ impl GlyphRasterizer {
         let advance_dev = finite_non_negative(metrics.width()).unwrap_or(0.0);
         let advance = (advance_dev / dpr as f64) as f32;
         if max_x == 0 || max_y == 0 {
+            let width = clamp_u16(advance_dev.ceil(), self.slot_w);
             return Ok(RasterizedGlyph {
-                rgba: vec![0; pixel_count * 4],
-                width: clamp_u16(advance_dev.ceil(), self.slot_w),
+                rgba: vec![0; width as usize * 4],
+                width,
                 height: 1,
                 advance,
                 ascent_offset: 0.0,
@@ -147,12 +149,14 @@ impl GlyphRasterizer {
         // UVs begin at the first atlas row. Pack the painted rows there and
         // keep the original device-pixel offset in `ascent_offset`; otherwise
         // the shader would sample transparent top rows and lose most glyphs.
-        let mut rgba = vec![0; pixel_count * 4];
+        let packed_width = (max_x as u16).max(1);
+        let packed_height = (max_y - min_y) as u16;
+        let mut rgba = vec![0; packed_width as usize * packed_height as usize * 4];
         for source_y in min_y..max_y {
             let dest_y = source_y - min_y;
-            for x in 0..self.slot_w as usize {
+            for x in 0..packed_width as usize {
                 let source = (source_y * self.slot_w as usize + x) * 4;
-                let dest = (dest_y * self.slot_w as usize + x) * 4;
+                let dest = (dest_y * packed_width as usize + x) * 4;
                 let alpha = pixels[source + 3];
                 if alpha == 0 {
                     continue;
@@ -172,8 +176,8 @@ impl GlyphRasterizer {
 
         Ok(RasterizedGlyph {
             rgba,
-            width: (max_x as u16).max(1),
-            height: (max_y - min_y) as u16,
+            width: packed_width,
+            height: packed_height,
             advance,
             ascent_offset: min_y as f32,
             is_color,
