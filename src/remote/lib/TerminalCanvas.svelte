@@ -9,6 +9,7 @@
     stabilizeTerminalVisualShiftPx,
     terminalVisualShiftPx,
   } from './keyboardOffset';
+  import { pinImeCaretToAnchor } from '@ridge/remote/shared/terminal/imeAnchor';
   import { writeClipboard } from './clipboard';
   import { copySelectionOnly } from '@ridge/remote/shared/terminal/mobileCopy';
   import {
@@ -91,6 +92,7 @@
       return;
     }
     onPaneStdin(pane, data);
+    manager.noteUserInput(paneId);
   }
 
   /** Scroll-up rows-from-top threshold that triggers a lazy older-history fetch.
@@ -355,6 +357,7 @@
       el.style.left = `${Math.round(anchor.x)}px`;
       el.style.top = `${Math.round(anchor.y)}px`;
       el.style.height = `${Math.max(1, Math.round(anchor.h))}px`;
+      pinImeCaretToAnchor(el);
     }
   }
 
@@ -368,10 +371,12 @@
       if (!el) return;
       if (document.activeElement !== el) el.focus({ preventScroll: true });
       try { el.setSelectionRange(el.value.length, el.value.length); } catch { /* ignore */ }
+      pinImeCaretToAnchor(el);
     });
   }
 
   function focusInput() {
+    if (attached) manager.captureImeAnchor(paneId);
     positionInputAtCursorOrCenter();
     focusHiddenInput();
   }
@@ -434,11 +439,8 @@
   /** Theme is GLOBAL on the manager (all panes); fine for mobile (one theme). */
   export function applyTheme(theme: Record<string, string>) { manager.setTheme(theme); }
   /** Host told us the PTY resized → remeasure this pane and repaint locally. */
-  export function resizeKernel(_rows: number, _cols: number) {
-    // Host dimensions are a notification, not a geometry authority. Re-measure
-    // this pane and claim its actual box instead of injecting a possibly stale
-    // remote grid that could leave the shell smaller than the pane.
-    manager.fitPaneNow(paneId);
+  export function resizeKernel(rows: number, cols: number) {
+    manager.applyPaneResize(paneId, rows, cols);
     manager.forceFullRedraw(paneId);
   }
 
@@ -761,12 +763,14 @@
     // §R4 IME: mark the input-start anchor + capture the preedit anchor cell.
     isComposing = true;
     manager.markInputStart(paneId);
+    manager.beginImeComposition(paneId);
     positionInputAtCursorOrCenter();
   }
   function handleCompositionUpdate(e: CompositionEvent) {
     // Renderer-side preedit overlay: painted on top of the cell grid without
     // touching kernel cells (a TUI redraw can't corrupt it and vice-versa).
     // 句级缓冲开启且有缓冲文本时，预览 = 缓冲 + 组合中段（一体显示）。
+    positionInputAtCursorOrCenter();
     if (sbufActive() && !sbuf.empty) {
       sbufPaint(e.data ?? '');
       return;
@@ -776,10 +780,12 @@
   }
   function handleCompositionEnd(e: CompositionEvent) {
     isComposing = false;
+    manager.endImeComposition(paneId);
     manager.clearPreedit(paneId);
     const data = e.data ?? '';
     // Clear the textarea so a late `input` can't resend the committed text.
     if (hiddenInput) hiddenInput.value = '';
+    positionInputAtCursorOrCenter();
     // §1.27: repaint cells under the (now-cleared) preedit overlay.
     manager.forceFullRedraw(paneId);
     if (!data) return;
@@ -1238,6 +1244,15 @@
         keyboardSettleRaf = null;
       }
     };
+  });
+
+  // PTY echo advances the kernel cursor on a later frame. Reposition the
+  // focused IME sink from the manager's authoritative post-echo anchor.
+  $effect(() => {
+    if (!attached || !alive) return;
+    return manager.onImeAnchor(paneId, () => {
+      if (alive && document.activeElement === hiddenInput) positionInputAtCursorOrCenter();
+    });
   });
 
   // orientationchange fires the most disruptive grid change; refit explicitly

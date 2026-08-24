@@ -40,15 +40,24 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain('caret-color:var(--rg-accent,#58a6ff)');
   });
 
+  it('pins IME composition to the captured input cursor and updates after PTY input', () => {
+    expect(source).toContain('manager.beginImeComposition(paneId);');
+    expect(source).toContain('manager.endImeComposition(paneId);');
+    expect(source).toContain('manager.noteUserInput(paneId);');
+    expect(source).toContain('manager.onImeAnchor(paneId');
+    expect(source).toContain('pinImeCaretToAnchor(el);');
+    expect(source).toContain('positionInputAtCursorOrCenter();\n    if (sbufActive()');
+  });
+
   it('keeps pane geometry authoritative for host resize recovery', () => {
     expect(source).toContain('export function fitPaneNow()');
     expect(source).toContain('if (attached) manager.fitPaneNow(paneId);');
     expect(source).toContain('export function claimPaneSize()');
     expect(source).toContain('manager.claimPaneSize(paneId)');
     expect(source).toContain('manager.forceFullRedraw(paneId)');
-    expect(source).toContain('export function resizeKernel(_rows: number, _cols: number)');
+    expect(source).toContain('export function resizeKernel(rows: number, cols: number)');
+    expect(source).toContain('manager.applyPaneResize(paneId, rows, cols)');
     expect(source).toContain('manager.forceFullRedraw(paneId)');
-    expect(source).not.toContain('manager.getKernel(paneId)?.resize(rows, cols);');
   });
 
   it('does not drop mobile spaces reported as insertCompositionText', () => {

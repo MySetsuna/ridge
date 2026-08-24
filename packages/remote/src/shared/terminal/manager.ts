@@ -286,12 +286,10 @@ interface PaneEntry {
 		isAlt: boolean,
 		isInlineTui: boolean,
 	) => Promise<void> | void;
-	/** iter-60 G3：raw 字节模式（手机 SPA feedUtf8 自解析，无 Rust Resize delta）
-	 *  下，本地 kernel 网格由 fitPane **直接** resize——P4 前 TerminalController 的
-	 *  语义。P4 换共享 manager 后丢了这一步：桌面靠 delta 回灌改格，LAN 手机靠
-	 *  `pty-resized` 回执，而 **cloud 腿两者皆无**（cloudRemote.onPtyResize 注释
-	 *  自证「effectively unused」）→ 公网手机 kernel 永卡初始格 → 「终端尺寸与
-	 *  网页尺寸不匹配」（0.1.1 起）。TerminalCanvas attach/unpark 后置 true。 */
+	/** iter-60 G3：raw 字节模式。Remote/Host 谁主动刷新，谁发送带 owner 的
+	 *  `pty-resized` canonical grid；另一端只应用该网格，不再次 claim。仅
+	 *  `localGridAuthority` pane 在 fit 时主动计算并刷新 PTY。TerminalCanvas
+	 *  attach/unpark 后置 true。 */
 	localGridAuthority?: boolean;
 	/** Debounce timer for fit. ResizeObserver fires many times during
 	 *  splitpanes drag (or SvelteKit hydration). Each fit calls
@@ -446,6 +444,12 @@ interface PaneEntry {
 	 *  rapid writes into a single capture: at most one rAF outstanding
 	 *  per pane. Cleared by the rAF callback. */
 	imeAnchorRaf: number | null;
+	/** DOM bridge for the focused IME sink. Fired after an input anchor is
+	 *  captured, including the delayed PTY-echo capture. */
+	imeAnchorHandler: ((anchor: { row: number; col: number } | null) => void) | null;
+	/** Composition is live. Shell mode follows its live cursor; TUI mode uses
+	 *  `imeAnchor` as a redraw-resistant snapshot until compositionend. */
+	imeCompositionActive: boolean;
 	/** §A.4 (2026-05-08) — pending PTY bytes held back briefly while the
 	 *  kernel is in inline-TUI mode (Ink/log-update emitting walk + new
 	 *  frame across multiple ConPTY reads). Without coalescing, a rAF
@@ -563,6 +567,7 @@ interface RafFrameState {
 	activeWsId: string | null;
 	activeHost: SurfaceHostHandle | null;
 	hostFrameOpen: boolean;
+	frameFailed: boolean;
 	anyRendered: boolean;
 	minDeadlineMs: number;
 }
@@ -690,6 +695,9 @@ export class TerminalManager {
 	 *  most ONE of `{rafHandle, idleTimer}` is non-null while panes are
 	 *  attached. */
 	private idleTimer: ReturnType<typeof setTimeout> | null = null;
+	/** Consecutive host/render failures. Prevents a broken WebGPU surface or
+	 * renderer exception from becoming a 1 ms RAF spin. */
+	private frameFailureCount = 0;
 	/** §A.9 (2026-05-08 follow-up) — single global host canvas, shared by
 	 *  EVERY workspace's panes. Replaces the previous per-workspace
 	 *  Map<wsId, {canvas, host}> design that forced a `surface.configure`
@@ -2343,6 +2351,8 @@ export class TerminalManager {
 			lastForegroundAt: Date.now(),
 			imeAnchor: null,
 			imeAnchorRaf: null,
+			imeAnchorHandler: null,
+			imeCompositionActive: false,
 			feedBuffer: null,
 			feedBufferChunks: [],
 			feedBufferBytes: 0,
@@ -2425,6 +2435,7 @@ export class TerminalManager {
 		if (entry.pendingFitTimer !== null) clearTimeout(entry.pendingFitTimer);
 		entry.pendingFitTimer = null;
 		this._cancelInitialFit(entry);
+		entry.imeAnchorHandler = null;
 	}
 
 	private _releaseRenderer(entry: PaneEntry): void {
@@ -2444,6 +2455,7 @@ export class TerminalManager {
 		if (entry.rendererRetained || !entry.parked) this._releaseRenderer(entry);
 		if (entry.imeAnchorRaf !== null) cancelAnimationFrame(entry.imeAnchorRaf);
 		entry.imeAnchorRaf = null;
+		entry.imeAnchorHandler = null;
 		dropPendingFeedBuffers(entry);
 		try { entry.kernel.free(); } catch { /* ignore */ }
 	}
@@ -2486,6 +2498,8 @@ export class TerminalManager {
 		}
 		this._releaseTuiCursorSuppression(entry);
 		this._detachParkedBindings(entry);
+		entry.imeCompositionActive = false;
+		entry.imeAnchor = null;
 		const retainRenderer = this._shouldRetainRenderer(entry, reason);
 		this._releaseParkedCanvas(entry, retainRenderer);
 		this._flushFeedBuffer(entry);
@@ -3726,7 +3740,8 @@ export class TerminalManager {
 		});
 	}
 
-	/** iter-60 G3：标记 raw 字节模式 pane（本地网格权威在 fit，见 PaneEntry 注释）。
+	/** iter-60 G3：标记 raw 字节模式 pane；外部 `pty-resized` 事件负责回灌
+	 *  canonical grid，仅 `localGridAuthority` pane 在 fit 时主动 claim。
 	 *  幂等；park/unpark 间存续。 */
 	setLocalGridAuthority(paneId: string, on: boolean): void {
 		const entry = this.panes.get(paneId);
@@ -4042,6 +4057,66 @@ export class TerminalManager {
 		entry.inputStartRow = null;
 		entry.inputStartCol = null;
 		entry.imeAnchor = null;
+		entry.imeCompositionActive = false;
+		this._emitImeAnchor(entry);
+	}
+
+	/** Capture the live cursor as the user's IME anchor. A TUI may redraw old
+	 * rows after input, but that must not move the composition window. */
+	captureImeAnchor(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked) return;
+		if (entry.imeAnchorRaf !== null) {
+			cancelAnimationFrame(entry.imeAnchorRaf);
+			entry.imeAnchorRaf = null;
+		}
+		entry.imeAnchor = {
+			row: entry.kernel.cursorRow(),
+			col: entry.kernel.cursorCol(),
+		};
+		this._emitImeAnchor(entry);
+	}
+
+	/** Start an IME composition at the cursor visible at compositionstart. */
+	beginImeComposition(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked) return;
+		entry.imeCompositionActive = true;
+		this.captureImeAnchor(paneId);
+	}
+
+	/** End an IME composition. Keep the captured post-composition cell until
+	 * the committed PTY echo schedules the next anchor; cancellation therefore
+	 * cannot fall back to a TUI spinner row. */
+	endImeComposition(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked) return;
+		this.captureImeAnchor(paneId);
+		entry.imeCompositionActive = false;
+	}
+
+	/** Notify the manager about input sent outside its key/write helpers. The
+	 * delayed capture waits for the PTY echo before moving the anchor. */
+	noteUserInput(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (entry) this.scheduleImeAnchorCapture(entry);
+	}
+
+	/** Subscribe to the same anchor used by `inputAnchorResolved`. The
+	 * callback bridges delayed PTY echo back to the DOM IME sink, so its
+	 * browser caret cannot remain at the previous terminal cell. */
+	onImeAnchor(
+		paneId: string,
+		handler: (anchor: { row: number; col: number } | null) => void,
+	): () => void {
+		const entry = this.panes.get(paneId);
+		if (!entry) return () => {};
+		entry.imeAnchorHandler = handler;
+		try { handler(entry.imeAnchor); } catch { /* component may be tearing down */ }
+		return () => {
+			const current = this.panes.get(paneId);
+			if (current?.imeAnchorHandler === handler) current.imeAnchorHandler = null;
+		};
 	}
 
 	/** §1.32 Wave F — reconstruct the real shell-input line by READING
@@ -4102,7 +4177,13 @@ export class TerminalManager {
 				row: entry.kernel.cursorRow(),
 				col: entry.kernel.cursorCol(),
 			};
+			this._emitImeAnchor(entry);
 		});
+	}
+
+	private _emitImeAnchor(entry: PaneEntry): void {
+		try { entry.imeAnchorHandler?.(entry.imeAnchor); }
+		catch (error) { console.error('[ridge-term] imeAnchorHandler error', entry.paneId, error); }
 	}
 
 	/** Pixel position of the kernel cursor relative to the pane container's
@@ -4187,21 +4268,14 @@ export class TerminalManager {
 	}
 
 	/** Pixel position of the IME helper anchor (§1.27 fix) — uses the
-	 *  stable user-input snapshot (`PaneEntry.imeAnchor`) instead of the
-	 *  live kernel cursor, so background PTY redraws (Ink/log-update
-	 *  spinner walks) don't drag the helper.
+	 *  stable user-input snapshot (`PaneEntry.imeAnchor`) for TUI composition
+	 *  instead of the live kernel cursor, so background PTY redraws
+	 *  (Ink/log-update spinner walks) don't drag the helper. Plain Shell
+	 *  composition deliberately follows the live cursor.
 	 *
-	 *  §1.27-tail fallback chain when `imeAnchor` is null (user clicked
-	 *  into a pane and started composing without typing any ASCII first):
-	 *    1. `kernel.lastAbsCsiPosition()` if recent (≤ 2 s) — for an Ink-
-	 *       style inline TUI, the LAST absolute-positioning CSI of any
-	 *       frame parks the cursor at the input row, so this reflects
-	 *       the Ink-stable input position even when the live cursor is
-	 *       mid-walk in some intermediate spinner state.
-	 *    2. Live `cursorPixelPosition` — for plain shells the live
-	 *       cursor sits at end-of-prompt and is a fine anchor.
-	 *  This avoids the live-cursor teleport bug for inline TUIs while
-	 *  preserving correct behaviour for plain shells. */
+	 *  §1.27-tail fallback chain when `imeAnchor` is null (for example before
+	 *  the first user input): recent TUI CSI, then the live cursor. Outside a
+	 *  live Shell composition, a user-input anchor wins over stale CSI. */
 	inputAnchorPixelPosition(
 		paneId: string,
 	): { x: number; y: number; cellW: number; cellH: number; fontSizePx: number } | null {
@@ -4254,27 +4328,22 @@ export class TerminalManager {
 		const isAlt = k.isAltScreen?.() === true;
 		const isInlineTui = k.isInlineTuiMode?.() === true;
 
-		// Priority for TUI scenarios (alt-screen / inline-TUI like Ink
-		// based apps — opencode, claude code): `lastAbsCsiPosition`
-		// wins over `imeAnchor`. Ink's frame ends with a CHA `\x1b[G`
-		// or CUP that parks the cursor at the user's input column;
-		// that's the stable "where the next character lands" signal.
-		// `imeAnchor` reads `kernel.cursor{Row,Col}` after a RAF, but
-		// in Ink the live cursor may have walked through a spinner /
-		// hint row mid-frame and the RAF picked up the wrong cell —
-		// so the preedit textarea anchored on `imeAnchor` no longer
-		// tracks the visible input position. Fall back to `imeAnchor`
-		// (post-PSReadLine-echo cursor) only when we're NOT inside a
-		// TUI, where it correctly tracks shell typing.
+		// Shell composition follows the live cursor so a real prompt move is
+		// reflected in the same compositionupdate. TUI composition stays on the
+		// start snapshot because its live cursor walks through redraw rows.
+		if (e.imeCompositionActive && !isAlt && !isInlineTui) {
+			return pickAt(e.kernel.cursorRow(), e.kernel.cursorCol());
+		}
+		// Outside shell composition, or inside a TUI, a user-input snapshot is
+		// authoritative. CSI is only a pre-input fallback.
+		const anchor = e.imeAnchor;
+		if (anchor) return pickAt(anchor.row, anchor.col);
 		if ((isAlt || isInlineTui) && typeof k.lastAbsCsiPosition === 'function') {
 			const csi = k.lastAbsCsiPosition();
 			if (csi && Date.now() - csi.atMs < ABS_CSI_DECAY_MS) {
 				return pickAt(csi.row, csi.col);
 			}
 		}
-
-		const anchor = e.imeAnchor;
-		if (anchor) return pickAt(anchor.row, anchor.col);
 
 		// Non-TUI fallback: try lastAbsCsiPosition even outside the
 		// TUI gate, then live cursor. Older wasm bundles without
@@ -4288,12 +4357,9 @@ export class TerminalManager {
 		return this.cursorPixelPosition(paneId);
 	}
 
-	/** Row/col version of `inputAnchorPixelPosition`. Resolved with the
-	 *  SAME fallback chain (alt-screen / inline-TUI → recent
-	 *  `lastAbsCsiPosition` → `imeAnchor` → live cursor) so the IME
-	 *  preedit-overlay code in RidgePane lands its CUP at the exact
-	 *  cell the user is "really" typing at — not wherever a mid-frame
-	 *  Ink spinner has parked the kernel cursor for the moment. */
+	/** Row/col version of `inputAnchorPixelPosition`. Shell composition follows
+	 *  the live cursor; TUI composition uses the same locked anchor as the
+	 *  pixel path, so the preedit overlay and browser sink never diverge. */
 	inputAnchorCell(paneId: string): { row: number; col: number } | null {
 		const e = this.panes.get(paneId);
 		if (!e) return null;
@@ -4307,23 +4373,16 @@ export class TerminalManager {
 		};
 		const isAlt = k.isAltScreen?.() === true;
 		const isInlineTui = k.isInlineTuiMode?.() === true;
-		// Alt-screen / inline-TUI: the LAST absolute-positioning CSI is
-		// the most reliable input-cell signal, even if it's "old". Ink /
-		// claude / opencode park the cursor at the user's input column
-		// at the end of every render frame; when the app goes idle (no
-		// spinner, no animation), it stops emitting CSI but the cursor
-		// stays exactly where the last frame left it — at the input
-		// cell. The 2 s decay used to demote a stale CSI in favour of
-		// the live `kernel.cursor*()`, but in alt-screen the live
-		// cursor and the last CSI position are the SAME thing (no
-		// other writes happen between user keystrokes), so age doesn't
-		// matter. Skip the decay so a quiet Ink TUI still gets the
-		// right anchor.
+		if (e.imeCompositionActive && !isAlt && !isInlineTui) {
+			return { row: k.cursorRow(), col: k.cursorCol() };
+		}
+		// A user-input snapshot is authoritative outside live shell
+		// composition. Before one exists, an absolute CSI is best effort.
+		if (e.imeAnchor) return { row: e.imeAnchor.row, col: e.imeAnchor.col };
 		if ((isAlt || isInlineTui) && typeof k.lastAbsCsiPosition === 'function') {
 			const csi = k.lastAbsCsiPosition();
 			if (csi) return { row: csi.row, col: csi.col };
 		}
-		if (e.imeAnchor) return { row: e.imeAnchor.row, col: e.imeAnchor.col };
 		if (typeof k.lastAbsCsiPosition === 'function') {
 			const csi = k.lastAbsCsiPosition();
 			if (csi && Date.now() - csi.atMs < ABS_CSI_DECAY_MS) {
@@ -4645,6 +4704,29 @@ export class TerminalManager {
 			);
 			void this.fitPane(e, true, true);
 		}, 1000);
+	}
+
+	/** Apply the canonical grid announced by another refresh owner. */
+	applyPaneResize(paneId: string, rows: number, cols: number): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked) return;
+		const nextRows = Math.floor(rows);
+		const nextCols = Math.floor(cols);
+		if (!Number.isFinite(nextRows) || !Number.isFinite(nextCols) || nextRows <= 0 || nextCols <= 0) return;
+		if (entry.pendingFitTimer !== null) {
+			clearTimeout(entry.pendingFitTimer);
+			entry.pendingFitTimer = null;
+		}
+		this._cancelInitialFit(entry);
+		entry.lastReportedRows = nextRows;
+		entry.lastReportedCols = nextCols;
+		entry.kernel.resize(nextRows, nextCols);
+		if (this._sharedRemoteMode) this._recomputeViewport(entry);
+		entry.handle?.invalidateAll();
+		entry.linkSpans.markDirty();
+		try { entry.handle?.render(entry.kernel); } catch (error) { console.error('[ridge-term] external resize render error', paneId, error); }
+		this._scheduleFitRedraw(paneId);
+		this.wake();
 	}
 
 	/**
@@ -4986,6 +5068,7 @@ export class TerminalManager {
 			...dirty,
 			activeHost: dirty.activeWsId === null ? null : this._globalHostHandle(),
 			hostFrameOpen: false,
+			frameFailed: false,
 			anyRendered: false,
 			minDeadlineMs: Infinity,
 		};
@@ -4995,6 +5078,10 @@ export class TerminalManager {
 		if (state.hostFrameOpen) return true;
 		if (state.activeHost === null) return false;
 		state.hostFrameOpen = state.activeHost.beginFrame(this._currentThemeBgRgba());
+		if (!state.hostFrameOpen) {
+			state.frameFailed = true;
+			this.frameFailureCount = Math.min(this.frameFailureCount + 1, 6);
+		}
 		return state.hostFrameOpen;
 	}
 
@@ -5041,6 +5128,8 @@ export class TerminalManager {
 				perfMark(`rg.terminal.render.pane.${entry.paneId}`, () => entry.handle?.render(entry.kernel)));
 			state.anyRendered = true;
 		} catch (error) {
+			state.frameFailed = true;
+			this.frameFailureCount = Math.min(this.frameFailureCount + 1, 6);
 			console.error('[ridge-term] render error', entry.paneId, error);
 		}
 	}
@@ -5099,6 +5188,17 @@ export class TerminalManager {
 		}, sleepMs);
 	}
 
+	private _scheduleFrameRetry(): void {
+		if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+		if (this.idleTimer !== null) return;
+		const exponent = Math.max(0, this.frameFailureCount - 1);
+		const retryMs = Math.min(1000, 50 * (2 ** exponent));
+		this.idleTimer = setTimeout(() => {
+			this.idleTimer = null;
+			this.startRafLoop();
+		}, retryMs);
+	}
+
 	private _hasQueuedFrameWork(order: readonly PaneEntry[]): boolean {
 		return order.some((entry) =>
 			entry.deltaQueueHead < entry.deltaQueue.length || hasDeferredFeed(entry),
@@ -5107,6 +5207,10 @@ export class TerminalManager {
 
 	private _scheduleNextFrame(state: RafFrameState, tick: () => void): void {
 		if (this.panes.size === 0) return;
+		if (state.frameFailed) {
+			this._scheduleFrameRetry();
+			return;
+		}
 		// A synchronized-output boundary may intentionally suppress paint while
 		// parser work remains queued. Keep draining on compositor turns; sleeping
 		// until the 150 ms safety timeout makes a pre-buffered TUI burst freeze and
@@ -5125,6 +5229,7 @@ export class TerminalManager {
 			const state = this._newRafFrame(perfNow, Date.now());
 			for (const entry of state.frameOrder) this._renderFrameEntry(entry, state);
 			this._finishHostFrame(state);
+			if (!state.frameFailed) this.frameFailureCount = 0;
 			this._emitScrollStateChanges();
 			this._rafRotationIndex = (this._rafRotationIndex + 1) >>> 0;
 			this._scheduleNextFrame(state, tick);
@@ -5155,6 +5260,7 @@ export class TerminalManager {
 			document.removeEventListener('pointercancel', this._resizeReleaseListener);
 			this._resizeReleaseListener = null;
 		}
+		this.frameFailureCount = 0;
 		this._lastMemorySweepAt = 0;
 		if (this.panes.size === 0) this._memoryRestorePending.clear();
 	}

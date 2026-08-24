@@ -50,6 +50,7 @@ import { scheduleForcedPaneResize } from '$lib/terminal/desktopPaneResize';
 import { buildPtyRuntimeSnapshot } from '$lib/terminal/ptyRuntimeSnapshot';
 import { PaneRpcScheduler } from '@ridge/remote/shared/transport/paneRpcScheduler';
 import { RpcCancelledError, RpcTimeoutError, type RpcRequestOptions } from '@ridge/remote/shared/transport/types';
+import { pinImeCaretToAnchor } from '@ridge/remote/shared/terminal/imeAnchor';
 import { Terminal, PlugZap } from 'lucide-svelte';
 
 interface Props {
@@ -787,17 +788,9 @@ let preeditSentToPty = '';
 // never drift apart by even a cell (single source via
 // `manager.inputAnchorResolved`).
 //
-// Lock policy:
-//   - Alt-screen / inline-TUI: snapshot frozen at compositionstart and
-//     held for the whole session. Re-resolving mid-update lets Ink-style
-//     log-update spinner walks (claude code, opencode) drag the preedit
-//     across the pane — the original "IME 输入域到处乱跑" symptom.
-//   - Plain shell (cmd / PowerShell / bash / zsh / fish): re-resolve on
-//     every compositionupdate. The resolver chain in shell mode is
-//     stable (imeAnchor reflects post-keystroke cursor; no spinner to
-//     drag it) so following genuine input movement — line wrap, async
-//     prompt re-emit — keeps preedit + textarea pinned to the visible
-//     input cell.
+// Lock policy: Alt/Inline TUI snapshots the input cell at compositionstart;
+// their live cursor walks redraw rows. Plain Shell follows the live input
+// cursor on compositionupdate, so an actual prompt move is not left behind.
 type ImeAnchor = {
 	row: number;
 	col: number;
@@ -1022,21 +1015,6 @@ function maybePrefetchOlder(): void {
 
 function repositionImeHelper() {
 	if (!imeHelper) return;
-	// Keep the DOM anchor and renderer preedit on the same effective cursor.
-	// Re-resolve during composition so a shell/TUI cursor move cannot leave
-	// the candidate popup or preedit text at the old cell.
-	if (isComposing) {
-		const fresh = manager.inputAnchorResolved?.(paneId);
-		if (fresh) {
-			const moved = !composingAnchor
-				|| fresh.row !== composingAnchor.row
-				|| fresh.col !== composingAnchor.col;
-			composingAnchor = fresh;
-			if (moved && preeditSentToPty) {
-				manager.setPreedit?.(paneId, preeditSentToPty, fresh.row, fresh.col);
-			}
-		}
-	}
 	const pos: { x: number; y: number; cellW: number; cellH: number } | null =
 		isComposing && composingAnchor
 			? (manager.pixelPositionFromCell?.(paneId, composingAnchor.row, composingAnchor.col) ?? composingAnchor)
@@ -1055,6 +1033,9 @@ function repositionImeHelper() {
 	// 设 `--rg-ime-cell-w`。仅把 cell 高度喂给 CSS（`var(--rg-ime-cell-h)`）
 	// 让候选框有一个 cell 高的竖直锚点矩形。
 	imeHelper.style.setProperty('--rg-ime-cell-h', `${pos.cellH}px`);
+	// Keep the native composition caret at the one-cell sink edge. Otherwise
+	// Chromium/WebView2 can place the candidate window at hidden preedit text.
+	pinImeCaretToAnchor(imeHelper);
 }
 
 // §1.27 (2026-05-07): RIDGE_DIAG-gated IME composition trace. The dim/IME
@@ -1088,6 +1069,7 @@ function onCompositionStart() {
 	isComposing = true;
 	notePtyRuntimeInput();
 	preeditSentToPty = '';
+	manager.beginImeComposition?.(paneId);
 	// §P5.IME: single-source anchor. Same `(row, col)` powers the
 	// wasm preedit overlay AND the textarea pixel rect — they cannot
 	// disagree about where the user's caret is.
@@ -1106,13 +1088,12 @@ function onCompositionStart() {
 		// mode and alt-screen TUIs (vim, less, claude code, opencode).
 		const next = e.data ?? '';
 
-		// Re-resolve happens in the same frame, including alt-screen/inline-TUI,
-		// so the composition-start lock cannot become stale.
-		if (composingAnchor) {
+		if (composingAnchor
+			&& !manager.isAltScreen(paneId)
+			&& !manager.isInlineTuiActive(paneId)) {
 			const fresh = manager.inputAnchorResolved?.(paneId);
 			if (fresh && (fresh.row !== composingAnchor.row || fresh.col !== composingAnchor.col)) {
 				composingAnchor = fresh;
-				repositionImeHelper();
 			}
 		}
 
@@ -1120,6 +1101,7 @@ function onCompositionStart() {
 			manager.setPreedit?.(paneId, next, composingAnchor.row, composingAnchor.col);
 			preeditSentToPty = next;
 		}
+		repositionImeHelper();
 		// §缺陷A (2026-06-18): NOT widen the hidden textarea during composition.
 		// 以前这里把 textarea 宽度撑成 `(charCount+1)*cellW`，col 0 时它 `left:0`
 		// 贴分区左边界又被聚焦 → WebView2/Chromium 对 overflow:hidden 祖先隐式设
@@ -1137,6 +1119,7 @@ function onCompositionStart() {
 		clearAgentPaneAttention(workspaceId, paneId);
 		// Anchor on focus too, in case the user clicked into the pane and
 		// expects the next IME composition to appear near the current cursor.
+		manager.captureImeAnchor?.(paneId);
 		repositionImeHelper();
 		// The IME textarea is visually transparent, including its native caret;
 		// keep the renderer caret visible when this helper owns focus.
@@ -1205,6 +1188,7 @@ function onCompositionStart() {
 	function onCompositionEnd(e: CompositionEvent) {
 		isComposing = false;
 		composingAnchor = null;
+		manager.endImeComposition?.(paneId);
 		const data = e.data ?? '';
 		// Clear the renderer-side preedit overlay (kernel cells were
 		// never touched, no erase needed). Then ship the committed
@@ -1225,6 +1209,7 @@ function onCompositionStart() {
 			// 撑宽，故这里也不再需要恢复宽度——清空可能残留的内联 width（防御
 			// 历史样式），让其回落到 CSS 固定值。
 			imeHelper.style.width = '';
+			pinImeCaretToAnchor(imeHelper);
 		}
 
 		// §1.27 fix: force a full-frame redraw so any canvas pixels that
@@ -1387,7 +1372,7 @@ function onPtyResize(
 		remote.link.refreshPane({
 			workspaceId: remote.workspaceId,
 			paneId: remote.remotePaneId,
-		}, rows, cols, 0, 0);
+		}, rows, cols, 0, 0, 'host');
 		return Promise.resolve();
 	}
 	// §1.24 / §A.3: `isAlt` and `isInlineTui` both let the backend skip
@@ -1693,10 +1678,19 @@ $effect(() => {
 	return manager.onScrollState(paneId, refreshScrollState);
 });
 
-// Continuous IME cursor following during composition. While IME is active
-// the textarea position is re-synced every frame so the OS candidate popup
-// follows the cursor when the viewport scrolls or cursor moves due to PTY
-// output. The rAF loop starts/stops reactively with `isComposing`.
+// PTY echo advances the kernel cursor on a later frame. Reposition the
+// focused IME sink when the manager captures that post-echo cell; composition
+// mode still uses the locked composingAnchor.
+$effect(() => {
+	if (!attached || !alive) return;
+	return manager.onImeAnchor(paneId, () => {
+		if (alive) repositionImeHelper();
+	});
+});
+
+// Continuous IME pixel following during composition. TUI row/col remains
+// locked; Shell row/col is refreshed on compositionupdate from the live
+// manager anchor, while this loop handles scroll/DPR/layout movement.
 $effect(() => {
 	if (!isComposing || !alive || !attached) return;
 	const track = () => {

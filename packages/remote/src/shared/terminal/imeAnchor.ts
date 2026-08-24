@@ -49,6 +49,18 @@ export interface ImeAnchorInput {
 	dpr: number;
 }
 
+/** Keep the browser's native composition caret at the right edge of the
+ *  one-cell IME sink. The sink is intentionally narrower than the preedit
+ *  text; without this explicit scroll, Chromium/WebView2 may place the
+ *  composition window at the hidden textarea's off-screen text width. */
+export function pinImeCaretToAnchor(input: Pick<
+	HTMLTextAreaElement,
+	'scrollLeft' | 'scrollTop' | 'scrollWidth' | 'clientWidth'
+>): void {
+	input.scrollLeft = Math.max(0, input.scrollWidth - input.clientWidth);
+	input.scrollTop = 0;
+}
+
 export function activateIme(ops: {
 	scrollToBottom(): void;
 	positionAtCursorOrCenter(): void;

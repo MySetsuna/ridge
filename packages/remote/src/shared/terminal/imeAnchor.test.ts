@@ -3,6 +3,7 @@ import {
 	scissorOriginDevicePx,
 	cellDeviceOffsetPx,
 	imeHelperCssPosition,
+	pinImeCaretToAnchor,
 	activateIme,
 	type ImeAnchorInput,
 } from './imeAnchor';
@@ -16,6 +17,20 @@ describe('activateIme', () => {
 			focus: () => calls.push('focus'),
 		});
 		expect(calls).toEqual(['bottom', 'anchor', 'focus']);
+	});
+});
+
+describe('pinImeCaretToAnchor', () => {
+	it('keeps the native composition caret at the one-cell sink edge', () => {
+		const input = {
+			scrollLeft: 0,
+			scrollTop: 12,
+			scrollWidth: 96,
+			clientWidth: 1,
+		} as HTMLTextAreaElement;
+		pinImeCaretToAnchor(input);
+		expect(input.scrollLeft).toBe(95);
+		expect(input.scrollTop).toBe(0);
 	});
 });
 
