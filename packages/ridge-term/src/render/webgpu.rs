@@ -690,24 +690,40 @@ impl WebGpuPaneBackend {
         glyph_text: &str,
         style_flags: u8,
     ) -> Option<GlyphEntry> {
-        let mut ctx = self.ctx.borrow_mut();
-        let entry = match ctx.atlas.lookup(&key) {
-            Some(entry) => Some(entry),
-            None => ctx
-                .rasterize_and_admit(
-                    key,
-                    glyph_text,
-                    self.metrics.dpr,
-                    style_flags,
-                    &self.frame_pinned,
-                )
-                .ok(),
+        let entry = {
+            let mut ctx = self.ctx.borrow_mut();
+            match ctx.atlas.lookup(&key) {
+                Some(entry) => Some(entry),
+                None => ctx
+                    .rasterize_and_admit(
+                        key,
+                        glyph_text,
+                        self.metrics.dpr,
+                        style_flags,
+                        &self.frame_pinned,
+                    )
+                    .ok(),
+            }
         }?;
-        self.frame_pinned[entry.layer as usize] = true;
-        if (entry.layer as usize) < ctx.frame_written.len() {
-            ctx.frame_written[entry.layer as usize] = true;
-        }
+        self.mark_glyph_used(entry);
         Some(entry)
+    }
+
+    /// Pin and mark an atlas layer once per pane frame. The local pin bitmap
+    /// already resets at `begin_frame`, so repeated cells using one glyph can
+    /// avoid borrowing the shared context just to rewrite `frame_written`.
+    fn mark_glyph_used(&mut self, entry: GlyphEntry) {
+        let layer = entry.layer as usize;
+        if layer < self.frame_pinned.len() {
+            if self.frame_pinned[layer] {
+                return;
+            }
+            self.frame_pinned[layer] = true;
+        }
+        let mut ctx = self.ctx.borrow_mut();
+        if layer < ctx.frame_written.len() {
+            ctx.frame_written[layer] = true;
+        }
     }
 
     fn admit_cached_glyph(
@@ -718,11 +734,7 @@ impl WebGpuPaneBackend {
     ) -> Option<GlyphEntry> {
         if let Some(entry) = self.glyph_frame_cache.get(&key).copied() {
             if let Some(entry) = entry {
-                self.frame_pinned[entry.layer as usize] = true;
-                let mut ctx = self.ctx.borrow_mut();
-                if (entry.layer as usize) < ctx.frame_written.len() {
-                    ctx.frame_written[entry.layer as usize] = true;
-                }
+                self.mark_glyph_used(entry);
             }
             return entry;
         }
@@ -745,9 +757,9 @@ impl WebGpuPaneBackend {
         }
         let target = col.min(u16::MAX as usize) as u16;
         row.clusters
-            .iter()
-            .find(|cluster| cluster.col == target)
-            .map(|cluster| cluster.text.as_ref())
+            .binary_search_by_key(&target, |cluster| cluster.col)
+            .ok()
+            .map(|index| row.clusters[index].text.as_ref())
     }
 
     fn glyph_style_flags(flags: crate::term::attrs::Flags) -> u8 {

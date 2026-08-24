@@ -118,8 +118,8 @@ pub fn scan_line_path(cells: &[Cell], clusters: &[ClusterSpan]) -> RenderPath {
 /// codepoint. The cell at `col` carries the FIRST codepoint of the
 /// cluster (so per-cell hashing / reflow / selection still see *some*
 /// glyph there); renderers that find a matching `ClusterSpan` use
-/// `text` instead of `cell.ch`. Ordered by `col`; a row typically has
-/// 0–2 clusters in non-emoji-heavy output, so linear scan is fine.
+/// `text` instead of `cell.ch`. Spans are kept ordered by `col` for cheap
+/// binary lookup in both the kernel-facing row helpers and WebGPU renderer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClusterSpan {
     pub col: u16,
@@ -225,15 +225,17 @@ impl Row {
         self.clusters.clear();
     }
 
-    /// §4.7 — return the cluster span anchored at `col` if any. O(N)
-    /// linear scan; expected N is 0 for the common case and small
-    /// (<10) even for emoji-heavy rows.
+    /// §4.7 — return the cluster span anchored at `col` if any. Cluster spans
+    /// are kept ordered by column, so lookup is O(log N).
     pub fn cluster_at(&self, col: usize) -> Option<&ClusterSpan> {
         if self.clusters.is_empty() {
             return None;
         }
         let target = col.min(u16::MAX as usize) as u16;
-        self.clusters.iter().find(|c| c.col == target)
+        self.clusters
+            .binary_search_by_key(&target, |cluster| cluster.col)
+            .ok()
+            .map(|index| &self.clusters[index])
     }
 
     /// §4.7 — register a multi-codepoint grapheme cluster anchored at
@@ -243,10 +245,12 @@ impl Row {
     /// and skip the sidecar overhead.
     pub fn set_cluster(&mut self, col: usize, text: Box<str>) {
         let col_u16 = col.min(u16::MAX as usize) as u16;
-        if let Some(existing) = self.clusters.iter_mut().find(|c| c.col == col_u16) {
-            existing.text = text;
-        } else {
-            self.clusters.push(ClusterSpan { col: col_u16, text });
+        match self
+            .clusters
+            .binary_search_by_key(&col_u16, |cluster| cluster.col)
+        {
+            Ok(index) => self.clusters[index].text = text,
+            Err(index) => self.clusters.insert(index, ClusterSpan { col: col_u16, text }),
         }
     }
 
@@ -397,6 +401,28 @@ mod tests {
         }
         assert!(!r.wrapped);
         assert!(r.hyperlinks.is_empty());
+    }
+
+    #[test]
+    fn row_clusters_stay_ordered_for_binary_lookup() {
+        let mut r = Row::new(16);
+        r.set_cluster(9, "nine".into());
+        r.set_cluster(2, "two".into());
+        r.set_cluster(9, "updated".into());
+
+        assert_eq!(
+            r.clusters.iter().map(|cluster| cluster.col).collect::<Vec<_>>(),
+            [2, 9]
+        );
+        assert_eq!(
+            r.cluster_at(2).map(|cluster| cluster.text.as_ref()),
+            Some("two")
+        );
+        assert_eq!(
+            r.cluster_at(9).map(|cluster| cluster.text.as_ref()),
+            Some("updated")
+        );
+        assert!(r.cluster_at(3).is_none());
     }
 
     #[test]
