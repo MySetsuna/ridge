@@ -82,15 +82,25 @@ impl GlyphRasterizer {
         let height = self.slot_h as f64;
         self.context.clear_rect(0.0, 0.0, width, height);
 
+        // All fallback faces in one terminal row share the primary font's
+        // alphabetic baseline. A per-glyph baseline makes CJK, box drawing,
+        // and symbol faces look vertically independent even though their
+        // cells share one line box.
+        let line_metrics = self
+            .context
+            .measure_text("M")
+            .map_err(|error| js_error("cannot measure terminal line box", error))?;
+        let line_ascent = finite_non_negative(line_metrics.actual_bounding_box_ascent())
+            .unwrap_or((device_size as f64) * 0.8);
+        let line_descent = finite_non_negative(line_metrics.actual_bounding_box_descent())
+            .unwrap_or((device_size as f64) * 0.2);
+        let line_height = (line_ascent + line_descent).max((device_size as f64) * 1.2);
+        let baseline = ((line_height + line_ascent - line_descent) * 0.5).clamp(0.0, height);
+
         let metrics = self
             .context
             .measure_text(glyph_text)
             .map_err(|error| js_error("cannot measure terminal glyph", error))?;
-        let ascent = finite_non_negative(metrics.actual_bounding_box_ascent())
-            .unwrap_or((device_size as f64) * 0.8);
-        let descent = finite_non_negative(metrics.actual_bounding_box_descent())
-            .unwrap_or((device_size as f64) * 0.2);
-        let baseline = ((height + ascent - descent) * 0.5).clamp(0.0, height);
         let left = metrics.actual_bounding_box_left();
         let draw_x = if left.is_finite() {
             (-left).max(0.0)

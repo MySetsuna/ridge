@@ -121,14 +121,13 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    // §B.5 — procedural rect short-circuit.
+    // §B.5 — solid overlay rectangle short-circuit.
     //
-    // Box-drawing / block-element / shade quads (webgpu.rs::draw_row_texts
-    // procedural path) set is_color = 2 as a sentinel. They MUST bypass
-    // atlas sampling: their atlas_uv = (0,0,0,0) and atlas_layer = 0 would
-    // otherwise read the unreliable corner of layer 0 (unwritten or the
-    // edge of an evicted glyph fragment), pulling coverage to ~0 and
-    // making the entire procedural rect invisible. Output is premultiplied
+    // Selection and other solid overlay quads set is_color = 2 as a sentinel.
+    // They bypass atlas sampling: their atlas_uv = (0,0,0,0) and atlas_layer
+    // = 0 would otherwise read the unreliable corner of layer 0 (unwritten
+    // or the edge of an evicted glyph fragment), pulling coverage to ~0.
+    // Output is premultiplied
     // to match the (src=One, dst=OneMinusSrcAlpha) BlendState configured
     // in gpu_context.rs.
     if (in.is_color > 1.5) {
