@@ -5149,7 +5149,7 @@ export class TerminalManager {
 				else handle?.invalidateAll?.();
 			}
 			perfMark('rg.terminal.render', () =>
-				perfMark(`rg.terminal.render.pane.${entry.paneId}`, () => entry.handle?.render(entry.kernel)));
+				perfMark(() => `rg.terminal.render.pane.${entry.paneId}`, () => entry.handle?.render(entry.kernel)));
 			entry.renderPending = false;
 			state.anyRendered = true;
 		} catch (error) {

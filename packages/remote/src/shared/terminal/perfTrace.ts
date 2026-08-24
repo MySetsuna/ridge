@@ -48,19 +48,21 @@ function tracingEnabled(): boolean {
  * around it iff `globalThis.__RIDGE_PERF_TRACE === true`. Re-throws
  * any error `fn()` throws but still emits the measure (via `finally`),
  * so partial-failure frames remain visible in the attribution data.
+ * A callback label is resolved only when tracing is enabled.
  */
-export function perfMark<T>(label: string, fn: () => T): T {
+export function perfMark<T>(label: string | (() => string), fn: () => T): T {
 	if (!tracingEnabled()) {
 		return fn();
 	}
-	const startMark = `${label}:s`;
-	const endMark = `${label}:e`;
+	const resolvedLabel = typeof label === 'function' ? label() : label;
+	const startMark = `${resolvedLabel}:s`;
+	const endMark = `${resolvedLabel}:e`;
 	performance.mark(startMark);
 	try {
 		return fn();
 	} finally {
 		performance.mark(endMark);
-		performance.measure(label, startMark, endMark);
+		performance.measure(resolvedLabel, startMark, endMark);
 		performance.clearMarks(startMark);
 		performance.clearMarks(endMark);
 	}
