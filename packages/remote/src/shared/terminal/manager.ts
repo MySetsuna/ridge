@@ -1569,7 +1569,7 @@ export class TerminalManager {
 	 *
 	 * Clamped to the host canvas bounds: a pane dragged to zero width
 	 * or off-canvas resolves to `{ w: 0, h: 0 }` and the host's
-	 * `record_pane` skips it entirely (parked-by-clip).
+	 * `queue_pane` skips it entirely (parked-by-clip).
 	 *
 	 * Every attached pane uses this host-relative geometry; the shared
 	 * WebGPU surface is the sole presentation target.

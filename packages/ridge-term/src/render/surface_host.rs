@@ -3,7 +3,7 @@
 //! Owns the single `wgpu::Surface` bound to the global `<canvas
 //! data-rg-host>` element in `+page.svelte`. All `WebGpuPaneBackend`
 //! instances funnel their per-frame draw calls through here via
-//! [`SurfaceHost::record_pane`]; one `surface.get_current_texture()` /
+//! [`SurfaceHost::queue_pane`]; one `surface.get_current_texture()` /
 //! `queue.submit` / `present` pair runs per frame regardless of pane
 //! count.
 //!
@@ -16,7 +16,7 @@
 //! holding `pane.viewport.w` × `pane.viewport.h`) to produce NDC.
 //!
 //! The mapping from per-pane NDC to the host canvas's actual rect happens
-//! at the GPU pipeline level: [`SurfaceHost::record_pane`] calls
+//! at the GPU pipeline level: [`SurfaceHost::queue_pane`] calls
 //! `pass.set_viewport(x, y, w, h, 0, 1)` with the pane's scissor rect,
 //! and `pass.set_scissor_rect` to clip overdraw at the boundaries. The
 //! pane backend stays unaware of where on the host canvas it lives.
@@ -47,7 +47,7 @@ use super::wallpaper::cover_uv_transform;
 /// Pane viewport rectangle in **host-canvas device-pixel coordinates**.
 /// `is_empty()` is true when the pane is parked-by-clip (pulled to zero
 /// width by a splitter drag, or laid out entirely outside the host
-/// canvas's bounds). Empty rects are skipped at `record_pane` so we
+/// canvas's bounds). Empty rects are skipped at `queue_pane` so we
 /// never call `set_viewport`/`set_scissor_rect` with zero extents
 /// (wgpu validation rejects `width == 0 || height == 0`).
 #[derive(Copy, Clone, Debug, Default)]
@@ -178,6 +178,15 @@ fn create_frame_target(
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
+}
+
+/// GPU handles needed to draw one pane. wgpu handles are reference-counted;
+/// keeping cheap clones until `end_frame` lets all panes share one render pass.
+struct QueuedPane {
+    scissor: ScissorRect,
+    bind_group: Rc<wgpu::BindGroup>,
+    instance_buffer: Rc<wgpu::Buffer>,
+    instance_count: u32,
 }
 
 fn create_scroll_scratch(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
@@ -397,11 +406,13 @@ pub struct SurfaceHost {
     needs_full_seed: bool,
     full_seed_recorded: bool,
     /// Per-frame transients. Populated by `begin_frame`, drained by
-    /// `end_frame`. `record_pane` mutates the encoder via
-    /// `begin_render_pass`. None outside the begin..end window.
+    /// `end_frame`. Pane handles are collected first and recorded in one
+    /// render pass at frame end. None outside the begin..end window.
     current_frame: Option<wgpu::SurfaceTexture>,
     current_surface_view: Option<wgpu::TextureView>,
     current_encoder: Option<wgpu::CommandEncoder>,
+    queued_panes: Vec<QueuedPane>,
+    pending_background_damage: Vec<ScissorRect>,
 }
 
 impl SurfaceHost {
@@ -533,6 +544,8 @@ impl SurfaceHost {
             current_frame: None,
             current_surface_view: None,
             current_encoder: None,
+            queued_panes: Vec::new(),
+            pending_background_damage: Vec::new(),
         })))
     }
 
@@ -619,8 +632,8 @@ impl SurfaceHost {
     }
 
     /// Begin one host frame: acquire a swap-chain texture and create the
-    /// per-frame encoder. Subsequent `record_pane` calls open render
-    /// passes against this encoder; `end_frame` finishes + submits +
+    /// per-frame encoder. Subsequent `queue_pane` calls enqueue draws for
+    /// this encoder; `end_frame` records, finishes + submits +
     /// presents.
     ///
     /// Returns `false` on surface-lost / outdated — the caller (JS RAF
@@ -628,6 +641,8 @@ impl SurfaceHost {
     /// `theme_bg` is the 4-byte RGBA seed color for the frame-store pass.
     pub fn begin_frame(&mut self, theme_bg: [u8; 4]) -> bool {
         self.full_seed_recorded = false;
+        self.queued_panes.clear();
+        self.pending_background_damage.clear();
         if self.current_frame.is_some() {
             // Stale frame from a previous tick that never ended (likely
             // a JS bug). Drop the transients and start fresh — better
@@ -753,17 +768,25 @@ impl SurfaceHost {
         true
     }
 
-    /// Restore the exact compositor background beneath damaged transparent
-    /// cells. Wallpaper keeps global cover UVs; plain colour uses a replace
-    /// pipeline so translucent themes cannot blend over retained glyphs.
+    /// Queue restoration of the exact compositor background beneath damaged
+    /// transparent cells. The regions are recorded in one pass at frame end.
     pub fn repair_background_damage(&mut self, rects: &[ScissorRect]) {
         if rects.is_empty() {
             return;
         }
-        let ctx = self.ctx.borrow();
-        let Some(encoder) = self.current_encoder.as_mut() else {
+        if self.current_encoder.is_none() {
             return;
-        };
+        }
+        self.pending_background_damage
+            .extend(rects.iter().copied().filter(|rect| !rect.is_empty()));
+    }
+
+    fn record_background_damage(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let rects = std::mem::take(&mut self.pending_background_damage);
+        if rects.is_empty() {
+            return;
+        }
+        let ctx = self.ctx.borrow();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("ridge-host-wallpaper-damage-pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -900,25 +923,21 @@ impl SurfaceHost {
         ScrollCopyResult::new(plan.repaint_rows)
     }
 
-    /// Open a render pass for one pane, set its viewport + scissor + the
-    /// shared cell pipeline, then hand the pass to the closure for bind
-    /// group / vertex buffer / draw recording. The pass is dropped at
-    /// the end of the closure so the encoder can accept the next pane's
-    /// pass.
+    /// Queue one pane's draw handles for the shared frame pass.
     ///
-    /// Always uses `LoadOp::Load` — the full-surface clear was already
-    /// issued by [`begin_frame`] as a dedicated render pass.
-    /// Empty / out-of-bounds scissors are no-ops — wgpu validation
+    /// The full-surface seed and background-damage passes run before this
+    /// pass. Empty / out-of-bounds scissors are no-ops — wgpu validation
     /// rejects zero-extent viewports.
-    pub fn record_pane<F>(
+    pub fn queue_pane(
         &mut self,
         scissor: ScissorRect,
-        pipeline: &wgpu::RenderPipeline,
-        record: F,
-    ) where
-        F: FnOnce(&mut wgpu::RenderPass<'_>),
-    {
-        if scissor.is_empty() { return; }
+        bind_group: &Rc<wgpu::BindGroup>,
+        instance_buffer: &Rc<wgpu::Buffer>,
+        instance_count: u32,
+    ) {
+        if instance_count == 0 || self.current_encoder.is_none() || scissor.is_empty() {
+            return;
+        }
         // Clamp scissor to swap-chain dimensions to avoid wgpu validation errors
         let x = scissor.x.min(self.config.width);
         let y = scissor.y.min(self.config.height);
@@ -928,45 +947,12 @@ impl SurfaceHost {
         if w == 0 || h == 0 {
             return;
         }
-
-        let load = wgpu::LoadOp::Load;
-
-        let encoder = match self.current_encoder.as_mut() {
-            Some(e) => e,
-            None => return,
-        };
-
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("ridge-host-pane-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.frame_store_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            // Map the pane's [-1, 1] NDC range to its rect on the host
-            // canvas. The pane's vertex shader divides cell_xy by
-            // frame_uniform.viewport (= scissor.w × scissor.h), so this
-            // is the correct NDC → device-pixel mapping.
-            pass.set_viewport(
-                scissor.x as f32,
-                scissor.y as f32,
-                w as f32,
-                h as f32,
-                0.0,
-                1.0,
-            );
-            pass.set_scissor_rect(scissor.x, scissor.y, w, h);
-            pass.set_pipeline(pipeline);
-            record(&mut pass);
-        }
+        self.queued_panes.push(QueuedPane {
+            scissor: ScissorRect { x, y, w, h },
+            bind_group: bind_group.clone(),
+            instance_buffer: instance_buffer.clone(),
+            instance_count,
+        });
     }
 
     /// Upload a new wallpaper image and enable the wallpaper path in
@@ -989,6 +975,7 @@ impl SurfaceHost {
     /// next `begin_frame` starts cleanly. No-op if `begin_frame` was
     /// never called or already returned `false` (surface lost).
     pub fn end_frame(&mut self) {
+        let queued_panes = std::mem::take(&mut self.queued_panes);
         let encoder = match self.current_encoder.take() {
             Some(e) => e,
             None => return,
@@ -1003,6 +990,46 @@ impl SurfaceHost {
         };
         {
             let mut encoder = encoder;
+            self.record_background_damage(&mut encoder);
+            if !queued_panes.is_empty() {
+                let ctx = self.ctx.borrow();
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("ridge-host-pane-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.frame_store_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                for pane in &queued_panes {
+                    pass.set_viewport(
+                        pane.scissor.x as f32,
+                        pane.scissor.y as f32,
+                        pane.scissor.w as f32,
+                        pane.scissor.h as f32,
+                        0.0,
+                        1.0,
+                    );
+                    pass.set_scissor_rect(
+                        pane.scissor.x,
+                        pane.scissor.y,
+                        pane.scissor.w,
+                        pane.scissor.h,
+                    );
+                    pass.set_pipeline(&ctx.cell_pipeline);
+                    pass.set_bind_group(0, &*pane.bind_group, &[]);
+                    pass.set_vertex_buffer(0, pane.instance_buffer.slice(..));
+                    pass.draw(0..4, 0..pane.instance_count);
+                }
+                drop(pass);
+                drop(ctx);
+            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ridge-host-frame-blit-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
