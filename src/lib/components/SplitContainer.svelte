@@ -103,9 +103,11 @@ import {
     // Keep Git/SCM polling scoped to the visible workspace. Keep-alive panes
     // remain mounted under display:none; querying each of them at boot caused
     // a find_git_repos_below + status/diff fan-out before the first paint.
-    const cwd = workspaceId === $activeWorkspaceId
-      ? ($paneCwdStore[`${workspaceId}:${node.id}`] ?? '')
-      : '';
+    // Do not pass null for hidden panes: null means "pane stopped tracking"
+    // and clears its header pill from the shared frontend store. The next
+    // activation supplies the current cwd and refreshes only if it changed.
+    if (workspaceId !== $activeWorkspaceId) return;
+    const cwd = $paneCwdStore[`${workspaceId}:${node.id}`] ?? '';
     trackPaneGitStatus(node.id, cwd || null);
   });
   let splitHost: HTMLElement | undefined;
