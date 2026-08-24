@@ -106,10 +106,7 @@ pub struct GlyphEntry {
 
 /// Place a glyph inside its terminal cell without letting fallback faces
 /// overflow neighboring cells.
-#[cfg_attr(
-    not(any(test, all(target_arch = "wasm32", feature = "webgpu"))),
-    allow(dead_code)
-)]
+#[allow(dead_code)]
 pub(crate) fn glyph_quad_geometry(
     pixel_x: f32,
     pixel_y: f32,
@@ -118,26 +115,62 @@ pub(crate) fn glyph_quad_geometry(
     box_h: f32,
     allow_upscale: bool,
 ) -> ([f32; 2], [f32; 2]) {
+    let (cell_xy, cell_size, _) =
+        glyph_quad_geometry_with_uv(pixel_x, pixel_y, entry, box_w, box_h, allow_upscale);
+    (cell_xy, cell_size)
+}
+
+/// Return native-size glyph geometry plus the UV crop needed to keep a
+/// glyph inside its cell. Narrow glyphs must not be uniformly scaled merely
+/// because Canvas2D included a one-pixel antialiasing overhang in its bitmap.
+#[cfg_attr(
+    not(any(test, all(target_arch = "wasm32", feature = "webgpu"))),
+    allow(dead_code)
+)]
+pub(crate) fn glyph_quad_geometry_with_uv(
+    pixel_x: f32,
+    pixel_y: f32,
+    entry: &GlyphEntry,
+    box_w: f32,
+    box_h: f32,
+    allow_upscale: bool,
+) -> ([f32; 2], [f32; 2], [f32; 4]) {
     let native_w = (entry.px_w as f32).max(1.0);
     let native_h = (entry.px_h as f32).max(1.0);
-    let exceeds_box = native_w > box_w || native_h > box_h;
-    if !allow_upscale && !exceeds_box {
+    if allow_upscale {
+        let (draw_x, draw_y, draw_w, draw_h) = fit_glyph_box(
+            native_w,
+            native_h,
+            box_w.max(1.0),
+            box_h.max(1.0),
+            pixel_x,
+            pixel_y,
+            true,
+        );
         return (
-            [pixel_x, pixel_y + entry.ascent_offset],
-            [native_w, native_h],
+            [draw_x, draw_y],
+            [draw_w.max(1.0), draw_h.max(1.0)],
+            entry.uv,
         );
     }
 
-    let (draw_x, draw_y, draw_w, draw_h) = fit_glyph_box(
-        native_w,
-        native_h,
-        box_w.max(1.0),
-        box_h.max(1.0),
-        pixel_x,
-        pixel_y,
-        allow_upscale,
-    );
-    ([draw_x, draw_y], [draw_w.max(1.0), draw_h.max(1.0)])
+    let box_w = box_w.max(1.0);
+    let box_h = box_h.max(1.0);
+    let draw_y = pixel_y + entry.ascent_offset;
+    let draw_w = native_w.min(box_w);
+    let draw_h = native_h.min((pixel_y + box_h - draw_y).max(1.0));
+    let uv_w = (entry.uv[2] - entry.uv[0]) * (draw_w / native_w);
+    let uv_h = (entry.uv[3] - entry.uv[1]) * (draw_h / native_h);
+    (
+        [pixel_x, draw_y],
+        [draw_w.max(1.0), draw_h.max(1.0)],
+        [
+            entry.uv[0],
+            entry.uv[1],
+            entry.uv[0] + uv_w,
+            entry.uv[1] + uv_h,
+        ],
+    )
 }
 
 struct AtlasEntry {
@@ -423,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn glyph_quad_contains_oversized_fallback_bitmap() {
+    fn glyph_quad_crops_oversized_fallback_bitmap_without_scaling() {
         let glyph = GlyphEntry {
             ascent_offset: 0.0,
             px_w: 16,
@@ -432,7 +465,11 @@ mod tests {
         };
         assert_eq!(
             glyph_quad_geometry(10.0, 20.0, &glyph, 8.0, 16.0, false),
-            ([10.0, 23.0], [8.0, 10.0])
+            ([10.0, 20.0], [8.0, 16.0])
+        );
+        assert_eq!(
+            glyph_quad_geometry_with_uv(10.0, 20.0, &glyph, 8.0, 16.0, false).2,
+            [0.0, 0.0, 0.5, 0.8]
         );
     }
 
