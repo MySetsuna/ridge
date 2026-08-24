@@ -647,6 +647,10 @@ export class TerminalManager {
 
 	private readonly opts: ManagerOptions;
 	private readonly panes = new Map<string, PaneEntry>();
+	/** Active-frame lookup. RAF paints one workspace, so avoid walking hidden
+	 * workspace panes on every compositor turn. The main map remains the source
+	 * of truth for lifecycle and feed bookkeeping. */
+	private readonly paneIdsByWorkspace = new Map<string, Set<string>>();
 	/** Pane ids with parser work waiting for a compositor turn. Keeping this
 	 * sparse avoids scanning every hidden workspace on each RAF tick. Parked
 	 * panes stay indexed so their backlog resumes when they are unparked. */
@@ -2348,6 +2352,12 @@ export class TerminalManager {
 		entry.resizeObserver.observe(container);
 
 		this.panes.set(paneId, entry);
+		let workspacePaneIds = this.paneIdsByWorkspace.get(workspaceId);
+		if (!workspacePaneIds) {
+			workspacePaneIds = new Set<string>();
+			this.paneIdsByWorkspace.set(workspaceId, workspacePaneIds);
+		}
+		workspacePaneIds.add(paneId);
 
 		// The worker mirrors kernel state only; presentation stays on the
 		// main-thread WebGPU host, so attach keeps the canvas local.
@@ -2442,6 +2452,9 @@ export class TerminalManager {
 			this._focusedPaneByWorkspace.delete(entry.workspaceId);
 		}
 		this.panes.delete(paneId);
+		const workspacePaneIds = this.paneIdsByWorkspace.get(entry.workspaceId);
+		workspacePaneIds?.delete(paneId);
+		if (workspacePaneIds?.size === 0) this.paneIdsByWorkspace.delete(entry.workspaceId);
 		this.pendingFrameWorkPanes.delete(paneId);
 		if (this.panes.size === 0) this.stopRafLoop();
 	}
@@ -3536,10 +3549,24 @@ export class TerminalManager {
 	 *  renderer/dirty-probe work. */
 	private _renderOrder(): PaneEntry[] {
 		const live: PaneEntry[] = [];
+		if (this._activeWorkspaceId !== null) {
+			const paneIds = this.paneIdsByWorkspace.get(this._activeWorkspaceId);
+			if (paneIds) {
+				for (const paneId of paneIds) {
+					const entry = this.panes.get(paneId);
+					if (entry && !entry.parked) live.push(entry);
+				}
+				return this._orderPanes(live);
+			}
+			// Keep the bootstrap/test path compatible with entries injected before
+			// the workspace index was introduced.
+			for (const entry of this.panes.values()) {
+				if (!entry.parked && entry.workspaceId === this._activeWorkspaceId) live.push(entry);
+			}
+			return this._orderPanes(live);
+		}
 		for (const entry of this.panes.values()) {
-			if (entry.parked) continue;
-			if (this._activeWorkspaceId !== null && entry.workspaceId !== this._activeWorkspaceId) continue;
-			live.push(entry);
+			if (!entry.parked) live.push(entry);
 		}
 		return this._orderPanes(live);
 	}
