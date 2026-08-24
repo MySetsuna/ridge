@@ -51,6 +51,8 @@ function flattenPanes(node: PaneNode | null | undefined): PaneInfo[] {
 export class CloudHostTopologyLink implements HostTopologyLink {
   /** Composite pane identity registry. Raw frames remain legacy paneId-only. */
   private readonly workspaceByPane = new Map<string, PaneRef>();
+  /** Reverse index avoids scanning every workspace on each raw PTY frame. */
+  private readonly paneKeysById = new Map<string, Set<string>>();
   private readonly livePanes = new Set<string>();
   private activeWorkspaceId: string | null = null;
   /** Panes actually attached to a foreign Host. `livePanes` also contains
@@ -118,6 +120,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     this.livePanes.clear();
     this.subscribedPanes.clear();
     this.workspaceByPane.clear();
+    this.paneKeysById.clear();
     this.activePaneKey = null;
     this.stopResizeEvents();
     this.stopReconnectResume();
@@ -149,7 +152,6 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     for (const [key, pane] of this.workspaceByPane) {
       if (pane.workspaceId === workspaceId && !liveIds.has(pane.paneId)) {
         this.retirePane(pane);
-        this.workspaceByPane.delete(key);
       }
     }
     for (const pane of panes) {
@@ -292,11 +294,13 @@ export class CloudHostTopologyLink implements HostTopologyLink {
 
   onRawBytes(fn: (pane: PaneRef, bytes: Uint8Array) => void): () => void {
     return this.adapter.onPaneBytes((paneId, bytes) => {
-      const matches = [...this.workspaceByPane.values()]
-        .filter((pane) => pane.paneId === paneId);
       // Legacy cloud raw frames carry no workspaceId. Never guess when the
       // same pane id is live in more than one workspace.
-      if (matches.length === 1) fn(matches[0], bytes);
+      const keys = this.paneKeysById.get(paneId);
+      if (keys?.size !== 1) return;
+      const key = keys.values().next().value as string | undefined;
+      const pane = key ? this.workspaceByPane.get(key) : undefined;
+      if (pane) fn(pane, bytes);
     });
   }
 
@@ -387,14 +391,30 @@ export class CloudHostTopologyLink implements HostTopologyLink {
   }
 
   private activatePane(pane: PaneRef): void {
-    this.workspaceByPane.set(paneRefKey(pane), pane);
-    this.livePanes.add(paneRefKey(pane));
+    const key = paneRefKey(pane);
+    if (!this.workspaceByPane.has(key)) {
+      this.workspaceByPane.set(key, pane);
+      let keys = this.paneKeysById.get(pane.paneId);
+      if (!keys) {
+        keys = new Set<string>();
+        this.paneKeysById.set(pane.paneId, keys);
+      }
+      keys.add(key);
+    } else {
+      this.workspaceByPane.set(key, pane);
+    }
+    this.livePanes.add(key);
     this.scheduler.resume(pane);
   }
 
   private retirePane(pane: PaneRef): void {
     const key = paneRefKey(pane);
     this.workspaceByPane.delete(key);
+    const keys = this.paneKeysById.get(pane.paneId);
+    if (keys) {
+      keys.delete(key);
+      if (keys.size === 0) this.paneKeysById.delete(pane.paneId);
+    }
     this.subscribedPanes.delete(key);
     this.livePanes.delete(key);
     if (this.activePaneKey === key) this.activePaneKey = null;
