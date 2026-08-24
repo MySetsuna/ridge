@@ -1006,6 +1006,14 @@ impl GpuContext {
             }
         }
 
+        // Glyph bitmaps are tightly packed by the rasterizer. Pad each row
+        // only to wgpu's copy alignment instead of uploading the entire atlas
+        // slot; the half-texel UV endpoint below keeps linear filtering away
+        // from stale pixels left outside this new bitmap on an evicted layer.
+        let upload_width = u32::from(glyph.width.max(1));
+        let upload_height = u32::from(glyph.height.max(1));
+        let (upload, bytes_per_row) =
+            super::wallpaper::pack_rows_to_alignment(&glyph.rgba, upload_width, upload_height);
         self.queue.write_texture(
             wgpu::ImageCopyTexture {
                 texture: &self.atlas_texture,
@@ -1017,21 +1025,21 @@ impl GpuContext {
                 },
                 aspect: wgpu::TextureAspect::All,
             },
-            &glyph.rgba,
+            &upload,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(self.slot_w * 4),
-                rows_per_image: Some(self.slot_h),
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(upload_height),
             },
             wgpu::Extent3d {
-                width: self.slot_w,
-                height: self.slot_h,
+                width: upload_width,
+                height: upload_height,
                 depth_or_array_layers: 1,
             },
         );
 
-        let u1 = (glyph.width as f32) / (self.slot_w as f32);
-        let v1 = (glyph.height as f32) / (self.slot_h as f32);
+        let u1 = ((glyph.width as f32 - 0.5).max(0.5)) / (self.slot_w as f32);
+        let v1 = ((glyph.height as f32 - 0.5).max(0.5)) / (self.slot_h as f32);
         // `glyph.width / glyph.height` are atlas bitmap pixels. The
         // renderer sizes quads in logical device pixels, so divide by
         // the explicit atlas density here. UV ratios stay unchanged.
