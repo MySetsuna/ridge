@@ -115,6 +115,44 @@ fn rgba_u8_to_f32(rgba: [u8; 4]) -> [f32; 4] {
     ]
 }
 
+fn push_background_instance(
+    instances: &mut Vec<CellInstance>,
+    start_col: usize,
+    end_col: usize,
+    cell_w: f32,
+    pixel_y: f32,
+    row_h: f32,
+    fg: [u8; 4],
+    bg: [u8; 4],
+) {
+    let pixel_x = (start_col as f32 * cell_w + 0.5).floor();
+    let pixel_x_right = (end_col as f32 * cell_w + 0.5).floor();
+    instances.push(CellInstance {
+        cell_xy: [pixel_x, pixel_y],
+        cell_size: [pixel_x_right - pixel_x, row_h],
+        atlas_uv: [0.0, 0.0, 0.0, 0.0],
+        atlas_layer: 0,
+        fg_rgba: rgba_u8_to_f32(fg),
+        bg_rgba: rgba_u8_to_f32(bg),
+        is_color: 0,
+    });
+}
+
+fn flush_background_run(
+    instances: &mut Vec<CellInstance>,
+    run: &mut Option<(usize, usize, [u8; 4], [u8; 4])>,
+    cell_w: f32,
+    pixel_y: f32,
+    row_h: f32,
+) {
+    let Some((start_col, end_col, fg, bg)) = run.take() else {
+        return;
+    };
+    push_background_instance(
+        instances, start_col, end_col, cell_w, pixel_y, row_h, fg, bg,
+    );
+}
+
 /// Initial per-frame cell instance buffer capacity. Realistic terminal
 /// sessions have a few thousand cells; 1024 covers small panes and the
 /// buffer grows on demand for larger ones.
@@ -644,13 +682,28 @@ impl WebGpuPaneBackend {
         // prevent an independent bg from visually cutting the emoji.
         let render_path = scan_line_path(row.cells, row.clusters);
         let mut consume_until: usize = 0;
+        let mut background_run: Option<(usize, usize, [u8; 4], [u8; 4])> = None;
 
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
+                flush_background_run(
+                    &mut self.pending_instances,
+                    &mut background_run,
+                    cell_w,
+                    pixel_y,
+                    row_h_int,
+                );
                 continue;
             }
 
             if col < consume_until {
+                flush_background_run(
+                    &mut self.pending_instances,
+                    &mut background_run,
+                    cell_w,
+                    pixel_y,
+                    row_h_int,
+                );
                 continue;
             }
 
@@ -659,29 +712,71 @@ impl WebGpuPaneBackend {
 
             let cell_span = cell.width.max(1) as usize;
 
-            let pixel_x = (col as f32 * cell_w + 0.5).floor();
-            let pixel_x_right = ((col + cell_span) as f32 * cell_w + 0.5).floor();
-            let cell_w_px = pixel_x_right - pixel_x;
-
             // Normal shell default backgrounds are transparent: the damaged
             // row was already repaired by SurfaceHost, so emitting one quad
             // per cell only burns CPU and instance bandwidth.
             if tui_mode || bg[3] != 0 {
-                self.pending_instances.push(CellInstance {
-                    cell_xy: [pixel_x, pixel_y],
-                    cell_size: [cell_w_px, row_h_int],
-                    atlas_uv: [0.0, 0.0, 0.0, 0.0],
-                    atlas_layer: 0,
-                    fg_rgba: rgba_u8_to_f32(fg),
-                    bg_rgba: rgba_u8_to_f32(bg),
-                    is_color: 0,
-                });
+                if cell_span == 1 {
+                    let extends = matches!(
+                        background_run.as_ref(),
+                        Some((_, end_col, run_fg, run_bg))
+                            if *end_col == col && *run_fg == fg && *run_bg == bg
+                    );
+                    if extends {
+                        if let Some((_, end_col, _, _)) = background_run.as_mut() {
+                            *end_col = col + 1;
+                        }
+                    } else {
+                        flush_background_run(
+                            &mut self.pending_instances,
+                            &mut background_run,
+                            cell_w,
+                            pixel_y,
+                            row_h_int,
+                        );
+                        background_run = Some((col, col + 1, fg, bg));
+                    }
+                } else {
+                    flush_background_run(
+                        &mut self.pending_instances,
+                        &mut background_run,
+                        cell_w,
+                        pixel_y,
+                        row_h_int,
+                    );
+                    push_background_instance(
+                        &mut self.pending_instances,
+                        col,
+                        col + cell_span,
+                        cell_w,
+                        pixel_y,
+                        row_h_int,
+                        fg,
+                        bg,
+                    );
+                }
+            } else {
+                flush_background_run(
+                    &mut self.pending_instances,
+                    &mut background_run,
+                    cell_w,
+                    pixel_y,
+                    row_h_int,
+                );
             }
 
             if render_path == RenderPath::Slow && cell_span > 1 {
                 consume_until = col + cell_span;
             }
         }
+
+        flush_background_run(
+            &mut self.pending_instances,
+            &mut background_run,
+            cell_w,
+            pixel_y,
+            row_h_int,
+        );
     }
 
     fn admit_glyph(
