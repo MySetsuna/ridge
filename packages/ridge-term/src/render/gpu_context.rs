@@ -44,10 +44,11 @@
 #![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::glyph_atlas::{pick_evictable_layer, GlyphAtlas, GlyphEntry, GlyphKey};
-use super::glyph_rasterizer::GlyphRasterizer;
+use super::glyph_rasterizer::{GlyphRasterizer, RasterizedGlyph};
 
 /// Atlas slot dimension floors in device pixels. `slot_w` is rounded up
 /// to a power of two so `bytes_per_row = slot_w × 4` automatically
@@ -122,6 +123,94 @@ pub struct WallpaperTex {
     pub img_h: u32,
 }
 
+/// CPU-side copy of recently rasterized glyph bitmaps. The GPU atlas is an
+/// LRU of texture layers, so a glyph can be evicted while its bitmap is still
+/// useful. Keeping a bounded copy avoids another synchronous Canvas2D
+/// `get_image_data` readback when that glyph returns under high pane churn.
+const RASTER_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
+const RASTER_CACHE_MAX_ENTRIES: usize = 2048;
+
+struct RasterCacheEntry {
+    glyph: Rc<RasterizedGlyph>,
+    last_used: u64,
+    bytes: usize,
+}
+
+#[derive(Default)]
+struct RasterizedGlyphCache {
+    entries: HashMap<GlyphKey, RasterCacheEntry>,
+    clock: u64,
+    bytes: usize,
+}
+
+impl RasterizedGlyphCache {
+    fn next_stamp(&mut self) -> u64 {
+        if self.clock == u64::MAX {
+            for entry in self.entries.values_mut() {
+                entry.last_used = 0;
+            }
+            self.clock = 0;
+        }
+        self.clock += 1;
+        self.clock
+    }
+
+    fn get(&mut self, key: &GlyphKey) -> Option<Rc<RasterizedGlyph>> {
+        let stamp = self.next_stamp();
+        let entry = self.entries.get_mut(key)?;
+        entry.last_used = stamp;
+        Some(entry.glyph.clone())
+    }
+
+    fn insert(&mut self, key: GlyphKey, glyph: Rc<RasterizedGlyph>) {
+        let bytes = glyph.rgba.len();
+        if bytes > RASTER_CACHE_MAX_BYTES {
+            return;
+        }
+        let stamp = self.next_stamp();
+        if let Some(existing) = self.entries.get_mut(&key) {
+            self.bytes = self.bytes.saturating_sub(existing.bytes);
+            existing.glyph = glyph;
+            existing.bytes = bytes;
+            existing.last_used = stamp;
+            self.bytes = self.bytes.saturating_add(bytes);
+            return;
+        }
+
+        while self.entries.len() >= RASTER_CACHE_MAX_ENTRIES
+            || self.bytes.saturating_add(bytes) > RASTER_CACHE_MAX_BYTES
+        {
+            let Some(oldest_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| *key)
+            else {
+                break;
+            };
+            if let Some(oldest) = self.entries.remove(&oldest_key) {
+                self.bytes = self.bytes.saturating_sub(oldest.bytes);
+            }
+        }
+
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.entries.insert(
+            key,
+            RasterCacheEntry {
+                glyph,
+                last_used: stamp,
+                bytes,
+            },
+        );
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.clock = 0;
+        self.bytes = 0;
+    }
+}
+
 /// Per-process shared GPU resources. One instance for all panes.
 pub struct GpuContext {
     pub instance: wgpu::Instance,
@@ -160,6 +249,7 @@ pub struct GpuContext {
     /// per-pane backends — all three must agree.
     pub atlas_layers: u32,
     pub rasterizer: GlyphRasterizer,
+    raster_cache: RasterizedGlyphCache,
     pub slot_w: u32,
     pub slot_h: u32,
     /// Bumped every time `atlas_texture` / `atlas_view` is recreated.
@@ -631,6 +721,7 @@ impl GpuContext {
             next_free_layer: ATLAS_RESERVED_LAYERS,
             atlas_layers,
             rasterizer,
+            raster_cache: RasterizedGlyphCache::default(),
             slot_w,
             slot_h,
             atlas_generation: 0,
@@ -799,6 +890,7 @@ impl GpuContext {
 
     pub fn rebuild_atlas(&mut self) -> Result<(), String> {
         self.atlas.clear();
+        self.raster_cache.clear();
         self.next_free_layer = ATLAS_RESERVED_LAYERS;
 
         let atlas_texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -858,6 +950,7 @@ impl GpuContext {
         // happens at apply time so panes see it on the same frame the atlas is
         // actually cleared.
         self.pending_invalidate = true;
+        self.raster_cache.clear();
     }
 
     /// Apply a deferred [`Self::invalidate_atlas`] at the host frame boundary.
@@ -870,6 +963,7 @@ impl GpuContext {
         }
         self.pending_invalidate = false;
         self.atlas.clear();
+        self.raster_cache.clear();
         self.next_free_layer = ATLAS_RESERVED_LAYERS;
         // Bump generation HERE (not in `invalidate_atlas`) so panes observe the
         // change on the SAME frame the map is actually cleared: each pane's
@@ -930,13 +1024,19 @@ impl GpuContext {
         // current native-DPR setting this avoids an extra filtered
         // downsample; the conversion below keeps future scaling local.
         let ss = ATLAS_SUPERSAMPLE as f32;
-        let glyph = self.rasterizer.rasterize(
-            &self.font_family,
-            self.font_size_px,
-            dpr * ss,
-            style_flags,
-            glyph_text,
-        )?;
+        let glyph = if let Some(glyph) = self.raster_cache.get(&key) {
+            glyph
+        } else {
+            let glyph = Rc::new(self.rasterizer.rasterize(
+                &self.font_family,
+                self.font_size_px,
+                dpr * ss,
+                style_flags,
+                glyph_text,
+            )?);
+            self.raster_cache.insert(key, glyph.clone());
+            glyph
+        };
 
         let layer: u32 = if self.next_free_layer < self.atlas_layers {
             let l = self.next_free_layer;

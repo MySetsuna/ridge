@@ -290,9 +290,11 @@ impl PaneDeltaMailbox {
         {
             return PaneDeltaMailboxPush::Queued { wake: false };
         }
-        if state.pending.as_ref().is_some_and(|pending| {
-            pending.deltas.len().saturating_add(frame.deltas.len()) > MAX_DELTA_MAILBOX_DELTAS
-        }) {
+        let pending_deltas = state
+            .pending
+            .as_ref()
+            .map_or(0, |pending| pending.deltas.len());
+        if pending_deltas.saturating_add(frame.deltas.len()) > MAX_DELTA_MAILBOX_DELTAS {
             return PaneDeltaMailboxPush::NeedsResync;
         }
         state.last_sequence = Some(frame.pane_seq);
@@ -1762,6 +1764,26 @@ mod pty_delta_channel_tests {
             state.enqueue_pane_delta_frame(ws, pane, DeltaFrame::new(2, vec![GridDelta::Bell])),
             PaneDeltaEnqueue::NeedsResync
         ));
+    }
+
+    #[test]
+    fn mailbox_rejects_one_oversized_frame_before_it_reaches_the_frontend() {
+        use ridge_term::term::delta::{DeltaFrame, GridDelta};
+
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender, count, _) = counting_sender();
+        state.register_pane_delta_channel(ws, pane, sender);
+        let burst = std::iter::repeat(GridDelta::Bell)
+            .take(MAX_DELTA_MAILBOX_DELTAS + 1)
+            .collect();
+
+        assert!(matches!(
+            state.enqueue_pane_delta_frame(ws, pane, DeltaFrame::new(1, burst)),
+            PaneDeltaEnqueue::NeedsResync
+        ));
+        assert_eq!(count.load(Ordering::SeqCst), 0, "oversized frame emits no stale wake");
     }
 
     #[test]
