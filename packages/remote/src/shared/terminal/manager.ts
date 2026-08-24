@@ -98,19 +98,6 @@ function traceKeydown(entry: PaneEntry, ev: KeyboardEvent, bytes: Uint8Array): v
 	console.debug(`[cursor-trace][${ts}ms] keydown key=${JSON.stringify(ev.key)} →bytes(${bytes.length})=${hex} kernel-cursor(pre)=(${kernel.cursorRow()},${kernel.cursorCol()})`);
 }
 
-// Quantize a CSS-px cell dimension to match the renderer's device-px
-// rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
-//   cell_dev = round(cell_css * dpr)
-// so the renderer's effective per-column width in CSS px is `cell_dev /
-// dpr`. JS-side hover (computeCell) and grid fit (fitPane) must use the
-// same effective value — otherwise the sub-pixel error per column
-// accumulates and the rightmost cell ends up outside the JS coordinate
-// range. With dpr=1 this is a no-op. (Bug: "resize 后无法选中最右一列".)
-function quantizeCellSize(raw: number, dpr: number): number {
-    if (!Number.isFinite(raw) || raw <= 0 || !Number.isFinite(dpr) || dpr <= 0) return raw;
-    return Math.round(raw * dpr) / dpr;
-}
-
 function isExpectedWorkerLifecycleCancellation(error: unknown): boolean {
 	const message = error instanceof Error ? error.message : unknownText(error);
 	return (
@@ -2229,7 +2216,7 @@ export class TerminalManager {
 		const handle = await this._makeHandleSerialized(canvas, hostHandle);
 		const dpr = window.devicePixelRatio || 1;
 		const [cellW, cellH] = handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as [number, number] | Float32Array;
-		return { handle, dpr, cellW: quantizeCellSize(Number(cellW), dpr), cellH: quantizeCellSize(Number(cellH), dpr) };
+		return { handle, dpr, cellW: Number(cellW), cellH: Number(cellH) };
 	}
 
 	private _attachScrollbackLines(): number {
@@ -2621,7 +2608,7 @@ export class TerminalManager {
 		Object.assign(entry, {
 			container, canvas, handle, rendererRetained: false, linkUnderlineEls: [],
 			linkUnderlineRegions: [], linkHintEl, linkHintRegion: null,
-			cellW: quantizeCellSize(Number(cellW), dpr), cellH: quantizeCellSize(Number(cellH), dpr),
+			cellW: Number(cellW), cellH: Number(cellH),
 			lastConfiguredDpr: dpr, lastReportedRows: -1, lastReportedCols: -1, lastAppliedPaddingPx: undefined,
 			renderPending: true,
 		});
@@ -4619,8 +4606,8 @@ export class TerminalManager {
 			const [w, h] = entry.handle.configure(family, sizePx, dpr) as
 				| [number, number]
 				| Float32Array;
-			entry.cellW = quantizeCellSize(Number(w), dpr);
-			entry.cellH = quantizeCellSize(Number(h), dpr);
+			entry.cellW = Number(w);
+			entry.cellH = Number(h);
 			entry.lastConfiguredDpr = dpr;
 			this._invalidateEntry(entry);
 			void this.fitPane(entry, this._sharedRemoteMode);
@@ -4977,8 +4964,8 @@ export class TerminalManager {
 	private _syncFitDpr(entry: PaneEntry, dpr: number): void {
 		if (entry.lastConfiguredDpr === dpr || !entry.handle) return;
 		const [width, height] = entry.handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as [number, number] | Float32Array;
-		entry.cellW = quantizeCellSize(Number(width), dpr);
-		entry.cellH = quantizeCellSize(Number(height), dpr);
+		entry.cellW = Number(width);
+		entry.cellH = Number(height);
 		entry.lastConfiguredDpr = dpr;
 	}
 
