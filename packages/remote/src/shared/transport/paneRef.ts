@@ -4,6 +4,9 @@ export interface PaneRef {
   paneId: string;
 }
 
+/** Side whose refresh established the pane's canonical render grid. */
+export type PaneRenderOwner = 'host' | 'remote';
+
 export function paneRefKey(ref: PaneRef): string {
   return `${ref.workspaceId}:${ref.paneId}`;
 }

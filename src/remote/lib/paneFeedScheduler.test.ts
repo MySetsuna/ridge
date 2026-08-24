@@ -160,6 +160,33 @@ describe('PaneFeedScheduler', () => {
     expect(scheduler.queuedBytes('pane')).toBe(0);
   });
 
+  it('resumes a rejected large frame from the same byte offset', () => {
+    let rejectOnce = true;
+    const delivered: number[] = [];
+    const scheduler = new PaneFeedScheduler((_key, bytes) => {
+      if (rejectOnce) {
+        rejectOnce = false;
+        return { accepted: false };
+      }
+      delivered.push(...bytes);
+      return { accepted: true };
+    }, {
+      stepBytes: 2,
+      maxBytesPerFrame: 2,
+      maxBytesPerPane: 16,
+      schedule: () => {},
+    });
+
+    scheduler.enqueue('pane', new Uint8Array([1, 2, 3, 4]));
+    scheduler.drainNow();
+    expect(scheduler.queuedBytes('pane')).toBe(4);
+
+    scheduler.drainNow();
+    scheduler.drainNow();
+    expect(delivered).toEqual([1, 2, 3, 4]);
+    expect(scheduler.queuedBytes('pane')).toBe(0);
+  });
+
   it('yields after the frame budget instead of draining the whole burst', () => {
     let clock = 0;
     const delivered: number[] = [];

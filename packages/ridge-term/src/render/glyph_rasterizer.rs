@@ -74,6 +74,28 @@ fn registered_fonts() -> Vec<Arc<Vec<u8>>> {
     FONT_REGISTRY.with(|cell| cell.borrow().faces.clone())
 }
 
+fn build_font_system(fonts: &[Arc<Vec<u8>>]) -> Result<FontSystem, String> {
+    if fonts.is_empty() {
+        return Err(
+            "FONT_DATA_MISSING: install selected system fonts before WebGPU initialization"
+                .to_string(),
+        );
+    }
+    let mut database = fontdb::Database::new();
+    for data in fonts {
+        if database
+            .load_font_source(fontdb::Source::Binary(data.clone()))
+            .is_empty()
+        {
+            return Err("FONT_DATA_INVALID: registered font could not be loaded".to_string());
+        }
+    }
+    Ok(FontSystem::new_with_locale_and_db(
+        "en-US".to_string(),
+        database,
+    ))
+}
+
 #[derive(Debug, Clone)]
 pub struct RasterizedGlyph {
     /// Full atlas-slot RGBA8 pixels, row-major.
@@ -109,50 +131,30 @@ pub struct GlyphRasterizer {
 
 impl GlyphRasterizer {
     pub fn new(slot_w: u16, slot_h: u16) -> Result<Self, String> {
-        let mut rasterizer = Self {
-            font_system: FontSystem::new_with_locale_and_db(
-                "en-US".to_string(),
-                fontdb::Database::new(),
-            ),
+        let fonts = registered_fonts();
+        Ok(Self {
+            font_system: build_font_system(&fonts)?,
             swash_cache: SwashCache::new(),
-            loaded_sources: 0,
+            loaded_sources: fonts.len(),
             resolved_stack: String::new(),
             resolved_family: None,
             slot_w,
             slot_h,
-        };
-        rasterizer.sync_registered_fonts()?;
-        Ok(rasterizer)
+        })
     }
 
     /// Pull newly registered host fonts into this live rasterizer.
     pub fn sync_registered_fonts(&mut self) -> Result<bool, String> {
         let fonts = registered_fonts();
-        if fonts.is_empty() {
-            return Err(
-                "FONT_DATA_MISSING: install selected system fonts before WebGPU initialization"
-                    .to_string(),
-            );
+        if fonts.len() == self.loaded_sources {
+            return Ok(false);
         }
-        let mut changed = false;
-        for data in fonts.iter().skip(self.loaded_sources) {
-            if self
-                .font_system
-                .db_mut()
-                .load_font_source(fontdb::Source::Binary(data.clone()))
-                .is_empty()
-            {
-                return Err("FONT_DATA_INVALID: registered font could not be loaded".to_string());
-            }
-            changed = true;
-        }
+        self.font_system = build_font_system(&fonts)?;
         self.loaded_sources = fonts.len();
-        if changed {
-            self.swash_cache = SwashCache::new();
-            self.resolved_stack.clear();
-            self.resolved_family = None;
-        }
-        Ok(changed)
+        self.swash_cache = SwashCache::new();
+        self.resolved_stack.clear();
+        self.resolved_family = None;
+        Ok(true)
     }
 
     pub fn rasterize(

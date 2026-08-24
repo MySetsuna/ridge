@@ -41,6 +41,11 @@ export interface TauriEvent<T> {
 export type EventCallback<T> = (event: TauriEvent<T>) => void;
 export type UnlistenFn = () => void;
 
+interface PtyOutputPayload {
+  data: string;
+  bytes: Uint8Array;
+}
+
 const INVOKE_TIMEOUT_MS = 20_000;
 
 export class TauriBridge {
@@ -50,10 +55,13 @@ export class TauriBridge {
   // Exact-name event listeners, fed by host `{type:'event'}` pushes.
   private readonly eventListeners = new Map<string, Map<number, EventCallback<unknown>>>();
   // PTY-output listeners, keyed by paneId, fed by the binary raw-byte fan-out.
-  private readonly ptyListeners = new Map<string, Map<number, EventCallback<{ data: string }>>>();
+  private readonly ptyListeners = new Map<string, Map<number, EventCallback<PtyOutputPayload>>>();
   // Panes we've subscribed to, so we can re-subscribe after a reconnect.
   private readonly subscribedPanes = new Map<string, { workspaceId?: string; active?: boolean }>();
-  private readonly decoder = new TextDecoder();
+  // Decode only when a legacy listener reads `payload.data`; raw consumers stay
+  // on the zero-copy byte path. One decoder per pane also prevents a split UTF-8
+  // sequence from leaking across two independent PTY streams.
+  private readonly ptyDecoders = new Map<string, TextDecoder>();
   private readonly disposers: Unsubscribe[] = [];
 
   /** True once a transport has been attached (after auth succeeds). */
@@ -111,6 +119,7 @@ export class TauriBridge {
     this.transport = null;
     this.eventListeners.clear();
     this.ptyListeners.clear();
+    this.ptyDecoders.clear();
     this.subscribedPanes.clear();
   }
 
@@ -158,8 +167,16 @@ export class TauriBridge {
         m = new Map();
         this.ptyListeners.set(paneId, m);
       }
-      m.set(id, cb as EventCallback<{ data: string }>);
-      return () => this.ptyListeners.get(paneId)?.delete(id);
+      m.set(id, cb as EventCallback<PtyOutputPayload>);
+      return () => {
+        const listeners = this.ptyListeners.get(paneId);
+        if (!listeners) return;
+        listeners.delete(id);
+        if (listeners.size === 0) {
+          this.ptyListeners.delete(paneId);
+          this.ptyDecoders.delete(paneId);
+        }
+      };
     }
     let m = this.eventListeners.get(name);
     if (!m) {
@@ -204,11 +221,24 @@ export class TauriBridge {
   private dispatchRawBytes(paneId: string, bytes: Uint8Array): void {
     const m = this.ptyListeners.get(paneId);
     if (!m || m.size === 0) return;
-    const data = this.decoder.decode(bytes, { stream: true });
-    const evt: TauriEvent<{ data: string }> = {
+    let data: string | undefined;
+    const decoder = this.ptyDecoders.get(paneId) ?? new TextDecoder();
+    this.ptyDecoders.set(paneId, decoder);
+    const payload = {} as PtyOutputPayload;
+    Object.defineProperty(payload, 'data', {
+      enumerable: true,
+      get: () => {
+        if (data === undefined) data = decoder.decode(bytes, { stream: true });
+        return data;
+      },
+    });
+    // Keep compatibility listeners seeing the historical `{ data }` shape
+    // while raw listeners can consume the exact transport bytes.
+    Object.defineProperty(payload, 'bytes', { enumerable: false, value: bytes });
+    const evt: TauriEvent<PtyOutputPayload> = {
       event: `pty-output-${paneId}`,
       id: 0,
-      payload: { data },
+      payload,
     };
     for (const cb of m.values()) {
       try {

@@ -57,10 +57,10 @@ use crate::render::backend::{
     physical_row_boundary, CursorDraw, FrameMetrics, RenderBackend, RowDraw, ScrollCopyResult,
     Theme,
 };
+use crate::render::procedural_box;
 use crate::render::renderer::{
     history_overlay_geometry, history_overlay_surface, history_text, history_text_width,
 };
-use crate::render::{is_box_drawing, procedural_box};
 use crate::term::attr_table::AttrTable;
 use crate::term::cell::{scan_line_path, RenderPath};
 use crate::term::grid::ScrollOp;
@@ -265,9 +265,6 @@ fn append_procedural_glyph(
     let Some(character) = glyph_text.chars().next() else {
         return false;
     };
-    if is_box_drawing(character) {
-        return false;
-    }
     if let Some(alpha) = shade_alpha(character) {
         let mut color = rgba_u8_to_f32(fg);
         color[3] *= alpha;
@@ -742,14 +739,20 @@ impl WebGpuPaneBackend {
         entry: Option<GlyphEntry>,
         pixel_x: f32,
         pixel_y: f32,
+        box_w: f32,
+        box_h: f32,
+        allow_upscale: bool,
         fg: [u8; 4],
-        drawn_procedurally: bool,
     ) {
-        if drawn_procedurally {
-            return;
-        }
         if let Some(entry) = entry {
-            let (cell_xy, cell_size) = glyph_quad_geometry(pixel_x, pixel_y, &entry);
+            let (cell_xy, cell_size) = glyph_quad_geometry(
+                pixel_x,
+                pixel_y,
+                &entry,
+                box_w,
+                box_h,
+                allow_upscale,
+            );
             instances.push(CellInstance {
                 cell_xy,
                 cell_size,
@@ -800,6 +803,23 @@ impl WebGpuPaneBackend {
                 None => cell.ch.encode_utf8(&mut ch_buf),
             };
 
+            // Geometry characters are independent of the selected font. Do
+            // this before atlas admission so unsupported font data cannot
+            // turn a deterministic line into a blank/missing-glyph path.
+            let drawn_procedurally = append_procedural_glyph(
+                &mut row_glyph_instances,
+                glyph_text,
+                fg,
+                pixel_x,
+                pixel_y,
+                cell_span,
+                cell_w,
+                row_h_int,
+            );
+            if drawn_procedurally {
+                continue;
+            }
+
             let (font_family_hash, font_size_q) = {
                 let ctx = self.ctx.borrow();
                 let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -819,26 +839,15 @@ impl WebGpuPaneBackend {
                 self.metrics.dpr * ATLAS_SUPERSAMPLE as f32,
             );
             let entry = self.admit_glyph(key, glyph_text, style_flags);
-
-            // Block Elements/shades retain exact cell geometry. Every Box
-            // Drawing scalar bypasses this helper and uses the font atlas.
-            let drawn_procedurally = append_procedural_glyph(
-                &mut row_glyph_instances,
-                glyph_text,
-                fg,
-                pixel_x,
-                pixel_y,
-                cell_span,
-                cell_w,
-                row_h_int,
-            );
             Self::append_atlas_glyph(
                 &mut row_glyph_instances,
                 entry,
                 pixel_x,
                 pixel_y,
+                cell_span as f32 * cell_w,
+                row_h_int,
+                cell_span > 1,
                 fg,
-                drawn_procedurally,
             );
         }
         self.pending_instances.append(&mut row_glyph_instances);
@@ -879,7 +888,15 @@ impl WebGpuPaneBackend {
             is_color: 0,
         });
 
-        self.draw_cursor_glyph(cursor, effective_col, cell_w, pixel_y, cursor_color);
+        self.draw_cursor_glyph(
+            cursor,
+            effective_col,
+            cell_w,
+            span_w,
+            cell_h_int,
+            pixel_y,
+            cursor_color,
+        );
     }
 }
 
@@ -909,6 +926,8 @@ impl WebGpuPaneBackend {
         cursor: &CursorDraw,
         effective_col: f64,
         cell_w: f32,
+        box_w: f32,
+        box_h: f32,
         pixel_y: f32,
         cursor_color: [f32; 4],
     ) {
@@ -934,7 +953,14 @@ impl WebGpuPaneBackend {
             self.frame_pinned[entry.layer as usize] = true;
         }
         let gx = (effective_col as f32 * cell_w + 0.5).floor();
-        let (cell_xy, cell_size) = glyph_quad_geometry(gx, pixel_y, &entry);
+        let (cell_xy, cell_size) = glyph_quad_geometry(
+            gx,
+            pixel_y,
+            &entry,
+            box_w,
+            box_h,
+            entry.is_color || box_w > cell_w,
+        );
         self.pending_instances.push(CellInstance {
             cell_xy,
             cell_size,
@@ -1062,6 +1088,7 @@ impl WebGpuPaneBackend {
             fg_color,
             font_family_hash,
             font_size_q,
+            (self.metrics.cell_h * self.metrics.dpr).round().max(1.0),
         );
 
         // 3) Underline — IME preedit convention. 1 device-px tall, bottom
@@ -1090,6 +1117,7 @@ impl WebGpuPaneBackend {
         fg_color: [f32; 4],
         font_family_hash: u64,
         font_size_q: u16,
+        cell_h: f32,
     ) {
         let mut cell_offset = 0usize;
         for (ch, width) in char_widths {
@@ -1119,11 +1147,15 @@ impl WebGpuPaneBackend {
                 if (entry.layer as usize) < self.frame_pinned.len() {
                     self.frame_pinned[entry.layer as usize] = true;
                 }
-                let (cell_xy, cell_size) = glyph_quad_geometry(
-                    (col + cell_offset) as f32 * cell_w,
-                    pixel_y,
-                    &entry,
-                );
+                let (cell_xy, cell_size) =
+                    glyph_quad_geometry(
+                        (col + cell_offset) as f32 * cell_w,
+                        pixel_y,
+                        &entry,
+                        *width as f32 * cell_w,
+                        cell_h,
+                        entry.is_color || *width > 1,
+                    );
                 self.pending_instances.push(CellInstance {
                     cell_xy,
                     cell_size,
@@ -1356,6 +1388,7 @@ impl WebGpuPaneBackend {
                 glyph_color,
                 font_family_hash,
                 font_size_q,
+                (self.metrics.cell_h * self.metrics.dpr).round().max(1.0),
             );
         }
     }
@@ -1381,6 +1414,8 @@ impl WebGpuPaneBackend {
                 ch,
                 row_y,
                 inner_x + cell_offset as f32 * cell_w,
+                ch_width as f32 * cell_w,
+                cell_w,
                 glyph_color,
                 font_family_hash,
                 font_size_q,
@@ -1394,6 +1429,8 @@ impl WebGpuPaneBackend {
         ch: char,
         row_y: f32,
         pixel_x: f32,
+        box_w: f32,
+        cell_w: f32,
         glyph_color: [f32; 4],
         font_family_hash: u64,
         font_size_q: u16,
@@ -1426,7 +1463,14 @@ impl WebGpuPaneBackend {
         if (entry.layer as usize) < self.frame_pinned.len() {
             self.frame_pinned[entry.layer as usize] = true;
         }
-        let (cell_xy, cell_size) = glyph_quad_geometry(pixel_x, row_y, &entry);
+        let (cell_xy, cell_size) = glyph_quad_geometry(
+            pixel_x,
+            row_y,
+            &entry,
+            box_w,
+            (self.metrics.cell_h * self.metrics.dpr).round().max(1.0),
+            entry.is_color || box_w > cell_w,
+        );
         self.pending_instances.push(CellInstance {
             cell_xy,
             cell_size,

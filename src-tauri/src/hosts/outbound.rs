@@ -325,6 +325,21 @@ impl OutboundClient {
 
     /// T3: resize_pane
     pub fn resize_pane(&self, remote_pane_id: &str, rows: u16, cols: u16) -> Result<(), String> {
+        self.resize_pane_with_owner(
+            remote_pane_id,
+            rows,
+            cols,
+            crate::types::PaneResizeOwner::Host,
+        )
+    }
+
+    pub fn resize_pane_with_owner(
+        &self,
+        remote_pane_id: &str,
+        rows: u16,
+        cols: u16,
+        owner: crate::types::PaneResizeOwner,
+    ) -> Result<(), String> {
         if !self.is_subscribed(remote_pane_id) {
             return Err(format!("not subscribed: {remote_pane_id}"));
         }
@@ -341,7 +356,7 @@ impl OutboundClient {
         }
         self.transport.send_json_rpc(
             "resize_pane",
-            json!({ "paneId": remote_pane_id, "rows": rows, "cols": cols }),
+            json!({ "paneId": remote_pane_id, "rows": rows, "cols": cols, "owner": owner.as_str() }),
         )?;
         self.resize_last_applied
             .lock()

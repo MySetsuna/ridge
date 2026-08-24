@@ -5,7 +5,9 @@ use base64::Engine;
 use fontdb::{Database, Family, Query, Stretch, Style, Weight};
 use serde::Serialize;
 
-const MAX_FAMILIES: usize = 16;
+// Keep the request budget wide enough for the canonical mono/text/symbol/
+// emoji stack while retaining the 32-face and 96 MiB payload caps.
+const MAX_FAMILIES: usize = 32;
 const MAX_FONT_FILES: usize = 32;
 const MAX_FONT_BYTES: usize = 96 * 1024 * 1024;
 

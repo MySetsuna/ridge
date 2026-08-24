@@ -1289,9 +1289,10 @@ pub fn route_foreign_resize(
     rr: &RemoteRef,
     rows: u16,
     cols: u16,
+    owner: crate::types::PaneResizeOwner,
 ) -> Result<(), String> {
     if let Some(client) = state.hosts.outbound_client(&rr.host_id) {
-        return client.resize_pane(&rr.remote_pane_id, rows, cols);
+        return client.resize_pane_with_owner(&rr.remote_pane_id, rows, cols, owner);
     }
     // No outbound: accept no-op (local foreign parser still resized by caller).
     Ok(())

@@ -33,7 +33,8 @@ export function bindRemotePane(binding: RemotePaneBinding): void {
     workspaceId: binding.workspaceId,
     paneId: binding.remotePaneId,
   };
-  live.unlisten = binding.link.onRawBytes((incoming, bytes) => {
+  const stops: Array<() => void> = [];
+  stops.push(binding.link.onRawBytes((incoming, bytes) => {
     if (incoming.paneId !== pane.paneId || incoming.workspaceId !== pane.workspaceId) return;
     if (live.active) {
       TerminalManager.instance().feed(binding.localPaneId, bytes);
@@ -44,7 +45,14 @@ export function bindRemotePane(binding: RemotePaneBinding): void {
     while (live.pendingBytes > MAX_PENDING_BYTES && live.pending.length > 1) {
       live.pendingBytes -= live.pending.shift()!.byteLength;
     }
-  });
+  }));
+  if (binding.link.onPtyResize) {
+    stops.push(binding.link.onPtyResize((incoming, rows, cols) => {
+      if (incoming.paneId !== pane.paneId || incoming.workspaceId !== pane.workspaceId) return;
+      TerminalManager.instance().applyPaneResize(binding.localPaneId, rows, cols);
+    }));
+  }
+  live.unlisten = () => { for (const stop of stops) stop(); };
   for (const text of binding.link.getPaneOutput(pane)) {
     const bytes = new TextEncoder().encode(text);
     live.pending.push(bytes);

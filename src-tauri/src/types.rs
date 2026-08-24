@@ -2,6 +2,29 @@ use serde::Serialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PaneResizeOwner {
+    Host,
+    Remote,
+}
+
+impl PaneResizeOwner {
+    pub fn from_wire(value: Option<&str>, default: Self) -> Self {
+        match value {
+            Some("host") => Self::Host,
+            Some("remote") => Self::Remote,
+            _ => default,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Remote => "remote",
+        }
+    }
+}
+
 /// Unified event type for the single per-client mpsc channel.
 #[derive(Clone, Debug)]
 pub enum RemotePtyEvent {
@@ -24,6 +47,7 @@ pub enum RemotePtyEvent {
         pane_id: Uuid,
         rows: u16,
         cols: u16,
+        owner: PaneResizeOwner,
     },
 }
 

@@ -31,8 +31,13 @@ export interface PaneFeedSchedulerOptions {
 }
 
 interface FeedQueue {
-  frames: Uint8Array[];
+  frames: FeedFrame[];
   bytes: number;
+}
+
+interface FeedFrame {
+  bytes: Uint8Array;
+  offset: number;
 }
 
 export type PaneFeedFn = (paneKey: string, bytes: Uint8Array) => PaneFeedDelivery;
@@ -97,18 +102,18 @@ export class PaneFeedScheduler {
       queue = { frames: [], bytes: 0 };
       this.queues.set(paneKey, queue);
     }
-    let frame = bytes.slice();
-    if (frame.byteLength > this.maxBytesPerPane) {
-      const dropped = frame.byteLength - this.maxBytesPerPane;
-      frame = frame.slice(dropped);
+    let frame = bytes.slice(Math.max(0, bytes.byteLength - this.maxBytesPerPane));
+    if (frame.byteLength < bytes.byteLength) {
+      const dropped = bytes.byteLength - frame.byteLength;
       this.onDrop?.(paneKey, dropped);
     }
-    queue.frames.push(frame);
+    queue.frames.push({ bytes: frame, offset: 0 });
     queue.bytes += frame.byteLength;
     while (queue.bytes > this.maxBytesPerPane && queue.frames.length > 0) {
       const dropped = queue.frames.shift()!;
-      queue.bytes -= dropped.byteLength;
-      this.onDrop?.(paneKey, dropped.byteLength);
+      const droppedBytes = dropped.bytes.byteLength - dropped.offset;
+      queue.bytes -= droppedBytes;
+      this.onDrop?.(paneKey, droppedBytes);
     }
     this.schedule();
   }
@@ -141,16 +146,15 @@ export class PaneFeedScheduler {
   private drainPane(paneKey: string): number {
     const queue = this.queues.get(paneKey);
     if (!queue || queue.frames.length === 0) return 0;
-    const frame = queue.frames.shift()!;
-    queue.bytes -= frame.byteLength;
-    const size = Math.min(this.stepBytes, frame.byteLength);
-    const chunk = size === frame.byteLength ? frame : frame.slice(0, size);
-    if (size < frame.byteLength) {
-      const remainder = frame.slice(size);
-      queue.frames.unshift(remainder);
-      queue.bytes += remainder.byteLength;
-    }
+    const frame = queue.frames[0];
+    const remaining = frame.bytes.byteLength - frame.offset;
+    const size = Math.min(this.stepBytes, remaining);
+    const start = frame.offset;
+    const chunk = frame.bytes.subarray(start, start + size);
+    frame.offset += size;
+    queue.bytes -= size;
     if (!this.deliverChunk(paneKey, queue, chunk)) return -1;
+    if (frame.offset >= frame.bytes.byteLength) queue.frames.shift();
     if (queue.frames.length === 0) this.queues.delete(paneKey);
     return chunk.byteLength;
   }
@@ -181,7 +185,8 @@ export class PaneFeedScheduler {
       delivery = { accepted: true };
     }
     if (delivery.accepted) return true;
-    queue.frames.unshift(chunk);
+    const frame = queue.frames[0];
+    frame.offset -= chunk.byteLength;
     queue.bytes += chunk.byteLength;
     return false;
   }

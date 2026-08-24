@@ -1888,6 +1888,10 @@ pub async fn resize_pane(
     app: tauri::AppHandle,
     request: ResizePaneRequest,
 ) -> Result<(), String> {
+    let owner = crate::types::PaneResizeOwner::from_wire(
+        request.owner.as_deref(),
+        crate::types::PaneResizeOwner::Host,
+    );
     let st = state.inner().clone();
     tokio::task::spawn_blocking(move || {
         resize_pane_inner(
@@ -1901,6 +1905,7 @@ pub async fn resize_pane(
                 is_alt: request.is_alt.unwrap_or(false),
                 is_inline_tui: request.is_inline_tui.unwrap_or(false),
                 suppress_errors: true,
+                owner,
             },
         )
     })
@@ -1918,6 +1923,7 @@ pub struct ResizePaneRequest {
     pub cols: u16,
     pub is_alt: Option<bool>,
     pub is_inline_tui: Option<bool>,
+    pub owner: Option<String>,
 }
 
 /// Remote invoke variant: stale Pane/PTY failures must reach the scheduler so
@@ -1931,6 +1937,7 @@ pub struct ResizePaneRemoteRequest {
     pub(crate) cols: u16,
     pub(crate) is_alt: Option<bool>,
     pub(crate) is_inline_tui: Option<bool>,
+    pub(crate) owner: crate::types::PaneResizeOwner,
 }
 
 pub async fn resize_pane_remote(
@@ -1951,6 +1958,7 @@ pub async fn resize_pane_remote(
                 is_alt: request.is_alt.unwrap_or(false),
                 is_inline_tui: request.is_inline_tui.unwrap_or(false),
                 suppress_errors: false,
+                owner: request.owner,
             },
         )
     })
@@ -2051,6 +2059,7 @@ fn resize_master(
     rows: u16,
     cols: u16,
     skip_silence: bool,
+    owner: crate::types::PaneResizeOwner,
 ) -> Result<(), AppError> {
     let map = state.workspaces.read();
     let ws = map
@@ -2058,7 +2067,7 @@ fn resize_master(
         .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
     if let Some(handle) = ws.terminals.get(&pane_id) {
         if let Some(ref remote_ref) = handle.remote_ref {
-            crate::hosts::route_foreign_resize(state, remote_ref, rows, cols)
+            crate::hosts::route_foreign_resize(state, remote_ref, rows, cols, owner)
                 .map_err(AppError::PtyError)?;
         }
         let master = handle.master.lock();
@@ -2112,6 +2121,7 @@ pub struct ResizeRequest {
     pub is_alt: bool,
     pub is_inline_tui: bool,
     pub suppress_errors: bool,
+    pub owner: crate::types::PaneResizeOwner,
 }
 
 pub fn resize_pane_inner(
@@ -2127,6 +2137,7 @@ pub fn resize_pane_inner(
         mut is_alt,
         mut is_inline_tui,
         suppress_errors,
+        owner,
     } = request;
     let pane_id = parse_pane_id(&pane_id)?;
     // 解耦 active_workspace_id（T5）：resize 落在面板**所属**工作区（前端按 pane 传入），
@@ -2197,6 +2208,7 @@ pub fn resize_pane_inner(
             rows,
             cols,
             is_alt || is_inline_tui || !parser_has_integration,
+            owner,
         )
     };
 
@@ -2234,10 +2246,20 @@ pub fn resize_pane_inner(
         Ok(()) => {
             pty_log::resize_ok(wid, pane_id, rows, cols);
             // Now we can safely acquire a write lock to update pane_sizes
-            let mut map = state.workspaces.write();
-            if let Some(ws) = map.get_mut(&wid) {
-                ws.pane_sizes.insert(pane_id, (rows, cols));
+            {
+                let mut map = state.workspaces.write();
+                if let Some(ws) = map.get_mut(&wid) {
+                    ws.pane_sizes.insert(pane_id, (rows, cols));
+                }
             }
+            crate::remote_host_impl::broadcast_pane_resize(
+                state,
+                wid,
+                pane_id,
+                rows,
+                cols,
+                owner,
+            );
             Ok(())
         }
         Err(e) => {

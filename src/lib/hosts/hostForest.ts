@@ -1,6 +1,8 @@
 import type {
   PaneInfo,
   PaneRef,
+  PtyResizeListener,
+  PaneRenderOwner,
   RemoteLink,
   WorkspaceInfo,
 } from '@ridge/remote';
@@ -42,6 +44,7 @@ export interface HostTopologyLink extends HostForestLink {
   closePane(pane: PaneRef): Promise<boolean>;
   closeWorkspace(workspaceId: string): Promise<boolean>;
   onRawBytes(fn: (pane: PaneRef, bytes: Uint8Array) => void): () => void;
+  onPtyResize?(fn: PtyResizeListener): () => void;
   subscribePane(pane: PaneRef): void;
   /** Promote a subscribed pane to the host's latency-priority stream. */
   promotePane?(pane: PaneRef): void;
@@ -53,6 +56,7 @@ export interface HostTopologyLink extends HostForestLink {
     cols: number,
     pixelWidth: number,
     pixelHeight: number,
+    owner?: PaneRenderOwner,
   ): void;
   getPaneOutput(pane: PaneRef): string[];
   markPaneAgent?(
