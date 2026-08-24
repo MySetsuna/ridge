@@ -87,6 +87,11 @@ fn rgba_to_wgpu_color(rgba: [u8; 4]) -> wgpu::Color {
     }
 }
 
+// Keep two swap-chain images available while the persistent frame store is
+// recorded. The surface is presentation-only; pane damage never relies on
+// swap-chain contents being preserved between frames.
+const SURFACE_FRAME_LATENCY: u32 = 2;
+
 const BLIT_SHADER: &str = r#"
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -464,20 +469,11 @@ impl SurfaceHost {
             // turning black.
             alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
             view_formats: vec![],
-            // P1.1 (2026-05-19): lat=1 so `get_current_texture` deterministically
-            // returns the just-presented frame N-1, not frame N-2. That makes
-            // `LoadOp::Load` actually preserve last-frame content, which is
-            // the entire point of the per-pane LoadOp::Load record path. With
-            // the prior lat=2 the swap chain returned an N-2 texture whose
-            // content could be anything (including the very first cleared
-            // frame), forcing `requires_full_frame()` to be hard-coded `true`
-            // and burning O(rows × cols) cell encodes per pane per tick. The
-            // throughput cost of lat=1 (CPU may stall ~1 frame waiting for
-            // GPU to release the buffer) is invisible for an idle terminal
-            // — typical wgpu submit + present is well under 16.6 ms even on
-            // an integrated GPU, and the saved encode cost dwarfs it under
-            // load anyway.
-            desired_maximum_frame_latency: 1,
+            // The persistent offscreen frame store owns incremental damage;
+            // the acquired surface is only a presentation target. Latency 1
+            // therefore adds avoidable CPU/GPU synchronization on integrated
+            // GPUs under multi-pane load without preserving any needed pixels.
+            desired_maximum_frame_latency: SURFACE_FRAME_LATENCY,
         };
         {
             let ctx_b = ctx.borrow();
