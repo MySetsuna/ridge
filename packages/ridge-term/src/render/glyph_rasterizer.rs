@@ -44,7 +44,7 @@ impl GlyphRasterizer {
             .create_element("canvas")
             .map_err(|error| js_error("cannot create glyph canvas", error))?
             .dyn_into::<HtmlCanvasElement>()
-            .map_err(|error| js_error("created glyph canvas has wrong type", error))?;
+            .map_err(|error| js_error("created glyph canvas has wrong type", error.into()))?;
         let width = slot_w.max(1) as u32;
         let height = slot_h.max(1) as u32;
         canvas.set_width(width);
@@ -54,7 +54,7 @@ impl GlyphRasterizer {
             .map_err(|error| js_error("cannot acquire glyph Canvas2D context", error))?
             .ok_or_else(|| "WEBGPU_INIT_FAILED: Canvas2D context is unavailable".to_string())?
             .dyn_into::<CanvasRenderingContext2d>()
-            .map_err(|error| js_error("glyph context has wrong type", error))?;
+            .map_err(|error| js_error("glyph context has wrong type", error.into()))?;
         context.set_text_align("left");
         context.set_text_baseline("alphabetic");
         context.set_fill_style_str("#ffffff");
