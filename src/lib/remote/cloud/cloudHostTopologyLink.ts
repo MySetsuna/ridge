@@ -7,6 +7,8 @@ import {
   type CloudWebrtcAdapter,
   type PaneInfo,
   type PaneRef,
+  type PaneRenderOwner,
+  type PtyResizeListener,
   type RemoteShellInfo,
   type WorkspaceInfo,
 } from '@ridge/remote';
@@ -58,12 +60,35 @@ export class CloudHostTopologyLink implements HostTopologyLink {
   private activePaneKey: string | null = null;
   private readonly scheduler: PaneRpcScheduler;
   private readonly stopReconnectResume: () => void;
+  private readonly resizeListeners = new Set<PtyResizeListener>();
+  private readonly stopResizeEvents: () => void;
 
   constructor(
     private readonly adapter: CloudWebrtcAdapter,
     private readonly rpc: RpcClient,
   ) {
     this.scheduler = new PaneRpcScheduler(rpc);
+    // Older cloud adapters can still lack the control subscription surface;
+    // pane lifecycle must remain usable while they are upgraded.
+    this.stopResizeEvents = typeof adapter.onControl === 'function'
+      ? adapter.onControl((frame) => {
+      if (frame.type !== 'event' || frame.name !== 'pty-resized') return;
+      const payload = frame.payload;
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return;
+      const value = payload as Record<string, unknown>;
+      if (typeof value.workspaceId !== 'string' || typeof value.paneId !== 'string') return;
+      const rows = typeof value.rows === 'number' ? value.rows : NaN;
+      const cols = typeof value.cols === 'number' ? value.cols : NaN;
+      if (!Number.isFinite(rows) || !Number.isFinite(cols)) return;
+      const owner: PaneRenderOwner = value.owner === 'remote' ? 'remote' : 'host';
+      this.resizeListeners.forEach((fn) => fn(
+        { workspaceId: value.workspaceId as string, paneId: value.paneId as string },
+        rows,
+        cols,
+        owner,
+      ));
+      })
+      : () => {};
     this.stopReconnectResume = rpc.onReconnected(() => {
       // A reconnect creates a fresh Host bridge: its pane subscriptions and
       // active-pane QoS state are gone. Replay only panes that were actually
@@ -94,6 +119,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     this.subscribedPanes.clear();
     this.workspaceByPane.clear();
     this.activePaneKey = null;
+    this.stopResizeEvents();
     this.stopReconnectResume();
     this.scheduler.dispose();
     this.rpc.dispose();
@@ -341,9 +367,15 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     cols: number,
     _pixelWidth: number,
     _pixelHeight: number,
+    owner: PaneRenderOwner = 'host',
   ): void {
     if (!this.livePanes.has(paneRefKey(pane))) return;
-    this.scheduler.scheduleResize(pane, rows, cols);
+    this.scheduler.scheduleResize(pane, rows, cols, { owner });
+  }
+
+  onPtyResize(fn: PtyResizeListener): () => void {
+    this.resizeListeners.add(fn);
+    return () => this.resizeListeners.delete(fn);
   }
 
   getPaneOutput(_pane: PaneRef): string[] {

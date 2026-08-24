@@ -26,6 +26,8 @@
 
 use std::collections::{hash_map::Entry, HashMap};
 
+use super::fit_glyph_box;
+
 /// Cache key. Identifies a glyph variant by (font, size, raster density,
 /// codepoint or font-internal id, weight/slant flags).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -89,7 +91,9 @@ pub struct GlyphEntry {
     /// this to position the bitmap inside the cell box.
     pub ascent_offset: f32,
     /// Native device-pixel bitmap dimensions after removing any atlas-only
-    /// supersample factor. The draw quad must preserve this exact extent.
+    /// supersample factor. The draw quad preserves this extent unless the
+    /// bitmap exceeds its terminal cell or a wide/color glyph needs to fill
+    /// its reserved cell box.
     pub px_w: u16,
     pub px_h: u16,
     /// True when the glyph carries a color-emoji palette in its atlas
@@ -100,7 +104,8 @@ pub struct GlyphEntry {
     pub is_color: bool,
 }
 
-/// Place a native-rasterized glyph without stretching it to the cell height.
+/// Place a glyph inside its terminal cell without letting fallback faces
+/// overflow neighboring cells.
 #[cfg_attr(
     not(any(test, all(target_arch = "wasm32", feature = "webgpu"))),
     allow(dead_code)
@@ -109,11 +114,30 @@ pub(crate) fn glyph_quad_geometry(
     pixel_x: f32,
     pixel_y: f32,
     entry: &GlyphEntry,
+    box_w: f32,
+    box_h: f32,
+    allow_upscale: bool,
 ) -> ([f32; 2], [f32; 2]) {
-    (
-        [pixel_x, pixel_y + entry.ascent_offset],
-        [(entry.px_w as f32).max(1.0), (entry.px_h as f32).max(1.0)],
-    )
+    let native_w = (entry.px_w as f32).max(1.0);
+    let native_h = (entry.px_h as f32).max(1.0);
+    let exceeds_box = native_w > box_w || native_h > box_h;
+    if !allow_upscale && !exceeds_box {
+        return (
+            [pixel_x, pixel_y + entry.ascent_offset],
+            [native_w, native_h],
+        );
+    }
+
+    let (draw_x, draw_y, draw_w, draw_h) = fit_glyph_box(
+        native_w,
+        native_h,
+        box_w.max(1.0),
+        box_h.max(1.0),
+        pixel_x,
+        pixel_y,
+        allow_upscale,
+    );
+    ([draw_x, draw_y], [draw_w.max(1.0), draw_h.max(1.0)])
 }
 
 struct AtlasEntry {
@@ -385,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn glyph_quad_preserves_native_bitmap_extent_and_vertical_offset() {
+    fn glyph_quad_preserves_native_bitmap_extent_and_vertical_offset_when_contained() {
         let glyph = GlyphEntry {
             ascent_offset: 3.0,
             px_w: 7,
@@ -393,8 +417,36 @@ mod tests {
             ..entry(0)
         };
         assert_eq!(
-            glyph_quad_geometry(10.0, 20.0, &glyph),
+            glyph_quad_geometry(10.0, 20.0, &glyph, 20.0, 20.0, false),
             ([10.0, 23.0], [7.0, 11.0])
+        );
+    }
+
+    #[test]
+    fn glyph_quad_contains_oversized_fallback_bitmap() {
+        let glyph = GlyphEntry {
+            ascent_offset: 0.0,
+            px_w: 16,
+            px_h: 20,
+            ..entry(0)
+        };
+        assert_eq!(
+            glyph_quad_geometry(10.0, 20.0, &glyph, 8.0, 16.0, false),
+            ([10.0, 23.0], [8.0, 10.0])
+        );
+    }
+
+    #[test]
+    fn wide_glyph_can_fill_its_reserved_cell_box() {
+        let glyph = GlyphEntry {
+            ascent_offset: 0.0,
+            px_w: 8,
+            px_h: 8,
+            ..entry(0)
+        };
+        assert_eq!(
+            glyph_quad_geometry(0.0, 0.0, &glyph, 16.0, 16.0, true),
+            ([0.0, 0.0], [16.0, 16.0])
         );
     }
 

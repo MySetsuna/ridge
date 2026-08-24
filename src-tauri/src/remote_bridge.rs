@@ -233,6 +233,7 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
                 is_alt,
                 is_inline_tui,
                 suppress_errors: false,
+                owner: crate::types::PaneResizeOwner::Remote,
             },
         )
         .map_err(|e| e.to_string())

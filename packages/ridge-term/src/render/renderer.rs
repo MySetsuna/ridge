@@ -687,12 +687,16 @@ impl<B: RenderBackend> Renderer<B> {
             }
         }
 
+        let tui_mode = Self::is_tui_mode(terminal);
+
         // Cursor handling: show the cursor when (a) the surface is focused,
-        // (b) DEC ?25 is enabled, and (c) we're on the visible blink half.
+        // (b) DEC ?25 is enabled, (c) we're on the visible blink half, and
+        // (d) the application is not drawing its own TUI cursor.
         // During a presentation transaction, keep that gate but use the
         // descriptor captured before the kernel's cursor walk. This keeps
         // grid paints immediate without exposing intermediate cursor moves.
-        let cursor_visible = self.focused && terminal.modes().cursor_visible && blink_phase;
+        let cursor_visible =
+            !tui_mode && self.focused && terminal.modes().cursor_visible && blink_phase;
         let computed_cursor = if cursor_visible && !self.presentation_cursor_suppressed {
             self.compute_cursor_draw(terminal, offset)
         } else {
@@ -771,11 +775,6 @@ impl<B: RenderBackend> Renderer<B> {
         // Potentially set tui_mode on the metrics so backends can avoid
         // forcing the theme background onto cells whose background hasn't
         // been explicitly set by the foreground program.
-        let tui_mode = terminal.grid().is_alt_screen()
-            || terminal.grid().is_inline_tui_active_at(
-                crate::term::clock::now_ms(),
-                terminal.modes().cursor_visible,
-            );
         let tui_metrics = FrameMetrics {
             tui_mode,
             ..self.metrics
@@ -934,6 +933,13 @@ impl<B: RenderBackend> Renderer<B> {
             self.last_is_alt = is_alt;
             self.invalidate_all();
         }
+    }
+
+    /// TUI applications paint their own input caret. The terminal cursor is
+    /// therefore suppressed for both fullscreen and inline TUI modes,
+    /// including the sticky idle-inline state used by resize handling.
+    fn is_tui_mode(terminal: &Terminal) -> bool {
+        terminal.is_alt_screen() || terminal.is_inline_tui_resize_at(crate::term::clock::now_ms())
     }
 
     fn update_selection_state(&mut self, selection: Option<SelRange>) {
@@ -1119,7 +1125,8 @@ impl<B: RenderBackend> Renderer<B> {
         } else {
             true
         };
-        if self.focused && blink_phase != self.last_blink_phase {
+        let tui_mode = Self::is_tui_mode(terminal);
+        if self.focused && !tui_mode && blink_phase != self.last_blink_phase {
             return true;
         }
 
@@ -1152,7 +1159,8 @@ impl<B: RenderBackend> Renderer<B> {
         // presentation transaction compare against the frozen descriptor so
         // kernel cursor walks do not wake or move the painted cursor.
         let offset = terminal.scroll_offset();
-        let cursor_visible = self.focused && terminal.modes().cursor_visible && blink_phase;
+        let cursor_visible =
+            !tui_mode && self.focused && terminal.modes().cursor_visible && blink_phase;
         if self.presentation_cursor_suppressed {
             let new_cursor = if cursor_visible {
                 self.frozen_cursor
@@ -1189,6 +1197,9 @@ impl<B: RenderBackend> Renderer<B> {
         // loop sleep through unfocused idle. Cap to Infinity so the
         // loop falls through to its 1 s watchdog (caller clamps).
         if !self.focused {
+            return f64::INFINITY;
+        }
+        if Self::is_tui_mode(terminal) {
             return f64::INFINITY;
         }
         let blink_active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
@@ -1631,6 +1642,37 @@ mod tests {
             dpr: 1.0,
             tui_mode: false,
         }
+    }
+
+    #[test]
+    fn fullscreen_tui_suppresses_terminal_cursor_and_blink_wakeup() {
+        let mut term = Terminal::new(4, 12, 0);
+        term.feed(b"\x1b[?1049h");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
+
+        assert!(renderer.tick(&term, None, 500.0));
+        assert_eq!(renderer.backend().cursors, 0);
+        assert!(!renderer.is_dirty(&term, None, 1000.0));
+        assert!(renderer.next_blink_deadline_ms(&term, 1000.0).is_infinite());
+    }
+
+    #[test]
+    fn inline_tui_suppresses_visible_terminal_cursor() {
+        let mut term = Terminal::new(4, 12, 0);
+        term.feed(b"\x1b[?1h\x1b[H");
+        assert!(term.is_inline_tui_resize_at(crate::term::clock::now_ms()));
+
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
+        assert!(renderer.tick(&term, None, 500.0));
+        assert_eq!(renderer.backend().cursors, 0);
     }
 
     #[test]

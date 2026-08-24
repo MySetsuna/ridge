@@ -26,13 +26,8 @@ pub struct Rect {
     pub h: f32,
 }
 
-pub(crate) fn is_box_drawing(character: char) -> bool {
-    matches!(character, '\u{2500}'..='\u{257F}')
-}
-
-/// Generates procedural rectangles for Block Elements (U+2580..=U+259F).
-/// Box Drawing characters always return `None` so WebGPU rasterizes the exact
-/// selected-font glyph through the atlas.
+/// Generates procedural rectangles for the common core of Box Drawing
+/// (U+2500..=U+257F) and Block Elements (U+2580..=U+259F).
 ///
 /// Coverage of the Block Elements range (U+2580..=U+259F):
 ///   - Half blocks (▀ ▄ ▌ ▐) + full block (█)
@@ -45,6 +40,104 @@ pub(crate) fn is_box_drawing(character: char) -> bool {
 /// they need an alpha-modulated full-cell quad rather than opaque
 /// rectangles, so the caller (`webgpu::draw_row_texts`) special-cases them
 /// with a scaled fg alpha before falling through to this lookup.
+#[derive(Clone, Copy)]
+enum Corner {
+    TopLeft,
+    TopRight,
+    BottomRight,
+    BottomLeft,
+}
+
+fn append_rounded_corner(
+    rects: &mut Vec<Rect>,
+    corner: Corner,
+    cell_x: f32,
+    cell_y: f32,
+    cell_w: f32,
+    cell_h: f32,
+    line_w: f32,
+    line_h: f32,
+) {
+    let radius = (cell_w.min(cell_h) * 0.42).max(line_w.max(line_h) * 1.5);
+    let cx = cell_x + (cell_w - line_w) / 2.0;
+    let cy = cell_y + (cell_h - line_h) / 2.0;
+    let (center_x, center_y, start, end, from_left, from_top) = match corner {
+        Corner::TopLeft => (
+            cx + radius,
+            cy + radius,
+            std::f32::consts::PI,
+            std::f32::consts::PI * 1.5,
+            false,
+            false,
+        ),
+        Corner::TopRight => (
+            cx + line_w - radius,
+            cy + radius,
+            std::f32::consts::PI * 1.5,
+            std::f32::consts::PI * 2.0,
+            true,
+            false,
+        ),
+        Corner::BottomRight => (
+            cx + line_w - radius,
+            cy + line_h - radius,
+            0.0,
+            std::f32::consts::PI * 0.5,
+            true,
+            true,
+        ),
+        Corner::BottomLeft => (
+            cx + radius,
+            cy + line_h - radius,
+            std::f32::consts::PI * 0.5,
+            std::f32::consts::PI,
+            false,
+            true,
+        ),
+    };
+    if from_left {
+        rects.push(Rect {
+            x: cell_x,
+            y: cy,
+            w: (center_x - cell_x).max(line_w),
+            h: line_h,
+        });
+    } else {
+        rects.push(Rect {
+            x: center_x,
+            y: cy,
+            w: (cell_x + cell_w - center_x).max(line_w) + 1.0,
+            h: line_h,
+        });
+    }
+    if from_top {
+        rects.push(Rect {
+            x: cx,
+            y: cell_y,
+            w: line_w,
+            h: (center_y - cell_y).max(line_h),
+        });
+    } else {
+        rects.push(Rect {
+            x: cx,
+            y: center_y,
+            w: line_w,
+            h: (cell_y + cell_h - center_y).max(line_h) + 1.0,
+        });
+    }
+    let steps = 6_u32;
+    let span = end - start;
+    for i in 0..=steps {
+        let t = start + span * (i as f32 / steps as f32);
+        rects.push(Rect {
+            x: center_x + radius * t.cos() - line_w * 0.5,
+            y: center_y + radius * t.sin() - line_h * 0.5,
+            w: line_w,
+            h: line_h,
+        });
+    }
+}
+
 pub fn procedural_box(
     c: char,
     cell_x: f32,
@@ -52,10 +145,18 @@ pub fn procedural_box(
     cell_w: f32,
     cell_h: f32,
 ) -> Option<Vec<Rect>> {
-    if is_box_drawing(c) {
-        return None;
-    }
     let mut rects = Vec::with_capacity(2);
+
+    // Keep line art independent of the selected font. Some Windows font
+    // stacks render a missing box glyph as a large hollow square.
+    let line_w = (cell_w * 0.22).max(2.0);
+    let line_h = (cell_h * 0.14).max(2.0);
+    let heavy_w = cell_w * 0.38;
+    let heavy_h = cell_h * 0.28;
+    let cx = cell_x + (cell_w - line_w) / 2.0;
+    let cy = cell_y + (cell_h - line_h) / 2.0;
+    let cy_heavy = cell_y + (cell_h - heavy_h) / 2.0;
+    let cx_heavy = cell_x + (cell_w - heavy_w) / 2.0 + (heavy_w - line_w);
 
     // Procedural drawing: use the exact provided bounds.
     // Rounding and snapping happen in the renderer's pixel-coordinate space,
@@ -245,6 +346,258 @@ pub fn procedural_box(
             rects.push(q_bl);
             rects.push(q_br);
         } // ▟ all except upper-left
+
+        // Core Box Drawing characters. Extend straight strokes by one pixel
+        // toward the next cell so adjacent rows/columns cannot show seams.
+        '\u{2500}' => rects.push(Rect {
+            x: cell_x,
+            y: cy,
+            w: cell_w + 1.0,
+            h: line_h,
+        }),
+        '\u{2501}' => rects.push(Rect {
+            x: cell_x,
+            y: cy_heavy,
+            w: cell_w + 1.0,
+            h: heavy_h,
+        }),
+        '\u{2502}' => rects.push(Rect {
+            x: cx,
+            y: cell_y,
+            w: line_w,
+            h: cell_h + 1.0,
+        }),
+        '\u{2503}' => rects.push(Rect {
+            x: cx_heavy,
+            y: cell_y,
+            w: heavy_w,
+            h: cell_h + 1.0,
+        }),
+
+        // Light/heavy half-cell stubs.
+        '\u{2574}' => rects.push(Rect {
+            x: cell_x,
+            y: cy,
+            w: cell_w / 2.0 + 1.0,
+            h: line_h,
+        }),
+        '\u{2576}' => rects.push(Rect {
+            x: cell_x + cell_w / 2.0,
+            y: cy,
+            w: cell_w / 2.0 + 1.0,
+            h: line_h,
+        }),
+        '\u{2578}' => rects.push(Rect {
+            x: cell_x,
+            y: cy_heavy,
+            w: cell_w / 2.0 + 1.0,
+            h: heavy_h,
+        }),
+        '\u{257A}' => rects.push(Rect {
+            x: cell_x + cell_w / 2.0,
+            y: cy_heavy,
+            w: cell_w / 2.0 + 1.0,
+            h: heavy_h,
+        }),
+        '\u{2575}' => rects.push(Rect {
+            x: cx,
+            y: cell_y,
+            w: line_w,
+            h: cell_h / 2.0 + 1.0,
+        }),
+        '\u{2577}' => rects.push(Rect {
+            x: cx,
+            y: cell_y + cell_h / 2.0,
+            w: line_w,
+            h: cell_h / 2.0 + 1.0,
+        }),
+        '\u{2579}' => rects.push(Rect {
+            x: cx_heavy,
+            y: cell_y,
+            w: heavy_w,
+            h: cell_h / 2.0 + 1.0,
+        }),
+        '\u{257B}' => rects.push(Rect {
+            x: cx_heavy,
+            y: cell_y + cell_h / 2.0,
+            w: heavy_w,
+            h: cell_h / 2.0 + 1.0,
+        }),
+
+        // Corners and junctions share connection geometry. This path avoids
+        // font fallback producing an oversized .notdef square.
+        '\u{250C}' | '\u{250D}' | '\u{250E}' | '\u{250F}' => {
+            rects.push(Rect {
+                x: cx,
+                y: cy,
+                w: cell_w - (cx - cell_x),
+                h: line_h,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cy,
+                w: line_w,
+                h: cell_h - (cy - cell_y),
+            });
+        }
+        '\u{2510}' | '\u{2511}' | '\u{2512}' | '\u{2513}' => {
+            rects.push(Rect {
+                x: cell_x,
+                y: cy,
+                w: cx - cell_x + line_w,
+                h: line_h,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cy,
+                w: line_w,
+                h: cell_h - (cy - cell_y),
+            });
+        }
+        '\u{2514}' | '\u{2515}' | '\u{2516}' | '\u{2517}' => {
+            rects.push(Rect {
+                x: cx,
+                y: cy,
+                w: cell_w - (cx - cell_x),
+                h: line_h,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cell_y,
+                w: line_w,
+                h: cy - cell_y + line_h,
+            });
+        }
+        '\u{2518}' | '\u{2519}' | '\u{251A}' | '\u{251B}' => {
+            rects.push(Rect {
+                x: cell_x,
+                y: cy,
+                w: cx - cell_x + line_w,
+                h: line_h,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cell_y,
+                w: line_w,
+                h: cy - cell_y + line_h,
+            });
+        }
+        '\u{256D}' => append_rounded_corner(
+            &mut rects,
+            Corner::TopLeft,
+            cell_x,
+            cell_y,
+            cell_w,
+            cell_h,
+            line_w,
+            line_h,
+        ),
+        '\u{256E}' => append_rounded_corner(
+            &mut rects,
+            Corner::TopRight,
+            cell_x,
+            cell_y,
+            cell_w,
+            cell_h,
+            line_w,
+            line_h,
+        ),
+        '\u{256F}' => append_rounded_corner(
+            &mut rects,
+            Corner::BottomRight,
+            cell_x,
+            cell_y,
+            cell_w,
+            cell_h,
+            line_w,
+            line_h,
+        ),
+        '\u{2570}' => append_rounded_corner(
+            &mut rects,
+            Corner::BottomLeft,
+            cell_x,
+            cell_y,
+            cell_w,
+            cell_h,
+            line_w,
+            line_h,
+        ),
+        '\u{251C}' | '\u{251D}' | '\u{251E}' | '\u{251F}' | '\u{2520}' | '\u{2521}'
+        | '\u{2522}' | '\u{2523}' => {
+            rects.push(Rect {
+                x: cx,
+                y: cell_y,
+                w: line_w,
+                h: cell_h,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cy,
+                w: cell_w - (cx - cell_x),
+                h: line_h,
+            });
+        }
+        '\u{2524}' | '\u{2525}' | '\u{2526}' | '\u{2527}' | '\u{2528}' | '\u{2529}'
+        | '\u{252A}' | '\u{252B}' => {
+            rects.push(Rect {
+                x: cx,
+                y: cell_y,
+                w: line_w,
+                h: cell_h,
+            });
+            rects.push(Rect {
+                x: cell_x,
+                y: cy,
+                w: cx - cell_x + line_w,
+                h: line_h,
+            });
+        }
+        '\u{252C}' | '\u{252D}' | '\u{252E}' | '\u{252F}' | '\u{2530}' | '\u{2531}'
+        | '\u{2532}' | '\u{2533}' => {
+            rects.push(Rect {
+                x: cell_x,
+                y: cy,
+                w: cell_w,
+                h: line_h,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cy,
+                w: line_w,
+                h: cell_h - (cy - cell_y),
+            });
+        }
+        '\u{2534}' | '\u{2535}' | '\u{2536}' | '\u{2537}' | '\u{2538}' | '\u{2539}'
+        | '\u{253A}' | '\u{253B}' => {
+            rects.push(Rect {
+                x: cell_x,
+                y: cy,
+                w: cell_w,
+                h: line_h,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cell_y,
+                w: line_w,
+                h: cy - cell_y + line_h,
+            });
+        }
+        '\u{253C}' | '\u{253D}' | '\u{253E}' | '\u{253F}' | '\u{2540}' | '\u{2541}'
+        | '\u{2542}' | '\u{2543}' | '\u{2544}' | '\u{2545}' | '\u{2546}' | '\u{2547}'
+        | '\u{2548}' | '\u{2549}' | '\u{254A}' | '\u{254B}' => {
+            rects.push(Rect {
+                x: cell_x,
+                y: cy,
+                w: cell_w,
+                h: line_h,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cell_y,
+                w: line_w,
+                h: cell_h,
+            });
+        }
 
         _ => return None,
     }
@@ -604,12 +957,33 @@ mod procedural_box_tests {
     }
 
     #[test]
-    fn every_box_drawing_character_uses_selected_font_glyphs() {
-        for codepoint in 0x2500..=0x257f {
+    fn core_box_drawing_characters_are_procedural() {
+        for codepoint in 0x2500..=0x2503 {
             let ch = char::from_u32(codepoint).expect("Box Drawing scalar");
             assert!(
-                procedural_box(ch, CX, CY, CW, CH).is_none(),
-                "U+{codepoint:04X} must be rasterized from the selected font"
+                procedural_box(ch, CX, CY, CW, CH).is_some(),
+                "U+{codepoint:04X} must not depend on a font glyph"
+            );
+        }
+        for codepoint in 0x250C..=0x254B {
+            let ch = char::from_u32(codepoint).expect("Box Drawing scalar");
+            assert!(
+                procedural_box(ch, CX, CY, CW, CH).is_some(),
+                "U+{codepoint:04X}"
+            );
+        }
+        for codepoint in 0x256D..=0x2570 {
+            let ch = char::from_u32(codepoint).expect("Box Drawing scalar");
+            assert!(
+                procedural_box(ch, CX, CY, CW, CH).is_some(),
+                "U+{codepoint:04X}"
+            );
+        }
+        for codepoint in 0x2574..=0x257B {
+            let ch = char::from_u32(codepoint).expect("Box Drawing scalar");
+            assert!(
+                procedural_box(ch, CX, CY, CW, CH).is_some(),
+                "U+{codepoint:04X}"
             );
         }
     }

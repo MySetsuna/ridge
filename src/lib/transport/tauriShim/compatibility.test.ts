@@ -47,10 +47,16 @@ describe('browser Tauri compatibility shims', () => {
 		const stopPane = await listen('pty-output-pane-1', paneHandler);
 
 		rig.dispatchControl({ type: 'event', name: 'pane-title', payload: { title: 'shell' } });
-		rig.dispatchPane('pane-1', new TextEncoder().encode('ready'));
+		const raw = new TextEncoder().encode('ready');
+		rig.dispatchPane('pane-1', raw);
 
 		expect(eventHandler).toHaveBeenCalledWith({ event: 'pane-title', id: 0, payload: { title: 'shell' } });
 		expect(paneHandler).toHaveBeenCalledWith({ event: 'pty-output-pane-1', id: 0, payload: { data: 'ready' } });
+		expect(paneHandler.mock.calls[0][0].payload.bytes).toBe(raw);
+
+		const binary = new Uint8Array([0xff, 0x00, 0xe2, 0x28, 0xa1]);
+		rig.dispatchPane('pane-1', binary);
+		expect(paneHandler.mock.calls[1][0].payload.bytes).toBe(binary);
 		stopEvent();
 		stopPane();
 	});

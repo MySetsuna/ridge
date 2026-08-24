@@ -170,7 +170,7 @@ function buildHost(): RidgeCloudHost | null {
           // iter-60 G9：把 host 的 pane 元信息/布局事件推给云控制端（此前 cloud 腿
           // 零事件推送，手机头部标题/CWD 与 Pane 弹层只能靠轮询/重连刷新）。
           hostEventSource: (emit) => {
-            const names = ['pane-meta-changed', 'pane-tree-changed'] as const;
+            const names = ['pane-meta-changed', 'pane-tree-changed', 'pty-resized'] as const;
             const unsubs: Array<() => void> = [];
             for (const name of names) {
               listen(name, (e) => {

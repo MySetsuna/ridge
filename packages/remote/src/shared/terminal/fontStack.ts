@@ -1,4 +1,4 @@
-// Single source of truth for the terminal font stack + emoji-fallback ordering.
+// Single source of truth for the terminal font stack + fallback ordering.
 //
 // Shared by every terminal renderer entry point so the emoji policy lives in ONE
 // place instead of being copy-pasted (and drifting) across:
@@ -6,12 +6,21 @@
 //   - the desktop theme/font bridge  (themeBridge.ts `pushFont`)
 //   - the web-remote controller      (src/remote/lib/terminalController.ts)
 //
-// Policy: selected installed mono/CJK faces first, then installed system emoji.
+// Policy: selected installed mono/CJK faces first, then generic text, symbols,
+// and emoji system faces. These are names only; loaders still install local
+// font files before Wasm starts.
 // Raw faces are supplied to the Wasm rasterizer by the native or browser-local
 // font-data service; document webfonts are deliberately outside this path.
 
+/** General Unicode text fallback faces (system fonts only). */
+export const TEXT_FALLBACK = "'Segoe UI','Noto Sans','Arial Unicode MS'";
+
+/** Unicode symbol fonts (system fonts only). */
+export const SYMBOL_FALLBACK =
+	"'Segoe UI Symbol','Segoe UI Historic','Apple Symbols','Noto Sans Symbols 2','Noto Sans Symbols2','Noto Sans Math'";
+
 /** Color-emoji fonts (system fonts only). */
-export const EMOJI_FALLBACK = "'Apple Color Emoji','Segoe UI Emoji'";
+export const EMOJI_FALLBACK = "'Noto Color Emoji','Apple Color Emoji','Segoe UI Emoji'";
 
 /** Back-compat alias — identical to {@link EMOJI_FALLBACK} now that no bundled
  *  Noto exists. Kept so existing remote imports don't churn. */
@@ -21,8 +30,8 @@ export const SYSTEM_EMOJI_FALLBACK = EMOJI_FALLBACK;
 export const TEXT_MONO =
 	"'JetBrains Mono','Cascadia Code','SF Mono',ui-monospace,Consolas,'SimHei','Heiti SC','Microsoft YaHei'";
 
-/** Full default terminal font stack: text fonts → system emoji chain → generic. */
-export const DEFAULT_TERM_FONT = `${TEXT_MONO},${EMOJI_FALLBACK},monospace`;
+/** Full default terminal font stack: text → symbols → emoji → generic. */
+export const DEFAULT_TERM_FONT = `${TEXT_MONO},${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`;
 
 /** Back-compat alias of {@link DEFAULT_TERM_FONT} (desktop + remote now share
  *  one stack). Kept so remote imports/tests don't churn. */
@@ -35,15 +44,33 @@ const EMOJI_FAMILY_NAMES = new Set([
 	'flag emoji',
 ]);
 
-/** Strip all emoji families and any trailing 'monospace' generic from a comma-separated font-family string. */
-function stripEmojiAndGeneric(family: string): string[] {
+const SYMBOL_FAMILY_NAMES = new Set([
+	'segoe ui symbol',
+	'segoe ui historic',
+	'apple symbols',
+	'noto sans symbols 2',
+	'noto sans symbols2',
+	'noto sans math',
+]);
+
+const TEXT_FAMILY_NAMES = new Set([
+	'segoe ui',
+	'noto sans',
+	'arial unicode ms',
+]);
+
+/** Strip canonical symbol/emoji families and generic fallbacks from a stack. */
+function stripCanonicalFallbacks(family: string): string[] {
 	return family
 		.split(',')
 		.map((s) => s.trim())
 		.filter(Boolean)
 		.filter((p) => {
 			const bare = p.replace(/^["']|["']$/g, '').toLowerCase();
-			return !EMOJI_FAMILY_NAMES.has(bare) && bare !== 'monospace';
+			return !EMOJI_FAMILY_NAMES.has(bare)
+				&& !SYMBOL_FAMILY_NAMES.has(bare)
+				&& !TEXT_FAMILY_NAMES.has(bare)
+				&& bare !== 'monospace';
 		});
 }
 
@@ -56,10 +83,10 @@ function stripEmojiAndGeneric(family: string): string[] {
  * SAME function, so both surfaces resolve the same installed family order.
  */
 export function withEmojiFallback(family: string): string {
-	const tail = `${EMOJI_FALLBACK},monospace`;
+	const tail = `${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`;
 	const trimmed = (family ?? '').trim();
 	if (trimmed === '') return `${TEXT_MONO},${tail}`;
-	const kept = stripEmojiAndGeneric(trimmed);
+	const kept = stripCanonicalFallbacks(trimmed);
 	if (kept.length === 0) return `${TEXT_MONO},${tail}`;
 	return `${kept.join(',')},${tail}`;
 }
