@@ -60,6 +60,10 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain('manager.forceFullRedraw(paneId)');
   });
 
+  it('does not promote the browser viewer to local grid authority', () => {
+    expect(source).not.toContain('manager.setLocalGridAuthority(paneId, true);');
+  });
+
   it('does not drop mobile spaces reported as insertCompositionText', () => {
     expect(source).toContain('Some mobile keyboards');
     expect(source).toContain('if (text === imeCommitExpect && Date.now() - imeCommitExpectTime < IME_DUP_WINDOW_MS)');

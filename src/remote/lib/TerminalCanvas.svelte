@@ -114,15 +114,12 @@
   let attached = $state(false);
   let attachError = $state<string | null>(null);
   const webgpuError = $derived(attachError ?? hostError);
-  const needsFontAccess = $derived(attachError?.includes('FONT_ACCESS_REQUIRED') === true);
   const MAX_PENDING_STDIN_BYTES = 64 * 1024;
   const pendingStdin: string[] = [];
   let pendingStdinBytes = 0;
 
   function formatWebgpuInitError(error: unknown): string {
     const detail = error instanceof Error ? error.message : String(error);
-    if (detail.includes('FONT_ACCESS_REQUIRED')) return detail;
-    if (detail.includes('FONT_ACCESS_') || detail.includes('FONT_DATA_')) return detail;
     const prefix = detail.includes('WEBGPU_INIT_FAILED') ? detail : `WEBGPU_INIT_FAILED: ${detail}`;
     return `${prefix}. Enable WebGPU or update graphics drivers, then reload.`;
   }
@@ -219,11 +216,10 @@
     return a ? { x: a.x, y: a.y, h: a.cellH } : null;
   }
 
-  async function attachTerminal(authorizeFonts = false): Promise<void> {
+  async function attachTerminal(): Promise<void> {
     attachError = null;
     try {
-      if (authorizeFonts) await manager.authorizeFonts();
-      else await manager.ready();
+      await manager.ready();
     } catch (err) {
       if (!alive) return;
       attachError = formatWebgpuInitError(err);
@@ -244,7 +240,6 @@
     }
     if (!alive) { manager.park(paneId); return; }
     attached = true;
-    manager.setLocalGridAuthority(paneId, true);
     backendName = manager.backendName(paneId) ?? 'WebGPU';
     manager.onData(paneId, (bytes) => onStdin(td.decode(bytes)));
     manager.onResize(paneId, (rows, cols) => {
@@ -1313,11 +1308,6 @@
   {#if webgpuError}
     <div class="webgpu-error" role="alert" aria-live="assertive">
       <span>{webgpuError}</span>
-      {#if needsFontAccess}
-        <button class="font-access-button" type="button" onclick={() => void attachTerminal(true)}>
-          Enable local fonts
-        </button>
-      {/if}
     </div>
   {:else if !attached}
     <div class="loading">{$t('mobile.initializingTerminal')}</div>
@@ -1375,7 +1365,6 @@
   .scrollback-loading::after{content:"";position:absolute;inset:0;width:35%;background:var(--rg-accent);animation:scrollback-progress .9s ease-in-out infinite}
   .scrollback-error{position:absolute;top:6px;left:50%;z-index:9;transform:translateX(-50%);max-width:calc(100% - 24px);padding:5px 10px;border:1px solid color-mix(in srgb,var(--rg-danger,#ef4444) 45%,transparent);border-radius:999px;background:color-mix(in srgb,var(--rg-bg,#111827) 92%,transparent);color:var(--rg-fg,#f9fafb);font-size:11px;white-space:nowrap}
   .webgpu-error{position:absolute;inset:0;z-index:10;display:grid;place-content:center;padding:24px;background:var(--rg-bg,#111);color:var(--rg-danger,#ff7b72);font:13px/1.5 ui-monospace,monospace;text-align:center;white-space:pre-wrap}
-  .font-access-button{justify-self:center;margin-top:14px;padding:8px 14px;border:1px solid currentColor;border-radius:8px;background:transparent;color:var(--rg-fg,#f9fafb);font:inherit;cursor:pointer}
   @keyframes scrollback-progress{from{transform:translateX(-100%)}to{transform:translateX(385%)}}
   /* Near-invisible input sink parked at the cursor. pointer-events:none keeps it
      from stealing canvas clicks. Opacity must be >0 so the IME candidate window
