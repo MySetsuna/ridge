@@ -647,6 +647,10 @@ export class TerminalManager {
 
 	private readonly opts: ManagerOptions;
 	private readonly panes = new Map<string, PaneEntry>();
+	/** Pane ids with parser work waiting for a compositor turn. Keeping this
+	 * sparse avoids scanning every hidden workspace on each RAF tick. Parked
+	 * panes stay indexed so their backlog resumes when they are unparked. */
+	private readonly pendingFrameWorkPanes = new Set<string>();
 	/** P4.6 Part B (2026-05-22) — paneIds that have been mirrored into
 	*/
 	private rafHandle: number | null = null;
@@ -2424,6 +2428,7 @@ export class TerminalManager {
 		entry.imeAnchorRaf = null;
 		entry.imeAnchorHandler = null;
 		dropPendingFeedBuffers(entry);
+		this._syncPendingFrameWork(entry);
 		try { entry.kernel.free(); } catch { /* ignore */ }
 	}
 
@@ -2437,6 +2442,7 @@ export class TerminalManager {
 			this._focusedPaneByWorkspace.delete(entry.workspaceId);
 		}
 		this.panes.delete(paneId);
+		this.pendingFrameWorkPanes.delete(paneId);
 		if (this.panes.size === 0) this.stopRafLoop();
 	}
 
@@ -2683,6 +2689,7 @@ export class TerminalManager {
 		if (bytes.byteLength === 0) return true;
 		if (entry.feedBuffer !== null || entry.feedBufferChunks.length > 0) this._flushFeedBuffer(entry);
 		const result = enqueueDeferredFeed(entry, bytes);
+		this._syncPendingFrameWork(entry);
 		entry.renderPending = true;
 		this.wake();
 		return result.droppedBytes === 0;
@@ -2726,13 +2733,17 @@ export class TerminalManager {
 			if (!chunk) break;
 			this._feedNow(entry, chunk, Math.max(1, boundedBudgetMs - elapsed), true);
 		}
+		this._syncPendingFrameWork(entry);
 		this.wake();
 	}
 
 	/** Cancel queued render bytes before a transport-level full resync. */
 	clearPendingFeed(paneId: string): number {
 		const entry = this.panes.get(paneId);
-		return entry ? dropPendingFeedBuffers(entry) : 0;
+		if (!entry) return 0;
+		const dropped = dropPendingFeedBuffers(entry);
+		this._syncPendingFrameWork(entry);
+		return dropped;
 	}
 
 	/** §A.4 — feed bytes to the kernel synchronously, including PTY trace,
@@ -2804,6 +2815,7 @@ export class TerminalManager {
 			entry.renderPending = true;
 			if (!drainingDeferred && hasDeferredFeed(entry)) {
 				enqueueDeferredFeed(entry, bytes.slice());
+				this._syncPendingFrameWork(entry);
 				this.wake();
 				return;
 			}
@@ -2813,6 +2825,7 @@ export class TerminalManager {
 				if (drainingDeferred) prependDeferredFeed(entry, remainder);
 				else enqueueDeferredFeed(entry, remainder);
 			}
+			this._syncPendingFrameWork(entry);
 			entry.linkSpans.markDirty();
 			if (requiresRenderSettle) this._noteTuiCursorSettle(entry, performance.now());
 			this.wake();
@@ -2831,6 +2844,7 @@ export class TerminalManager {
 		if (!entry) return;
 		entry.deltaQueue.push({ bytes, onError });
 		entry.deltaQueuedBytes += bytes.byteLength;
+		this._syncPendingFrameWork(entry);
 		entry.renderPending = true;
 		this.wake();
 	}
@@ -2890,6 +2904,7 @@ export class TerminalManager {
 			entry.deltaQueue = entry.deltaQueue.slice(entry.deltaQueueHead);
 			entry.deltaQueueHead = 0;
 		}
+		this._syncPendingFrameWork(entry);
 		return frame;
 	}
 
@@ -2897,6 +2912,7 @@ export class TerminalManager {
 		entry.deltaQueue.length = 0;
 		entry.deltaQueueHead = 0;
 		entry.deltaQueuedBytes = 0;
+		this._syncPendingFrameWork(entry);
 	}
 
 	private _inputPending(): boolean {
@@ -3464,6 +3480,7 @@ export class TerminalManager {
 		if (dropPendingFeed) {
 			dropPendingFeedBuffers(entry);
 			this._clearQueuedDeltaFrames(entry);
+			this._syncPendingFrameWork(entry);
 			this._releaseTuiCursorSuppression(entry);
 		} else {
 			// Automatic memory reclaim must not turn a scrollback sweep into a
@@ -3527,15 +3544,32 @@ export class TerminalManager {
 		return this._orderPanes(live);
 	}
 
+	/** Mark whether a pane currently needs parser work on a compositor turn. */
+	private _syncPendingFrameWork(entry: PaneEntry): void {
+		if (entry.deltaQueueHead < entry.deltaQueue.length || hasDeferredFeed(entry)) {
+			this.pendingFrameWorkPanes.add(entry.paneId);
+		} else {
+			this.pendingFrameWorkPanes.delete(entry.paneId);
+		}
+	}
+
 	/**
 	 * Background parser work must continue for hidden panes so their kernels
-	 * remain current when a workspace is shown. It shares the same focus-first
-	 * rotation, but is kept out of the paint pass so hidden workspace count does
-	 * not multiply renderer/dirty-probe work every RAF tick.
+	 * remain current when a workspace is shown. Only panes with queued parser
+	 * work enter this order; parked panes stay indexed but wait until unparked.
 	 */
 	private _feedOrder(): PaneEntry[] {
 		const live: PaneEntry[] = [];
-		for (const entry of this.panes.values()) {
+		for (const paneId of this.pendingFrameWorkPanes) {
+			const entry = this.panes.get(paneId);
+			if (!entry) {
+				this.pendingFrameWorkPanes.delete(paneId);
+				continue;
+			}
+			if (entry.deltaQueueHead >= entry.deltaQueue.length && !hasDeferredFeed(entry)) {
+				this.pendingFrameWorkPanes.delete(paneId);
+				continue;
+			}
 			if (!entry.parked) live.push(entry);
 		}
 		return this._orderPanes(live);
@@ -5242,9 +5276,21 @@ export class TerminalManager {
 	}
 
 	private _hasQueuedFrameWork(order: readonly PaneEntry[]): boolean {
-		return order.some((entry) =>
+		if (order.some((entry) =>
 			entry.deltaQueueHead < entry.deltaQueue.length || hasDeferredFeed(entry),
-		);
+		)) return true;
+		// A transport callback may enqueue work after `_newRafFrame` captured
+		// `feedOrder`; consult the sparse live index so that wakeups cannot fall
+		// asleep for the idle watchdog interval.
+		for (const paneId of this.pendingFrameWorkPanes) {
+			const entry = this.panes.get(paneId);
+			if (!entry || (entry.deltaQueueHead >= entry.deltaQueue.length && !hasDeferredFeed(entry))) {
+				this.pendingFrameWorkPanes.delete(paneId);
+				continue;
+			}
+			if (!entry.parked) return true;
+		}
+		return false;
 	}
 
 	private _scheduleNextFrame(state: RafFrameState, tick: () => void): void {

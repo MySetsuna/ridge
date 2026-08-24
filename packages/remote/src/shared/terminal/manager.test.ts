@@ -1594,6 +1594,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		internal._focusedPaneByWorkspace.set('workspace-3', 'stress-3-0');
 		const host = { beginFrame: vi.fn(() => true), endFrame: vi.fn() };
 		internal.globalHost = { canvas: fixture.pane.canvas, host };
+		for (const { pane } of fixtures) manager.enqueueFeed(pane.paneId, new Uint8Array([1]));
 
 		const order = internal._renderOrder();
 		const feedOrder = internal._feedOrder();
