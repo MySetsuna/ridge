@@ -918,10 +918,7 @@ impl SurfaceHost {
     ) where
         F: FnOnce(&mut wgpu::RenderPass<'_>),
     {
-        if scissor.is_empty() {
-            println!("[ridge-term] Scissor empty, clipping: {:?}", scissor);
-            return;
-        }
+        if scissor.is_empty() { return; }
         // Clamp scissor to swap-chain dimensions to avoid wgpu validation errors
         let x = scissor.x.min(self.config.width);
         let y = scissor.y.min(self.config.height);

@@ -342,6 +342,43 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(events).toEqual(expect.arrayContaining([{ offset: 0, total: 12 }]));
 	});
 
+	it('skips a duplicate dirty probe when output already marked the pane pending', () => {
+		const { manager, fixture, internal } = makeManager();
+		internal._activeWorkspaceId = fixture.pane.workspaceId;
+		const isDirty = vi.fn(() => false);
+		(fixture.handle as any).isDirty = isDirty;
+
+		manager.feed(PANE, new Uint8Array([1, 2, 3]));
+		expect(fixture.pane.renderPending).toBe(true);
+		const state: any = {
+			frameOrder: [fixture.pane],
+			dateNow: Date.now(),
+			perfNow: 10,
+			anyRendered: false,
+			minDeadlineMs: Infinity,
+		};
+		internal._renderFrameEntry(fixture.pane, state);
+
+		expect(fixture.handle.render).toHaveBeenCalledOnce();
+		expect(isDirty).not.toHaveBeenCalled();
+		expect(fixture.pane.renderPending).toBe(false);
+
+		internal._renderFrameEntry(fixture.pane, { ...state, anyRendered: false });
+		expect(isDirty).toHaveBeenCalledOnce();
+	});
+
+	it('keeps remote feed callbacks on the bounded compositor queue', () => {
+		const { manager, fixture, internal } = makeManager();
+		const bytes = new Uint8Array([1, 2, 3]);
+
+		expect(manager.enqueueFeed(PANE, bytes)).toBe(true);
+		expect(fixture.kernel.feed).not.toHaveBeenCalled();
+		internal._drainDeferredFeeds([fixture.pane]);
+
+		expect(fixture.kernel.feed).toHaveBeenCalledWith(bytes);
+		expect(fixture.pane.feedDeferredBytes).toBe(0);
+	});
+
 	it('drains native deltas on the frame hub, paints output, and freezes only a hinted TUI cursor', () => {
 		const { manager, fixture, internal } = makeManager();
 		fixture.kernel.applyDeltaFrame.mockReturnValueOnce(true);
@@ -1537,6 +1574,53 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(state.renderDeferred).toBe(true);
 		expect(raf).toHaveBeenCalledOnce();
 		now.mockRestore();
+	});
+
+	it('keeps an 8-workspace 4-split workload GPU-bound to the active workspace', () => {
+		const { manager, fixture, internal } = makeManager();
+		const fixtures = [fixture];
+		fixture.pane.workspaceId = 'workspace-0';
+		for (let workspace = 0; workspace < 8; workspace += 1) {
+			for (let split = workspace === 0 ? 1 : 0; split < 4; split += 1) {
+				const next = workspace === 0 && split === 0 ? fixture : makePane();
+				next.pane.paneId = `stress-${workspace}-${split}`;
+				next.pane.workspaceId = `workspace-${workspace}`;
+				next.pane.canvas = fixture.pane.canvas;
+				internal.panes.set(next.pane.paneId, next.pane);
+				if (next !== fixture) fixtures.push(next);
+			}
+		}
+		internal._activeWorkspaceId = 'workspace-3';
+		internal._focusedPaneByWorkspace.set('workspace-3', 'stress-3-0');
+		const host = { beginFrame: vi.fn(() => true), endFrame: vi.fn() };
+		internal.globalHost = { canvas: fixture.pane.canvas, host };
+
+		const order = internal._renderOrder();
+		const collected = internal._collectHostDirty(order, Date.now());
+		const state: any = {
+			frameOrder: order,
+			...collected,
+			activeHost: host,
+			hostFrameOpen: false,
+			surfaceJustWiped: false,
+			anyRendered: false,
+			renderDeferred: false,
+			renderDeadlineMs: Infinity,
+			minDeadlineMs: Infinity,
+			dateNow: Date.now(),
+			perfNow: 10,
+		};
+		for (const entry of order) internal._renderFrameEntry(entry, state);
+		internal._finishHostFrame(state);
+
+		const active = fixtures.filter(({ pane }) => pane.workspaceId === 'workspace-3');
+		expect(active).toHaveLength(4);
+		expect(active.every(({ handle }) => handle.render.mock.calls.length === 1)).toBe(true);
+		expect(fixtures.filter(({ pane }) => pane.workspaceId !== 'workspace-3')
+			.every(({ handle }) => handle.render.mock.calls.length === 0)).toBe(true);
+		expect(host.beginFrame).toHaveBeenCalledOnce();
+		expect(host.endFrame).toHaveBeenCalledOnce();
+		void manager;
 	});
 
 	it('backs off after a failed host frame instead of spinning RAF', async () => {

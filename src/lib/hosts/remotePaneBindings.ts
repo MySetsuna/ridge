@@ -37,7 +37,8 @@ export function bindRemotePane(binding: RemotePaneBinding): void {
   stops.push(binding.link.onRawBytes((incoming, bytes) => {
     if (incoming.paneId !== pane.paneId || incoming.workspaceId !== pane.workspaceId) return;
     if (live.active) {
-      TerminalManager.instance().feed(binding.localPaneId, bytes);
+      const manager = TerminalManager.instance();
+      manager.enqueueFeed?.(binding.localPaneId, bytes);
       return;
     }
     live.pending.push(bytes.slice());
@@ -113,7 +114,7 @@ export function activateRemotePaneBinding(localPaneId: string): void {
   live.active = true;
   promoteRemotePaneBinding(localPaneId);
   const manager = TerminalManager.instance();
-  for (const bytes of live.pending) manager.feed(localPaneId, bytes);
+  for (const bytes of live.pending) manager.enqueueFeed?.(localPaneId, bytes);
   live.pending = [];
   live.pendingBytes = 0;
 }

@@ -322,6 +322,8 @@ interface PaneEntry {
 	 *  burning CPU while the TUI is misbehaving. Cleared together with
 	 *  `syncStart` when sync mode clears (TASKS §1.4). */
 	syncTimeoutRendered: boolean;
+	/** Kernel/output or renderer invalidation already requires a paint. */
+	renderPending: boolean;
 	/** Monotonic delta generation mirrored into the worker renderer. */
 	/** Native delta frames wait here until the next compositor turn. Keeping
 	 * their parse/apply work out of the Tauri Channel callback prevents a burst
@@ -2285,6 +2287,7 @@ export class TerminalManager {
 			initialFitAttempt: 0,
 			syncStart: null,
 			syncTimeoutRendered: false,
+			renderPending: true,
 			deltaQueue: [],
 			deltaQueueHead: 0,
 			deltaQueuedBytes: 0,
@@ -2599,6 +2602,7 @@ export class TerminalManager {
 			linkUnderlineRegions: [], linkHintEl, linkHintRegion: null,
 			cellW: quantizeCellSize(Number(cellW), dpr), cellH: quantizeCellSize(Number(cellH), dpr),
 			lastConfiguredDpr: dpr, lastReportedRows: -1, lastReportedCols: -1, lastAppliedPaddingPx: undefined,
+			renderPending: true,
 		});
 		if (wipeHost) this._invalidateHost();
 		this._bindUnparkListeners(paneId, container, entry);
@@ -2665,6 +2669,21 @@ export class TerminalManager {
 		const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
 		if (this._isInlineTui(entry)) this._feedInline(entry, bytes);
 		else this._feedImmediate(entry, bytes);
+	}
+
+	/** Queue external/remote PTY bytes for the shared compositor budget. This
+	 * keeps several remote split panes from parsing back-to-back network frames
+	 * inside one callback; local PTY paths retain the synchronous `feed()` API. */
+	enqueueFeed(paneId: string, data: string | Uint8Array): boolean {
+		const entry = this.panes.get(paneId);
+		if (!entry) return false;
+		const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+		if (bytes.byteLength === 0) return true;
+		if (entry.feedBuffer !== null || entry.feedBufferChunks.length > 0) this._flushFeedBuffer(entry);
+		const result = enqueueDeferredFeed(entry, bytes);
+		entry.renderPending = true;
+		this.wake();
+		return result.droppedBytes === 0;
 	}
 
 	/** Read bounded render-queue diagnostics without exposing kernel internals. */
@@ -2780,6 +2799,7 @@ export class TerminalManager {
 			drainingDeferred = false,
 		): void {
 			this._traceFeed(entry, bytes);
+			entry.renderPending = true;
 			if (!drainingDeferred && hasDeferredFeed(entry)) {
 				enqueueDeferredFeed(entry, bytes.slice());
 				this.wake();
@@ -2809,6 +2829,7 @@ export class TerminalManager {
 		if (!entry) return;
 		entry.deltaQueue.push({ bytes, onError });
 		entry.deltaQueuedBytes += bytes.byteLength;
+		entry.renderPending = true;
 		this.wake();
 	}
 
@@ -2849,6 +2870,7 @@ export class TerminalManager {
 				for (const ev of events) entry.eventHandler(ev);
 			}
 			entry.linkSpans.markDirty();
+			entry.renderPending = true;
 			this.wake();
 			return requiresRenderSettle;
 		});
@@ -3018,6 +3040,7 @@ export class TerminalManager {
 		const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
 		if (bytes.length === 0) return false;
 		entry.kernel.prependScrollback(bytes);
+		entry.renderPending = true;
 		// No selection / search clear here: prepend grows the scrollback
 		// at its older end and leaves all existing rows in place, so any
 		// currently-active selection or search anchor is still valid.
@@ -4440,7 +4463,7 @@ export class TerminalManager {
 		for (const id of ids) {
 			const entry = this.panes.get(id);
 			if (!entry || entry.parked) continue;
-			entry.handle?.invalidateAll();
+			this._invalidateEntry(entry);
 		}
 		if (ids.length) this.wake();
 	}
@@ -4448,7 +4471,7 @@ export class TerminalManager {
 	forceFullRedraw(paneId: string): void {
 		const entry = this.panes.get(paneId);
 		if (!entry || entry.parked) return;
-		entry.handle?.invalidateAll();
+		this._invalidateEntry(entry);
 		this.wake();
 	}
 
@@ -4464,7 +4487,7 @@ export class TerminalManager {
 		for (const entry of this.panes.values()) {
 			if (entry.parked) continue;
 			if (entry.workspaceId !== workspaceId) continue;
-			entry.handle?.invalidateAll();
+			this._invalidateEntry(entry);
 		}
 		this.wake();
 	}
@@ -4472,7 +4495,7 @@ export class TerminalManager {
 	invalidateAllPanes(): void {
 		for (const entry of this.panes.values()) {
 			if (entry.parked) continue;
-			entry.handle?.invalidateAll();
+			this._invalidateEntry(entry);
 		}
 		this.wake();
 	}
@@ -4518,7 +4541,7 @@ export class TerminalManager {
 			entry.cellW = quantizeCellSize(Number(w), dpr);
 			entry.cellH = quantizeCellSize(Number(h), dpr);
 			entry.lastConfiguredDpr = dpr;
-			entry.handle.invalidateAll();
+			this._invalidateEntry(entry);
 			void this.fitPane(entry, this._sharedRemoteMode);
 		}
 		this.wake();
@@ -4540,7 +4563,7 @@ export class TerminalManager {
 			if (entry.parked) return;
 			entry.handle?.applyDefaultTheme();
 			entry.handle?.applyTheme(theme);
-			entry.handle?.invalidateAll();
+			this._invalidateEntry(entry);
 			applied++;
 		};
 		for (const entry of this.panes.values()) {
@@ -4554,7 +4577,7 @@ export class TerminalManager {
 			entry.handle?.applyTheme(theme);
 			// Theme change doesn't bump kernel dirty. Force a full renderer
 			// refresh so the next frame re-resolves every cell colour.
-			entry.handle?.invalidateAll();
+			this._invalidateEntry(entry);
 			applied++;
 		}
 		// Surface-host LoadOp::Clear color is sampled from JS `themeBg`
@@ -4683,9 +4706,12 @@ export class TerminalManager {
 		entry.lastReportedCols = nextCols;
 		entry.kernel.resize(nextRows, nextCols);
 		if (this._sharedRemoteMode) this._recomputeViewport(entry);
-		entry.handle?.invalidateAll();
+		this._invalidateEntry(entry);
 		entry.linkSpans.markDirty();
-		try { entry.handle?.render(entry.kernel); } catch (error) { console.error('[ridge-term] external resize render error', paneId, error); }
+		try {
+			entry.handle?.render(entry.kernel);
+			entry.renderPending = false;
+		} catch (error) { console.error('[ridge-term] external resize render error', paneId, error); }
 		this._scheduleFitRedraw(paneId);
 		this.wake();
 	}
@@ -4944,9 +4970,12 @@ export class TerminalManager {
 		if (entry.localGridAuthority || this._sharedRemoteMode) entry.kernel.resize(grid.rows, grid.cols);
 		await entry.resizeHandler?.(grid.rows, grid.cols, isAlt, isInlineTui);
 		if (this._sharedRemoteMode && entry.localGridAuthority) this._recomputeViewport(entry);
-		entry.handle?.invalidateAll();
+		this._invalidateEntry(entry);
 		entry.linkSpans.markDirty();
-		try { entry.handle?.render(entry.kernel); } catch (error) { console.error('[ridge-term] post-resize render error', entry.paneId, error); }
+		try {
+			entry.handle?.render(entry.kernel);
+			entry.renderPending = false;
+		} catch (error) { console.error('[ridge-term] post-resize render error', entry.paneId, error); }
 		this._scheduleFitRedraw(entry.paneId);
 		this.wake();
 	}
@@ -4979,6 +5008,7 @@ export class TerminalManager {
 	}
 
 	private _hostPaneDirty(entry: PaneEntry, dateNow: number): boolean {
+		if (entry.renderPending) return true;
 		if (entry.wasHiddenLastTick || entry.handle === null) return true;
 		const handle = entry.handle as unknown as { isDirty?: (kernel: TerminalKernel, now: number) => boolean };
 		if (typeof handle.isDirty !== 'function') return true;
@@ -5068,7 +5098,17 @@ export class TerminalManager {
 		return true;
 	}
 
+	private _markRenderPending(entry: PaneEntry): void {
+		entry.renderPending = true;
+	}
+
+	private _invalidateEntry(entry: PaneEntry): void {
+		this._markRenderPending(entry);
+		entry.handle?.invalidateAll();
+	}
+
 	private _entryDirty(entry: PaneEntry, state: RafFrameState): boolean {
+		if (entry.renderPending) return true;
 		if (this._isHostMode(entry)) return state.dirtyByPane.get(entry.paneId) ?? true;
 		const handle = entry.handle as unknown as { isDirty?: (kernel: TerminalKernel, now: number) => boolean } | null;
 		if (handle === null || typeof handle.isDirty !== 'function') return true;
@@ -5089,6 +5129,7 @@ export class TerminalManager {
 			}
 			perfMark('rg.terminal.render', () =>
 				perfMark(`rg.terminal.render.pane.${entry.paneId}`, () => entry.handle?.render(entry.kernel)));
+			entry.renderPending = false;
 			state.anyRendered = true;
 		} catch (error) {
 			state.frameFailed = true;
@@ -5142,6 +5183,7 @@ export class TerminalManager {
 				state.renderDeferred = true;
 				if (state.surfaceJustWiped || becameVisible) {
 					const handle = entry.handle as unknown as { invalidateAll?: () => void } | null;
+					this._markRenderPending(entry);
 					handle?.invalidateAll?.();
 				}
 			} else if (!this._isHostMode(entry) || this._ensureHostFrame(state)) {
