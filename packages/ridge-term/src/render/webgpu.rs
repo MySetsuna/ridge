@@ -1388,7 +1388,6 @@ impl WebGpuPaneBackend {
                 glyph_color,
                 font_family_hash,
                 font_size_q,
-                (self.metrics.cell_h * self.metrics.dpr).round().max(1.0),
             );
         }
     }
