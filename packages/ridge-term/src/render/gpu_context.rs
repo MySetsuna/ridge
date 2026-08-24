@@ -235,25 +235,6 @@ pub fn atlas_overwrite_after_cite_count() -> u64 {
     })
 }
 
-/// Register host-provided system-font bytes and synchronize a live shared
-/// rasterizer. The atlas is invalidated only when the payload is new.
-pub fn install_font_data(data: Vec<u8>) -> Result<bool, String> {
-    let added = super::glyph_rasterizer::register_font_data(data)?;
-    if !added {
-        return Ok(false);
-    }
-    SHARED_GPU.with(|cell| -> Result<(), String> {
-        let Some(ctx) = cell.borrow().as_ref().cloned() else {
-            return Ok(());
-        };
-        let mut ctx = ctx.borrow_mut();
-        ctx.rasterizer.sync_registered_fonts()?;
-        ctx.invalidate_atlas();
-        Ok(())
-    })?;
-    Ok(true)
-}
-
 /// §stale-replay detector: read the process-wide count of cached replays
 /// aborted because a cited atlas layer was repurposed since caching (the
 /// cross-frame switch-workspace garble). 0 before the GPU context inits.

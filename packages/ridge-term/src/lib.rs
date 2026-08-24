@@ -66,14 +66,6 @@ pub fn set_present_fast(on: bool) {
     crate::render::webgpu::set_present_fast(on);
 }
 
-/// Install one host-resolved system font into the synchronous WebGPU glyph
-/// rasterizer. JS must finish this preload before constructing SurfaceHost.
-#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-#[wasm_bindgen(js_name = installFontData)]
-pub fn install_font_data(data: Vec<u8>) -> Result<bool, JsValue> {
-    crate::render::gpu_context::install_font_data(data).map_err(JsValue::from)
-}
-
 /// §atlas-race detector (2026-06-22): read the process-wide count of
 /// "a glyph-atlas layer was overwritten after a recorded draw already cited
 /// it this frame" events — the exact cross-pane switch-workspace garble.

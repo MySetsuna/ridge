@@ -6,11 +6,9 @@
 //   - the desktop theme/font bridge  (themeBridge.ts `pushFont`)
 //   - the web-remote controller      (src/remote/lib/terminalController.ts)
 //
-// Policy: selected installed mono/CJK faces first, then generic text, symbols,
-// and emoji system faces. These are names only; loaders still install local
-// font files before Wasm starts.
-// Raw faces are supplied to the Wasm rasterizer by the native or browser-local
-// font-data service; document webfonts are deliberately outside this path.
+// Policy: selected system mono/CJK faces first, then generic text, symbols,
+// and emoji faces. These are CSS names only; the browser/OS owns fallback and
+// font loading. ridge-term never requests raw local font bytes.
 
 /** General Unicode text fallback faces (system fonts only). */
 export const TEXT_FALLBACK = "'Segoe UI','Noto Sans','Arial Unicode MS'";
@@ -77,7 +75,7 @@ function stripCanonicalFallbacks(family: string): string[] {
 /**
  * Normalize any terminal font-family string so it ends with the canonical emoji
  * chain + a generic fallback. Legacy webfont family names are stripped because
- * the Wasm renderer accepts raw installed faces, not document font faces.
+ * terminal glyphs must resolve through the same CSS fallback chain as overlays.
  *
  * Desktop (themeBridge `pushFont`) and web-remote (terminalController) call this
  * SAME function, so both surfaces resolve the same installed family order.

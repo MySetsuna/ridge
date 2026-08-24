@@ -1,104 +1,21 @@
-//! Selected-font shaping and rasterization for the WebGPU glyph atlas.
 //!
-//! The host loads the user's installed font files before WebGPU starts and
-//! passes their SFNT bytes through `installFontData`. cosmic-text/swash then
-//! keep atlas misses synchronous without creating a browser 2D context.
+//! Rasterizes terminal glyphs with the browser's native Canvas2D font stack.
+//!
+//! The canvas is detached from the document and exists only as a glyph source
+//! for the WebGPU atlas. Browser/OS font fallback handles CJK, symbols, emoji,
+//! combining marks, and grapheme clusters without shipping or requesting raw
+//! local font files.
 
 #![cfg(feature = "webgpu")]
 
-use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::sync::Arc;
-
-use cosmic_text::fontdb;
-use cosmic_text::{
-    Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, SwashContent, Weight,
-    Wrap,
-};
+use wasm_bindgen::{JsCast, JsValue};
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 use super::glyph_atlas::GlyphKey;
 
-const MAX_FONT_FACES: usize = 32;
-const MAX_FONT_BYTES: usize = 96 * 1024 * 1024;
-const MAX_SINGLE_FONT_BYTES: usize = 32 * 1024 * 1024;
-
-#[derive(Default)]
-struct FontRegistry {
-    faces: Vec<Arc<Vec<u8>>>,
-    hashes: Vec<u64>,
-    total_bytes: usize,
-}
-
-thread_local! {
-    static FONT_REGISTRY: RefCell<FontRegistry> = RefCell::new(FontRegistry::default());
-}
-
-/// Validate and retain one SFNT/TTC payload. Returns true only for new data.
-pub fn register_font_data(data: Vec<u8>) -> Result<bool, String> {
-    if data.is_empty() || data.len() > MAX_SINGLE_FONT_BYTES {
-        return Err(format!(
-            "FONT_DATA_INVALID: font payload size {} is outside 1..={MAX_SINGLE_FONT_BYTES}",
-            data.len()
-        ));
-    }
-    let mut hasher = DefaultHasher::new();
-    data.hash(&mut hasher);
-    let hash = hasher.finish();
-    FONT_REGISTRY.with(|cell| {
-        let mut registry = cell.borrow_mut();
-        if registry.hashes.contains(&hash) {
-            return Ok(false);
-        }
-        if registry.faces.len() >= MAX_FONT_FACES
-            || registry.total_bytes.saturating_add(data.len()) > MAX_FONT_BYTES
-        {
-            return Err("FONT_DATA_LIMIT: terminal font registry is full".to_string());
-        }
-        let data = Arc::new(data);
-        let mut probe = fontdb::Database::new();
-        if probe
-            .load_font_source(fontdb::Source::Binary(data.clone()))
-            .is_empty()
-        {
-            return Err("FONT_DATA_INVALID: payload contains no supported font face".to_string());
-        }
-        registry.total_bytes += data.len();
-        registry.hashes.push(hash);
-        registry.faces.push(data);
-        Ok(true)
-    })
-}
-
-fn registered_fonts() -> Vec<Arc<Vec<u8>>> {
-    FONT_REGISTRY.with(|cell| cell.borrow().faces.clone())
-}
-
-fn build_font_system(fonts: &[Arc<Vec<u8>>]) -> Result<FontSystem, String> {
-    if fonts.is_empty() {
-        return Err(
-            "FONT_DATA_MISSING: install selected system fonts before WebGPU initialization"
-                .to_string(),
-        );
-    }
-    let mut database = fontdb::Database::new();
-    for data in fonts {
-        if database
-            .load_font_source(fontdb::Source::Binary(data.clone()))
-            .is_empty()
-        {
-            return Err("FONT_DATA_INVALID: registered font could not be loaded".to_string());
-        }
-    }
-    Ok(FontSystem::new_with_locale_and_db(
-        "en-US".to_string(),
-        database,
-    ))
-}
-
 #[derive(Debug, Clone)]
 pub struct RasterizedGlyph {
-    /// Full atlas-slot RGBA8 pixels, row-major.
+    /// Full atlas-slot premultiplied RGBA8 pixels, row-major.
     pub rgba: Vec<u8>,
     /// Painted bounds inside the slot.
     pub width: u16,
@@ -107,54 +24,46 @@ pub struct RasterizedGlyph {
     pub advance: f32,
     /// Device-pixel offset from cell top to the cropped bitmap top.
     pub ascent_offset: f32,
+    /// True when Canvas2D supplied native color pixels (normally emoji).
     pub is_color: bool,
 }
 
-struct PendingImage {
-    x: i32,
-    y: i32,
-    content: SwashContent,
-    width: u32,
-    height: u32,
-    data: Vec<u8>,
-}
-
 pub struct GlyphRasterizer {
-    font_system: FontSystem,
-    swash_cache: SwashCache,
-    loaded_sources: usize,
-    resolved_stack: String,
-    resolved_family: Option<String>,
+    _canvas: HtmlCanvasElement,
+    context: CanvasRenderingContext2d,
     slot_w: u16,
     slot_h: u16,
 }
 
 impl GlyphRasterizer {
     pub fn new(slot_w: u16, slot_h: u16) -> Result<Self, String> {
-        let fonts = registered_fonts();
+        let document = web_sys::window()
+            .and_then(|window| window.document())
+            .ok_or_else(|| "WEBGPU_INIT_FAILED: browser document is unavailable".to_string())?;
+        let canvas = document
+            .create_element("canvas")
+            .map_err(|error| js_error("cannot create glyph canvas", error))?
+            .dyn_into::<HtmlCanvasElement>()
+            .map_err(|error| js_error("created glyph canvas has wrong type", error))?;
+        let width = slot_w.max(1) as u32;
+        let height = slot_h.max(1) as u32;
+        canvas.set_width(width);
+        canvas.set_height(height);
+        let context = canvas
+            .get_context("2d")
+            .map_err(|error| js_error("cannot acquire glyph Canvas2D context", error))?
+            .ok_or_else(|| "WEBGPU_INIT_FAILED: Canvas2D context is unavailable".to_string())?
+            .dyn_into::<CanvasRenderingContext2d>()
+            .map_err(|error| js_error("glyph context has wrong type", error))?;
+        context.set_text_align("left");
+        context.set_text_baseline("alphabetic");
+        context.set_fill_style_str("#ffffff");
         Ok(Self {
-            font_system: build_font_system(&fonts)?,
-            swash_cache: SwashCache::new(),
-            loaded_sources: fonts.len(),
-            resolved_stack: String::new(),
-            resolved_family: None,
-            slot_w,
-            slot_h,
+            _canvas: canvas,
+            context,
+            slot_w: slot_w.max(1),
+            slot_h: slot_h.max(1),
         })
-    }
-
-    /// Pull newly registered host fonts into this live rasterizer.
-    pub fn sync_registered_fonts(&mut self) -> Result<bool, String> {
-        let fonts = registered_fonts();
-        if fonts.len() == self.loaded_sources {
-            return Ok(false);
-        }
-        self.font_system = build_font_system(&fonts)?;
-        self.loaded_sources = fonts.len();
-        self.swash_cache = SwashCache::new();
-        self.resolved_stack.clear();
-        self.resolved_family = None;
-        Ok(true)
     }
 
     pub fn rasterize(
@@ -166,98 +75,107 @@ impl GlyphRasterizer {
         glyph_text: &str,
     ) -> Result<RasterizedGlyph, String> {
         let dpr = valid_dpr(dpr);
-        let device_size = (font_size_px * dpr).max(1.0);
-        let line_height = (device_size * 1.2).max(1.0);
-        let family = self.resolve_family(font_family)?;
-        let attrs = attrs_for(&family, style_flags);
-        let mut buffer = Buffer::new(
-            &mut self.font_system,
-            Metrics::new(device_size, line_height),
-        );
-        buffer.set_size(Some(self.slot_w as f32), Some(self.slot_h as f32));
-        buffer.set_wrap(Wrap::None);
-        buffer.set_text(glyph_text, &attrs, Shaping::Advanced, None);
-        buffer.shape_until_scroll(&mut self.font_system, false);
+        let device_size = (font_size_px.max(1.0) * dpr).max(1.0);
+        self.set_font(font_family, device_size, style_flags);
+        let width = self.slot_w as f64;
+        let height = self.slot_h as f64;
+        self.context.clear_rect(0.0, 0.0, width, height);
 
-        let mut advance_dev = 0.0_f32;
-        let mut glyphs = Vec::new();
-        for run in buffer.layout_runs() {
-            advance_dev = advance_dev.max(run.line_w);
-            for glyph in run.glyphs {
-                let physical = glyph.physical((0.0, run.line_y), 1.0);
-                glyphs.push((physical.x, physical.y, physical.cache_key));
-            }
+        let metrics = self
+            .context
+            .measure_text(glyph_text)
+            .map_err(|error| js_error("cannot measure terminal glyph", error))?;
+        let ascent = finite_non_negative(metrics.actual_bounding_box_ascent())
+            .unwrap_or((device_size as f64) * 0.8);
+        let descent = finite_non_negative(metrics.actual_bounding_box_descent())
+            .unwrap_or((device_size as f64) * 0.2);
+        let baseline = ((height + ascent - descent) * 0.5).clamp(0.0, height);
+        let left = metrics.actual_bounding_box_left();
+        let draw_x = if left.is_finite() {
+            (-left).max(0.0)
+        } else {
+            0.0
+        };
+        self.context
+            .fill_text(glyph_text, draw_x, baseline)
+            .map_err(|error| js_error("cannot rasterize terminal glyph", error))?;
+
+        let image = self
+            .context
+            .get_image_data(0.0, 0.0, width, height)
+            .map_err(|error| js_error("cannot read terminal glyph pixels", error))?;
+        let pixels = image.data().0;
+        let pixel_count = self.slot_w as usize * self.slot_h as usize;
+        if pixels.len() != pixel_count * 4 {
+            return Err(
+                "WEBGPU_INIT_FAILED: glyph Canvas2D returned an invalid pixel buffer".to_string(),
+            );
         }
 
-        let mut images = Vec::with_capacity(glyphs.len());
-        let mut min_y = i32::MAX;
-        let mut max_x = 0_i32;
-        let mut max_y = i32::MIN;
+        let mut min_y = self.slot_h as usize;
+        let mut max_x = 0_usize;
+        let mut max_y = 0_usize;
         let mut is_color = false;
-        for (origin_x, origin_y, key) in glyphs {
-            let Some(image) = self
-                .swash_cache
-                .get_image_uncached(&mut self.font_system, key)
-            else {
+        for index in 0..pixel_count {
+            let offset = index * 4;
+            let alpha = pixels[offset + 3];
+            if alpha == 0 {
                 continue;
-            };
-            let x = origin_x + image.placement.left;
-            let y = origin_y - image.placement.top;
+            }
+            let x = index % self.slot_w as usize;
+            let y = index / self.slot_w as usize;
             min_y = min_y.min(y);
-            max_x = max_x.max(x.saturating_add(image.placement.width as i32));
-            max_y = max_y.max(y.saturating_add(image.placement.height as i32));
-            is_color |= image.content == SwashContent::Color;
-            images.push(PendingImage {
-                x,
-                y,
-                content: image.content,
-                width: image.placement.width,
-                height: image.placement.height,
-                data: image.data,
-            });
+            max_x = max_x.max(x + 1);
+            max_y = max_y.max(y + 1);
+            is_color |=
+                pixels[offset] != pixels[offset + 1] || pixels[offset + 1] != pixels[offset + 2];
         }
 
-        if images.is_empty() {
+        let advance_dev = finite_non_negative(metrics.width()).unwrap_or(0.0);
+        let advance = (advance_dev / dpr as f64) as f32;
+        if max_x == 0 || max_y == 0 {
             return Ok(RasterizedGlyph {
-                rgba: vec![0; self.slot_w as usize * self.slot_h as usize * 4],
-                width: advance_dev.ceil().clamp(1.0, self.slot_w as f32) as u16,
+                rgba: vec![0; pixel_count * 4],
+                width: clamp_u16(advance_dev.ceil(), self.slot_w),
                 height: 1,
-                advance: advance_dev / dpr,
+                advance,
                 ascent_offset: 0.0,
                 is_color: false,
             });
         }
 
-        let mut crop_y = min_y;
-        let width = max_x.clamp(1, self.slot_w as i32) as u16;
-        let mut height = max_y.saturating_sub(crop_y).clamp(1, self.slot_h as i32) as u16;
-        let mut rgba = vec![0; self.slot_w as usize * self.slot_h as usize * 4];
-        for image in &images {
-            composite_image(
-                &mut rgba,
-                self.slot_w as usize,
-                self.slot_h as usize,
-                image,
-                crop_y,
-            );
+        // UVs begin at the first atlas row. Pack the painted rows there and
+        // keep the original device-pixel offset in `ascent_offset`; otherwise
+        // the shader would sample transparent top rows and lose most glyphs.
+        let mut rgba = vec![0; pixel_count * 4];
+        for source_y in min_y..max_y {
+            let dest_y = source_y - min_y;
+            for x in 0..self.slot_w as usize {
+                let source = (source_y * self.slot_w as usize + x) * 4;
+                let dest = (dest_y * self.slot_w as usize + x) * 4;
+                let alpha = pixels[source + 3];
+                if alpha == 0 {
+                    continue;
+                }
+                if is_color {
+                    rgba[dest] = premultiply(pixels[source], alpha);
+                    rgba[dest + 1] = premultiply(pixels[source + 1], alpha);
+                    rgba[dest + 2] = premultiply(pixels[source + 2], alpha);
+                    rgba[dest + 3] = alpha;
+                } else {
+                    // The shader uses alpha as coverage and tints monochrome
+                    // glyphs with the cell foreground color.
+                    rgba[dest..dest + 4].fill(alpha);
+                }
+            }
         }
-        stabilize_box_connector_edges(
-            &mut rgba,
-            self.slot_w as usize,
-            width as usize,
-            &mut height,
-            &mut crop_y,
-            advance_dev,
-            line_height,
-            glyph_text,
-        );
 
         Ok(RasterizedGlyph {
             rgba,
-            width,
-            height,
-            advance: advance_dev / dpr,
-            ascent_offset: crop_y as f32,
+            width: (max_x as u16).max(1),
+            height: (max_y - min_y) as u16,
+            advance,
+            ascent_offset: min_y as f32,
             is_color,
         })
     }
@@ -267,60 +185,38 @@ impl GlyphRasterizer {
     }
 
     pub fn measure(&mut self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
-        let family = self.resolve_family(font_family)?;
-        let metrics = Metrics::new(font_size_px.max(1.0), (font_size_px * 1.2).max(1.0));
-        let mut buffer = Buffer::new(&mut self.font_system, metrics);
-        buffer.set_size(None, Some(metrics.line_height));
-        buffer.set_wrap(Wrap::None);
-        buffer.set_text(
-            "M",
-            &Attrs::new().family(Family::Name(&family)),
-            Shaping::Advanced,
-            None,
-        );
-        buffer.shape_until_scroll(&mut self.font_system, false);
-        let run = buffer
-            .layout_runs()
-            .next()
-            .ok_or_else(|| format!("FONT_DATA_MISSING: no face matched {family}"))?;
-        Ok((
-            run.line_w.round().max(1.0),
-            run.line_height.round().max(1.0),
-        ))
+        let size = font_size_px.max(1.0);
+        self.set_font(font_family, size, 0);
+        let metrics = self
+            .context
+            .measure_text("M")
+            .map_err(|error| js_error("cannot measure terminal font", error))?;
+        let width = finite_non_negative(metrics.width()).unwrap_or(size as f64 * 0.6);
+        let ascent = finite_non_negative(metrics.actual_bounding_box_ascent()).unwrap_or(0.0);
+        let descent = finite_non_negative(metrics.actual_bounding_box_descent()).unwrap_or(0.0);
+        let measured_height = ascent + descent;
+        let line_height = measured_height.max(size as f64 * 1.2);
+        Ok((width.max(1.0) as f32, line_height.max(1.0) as f32))
     }
 
-    fn resolve_family(&mut self, stack: &str) -> Result<String, String> {
-        if self.resolved_stack == stack {
-            if let Some(family) = self.resolved_family.as_ref() {
-                return Ok(family.clone());
-            }
-        }
-        let family = first_available_family(stack, |candidate| {
-            let query_family = match candidate.to_ascii_lowercase().as_str() {
-                "monospace" | "ui-monospace" => Family::Monospace,
-                "serif" => Family::Serif,
-                "sans-serif" | "system-ui" => Family::SansSerif,
-                _ => Family::Name(candidate),
-            };
-            let query = fontdb::Query {
-                families: std::slice::from_ref(&query_family),
-                weight: fontdb::Weight::NORMAL,
-                stretch: fontdb::Stretch::Normal,
-                style: fontdb::Style::Normal,
-            };
-            let id = self.font_system.db().query(&query)?;
-            self.font_system
-                .db()
-                .face(id)
-                .and_then(|face| face.families.first())
-                .map(|(name, _)| name.clone())
-                .or_else(|| Some(candidate.to_string()))
-        })
-        .ok_or_else(|| format!("FONT_DATA_MISSING: no loaded face matched {stack}"))?;
-        self.resolved_stack.clear();
-        self.resolved_stack.push_str(stack);
-        self.resolved_family = Some(family.clone());
-        Ok(family)
+    fn set_font(&self, font_family: &str, size_px: f32, style_flags: u8) {
+        let style = if style_flags & GlyphKey::STYLE_ITALIC != 0 {
+            "italic "
+        } else {
+            ""
+        };
+        let weight = if style_flags & GlyphKey::STYLE_BOLD != 0 {
+            "bold "
+        } else {
+            ""
+        };
+        let family = if font_family.trim().is_empty() {
+            "monospace"
+        } else {
+            font_family
+        };
+        self.context
+            .set_font(&format!("{style}{weight}{size_px:.3}px {family}"));
     }
 }
 
@@ -332,339 +228,21 @@ fn valid_dpr(dpr: f32) -> f32 {
     }
 }
 
-fn first_available_family(
-    stack: &str,
-    mut resolve: impl FnMut(&str) -> Option<String>,
-) -> Option<String> {
-    stack
-        .split(',')
-        .map(|part| part.trim().trim_matches(['\'', '"']).trim())
-        .filter(|part| !part.is_empty())
-        .find_map(|part| resolve(part))
+fn finite_non_negative(value: f64) -> Option<f64> {
+    (value.is_finite() && value >= 0.0).then_some(value)
 }
 
-fn attrs_for(family: &str, style_flags: u8) -> Attrs<'_> {
-    let weight = if style_flags & GlyphKey::STYLE_BOLD != 0 {
-        Weight::BOLD
-    } else {
-        Weight::NORMAL
-    };
-    let style = if style_flags & GlyphKey::STYLE_ITALIC != 0 {
-        Style::Italic
-    } else {
-        Style::Normal
-    };
-    Attrs::new()
-        .family(Family::Name(family))
-        .weight(weight)
-        .style(style)
-}
-
-fn composite_image(
-    dst: &mut [u8],
-    slot_w: usize,
-    slot_h: usize,
-    image: &PendingImage,
-    crop_y: i32,
-) {
-    for src_y in 0..image.height as usize {
-        for src_x in 0..image.width as usize {
-            let x = image.x + src_x as i32;
-            let y = image.y - crop_y + src_y as i32;
-            if x < 0 || y < 0 || x as usize >= slot_w || y as usize >= slot_h {
-                continue;
-            }
-            let src = match image.content {
-                SwashContent::Mask => {
-                    let alpha = image.data[src_y * image.width as usize + src_x];
-                    [alpha, alpha, alpha, alpha]
-                }
-                SwashContent::Color => {
-                    let offset = (src_y * image.width as usize + src_x) * 4;
-                    let alpha = image.data[offset + 3];
-                    [
-                        premultiply(image.data[offset], alpha),
-                        premultiply(image.data[offset + 1], alpha),
-                        premultiply(image.data[offset + 2], alpha),
-                        alpha,
-                    ]
-                }
-                SwashContent::SubpixelMask => continue,
-            };
-            let offset = (y as usize * slot_w + x as usize) * 4;
-            blend_premult(&mut dst[offset..offset + 4], src);
-        }
-    }
+fn clamp_u16(value: f64, max: u16) -> u16 {
+    value.max(1.0).min(max as f64) as u16
 }
 
 fn premultiply(channel: u8, alpha: u8) -> u8 {
     ((channel as u32 * alpha as u32 + 127) / 255) as u8
 }
 
-fn blend_premult(dst: &mut [u8], src: [u8; 4]) {
-    let inv = 255_u32 - src[3] as u32;
-    for channel in 0..3 {
-        dst[channel] =
-            (src[channel] as u32 + (dst[channel] as u32 * inv + 127) / 255).min(255) as u8;
-    }
-    dst[3] = (src[3] as u32 + (dst[3] as u32 * inv + 127) / 255).min(255) as u8;
-}
-
-/// Preserve the selected font's box-drawing outline while removing the
-/// repeated anti-aliased notch at horizontal cell joins. Swash rasterizes a
-/// fractional advance into an integer bitmap, so the last covered device pixel
-/// can be translucent even though the outline reaches the advance boundary.
-/// Adjacent cached glyphs then repeat that dim endpoint at every cell. Only
-/// already-covered boundary pixels are made opaque. Vertical connectors are
-/// extended through line-height slack by repeating the font's own edge row;
-/// the curved outline itself is never replaced with a procedural shape.
-fn stabilize_box_connector_edges(
-    rgba: &mut [u8],
-    slot_w: usize,
-    width: usize,
-    height: &mut u16,
-    ascent_offset: &mut i32,
-    advance_dev: f32,
-    line_height: f32,
-    glyph_text: &str,
-) {
-    let mut chars = glyph_text.chars();
-    let Some(ch) = chars.next() else { return };
-    if chars.next().is_some() || !('\u{2500}'..='\u{257f}').contains(&ch) || slot_w == 0 {
-        return;
-    }
-    let right = advance_dev.ceil().max(1.0) as usize - 1;
-    let glyph_height = *height as usize;
-    for x in [0, right] {
-        if x >= width || x >= slot_w {
-            continue;
-        }
-        for y in 0..glyph_height {
-            let offset = (y * slot_w + x) * 4;
-            if offset + 4 <= rgba.len() && rgba[offset + 3] != 0 {
-                rgba[offset..offset + 4].fill(255);
-            }
-        }
-    }
-
-    // Common light box glyphs must also meet across row boundaries. Bottom
-    // corners and vertical strokes start at the cell top; retain the original
-    // bitmap by shifting it down, then repeat only its first connector row into
-    // the font's top slack. One device-pixel overlap prevents a sampling seam
-    // where adjacent row quads meet exactly at the same boundary.
-    let target_height = line_height.round().max(1.0) as i32;
-    let slot_h = rgba.len() / (slot_w * 4);
-    let row_bytes = slot_w * 4;
-    let connector_center_x = (advance_dev.ceil().max(1.0) as usize - 1) / 2;
-    let top_extension = match ch {
-        '│' | '╰' | '╯' => (*ascent_offset).max(0) as usize + 1,
-        _ => 0,
-    }
-    .min(slot_h.saturating_sub(glyph_height));
-    let top_source = (0..glyph_height)
-        .find(|&y| (0..width.min(slot_w)).any(|x| rgba[(y * slot_w + x) * 4 + 3] >= 192))
-        .map(|row| (row, 192))
-        .or_else(|| {
-            (0..glyph_height)
-                .find(|&y| (0..width.min(slot_w)).any(|x| rgba[(y * slot_w + x) * 4 + 3] >= 128))
-                .map(|row| (row, 128))
-        })
-        .or_else(|| {
-            (0..glyph_height)
-                .find(|&y| (0..width.min(slot_w)).any(|x| rgba[(y * slot_w + x) * 4 + 3] != 0))
-                .map(|row| (row, 1))
-        });
-    let mut glyph_height = glyph_height;
-    if top_extension != 0 {
-        rgba.copy_within(0..glyph_height * row_bytes, top_extension * row_bytes);
-        if let Some((source_row, min_alpha)) = top_source {
-            let source = (source_row + top_extension) * row_bytes;
-            let connector_x = (0..width.min(slot_w))
-                .filter(|&x| rgba[source + x * 4 + 3] >= min_alpha)
-                .min_by_key(|&x| x.abs_diff(connector_center_x));
-            if let Some(x) = connector_x {
-                for y in 0..top_extension {
-                    let dest = y * row_bytes + x * 4;
-                    rgba[dest..dest + 4].fill(255);
-                }
-            }
-        }
-        *ascent_offset -= top_extension as i32;
-        *height += top_extension as u16;
-        glyph_height += top_extension;
-    }
-
-    // Top corners and vertical strokes finish at the cell bottom. Repeat only
-    // the font's own last connector row through the remaining bottom slack and
-    // one device pixel into the next row; curves and horizontal arms remain
-    // byte-for-byte intact.
-    let extension = match ch {
-        '│' | '╭' | '╮' => {
-            target_height
-                .saturating_sub(*ascent_offset + *height as i32)
-                .max(0) as usize
-                + 1
-        }
-        _ => 0,
-    };
-    let extension = extension.min(slot_h.saturating_sub(glyph_height));
-    if extension == 0 {
-        return;
-    }
-    let source = (0..glyph_height)
-        .rev()
-        .find(|&y| (0..width.min(slot_w)).any(|x| rgba[(y * slot_w + x) * 4 + 3] >= 192))
-        .map(|row| (row, 192))
-        .or_else(|| {
-            (0..glyph_height)
-                .rev()
-                .find(|&y| (0..width.min(slot_w)).any(|x| rgba[(y * slot_w + x) * 4 + 3] >= 128))
-                .map(|row| (row, 128))
-        })
-        .or_else(|| {
-            (0..glyph_height)
-                .rev()
-                .find(|&y| (0..width.min(slot_w)).any(|x| rgba[(y * slot_w + x) * 4 + 3] != 0))
-                .map(|row| (row, 1))
-        });
-    let Some((source_row, min_alpha)) = source else {
-        return;
-    };
-    let source = source_row * slot_w * 4;
-    let connector_x = (0..width.min(slot_w))
-        .filter(|&x| rgba[source + x * 4 + 3] >= min_alpha)
-        .min_by_key(|&x| x.abs_diff(connector_center_x));
-    if let Some(x) = connector_x {
-        for y in glyph_height..glyph_height + extension {
-            let dest = y * slot_w * 4 + x * 4;
-            rgba[dest..dest + 4].fill(255);
-        }
-    }
-    *height += extension as u16;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn css_stack_uses_first_available_family() {
-        assert_eq!(
-            first_available_family("'JetBrains Mono', ui-monospace, Consolas", |family| {
-                match family {
-                    "ui-monospace" => Some("Consolas".to_string()),
-                    _ => None,
-                }
-            })
-            .as_deref(),
-            Some("Consolas")
-        );
-        assert_eq!(
-            first_available_family("  ", |_| Some("unused".to_string())),
-            None
-        );
-    }
-
-    #[test]
-    fn premultiplied_blend_preserves_coverage() {
-        let mut dst = [0, 0, 0, 0];
-        blend_premult(&mut dst, [64, 32, 16, 128]);
-        assert_eq!(dst, [64, 32, 16, 128]);
-        blend_premult(&mut dst, [0, 64, 0, 128]);
-        assert_eq!(dst, [32, 80, 8, 192]);
-    }
-
-    #[test]
-    fn box_connector_edges_keep_shape_and_remove_dim_join() {
-        let mut rgba = vec![0; 3 * 2 * 4];
-        rgba[3] = 96;
-        rgba[(2 * 4)..(2 * 4 + 4)].fill(204);
-
-        let mut height = 2;
-        let mut ascent_offset = 0;
-        stabilize_box_connector_edges(
-            &mut rgba,
-            3,
-            3,
-            &mut height,
-            &mut ascent_offset,
-            3.0,
-            2.0,
-            "─",
-        );
-
-        assert_eq!(&rgba[0..4], &[255; 4]);
-        assert_eq!(&rgba[(2 * 4)..(2 * 4 + 4)], &[255; 4]);
-        assert_eq!(&rgba[(3 * 4)..(3 * 4 + 4)], &[0; 4]);
-
-        let mut ordinary = rgba.clone();
-        ordinary[3] = 96;
-        stabilize_box_connector_edges(
-            &mut ordinary,
-            3,
-            3,
-            &mut height,
-            &mut ascent_offset,
-            3.0,
-            2.0,
-            "A",
-        );
-        assert_eq!(ordinary[3], 96);
-    }
-
-    #[test]
-    fn vertical_box_glyph_extends_only_its_existing_connector_pixels() {
-        let mut rgba = vec![0; 3 * 6 * 4];
-        rgba[(1 * 4)..(1 * 4 + 4)].fill(128);
-        rgba[(4 * 4)..(4 * 4 + 4)].fill(128);
-        let mut height = 2;
-        let mut ascent_offset = 0;
-
-        stabilize_box_connector_edges(
-            &mut rgba,
-            3,
-            3,
-            &mut height,
-            &mut ascent_offset,
-            3.0,
-            4.0,
-            "│",
-        );
-
-        assert_eq!(ascent_offset, -1);
-        assert_eq!(height, 6);
-        assert_eq!(&rgba[(1 * 4)..(1 * 4 + 4)], &[255; 4]);
-        assert_eq!(&rgba[(2 * 3 * 4 + 4)..(2 * 3 * 4 + 8)], &[128; 4]);
-        assert_eq!(&rgba[(5 * 3 * 4 + 4)..(5 * 3 * 4 + 8)], &[255; 4]);
-        assert_eq!(&rgba[(2 * 3 * 4)..(2 * 3 * 4 + 4)], &[0; 4]);
-    }
-
-    #[test]
-    fn bottom_corner_extends_its_connector_to_the_cell_top() {
-        let mut rgba = vec![0; 3 * 6 * 4];
-        rgba[(1 * 4)..(1 * 4 + 4)].fill(128);
-        rgba[(4 * 4)..(4 * 4 + 4)].fill(64);
-        let mut height = 2;
-        let mut ascent_offset = 2;
-
-        stabilize_box_connector_edges(
-            &mut rgba,
-            3,
-            3,
-            &mut height,
-            &mut ascent_offset,
-            3.0,
-            4.0,
-            "╰",
-        );
-
-        assert_eq!(ascent_offset, -1);
-        assert_eq!(height, 5);
-        for y in 0..3 {
-            assert_eq!(&rgba[(y * 3 * 4 + 4)..(y * 3 * 4 + 8)], &[255; 4]);
-        }
-        assert_eq!(&rgba[(3 * 3 * 4 + 4)..(3 * 3 * 4 + 8)], &[128; 4]);
-        assert_eq!(&rgba[(4 * 3 * 4 + 4)..(4 * 3 * 4 + 8)], &[64; 4]);
-        assert_eq!(&rgba[0..4], &[0; 4]);
-    }
+fn js_error(prefix: &str, value: JsValue) -> String {
+    let detail = value
+        .as_string()
+        .unwrap_or_else(|| "unknown JavaScript error".to_string());
+    format!("{prefix}: {detail}")
 }
