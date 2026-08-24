@@ -779,17 +779,16 @@ impl<B: RenderBackend> Renderer<B> {
             tui_mode,
             ..self.metrics
         };
-        // Collect hyperlink rects from every visible row. Most rows have
-        // empty `hyperlinks` so this is cheap. We always re-emit on full
-        // redraw; partial draws still emit them so the underlines aren't
-        // erased by other row repaints.
+        // Hyperlink underlines share the persistent frame store with row
+        // pixels. Re-emit spans only for rows painted in this frame; a full
+        // redraw still supplies every visible row through `dirty_rows`.
         let mut hl_rects: Vec<(usize, usize, usize)> = Vec::new();
-        for r in 0..rows_n {
-            let Some(row) = terminal.viewport_row(r) else {
+        for row_draw in &rows {
+            let Some(row) = terminal.viewport_row(row_draw.row_index) else {
                 continue;
             };
             for span in &row.hyperlinks {
-                hl_rects.push((r, span.col_start, span.col_end));
+                hl_rects.push((row_draw.row_index, span.col_start, span.col_end));
             }
         }
         draw_frame(
@@ -1584,6 +1583,7 @@ mod tests {
         scrolls: Vec<ScrollOp>,
         drawn_rows: Vec<usize>,
         last_drawn: Vec<usize>,
+        hyperlink_rects: Vec<(usize, usize, usize)>,
     }
 
     impl RenderBackend for RecordingBackend {
@@ -1595,6 +1595,7 @@ mod tests {
         }
         fn begin_frame(&mut self, _: FrameMetrics, _: &Theme) {
             self.last_drawn.clear();
+            self.hyperlink_rects.clear();
         }
         fn clear(&mut self) {
             self.clears += 1;
@@ -1628,7 +1629,9 @@ mod tests {
             self.cursor_positions.push((cursor.row, cursor.col));
         }
         fn draw_selection_overlay(&mut self, _: &[(usize, usize, usize)]) {}
-        fn draw_hyperlink_underlines(&mut self, _: &[(usize, usize, usize)]) {}
+        fn draw_hyperlink_underlines(&mut self, rects: &[(usize, usize, usize)]) {
+            self.hyperlink_rects.extend_from_slice(rects);
+        }
         fn end_frame(&mut self) {
             self.frames += 1;
             self.requires_full_frame = false;
@@ -2028,6 +2031,34 @@ mod tests {
         );
         assert!(renderer.tick(&term, None, 0.0));
         assert!(renderer.backend().last_drawn.contains(&0));
+    }
+
+    #[test]
+    fn partial_repaint_emits_hyperlinks_only_for_painted_rows() {
+        let mut term = Terminal::new(4, 16, 0);
+        term.feed(b"\x1b]8;;https://example.com\x07link\x1b]8;;\x07");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
+        renderer.set_focused(false);
+
+        assert!(renderer.tick(&term, None, 0.0));
+        assert_eq!(
+            renderer.backend().hyperlink_rects,
+            vec![(0, 0, 4)],
+            "full redraw must emit the visible link"
+        );
+
+        // Change a distant row. The persistent frame store retains row 0,
+        // so its underline must not be rebuilt for this partial paint.
+        term.feed(b"\x1b[4;1HZ");
+        assert!(renderer.tick(&term, None, 0.0));
+        assert!(
+            renderer.backend().hyperlink_rects.is_empty(),
+            "partial redraw must not scan or re-emit clean-row links"
+        );
     }
 
     #[test]
