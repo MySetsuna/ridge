@@ -38,7 +38,6 @@ import type { ActiveWallpaperGpu, InputBufferState } from './types';
 import { perfMark } from './perfTrace';
 import { unknownText } from '../transport/unknownText';
 import { DEFAULT_TERM_FONT } from './fontStack';
-import { loadTerminalFonts, type FontDataInstaller } from './fontDataService';
 import { imeHelperCssPosition, type ImeAnchorInput } from './imeAnchor';
 import {
 	cellFromVisualClientPoint,
@@ -569,6 +568,9 @@ interface RafFrameState {
 	hostFrameOpen: boolean;
 	frameFailed: boolean;
 	anyRendered: boolean;
+	/** Dirty panes left for the next compositor turn by the paint budget. */
+	renderDeferred: boolean;
+	renderDeadlineMs: number;
 	minDeadlineMs: number;
 }
 
@@ -605,6 +607,9 @@ const FEED_PER_CALL_BUDGET_MS = 4;
  * a frame. A focused pane may drain two chunks, then siblings get a turn. */
 const FEED_FRAME_BUDGET_MS = 6;
 const MAX_DEFERRED_CHUNKS_PER_FRAME = 2;
+/** Leave a turn for input/layout after parser work. The focused pane is always
+ * allowed one paint; siblings yield once this deadline is reached. */
+const RENDER_FRAME_BUDGET_MS = 8;
 /** Public fast-path flushes may never bypass the frame budget. */
 export const MAX_PANE_FEED_FLUSH_BUDGET_MS = FEED_FRAME_BUDGET_MS;
 /** Delta frames are already VTE-parsed natively, but decoding/applying a
@@ -635,9 +640,6 @@ export class TerminalManager {
 
 	private wasmReady = false;
 	private wasmReadyPromise: Promise<void> | null = null;
-	private fontInstaller: FontDataInstaller | null = null;
-	private readonly loadedFontStacks = new Set<string>();
-	private readonly fontLoadPromises = new Map<string, Promise<void>>();
 
 	private readonly opts: ManagerOptions;
 	private readonly panes = new Map<string, PaneEntry>();
@@ -785,7 +787,7 @@ export class TerminalManager {
 	}
 
 	/** Return the existing singleton without creating one. Used by
-	 *  late-arriving callers (font loaders, theme watchers) that want
+	 *  late-arriving callers (theme watchers) that want
 	 *  to invalidate panes only when the manager has actually spun up.
 	 *  Returns null when no pane has attached yet — in which case the
 	 *  next attach starts with a fresh atlas anyway. */
@@ -875,8 +877,8 @@ export class TerminalManager {
 			//
 			TerminalManager._instance = new TerminalManager(
 				opts ?? {
-					// Named mono/CJK faces precede installed system emoji;
-					// the raw SFNT data is loaded before WebGPU attaches.
+					// The browser/OS resolves this CSS stack for metrics and glyph
+					// fallback; no font bytes are loaded by the app.
 					fontFamily: DEFAULT_TERM_FONT,
 					fontSizePx: 15,
 					scrollbackLines: 2000,
@@ -903,51 +905,11 @@ export class TerminalManager {
 	 * `?url` import (above) is vite's official asset-URL syntax and
 	 * resolves to whatever path actually serves the file.
 	 */
-	private _ensureFontStack(stack: string): Promise<void> {
-		const key = stack.trim();
-		if (this.loadedFontStacks.has(key)) return Promise.resolve();
-		const active = this.fontLoadPromises.get(key);
-		if (active) return active;
-		if (!this.fontInstaller) {
-			return Promise.reject(new Error('FONT_DATA_MISSING: wasm font installer is unavailable'));
-		}
-		const pending = loadTerminalFonts(key, this.fontInstaller).then(
-			() => {
-				this.loadedFontStacks.add(key);
-				this.fontLoadPromises.delete(key);
-			},
-			(error) => {
-				this.fontLoadPromises.delete(key);
-				throw error;
-			},
-		);
-		this.fontLoadPromises.set(key, pending);
-		return pending;
-	}
-
-	/** Retry browser Local Font Access directly from a user click. */
-	async authorizeFonts(): Promise<void> {
-		if (!this.fontInstaller) {
-			await this.ready();
-			return;
-		}
-		await this._ensureFontStack(this.opts.fontFamily);
-		await this.ready();
-	}
-
 	ready(): Promise<void> {
 		if (this.wasmReady) return Promise.resolve();
 		if (this.wasmReadyPromise !== null) return this.wasmReadyPromise;
 		const pending = (async () => {
 			await init(wasmUrl);
-			const fontModule = (await import('@ridge/term-wasm')) as unknown as {
-				installFontData?: (data: Uint8Array) => boolean;
-			};
-			if (typeof fontModule.installFontData !== 'function') {
-				throw new Error('FONT_DATA_MISSING: wasm bundle has no system-font installer');
-			}
-			this.fontInstaller = fontModule.installFontData;
-			await this._ensureFontStack(this.opts.fontFamily);
 			this.wasmReady = true;
 			// §atlas-race forensics (2026-06-22): expose detector counters on
 			// window.__ridgeAtlasRace() for release console / CDP polling. A value
@@ -4537,10 +4499,9 @@ export class TerminalManager {
 			document.documentElement.style.setProperty('--rg-term-font-size', `${sizePx}px`);
 		}
 		if (!this.wasmReady) return Promise.resolve();
-		return this._ensureFontStack(family).then(() => {
-			if (this.opts.fontFamily !== family || this.opts.fontSizePx !== sizePx) return;
-			const dpr = window.devicePixelRatio || 1;
-			for (const entry of this.panes.values()) {
+		if (this.opts.fontFamily !== family || this.opts.fontSizePx !== sizePx) return Promise.resolve();
+		const dpr = window.devicePixelRatio || 1;
+		for (const entry of this.panes.values()) {
 			// Skip parked entries — their handle has been freed. They'll
 			// pick up the new font on the next unpark via this.opts.
 			if (entry.parked) continue;
@@ -4559,9 +4520,9 @@ export class TerminalManager {
 			entry.lastConfiguredDpr = dpr;
 			entry.handle.invalidateAll();
 			void this.fitPane(entry, this._sharedRemoteMode);
-			}
-			this.wake();
-		});
+		}
+		this.wake();
+		return Promise.resolve();
 	}
 
 	/** Apply theme overrides to all panes. */
@@ -5070,6 +5031,8 @@ export class TerminalManager {
 			hostFrameOpen: false,
 			frameFailed: false,
 			anyRendered: false,
+			renderDeferred: false,
+			renderDeadlineMs: framePerfNow + RENDER_FRAME_BUDGET_MS,
 			minDeadlineMs: Infinity,
 		};
 	}
@@ -5169,7 +5132,22 @@ export class TerminalManager {
 		const shouldRender = this._isHostMode(entry)
 			? state.activeHost !== null && (dirty || state.surfaceJustWiped || becameVisible)
 			: dirty;
-		if (shouldRender && (!this._isHostMode(entry) || this._ensureHostFrame(state))) this._paintFrameEntry(entry, state, becameVisible);
+		if (shouldRender) {
+			const deadline = Number.isFinite(state.renderDeadlineMs) ? state.renderDeadlineMs : Infinity;
+			const budgetExpired = performance.now() >= deadline;
+			if (state.anyRendered && budgetExpired) {
+				// Keep the renderer dirty for the next RAF. A wiped/just-visible
+				// host also needs explicit invalidation because its old frame store
+				// pixels may have been cleared before this pane got a turn.
+				state.renderDeferred = true;
+				if (state.surfaceJustWiped || becameVisible) {
+					const handle = entry.handle as unknown as { invalidateAll?: () => void } | null;
+					handle?.invalidateAll?.();
+				}
+			} else if (!this._isHostMode(entry) || this._ensureHostFrame(state)) {
+				this._paintFrameEntry(entry, state, becameVisible);
+			}
+		}
 		this._updateBlinkDeadline(entry, state);
 	}
 
@@ -5215,7 +5193,7 @@ export class TerminalManager {
 		// parser work remains queued. Keep draining on compositor turns; sleeping
 		// until the 150 ms safety timeout makes a pre-buffered TUI burst freeze and
 		// then jump to its tail even though each individual apply is cheap.
-		if (state.anyRendered || this._hasQueuedFrameWork(state.frameOrder)) {
+		if (state.renderDeferred || state.anyRendered || this._hasQueuedFrameWork(state.frameOrder)) {
 			this.rafHandle = requestAnimationFrame(tick);
 			return;
 		}

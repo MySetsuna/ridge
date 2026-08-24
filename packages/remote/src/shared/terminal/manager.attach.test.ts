@@ -80,7 +80,6 @@ const wasm = vi.hoisted(() => {
 		FakeKernel,
 		FakeRenderHandle,
 		init: vi.fn(async () => undefined),
-		installFontData: vi.fn(() => true),
 		atlasOverwriteAfterCiteCount: vi.fn(() => 7),
 		setPresentFast: vi.fn(),
 		SurfaceHostHandle: { init: vi.fn(async () => host) },
@@ -89,9 +88,7 @@ const wasm = vi.hoisted(() => {
 });
 
 const tauri = vi.hoisted(() => ({
-	invoke: vi.fn(async (command: string) => command === 'load_terminal_font_faces'
-		? [{ family: 'monospace', dataBase64: 'AA==' }]
-		: undefined),
+	invoke: vi.fn(async () => undefined),
 }));
 
 vi.mock('@tauri-apps/api/core', () => tauri);
@@ -101,7 +98,6 @@ vi.mock('@ridge/term-wasm', () => ({
 	TerminalKernel: wasm.FakeKernel,
 	RenderHandle: wasm.FakeRenderHandle,
 	SurfaceHostHandle: wasm.SurfaceHostHandle,
-	installFontData: wasm.installFontData,
 	atlasOverwriteAfterCiteCount: wasm.atlasOverwriteAfterCiteCount,
 	setPresentFast: wasm.setPresentFast,
 }));

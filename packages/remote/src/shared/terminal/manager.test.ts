@@ -562,7 +562,6 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		manager.invalidateWorkspace('workspace-a');
 		manager.invalidateAllPanes();
 		expect(fixture.handle.invalidateAll).toHaveBeenCalled();
-		internal.loadedFontStacks.add('new-font');
 		await manager.setFont('new-font', 16);
 		expect(fixture.handle.configure).toHaveBeenCalledWith('new-font', 16, 1);
 		manager.setTheme({ background: '#101010', foreground: '#f0f0f0' });
@@ -589,16 +588,6 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		fixture.kernel.feed.mockReturnValueOnce(undefined);
 		manager.feed(PANE, 'plain output');
 		expect(fixture.handle.setPresentationCursorSuppressed).not.toHaveBeenCalledWith(true);
-	});
-
-	it('rejects failed font loading before configuring attached panes', async () => {
-		const { manager, fixture, internal } = makeManager();
-
-		await expect(manager.setFont('missing-font', 16)).rejects.toThrow(
-			'FONT_DATA_MISSING: wasm font installer is unavailable',
-		);
-		expect(fixture.handle.configure).not.toHaveBeenCalled();
-		expect(internal.loadedFontStacks.has('missing-font')).toBe(false);
 	});
 
 	it('covers pointer/link routing, scroll subscriptions, padding, and lifecycle defaults', async () => {
@@ -1510,6 +1499,44 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(sibling.handle.render).not.toHaveBeenCalled();
 		expect(host.beginFrame).toHaveBeenCalledOnce();
 		expect(host.endFrame).toHaveBeenCalledOnce();
+	});
+
+	it('defers dirty sibling paints after the frame budget and schedules another turn', () => {
+		const { manager, fixture, internal } = makeManager();
+		const sibling = makePane();
+		sibling.pane.paneId = 'budget-sibling';
+		sibling.pane.canvas = fixture.pane.canvas;
+		internal.panes.set(sibling.pane.paneId, sibling.pane);
+		internal._activeWorkspaceId = fixture.pane.workspaceId;
+		const host = { beginFrame: vi.fn(() => true), endFrame: vi.fn() };
+		internal.globalHost = { canvas: fixture.pane.canvas, host };
+		const now = vi.spyOn(performance, 'now').mockReturnValue(20);
+		const state: any = {
+			frameOrder: [fixture.pane, sibling.pane],
+			dirtyByPane: new Map([[PANE, true], [sibling.pane.paneId, true]]),
+			activeHost: host,
+			hostFrameOpen: false,
+			surfaceJustWiped: false,
+			anyRendered: false,
+			renderDeferred: false,
+			renderDeadlineMs: 8,
+			minDeadlineMs: Infinity,
+			dateNow: Date.now(),
+			perfNow: 20,
+		};
+		const raf = vi.fn();
+		vi.stubGlobal('requestAnimationFrame', raf);
+
+		internal._renderFrameEntry(fixture.pane, state);
+		internal._renderFrameEntry(sibling.pane, state);
+		internal._finishHostFrame(state);
+		internal._scheduleNextFrame(state, vi.fn());
+
+		expect(fixture.handle.render).toHaveBeenCalledOnce();
+		expect(sibling.handle.render).not.toHaveBeenCalled();
+		expect(state.renderDeferred).toBe(true);
+		expect(raf).toHaveBeenCalledOnce();
+		now.mockRestore();
 	});
 
 	it('backs off after a failed host frame instead of spinning RAF', async () => {
