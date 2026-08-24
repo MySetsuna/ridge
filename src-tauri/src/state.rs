@@ -1447,10 +1447,15 @@ impl AppState {
                 })
                 .is_err()
             {
-                subscriber
+                // A saturated client can drop many PTY chunks before its next
+                // resync. Log only the transition into desync so a burst does
+                // not turn backpressure into a logging hot loop.
+                if !subscriber
                     .desync
-                    .store(true, std::sync::atomic::Ordering::Release);
-                tracing::warn!(target: "ridge::remote", sub = subscriber.id, "raw byte channel full; dropping frame, will resync");
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    tracing::warn!(target: "ridge::remote", sub = subscriber.id, "raw byte channel full; dropping frame, will resync");
+                }
             }
         }
     }
