@@ -56,7 +56,6 @@ use crate::render::backend::{
     physical_row_boundary, CursorDraw, FrameMetrics, RenderBackend, RowDraw, ScrollCopyResult,
     Theme,
 };
-use crate::render::procedural_box;
 use crate::render::renderer::{
     history_overlay_geometry, history_overlay_surface, history_text, history_text_width,
 };
@@ -94,13 +93,11 @@ fn present_fast() -> bool {
 /// with any Unicode codepoint (max 0x10FFFF).
 const CLUSTER_TAG: u32 = 0x8000_0000;
 
-/// CellInstance `is_color` sentinel for procedural rects (block-element /
-/// box-drawing / shade chars). `cell.wgsl::fs_main` short-circuits this
-/// value and returns the premultiplied fg directly, bypassing atlas
-/// sampling — the procedural path's `atlas_uv = (0,0,0,0)` would otherwise
-/// read the unreliable corner of layer 0 and pull coverage to ~0, making
-/// the rect invisible. 0 = mono atlas glyph, 1 = color emoji, 2 = procedural.
-const INSTANCE_MODE_PROCEDURAL: u32 = 2;
+/// CellInstance `is_color` sentinel for solid overlay rectangles. Character
+/// cells never use this mode: box drawing, block elements, and symbols all
+/// go through the system-font rasterizer and shared glyph atlas. 0 = mono
+/// atlas glyph, 1 = color emoji, 2 = solid overlay.
+const INSTANCE_MODE_SOLID: u32 = 2;
 
 /// Convert an `[u8; 4]` byte color into the f32 form CellInstance
 /// fields use. Vertex stage shaders can multiply linearly without
@@ -187,7 +184,7 @@ struct CellInstance {
     atlas_layer: u32,    // 32..36
     fg_rgba: [f32; 4],   // 36..52
     bg_rgba: [f32; 4],   // 52..68
-    is_color: u32, // 68..72  — 0 = mono atlas glyph, 1 = color emoji bitmap, 2 = procedural rect (cell.wgsl short-circuits to premultiplied fg, skipping atlas sampling)
+    is_color: u32, // 68..72  — 0 = mono atlas glyph, 1 = color emoji bitmap, 2 = solid overlay (cell.wgsl skips atlas sampling)
 }
 
 /// Re-exported so `gpu_context.rs` can wire the shared `cell_pipeline`'s
@@ -294,73 +291,6 @@ fn glyph_id_for(cluster_text: Option<&str>, character: char) -> u32 {
             CLUSTER_TAG | (hasher.finish() as u32 & !CLUSTER_TAG)
         }
         None => character as u32,
-    }
-}
-
-fn append_procedural_glyph(
-    instances: &mut Vec<CellInstance>,
-    glyph_text: &str,
-    fg: [u8; 4],
-    pixel_x: f32,
-    pixel_y: f32,
-    cell_span: usize,
-    cell_w: f32,
-    row_h: f32,
-) -> bool {
-    let Some(character) = glyph_text.chars().next() else {
-        return false;
-    };
-    if let Some(alpha) = shade_alpha(character) {
-        let mut color = rgba_u8_to_f32(fg);
-        color[3] *= alpha;
-        instances.push(procedural_instance(
-            [pixel_x, pixel_y],
-            [cell_span as f32 * cell_w, row_h],
-            color,
-        ));
-        return true;
-    }
-    let Some(rects) = procedural_box(
-        character,
-        pixel_x,
-        pixel_y,
-        cell_span as f32 * cell_w,
-        row_h,
-    ) else {
-        return false;
-    };
-    for rect in rects {
-        let x = rect.x.round();
-        let y = rect.y.round();
-        let right = (rect.x + rect.w).round();
-        let bottom = (rect.y + rect.h).round();
-        instances.push(procedural_instance(
-            [x, y],
-            [(right - x).max(1.0), (bottom - y).max(1.0)],
-            rgba_u8_to_f32(fg),
-        ));
-    }
-    true
-}
-
-fn shade_alpha(character: char) -> Option<f32> {
-    match character {
-        '\u{2591}' => Some(0.25),
-        '\u{2592}' => Some(0.50),
-        '\u{2593}' => Some(0.75),
-        _ => None,
-    }
-}
-
-fn procedural_instance(position: [f32; 2], size: [f32; 2], color: [f32; 4]) -> CellInstance {
-    CellInstance {
-        cell_xy: position,
-        cell_size: size,
-        atlas_uv: [0.0, 0.0, 0.0, 0.0],
-        atlas_layer: 0,
-        fg_rgba: color,
-        bg_rgba: [0.0, 0.0, 0.0, 0.0],
-        is_color: INSTANCE_MODE_PROCEDURAL,
     }
 }
 
@@ -947,23 +877,6 @@ impl WebGpuPaneBackend {
                 None => cell.ch.encode_utf8(&mut ch_buf),
             };
 
-            // Geometry characters are independent of the selected font. Do
-            // this before atlas admission so a browser glyph-source failure
-            // cannot turn a deterministic line into a blank/missing-glyph path.
-            let drawn_procedurally = append_procedural_glyph(
-                &mut self.pending_instances,
-                glyph_text,
-                fg,
-                pixel_x,
-                pixel_y,
-                cell_span,
-                cell_w,
-                row_h_int,
-            );
-            if drawn_procedurally {
-                continue;
-            }
-
             let style_flags = Self::glyph_style_flags(attrs.flags);
             let glyph_id = glyph_id_for(cluster_text, cell.ch);
             let key = GlyphKey::new(
@@ -1148,9 +1061,7 @@ impl WebGpuPaneBackend {
                 fg_rgba: sel_color,
                 bg_rgba: sel_color,
                 // Selection is a solid translucent rectangle, not an atlas glyph.
-                // Use the premultiplied procedural path so its alpha stays stable
-                // while the pointer moves across cells.
-                is_color: INSTANCE_MODE_PROCEDURAL,
+                is_color: INSTANCE_MODE_SOLID,
             });
         }
     }
