@@ -561,6 +561,8 @@ interface PaneEntry {
 
 interface RafFrameState {
 	frameOrder: PaneEntry[];
+	/** All live panes still receive bounded kernel/delta work, including hidden workspaces. */
+	feedOrder: PaneEntry[];
 	dateNow: number;
 	perfNow: number;
 	surfaceJustWiped: boolean;
@@ -3511,17 +3513,35 @@ export class TerminalManager {
 	/** P2.2 (2026-05-20): build the per-frame pane visit order for the
 	 *  RAF tick — focused pane first, then non-focused entries rotated
 	 *  by `_rafRotationIndex` so over many frames every non-focused
-	 *  pane gets first-of-the-rest treatment in turn. Parked entries
-	 *  are filtered out (the render loop already skips them, but
-	 *  excluding here keeps the rotation index meaningful — otherwise
-	 *  a parked pane's slot would shift the cadence). Workspace
-	 *  visibility is handled later (the existing `_isContainerHidden`
-	 *  check) — this helper just orders the candidates. */
+	 *  pane gets first-of-the-rest treatment in turn. Parked entries and
+	 *  inactive-workspace entries are excluded from this paint order; the
+	 *  separate `_feedOrder` keeps their kernels current without paying
+	 *  renderer/dirty-probe work. */
 	private _renderOrder(): PaneEntry[] {
+		const live: PaneEntry[] = [];
+		for (const entry of this.panes.values()) {
+			if (entry.parked) continue;
+			if (this._activeWorkspaceId !== null && entry.workspaceId !== this._activeWorkspaceId) continue;
+			live.push(entry);
+		}
+		return this._orderPanes(live);
+	}
+
+	/**
+	 * Background parser work must continue for hidden panes so their kernels
+	 * remain current when a workspace is shown. It shares the same focus-first
+	 * rotation, but is kept out of the paint pass so hidden workspace count does
+	 * not multiply renderer/dirty-probe work every RAF tick.
+	 */
+	private _feedOrder(): PaneEntry[] {
 		const live: PaneEntry[] = [];
 		for (const entry of this.panes.values()) {
 			if (!entry.parked) live.push(entry);
 		}
+		return this._orderPanes(live);
+	}
+
+	private _orderPanes(live: PaneEntry[]): PaneEntry[] {
 		if (live.length <= 1) return live;
 		const focusedId = this._activeWorkspaceId === null
 			? live.find((entry) => this._focusedPaneByWorkspace.get(entry.workspaceId) === entry.paneId)?.paneId ?? null
@@ -5048,14 +5068,15 @@ export class TerminalManager {
 		const surfaceJustWiped = this._hostInvalidatePending || hostNeedsSeed;
 		this._hostInvalidatePending = false;
 		const frameOrder = this._renderOrder();
-		this._drainQueuedDeltaFrames(frameOrder);
-		this._drainDeferredFeeds(frameOrder);
+		const feedOrder = this._feedOrder();
+		this._drainQueuedDeltaFrames(feedOrder);
+		this._drainDeferredFeeds(feedOrder);
 		// Delta draining has a strict CPU budget but can still consume a few
 		// milliseconds. Anchor hold/sync deadlines after it, not at RAF entry.
 		const framePerfNow = performance.now();
 		const dirty = this._collectHostDirty(frameOrder, dateNow);
 		return {
-			frameOrder, dateNow, perfNow: framePerfNow, surfaceJustWiped,
+			frameOrder, feedOrder, dateNow, perfNow: framePerfNow, surfaceJustWiped,
 			...dirty,
 			activeHost: dirty.activeWsId === null ? null : this._globalHostHandle(),
 			hostFrameOpen: false,
@@ -5148,8 +5169,9 @@ export class TerminalManager {
 	}
 
 	private _renderFrameEntry(entry: PaneEntry, state: RafFrameState): void {
-		if (entry.parked || this._isContainerHidden(entry)) {
-			if (!entry.parked && this._isContainerHidden(entry)) entry.wasHiddenLastTick = true;
+		const hidden = !entry.parked && this._isContainerHidden(entry);
+		if (entry.parked || hidden) {
+			if (hidden) entry.wasHiddenLastTick = true;
 			return;
 		}
 		const becameVisible = !!entry.wasHiddenLastTick;
@@ -5235,7 +5257,8 @@ export class TerminalManager {
 		// parser work remains queued. Keep draining on compositor turns; sleeping
 		// until the 150 ms safety timeout makes a pre-buffered TUI burst freeze and
 		// then jump to its tail even though each individual apply is cheap.
-		if (state.renderDeferred || state.anyRendered || this._hasQueuedFrameWork(state.frameOrder)) {
+		const feedOrder = state.feedOrder ?? state.frameOrder;
+		if (state.renderDeferred || state.anyRendered || this._hasQueuedFrameWork(feedOrder)) {
 			this.rafHandle = requestAnimationFrame(tick);
 			return;
 		}

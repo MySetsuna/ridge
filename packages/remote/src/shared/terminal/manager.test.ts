@@ -1596,6 +1596,10 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		internal.globalHost = { canvas: fixture.pane.canvas, host };
 
 		const order = internal._renderOrder();
+		const feedOrder = internal._feedOrder();
+		expect(order).toHaveLength(4);
+		expect(order.every((entry: any) => entry.workspaceId === 'workspace-3')).toBe(true);
+		expect(feedOrder).toHaveLength(32);
 		const collected = internal._collectHostDirty(order, Date.now());
 		const state: any = {
 			frameOrder: order,
