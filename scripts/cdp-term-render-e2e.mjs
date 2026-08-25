@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import sharp from 'sharp';
 import { DEV_USER_DATA_DIR, resolveCdpPort } from './cdp-port.mjs';
 import { isRidgeCdpTarget } from './lib/cdpTarget.mjs';
 
@@ -649,6 +650,42 @@ async function capture(cdp, name, clip = null) {
   const target = path.join(artifactDir, name);
   fs.writeFileSync(target, Buffer.from(response.result.data, 'base64'));
   return target;
+}
+
+async function measureMonochromeSharpness(file, clip) {
+  const { data, info } = await sharp(file)
+    .extract({
+      left: Math.max(0, Math.round(clip.x)),
+      top: Math.max(0, Math.round(clip.y)),
+      width: Math.max(1, Math.round(clip.width)),
+      height: Math.max(1, Math.round(clip.height)),
+    })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  let total = 0;
+  let low = 0;
+  let middle = 0;
+  let solid = 0;
+  for (let offset = 0; offset < data.length; offset += info.channels) {
+    const red = data[offset];
+    const green = data[offset + 1];
+    const blue = data[offset + 2];
+    if (Math.max(red, green, blue) - Math.min(red, green, blue) > 4) continue;
+    const luminance = Math.round((red + green + blue) / 3);
+    if (luminance === 0) continue;
+    total += 1;
+    if (luminance < 56) low += 1;
+    else if (luminance < 168) middle += 1;
+    else solid += 1;
+  }
+  return {
+    total,
+    low,
+    middle,
+    solid,
+    solidRatio: total > 0 ? solid / total : 0,
+    transitionRatio: total > 0 ? (low + middle) / total : 1,
+  };
 }
 
 async function forceWebgpuUnavailable(cdp, { disableWebgl = false } = {}) {
@@ -1725,7 +1762,8 @@ try {
     }));
   }
   summary.nativeGlyphFixture = await testNativeGlyphFixture(cdp, workspaceId, paneId);
-  summary.screenshots.push(await capture(cdp, '11-native-cjk-emoji.png'));
+  const nativeGlyphScreenshot = await capture(cdp, '11-native-cjk-emoji.png');
+  summary.screenshots.push(nativeGlyphScreenshot);
   const nativeGlyphGeometry = await paneProbe(cdp, paneId);
   if (nativeGlyphGeometry) {
     const gridLeft = nativeGlyphGeometry.rect.left + nativeGlyphGeometry.anchor.x
@@ -1739,6 +1777,19 @@ try {
       height: 5 * nativeGlyphGeometry.anchor.cellH,
       scale: 4,
     }));
+    const dpr = await cdp.evaluate('devicePixelRatio');
+    if (Math.abs(dpr - 1) < 0.01) {
+      const sharpness = await measureMonochromeSharpness(nativeGlyphScreenshot, {
+        x: gridLeft,
+        y: gridTop,
+        width: Math.min(nativeGlyphGeometry.rect.width, 42 * nativeGlyphGeometry.anchor.cellW),
+        height: 2 * nativeGlyphGeometry.anchor.cellH,
+      });
+      summary.nativeGlyphFixture.sharpness = { dpr, ...sharpness };
+      if (sharpness.solidRatio < 0.6 || sharpness.transitionRatio > 0.4) {
+        throw new Error(`monochrome glyph sharpness regressed: ${JSON.stringify(sharpness)}`);
+      }
+    }
   }
   // Exclude Codex/network startup noise; global gate covers settled terminal workload.
   await cdp.evaluate('window.__ridgeTermProbe.reset()');

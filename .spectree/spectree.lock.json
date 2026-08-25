@@ -1,91 +1,22 @@
 {
   "version": 1,
-  "changeId": "CHG-005",
-  "specHash": "c0b09751d0c5e9199e1f282fd77e65d50da5455c215f58dfffff1df39f218f1e",
+  "changeId": "CHG-006",
+  "specHash": "f33b50e0163f27a0323818640bfb4c5e92d2bb0f5f414c31b41d6823250fd8c3",
   "units": [
-    {
-      "id": "L2-REMOTE-EXPERIENCE-001",
-      "level": "L2",
-      "nodeHash": "07c6c430ceb2d231bf42eeae1bf203552ed57db66429863291caa7670da5ef0e",
-      "codeTargets": [
-        "src/remote/**",
-        "packages/remote/src/**",
-        "src-tauri/src/remote_host_impl.rs"
-      ],
-      "testTargets": [
-        "src/remote/**",
-        "packages/remote/src/**"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L2-RUNTIME-QUALITY-001",
-      "level": "L2",
-      "nodeHash": "73d6a39fed0c17b0d9f47558c1c5ffa5b616305ca3e4da2552d4e3d4f7ad625c",
-      "codeTargets": [
-        "src-tauri/src/**",
-        "packages/ridge-term/src/**"
-      ],
-      "testTargets": [
-        "src-tauri/src/**",
-        "packages/ridge-term/src/**"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L3-DESKTOP-BOOT-001",
-      "level": "L3",
-      "nodeHash": "b6aee866bdf27591584b94f30d7c95c762ae2c3ba4210ea5fdf2fdbd43f66f59",
-      "codeTargets": [
-        "src/routes/+page.svelte",
-        "playwright.config.ts"
-      ],
-      "testTargets": [
-        "src/lib/components/SidebarLazyMount.test.ts",
-        "tests/e2e/commune.spec.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L3-REMOTE-SMOOTHNESS-001",
-      "level": "L3",
-      "nodeHash": "515a5fea42395c563f486d47e5c71e4841526ac7c2d7073d6351d92f431399d0",
-      "codeTargets": [
-        "src/remote/MainApp.svelte",
-        "src/remote/lib/paneFeedScheduler.ts",
-        "packages/remote/src/shared/terminal/manager.ts",
-        "packages/remote/src/shared/transport/**"
-      ],
-      "testTargets": [
-        "src/remote/lib/paneFeedScheduler.test.ts",
-        "packages/remote/src/shared/**"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L3-RUNTIME-DISCOVERY-001",
-      "level": "L3",
-      "nodeHash": "086679df8c76c7f82a90d882122662843eafda2c716bfde19893c1fdd72ade0e",
-      "codeTargets": [
-        "src-tauri/src/teammate/autodiscover.rs"
-      ],
-      "testTargets": [
-        "src-tauri/src/teammate/autodiscover.rs"
-      ],
-      "status": "LOCKED"
-    },
     {
       "id": "L3-TERMINAL-GLYPH-001",
       "level": "L3",
-      "nodeHash": "7f01c5ec7f15fafac55875e2ab50255f27bce15877b69a2a8eefa74a0de60fd5",
+      "nodeHash": "534a796283eae3a04aca35e241d1b9544d74e72b4407b49cecdb411d227e8a57",
       "codeTargets": [
         "packages/ridge-term/src/render/glyph_atlas.rs",
+        "packages/ridge-term/src/render/shaders/cell.wgsl",
         "packages/ridge-term/src/render/webgpu.rs",
         "packages/ridge-term/src/term/wcwidth.rs"
       ],
       "testTargets": [
         "packages/ridge-term/src/render/glyph_atlas.rs",
-        "packages/ridge-term/src/term/wcwidth.rs"
+        "packages/ridge-term/src/term/wcwidth.rs",
+        "scripts/cdp-term-render-e2e.mjs"
       ],
       "status": "LOCKED"
     },
@@ -102,93 +33,14 @@
         "packages/ridge-term/src/term/wcwidth.rs"
       ],
       "status": "LOCKED"
-    },
-    {
-      "id": "L4-REMOTE-GPU-COMPAT-001",
-      "level": "L4",
-      "nodeHash": "6aac64aa27bb5975d6e3ee06797afdd1b08890fdff438cca325395f9969e576d",
-      "codeTargets": [
-        "packages/ridge-term/Cargo.toml",
-        "packages/ridge-term/README.md",
-        "packages/ridge-term/build.mjs",
-        "packages/ridge-term/src/lib.rs",
-        "packages/ridge-term/src/render/gpu_context.rs",
-        "packages/ridge-term/src/render/surface_host.rs",
-        "packages/ridge-term/src/render/webgpu.rs",
-        "packages/remote/src/shared/terminal/manager.ts",
-        "src/remote/MainApp.svelte",
-        "src/remote/lib/TerminalCanvas.svelte",
-        "scripts/cdp-term-render-e2e.mjs",
-        "scripts/mobile-keyboard-e2e.mjs"
-      ],
-      "testTargets": [
-        "packages/remote/src/shared/terminal/manager.attach.test.ts",
-        "src/remote/lib/TerminalCanvas.test.ts",
-        "scripts/cdp-term-render-e2e.mjs",
-        "scripts/mobile-keyboard-e2e.mjs"
-      ],
-      "status": "DRAFT"
-    },
-    {
-      "id": "L4-REMOTE-PERFORMANCE-GATE-001",
-      "level": "L4",
-      "nodeHash": "179f527298c4681dbc00a6c64676205425cb53940d021b2fe5c6ac5bb5fd4470",
-      "codeTargets": [
-        "src/remote/**",
-        "packages/remote/src/**"
-      ],
-      "testTargets": [
-        "tests/e2e/**",
-        "scripts/perf-bench.ps1"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L4-RUNTIME-DISCOVERY-001",
-      "level": "L4",
-      "nodeHash": "cf9a7b73fddcd9b35437b6d21fc03ca741841bf00bcae736ed02338c67abd9a7",
-      "codeTargets": [
-        "src-tauri/src/teammate/autodiscover.rs"
-      ],
-      "testTargets": [
-        "src-tauri/src/teammate/autodiscover.rs"
-      ],
-      "status": "LOCKED"
     }
   ],
   "allowedPaths": [
-    "packages/remote/src/**",
-    "packages/remote/src/shared/**",
-    "packages/remote/src/shared/terminal/manager.attach.test.ts",
-    "packages/remote/src/shared/terminal/manager.ts",
-    "packages/remote/src/shared/transport/**",
-    "packages/ridge-term/Cargo.toml",
-    "packages/ridge-term/README.md",
-    "packages/ridge-term/build.mjs",
-    "packages/ridge-term/src/**",
-    "packages/ridge-term/src/lib.rs",
     "packages/ridge-term/src/render/glyph_atlas.rs",
-    "packages/ridge-term/src/render/gpu_context.rs",
-    "packages/ridge-term/src/render/surface_host.rs",
+    "packages/ridge-term/src/render/shaders/cell.wgsl",
     "packages/ridge-term/src/render/webgpu.rs",
     "packages/ridge-term/src/term/wcwidth.rs",
-    "playwright.config.ts",
-    "scripts/cdp-term-render-e2e.mjs",
-    "scripts/mobile-keyboard-e2e.mjs",
-    "scripts/perf-bench.ps1",
-    "src-tauri/src/**",
-    "src-tauri/src/remote_host_impl.rs",
-    "src-tauri/src/teammate/autodiscover.rs",
-    "src/lib/components/SidebarLazyMount.test.ts",
-    "src/remote/**",
-    "src/remote/MainApp.svelte",
-    "src/remote/lib/TerminalCanvas.svelte",
-    "src/remote/lib/TerminalCanvas.test.ts",
-    "src/remote/lib/paneFeedScheduler.test.ts",
-    "src/remote/lib/paneFeedScheduler.ts",
-    "src/routes/+page.svelte",
-    "tests/e2e/**",
-    "tests/e2e/commune.spec.ts"
+    "scripts/cdp-term-render-e2e.mjs"
   ],
   "testCommand": [
     "pnpm",
@@ -210,7 +62,8 @@
     "changes/CHG-002.md": "e6928b9317666927b0c99f12cf71621b523feae579af3e013b84cb45906adcc4",
     "changes/CHG-003.md": "17a65ecbcd2d769d498672de32b3bf901bee7532eb0382bc7750e90acd83f41d",
     "changes/CHG-004.md": "f15640b963d7b5afc24b659240ad940d7644595bd4c372534de7ffc30b8557aa",
-    "changes/CHG-005.md": "639d1149b0f735e5af622589a569e20e58f31994b528f57e0e20ba5d4c3b4053",
+    "changes/CHG-005.md": "a15c67ed021e88bbee4eab31920be2aef8a047d8d532ed4ce56566e79feefece",
+    "changes/CHG-006.md": "b9f2c86c179d6a286c543073bee668f0690e68583d8965857fc989b55029c057",
     "CLAUDE.md": "1f07d1b3dcd28c80ef7f2255ae8d6135717c98e75a2b7630dc246902148bfd21",
     "docs/_team-archive/site-revamp-2026-04-30/content-brief.md": "ae3ffae60b3037e595e0b0e976675cbbf49edb74ed01ce44e7188b9862a26bfc",
     "docs/_team-archive/site-revamp-2026-04-30/decisions.md": "63b66c909323ed7acc6cce207b8de7395579a5d6636fc00abb62b3502e4f4629",
@@ -1042,7 +895,7 @@
     "packages/ridge-term/src/render/gpu_context.rs": "8d64cbcd32b70f8f04c414aacef4c301347619e2319105619ce9db3067b270e4",
     "packages/ridge-term/src/render/mod.rs": "24e2553b6c4ac47e0d27b60d4e610c3d656320ae7fd06751623cfa865da12213",
     "packages/ridge-term/src/render/renderer.rs": "f8f0a67968ce951c5dc91efcefe9c549a06a4275817c62ea87e163611a5ddd13",
-    "packages/ridge-term/src/render/shaders/cell.wgsl": "fbbd99bbef6188e731a7e4baba512405755c7ddd5da7ae5e01af6c934f0a69ca",
+    "packages/ridge-term/src/render/shaders/cell.wgsl": "df3c8780150e106ca34485a6b42069c966e81387a5db32a950b0e6896f601a37",
     "packages/ridge-term/src/render/shaders/wallpaper.wgsl": "0bbeff392870654082ddaee0cc67e77695e5bd498737b6f8ba7baba85fdb9208",
     "packages/ridge-term/src/render/surface_host.rs": "00cf777c62c5cd12666cc111373f15b81205ecd2e69ce8652ffcd2fc097e9644",
     "packages/ridge-term/src/render/wallpaper.rs": "1a2ed3eeee5fed42ca98cca868be91d404610b893ad4150b68606ad278f03a2c",
@@ -1109,7 +962,7 @@
     "scripts/cdp-teammate-e2e.mjs": "b449b0aed6d5bd2143f727632ea7291bbe7efa30a33c740e7d0ca2a00b2606db",
     "scripts/cdp-teammate-mcp-e2e.mjs": "c141637afb18c7f27fac8276c7bbf9c24180f40274bb2f919c8f85831002a4b7",
     "scripts/cdp-term-input.mjs": "64d975e19d59f5a3a2a0a8da2df2c527c05bb15b3aaad7ce89b233d4439c5bf7",
-    "scripts/cdp-term-render-e2e.mjs": "3d0915668aff555a85baf73a92f30d8a7bf49f1a11482d26e5804de64e613af5",
+    "scripts/cdp-term-render-e2e.mjs": "a8f799e79362d4424919942a666d0342d172100c1f8e960643d4cb29f83c22c8",
     "scripts/cdp-wait-and-enable.mjs": "00edd32a2e50a73bc74edded05a2335881e19dfafd5512c05789b84808fb7b7e",
     "scripts/check-capability-matrix.mjs": "f5080b78ac4f3d9a80dcc150ed5dd91cd51089d27d3d0b43f9b285fe76559934",
     "scripts/check-desktop-only-hosts.mjs": "c7083988aba4fce97cb65a7ca5cda7f75bdfb9fefc17fcbf1bbbd3a72953acc6",
@@ -1226,7 +1079,7 @@
     "specs/l3-desktop-boot.md": "15f679ff509c729ae267d86a717a11f0ec3e37505883c36b58cd7ed4f25faf77",
     "specs/l3-remote-smoothness.md": "a8f99de0b3f27e07711e01319f31096c55549a4a352c21a6e063ac2e34ef15bb",
     "specs/l3-runtime-discovery.md": "42ab19ac403124c1efcb4352fa293f9d111deabe66ede5a2cad9e0638a70fead",
-    "specs/l3-terminal-glyph-rendering.md": "e51da7abc28864b6d5264fbebbe2365d8738548ac5a266b88e7be5e34b260091",
+    "specs/l3-terminal-glyph-rendering.md": "0ec25dc84a61ca28d115b825ed0c283c75874f492c263e41004108a59f977c62",
     "specs/l4-agent-activity.md": "793af4db95e6e3b5517c768b87b4ffb570fc1feffd6677b43f20b16ebe59055d",
     "specs/l4-agent-card.md": "e051a80b80b107612c4f4eab5089c498f4f3e22c4ce087eb7c5ea79220d294d9",
     "specs/l4-emoji-geometry-gate.md": "181b1f7991fe4b398ba26c79f99c8fdca50a803f3f60d163350718f2efd73544",
@@ -1743,6 +1596,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-28c8366a5134",
-  "manifestHash": "28c8366a5134306270628787687a2804429d935297ecb6f0b44e9347d8598162"
+  "buildId": "BUILD-68afaaf8b4be",
+  "manifestHash": "68afaaf8b4be40ea45b6d0601bcbd0f38229ea83d9e34986679ef378a320dff7"
 }

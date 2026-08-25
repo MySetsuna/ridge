@@ -150,8 +150,12 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         0.0,
     );
 
-    // Alpha is glyph coverage in both rasterization modes.
-    let coverage = glyph.a;
+    let is_color = in.is_color > 0.5;
+
+    // Canvas2D exposes grayscale antialiasing rather than native terminal
+    // subpixel coverage. Tighten only monochrome edges around the unchanged
+    // 0.5 boundary; color emoji must preserve their original alpha.
+    let coverage = select(smoothstep(0.12, 0.88, glyph.a), glyph.a, is_color);
 
     // §B.3 — color/mono classification carried per-instance from the
     // rasterizer's pixel-scan (`GlyphEntry::is_color`). The earlier
@@ -160,8 +164,6 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // that the heuristic misclassified as "color emoji", then used
     // the gray rgb instead of tinting with `fg_rgba` — visible as
     // gray halos on monochrome glyphs (user-reported "白色毛边").
-    let is_color = in.is_color > 0.5;
-
     // §B.4 — premultiplied composite formula:
     //     out_rgb = bg_rgb * (1 - coverage) + glyph_contribution
     //
