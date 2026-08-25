@@ -51,8 +51,18 @@
   },
   {
     "changeId": "CHG-012",
-    "specHash": "8e039a3937ae236c160b5c7375389cc4f4fd1cac80851007c10c6ab1625f7ed6",
-    "approvedAt": "2026-08-25T21:06:18.757Z"
+    "specHash": "1bff779ff379636e9194bb08de4a66a5e4bf255a452e4125d4ba73f4a6145ad6",
+    "approvedAt": "2026-08-25T21:25:48.227Z"
+  },
+  {
+    "changeId": "CHG-013",
+    "specHash": "e6a6db460b34a081741e6a027ced7613566e475c39cae3eeab36ff1fc196e544",
+    "approvedAt": "2026-08-25T21:26:21.278Z"
+  },
+  {
+    "changeId": "CHG-014",
+    "specHash": "b067da94d215fe2902561e6b6295bf5a18be21a8878c06fb3486f688a5f67aef",
+    "approvedAt": "2026-08-25T21:26:51.447Z"
   },
   {
     "changeId": "CHG-015",

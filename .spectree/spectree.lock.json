@@ -1,46 +1,81 @@
 {
   "version": 1,
-  "changeId": "CHG-016",
-  "specHash": "4d1ac9dc8d08c6d071bf67368a0a0456854653d30039bcfa9cd6bda0a70ba8ce",
+  "changeId": "CHG-014",
+  "specHash": "b067da94d215fe2902561e6b6295bf5a18be21a8878c06fb3486f688a5f67aef",
   "units": [
     {
-      "id": "L3-TERMINAL-GLYPH-001",
-      "level": "L3",
-      "nodeHash": "bdeabd8980b88f74f5e30d31352a86792935f17873cd8d5b817c040ada120e57",
+      "id": "L2-AUTOMATION-001",
+      "level": "L2",
+      "nodeHash": "d690cf9c468e244ff525eb6bc990c1715eb8fc1e66580524c055fd7b3c3571c7",
       "codeTargets": [
-        "packages/ridge-term/src/render/glyph_atlas.rs",
-        "packages/ridge-term/src/render/shaders/cell.wgsl",
-        "packages/ridge-term/src/render/webgpu.rs",
-        "packages/ridge-term/src/term/wcwidth.rs"
+        "scripts/**"
       ],
       "testTargets": [
-        "packages/ridge-term/src/render/glyph_atlas.rs",
-        "packages/ridge-term/src/term/wcwidth.rs",
-        "scripts/cdp-term-render-e2e.mjs"
+        "scripts/**/*.test.mjs",
+        "scripts/**/*.test.ts"
       ],
       "status": "LOCKED"
     },
     {
-      "id": "L4-EMOJI-GEOMETRY-001",
+      "id": "L4-REMOTE-GPU-COMPAT-001",
       "level": "L4",
-      "nodeHash": "fb773b718b7c18be58d757d0fbd26faaa061824bb10104d06add41167d0e4719",
+      "nodeHash": "5118fca6c03bcd88eaccc1e7d58ac2c2aa00b47e0a5f054c10d17cfb28b1b0c0",
       "codeTargets": [
-        "packages/ridge-term/src/render/glyph_atlas.rs",
-        "packages/ridge-term/src/render/webgpu.rs"
+        "Cargo.lock",
+        "packages/ridge-term/Cargo.toml",
+        "packages/ridge-term/README.md",
+        "packages/ridge-term/build.mjs",
+        "packages/ridge-term/src/lib.rs",
+        "packages/ridge-term/src/render/gpu_context.rs",
+        "packages/ridge-term/src/render/gpu_limits.rs",
+        "packages/ridge-term/src/render/mod.rs",
+        "packages/ridge-term/src/render/surface_host.rs",
+        "packages/ridge-term/src/render/webgpu.rs",
+        "packages/remote/src/shared/terminal/manager.ts",
+        "scripts/cdp-port*",
+        "scripts/lib/cdpTarget*",
+        "scripts/lib/toolPath*",
+        "src/remote/MainApp.svelte",
+        "src/remote/lib/TerminalCanvas.svelte",
+        "scripts/cdp-term-render-e2e.mjs",
+        "scripts/mobile-keyboard-e2e.mjs"
       ],
       "testTargets": [
-        "packages/ridge-term/src/render/glyph_atlas.rs",
-        "packages/ridge-term/src/term/wcwidth.rs"
+        "packages/remote/src/shared/terminal/manager.attach.test.ts",
+        "packages/remote/src/shared/terminal/manager.test.ts",
+        "packages/ridge-term/src/render/gpu_limits.rs",
+        "src/remote/lib/TerminalCanvas.test.ts",
+        "scripts/cdp-term-render-e2e.mjs",
+        "scripts/mobile-keyboard-e2e.mjs"
       ],
       "status": "LOCKED"
     }
   ],
   "allowedPaths": [
-    "packages/ridge-term/src/render/glyph_atlas.rs",
-    "packages/ridge-term/src/render/shaders/cell.wgsl",
+    "Cargo.lock",
+    "packages/remote/src/shared/terminal/manager.attach.test.ts",
+    "packages/remote/src/shared/terminal/manager.test.ts",
+    "packages/remote/src/shared/terminal/manager.ts",
+    "packages/ridge-term/Cargo.toml",
+    "packages/ridge-term/README.md",
+    "packages/ridge-term/build.mjs",
+    "packages/ridge-term/src/lib.rs",
+    "packages/ridge-term/src/render/gpu_context.rs",
+    "packages/ridge-term/src/render/gpu_limits.rs",
+    "packages/ridge-term/src/render/mod.rs",
+    "packages/ridge-term/src/render/surface_host.rs",
     "packages/ridge-term/src/render/webgpu.rs",
-    "packages/ridge-term/src/term/wcwidth.rs",
-    "scripts/cdp-term-render-e2e.mjs"
+    "scripts/**",
+    "scripts/**/*.test.mjs",
+    "scripts/**/*.test.ts",
+    "scripts/cdp-port*",
+    "scripts/cdp-term-render-e2e.mjs",
+    "scripts/lib/cdpTarget*",
+    "scripts/lib/toolPath*",
+    "scripts/mobile-keyboard-e2e.mjs",
+    "src/remote/MainApp.svelte",
+    "src/remote/lib/TerminalCanvas.svelte",
+    "src/remote/lib/TerminalCanvas.test.ts"
   ],
   "testCommand": [
     "pnpm",
@@ -69,9 +104,9 @@
     "changes/CHG-009.md": "d632df7b1225fbbf807217babc6299ce5d640d93b3095cc72adf40d4a707d13e",
     "changes/CHG-010.md": "6859fc449fccbbb86a95664a1cfb80d1dd83a209d12d993df6fb75fc0a332b21",
     "changes/CHG-011.md": "9b8197bfe5e9bb79937eddedf9f193c6cdd04c9431de7ff2cb957d2c0977b4e4",
-    "changes/CHG-012.md": "1c2040117437dc4f68cfd393d67bd158e78cb846e2a10e747ee35de90d40a075",
-    "changes/CHG-013.md": "dfd2ca904819227cfa49cee0ed31c13cf624ad480beaf0c5abf73ec984dccd75",
-    "changes/CHG-014.md": "a3dedac697a1087a36068216177dd2ea52202f52461f2fd5f4d33ed184e96236",
+    "changes/CHG-012.md": "5ab5afee36a4ce4dbefd2badbf93744dbcef93dd2e238064335d8b7925b9b452",
+    "changes/CHG-013.md": "460e5e28b5e3718498852ac3e4000b87cdab24312d1b27cd88e519f8934e6133",
+    "changes/CHG-014.md": "8ca56ab8675908cb577c521ec8f8a36bbe65aec14282fdc5be4af1fcecf5a3eb",
     "changes/CHG-015.md": "aadb97036876b99a3fa1de22524a174e1cbb7e0e54a4e45b85dfa65d89b1cac0",
     "changes/CHG-016.md": "c21fd94de35abd316852f36f985bb6fff6af1c49ba7fbc7c50eb67f58b9b9f5e",
     "CLAUDE.md": "1f07d1b3dcd28c80ef7f2255ae8d6135717c98e75a2b7630dc246902148bfd21",
@@ -1613,6 +1648,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-3af39bfa70c5",
-  "manifestHash": "3af39bfa70c5f375f5ce4a1c333f3db333a7011a954116a109766dd6d16c5c88"
+  "buildId": "BUILD-88b75a5f96d0",
+  "manifestHash": "88b75a5f96d084253245d4d8bfeb86573a9a26c1c689de479f02ea01d738a40f"
 }
