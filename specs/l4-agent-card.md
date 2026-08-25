@@ -2,7 +2,7 @@
 id: L4-AGENT-CARD-001
 level: L4
 title: Render one Agent member card
-status: DRAFT
+status: LOCKED
 parent: L3-AGENT-CARD-001
 artifact: PSEUDOCODE
 code_targets:

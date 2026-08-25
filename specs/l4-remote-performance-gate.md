@@ -2,14 +2,14 @@
 id: L4-REMOTE-PERFORMANCE-GATE-001
 level: L4
 title: Verify Remote latency memory and cleanup
-status: DRAFT
+status: LOCKED
 parent: L3-REMOTE-SMOOTHNESS-001
 artifact: PSEUDOCODE
 code_targets:
-  - src/remote
-  - packages/remote/src
+  - src/remote/**
+  - packages/remote/src/**
 test_targets:
-  - tests/e2e
+  - tests/e2e/**
   - scripts/perf-bench.ps1
 ---
 

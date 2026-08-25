@@ -2,13 +2,13 @@
 id: L2-AGENT-COMMUNE-001
 level: L2
 title: Agent coordination and Commune
-status: DRAFT
+status: LOCKED
 parent: L1-PROJECT-001
 code_targets:
-  - src/lib/teammate
+  - src/lib/teammate/**
   - src-tauri/src/commands/teammate.rs
 test_targets:
-  - src/lib/teammate
+  - src/lib/teammate/**
 ---
 
 # Agent coordination and Commune

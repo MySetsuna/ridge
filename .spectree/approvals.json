@@ -3,5 +3,10 @@
     "changeId": "CHG-003",
     "specHash": "29f04c03d159bc035e843e7f8fe18c03debe020545628869b205a42b04bb432e",
     "approvedAt": "2026-08-25T16:14:26.435Z"
+  },
+  {
+    "changeId": "CHG-004",
+    "specHash": "fd9f51016da564908b7ef0b0cd20828340595d3a1e737a90f527cce04290d523",
+    "approvedAt": "2026-08-25T16:32:06.329Z"
   }
 ]

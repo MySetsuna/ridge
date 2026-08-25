@@ -80,6 +80,12 @@ scripts/tmp-*.mjs
 # SpecTree's Obsidian view is deterministic generated output; specs/changes are authoritative.
 /obsidian-vault/
 /.spectree/obsidian-vault/
+/.spectree/build/
+/.spectree/proposals/
+/.spectree/migration/
+/.spectree/evidence.json
+/.spectree/need-spec-change.json
+/.spectree/oauth-token.json
 
 # Separate ridge-code checkout used for local reference work; it is not part
 # of this repository's release graph.

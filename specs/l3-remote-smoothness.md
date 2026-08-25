@@ -2,16 +2,16 @@
 id: L3-REMOTE-SMOOTHNESS-001
 level: L3
 title: Bounded Remote smoothness and lifecycle
-status: DRAFT
+status: LOCKED
 parent: L2-REMOTE-EXPERIENCE-001
 code_targets:
   - src/remote/MainApp.svelte
   - src/remote/lib/paneFeedScheduler.ts
   - packages/remote/src/shared/terminal/manager.ts
-  - packages/remote/src/shared/transport
+  - packages/remote/src/shared/transport/**
 test_targets:
   - src/remote/lib/paneFeedScheduler.test.ts
-  - packages/remote/src/shared
+  - packages/remote/src/shared/**
 ---
 
 # Bounded Remote smoothness and lifecycle

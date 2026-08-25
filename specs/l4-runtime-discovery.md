@@ -2,7 +2,7 @@
 id: L4-RUNTIME-DISCOVERY-001
 level: L4
 title: Cache and consume one host process snapshot
-status: DRAFT
+status: LOCKED
 parent: L3-RUNTIME-DISCOVERY-001
 artifact: PSEUDOCODE
 code_targets:

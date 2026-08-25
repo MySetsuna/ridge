@@ -2,7 +2,7 @@
 id: L3-AGENT-ACTIVITY-001
 level: L3
 title: Agent activity and acknowledged attention
-status: DRAFT
+status: LOCKED
 parent: L2-AGENT-COMMUNE-001
 code_targets:
   - src-tauri/src/commands/teammate.rs

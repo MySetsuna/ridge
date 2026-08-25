@@ -2,7 +2,7 @@
 id: L3-DESKTOP-BOOT-001
 level: L3
 title: Demand-loaded desktop feature graph
-status: DRAFT
+status: LOCKED
 parent: L2-RUNTIME-QUALITY-001
 code_targets:
   - src/routes/+page.svelte
