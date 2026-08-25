@@ -1,5 +1,10 @@
 [
   {
+    "changeId": "CHG-001",
+    "specHash": "1041207a9a977adeacd16965ab6f3f69026609e6ca443ca21129dc2490082914",
+    "approvedAt": "2026-08-25T19:13:06.301Z"
+  },
+  {
     "changeId": "CHG-003",
     "specHash": "29f04c03d159bc035e843e7f8fe18c03debe020545628869b205a42b04bb432e",
     "approvedAt": "2026-08-25T16:14:26.435Z"
