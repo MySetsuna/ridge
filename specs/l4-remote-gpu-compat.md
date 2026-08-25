@@ -28,6 +28,7 @@ code_targets:
   - scripts/mobile-keyboard-e2e.mjs
 test_targets:
   - packages/remote/src/shared/terminal/manager.attach.test.ts
+  - packages/remote/src/shared/terminal/manager.test.ts
   - packages/ridge-term/src/render/gpu_limits.rs
   - src/remote/lib/TerminalCanvas.test.ts
   - scripts/cdp-term-render-e2e.mjs

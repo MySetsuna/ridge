@@ -1863,8 +1863,8 @@ try {
         height: 2 * nativeGlyphGeometry.anchor.cellH,
       }, viewport);
       summary.nativeGlyphFixture.sharpness = { dpr, ...sharpness };
-      if (sharpness.solidRatio < 0.8 || sharpness.transitionRatio > 0.2) {
-        throw new Error(`monochrome glyph sharpness regressed (solid >= 0.8, transition <= 0.2): ${JSON.stringify(sharpness)}`);
+      if (sharpness.solidRatio < 0.95 || sharpness.transitionRatio > 0.05) {
+        throw new Error(`monochrome glyph sharpness regressed (solid >= 0.95, transition <= 0.05): ${JSON.stringify(sharpness)}`);
       }
     }
   }
