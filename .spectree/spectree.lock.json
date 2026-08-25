@@ -1,46 +1,196 @@
 {
   "version": 1,
-  "changeId": "CHG-007",
-  "specHash": "015389ab394c12e71a0d2fc5d0ce093dd4a55b63f037696bbd71cb6f2e09810c",
+  "changeId": "CHG-001",
+  "specHash": "1041207a9a977adeacd16965ab6f3f69026609e6ca443ca21129dc2490082914",
   "units": [
     {
-      "id": "L3-TERMINAL-GLYPH-001",
+      "id": "L3-AGENT-ACTIVITY-001",
       "level": "L3",
-      "nodeHash": "dc8fcf3d24bcb7e2c8fbc8fcd9ca13b551b690bc8e6a9b2bba25a10ae16a2fd6",
+      "nodeHash": "1cf45c9dbc376029c7e23479910e28b37d7ac642c75fcf3c91ca191bdf3da0f1",
       "codeTargets": [
-        "packages/ridge-term/src/render/glyph_atlas.rs",
-        "packages/ridge-term/src/render/shaders/cell.wgsl",
-        "packages/ridge-term/src/render/webgpu.rs",
-        "packages/ridge-term/src/term/wcwidth.rs"
+        "src-tauri/src/commands/teammate.rs",
+        "src/lib/teammate/agentPaneHighlightSync.ts",
+        "src/lib/teammate/AgentPaneHighlightSync.svelte",
+        "src/lib/stores/paneTree.ts"
       ],
       "testTargets": [
-        "packages/ridge-term/src/render/glyph_atlas.rs",
-        "packages/ridge-term/src/term/wcwidth.rs",
-        "scripts/cdp-term-render-e2e.mjs"
+        "src/lib/teammate/agentPaneHighlightSync.test.ts"
       ],
       "status": "LOCKED"
     },
     {
-      "id": "L4-EMOJI-GEOMETRY-001",
-      "level": "L4",
-      "nodeHash": "fb773b718b7c18be58d757d0fbd26faaa061824bb10104d06add41167d0e4719",
+      "id": "L3-AGENT-CARD-001",
+      "level": "L3",
+      "nodeHash": "f4f65681a84976e29080ea9ccc7652bcb6aa66089e243748e94b2f35516d6205",
       "codeTargets": [
-        "packages/ridge-term/src/render/glyph_atlas.rs",
-        "packages/ridge-term/src/render/webgpu.rs"
+        "src/lib/teammate/AgentCenterPanel.svelte",
+        "src/lib/teammate/AgentMemberRow.svelte",
+        "src/routes/+page.svelte"
       ],
       "testTargets": [
-        "packages/ridge-term/src/render/glyph_atlas.rs",
-        "packages/ridge-term/src/term/wcwidth.rs"
+        "src/lib/components/SplitContainer.test.ts",
+        "tests/e2e/commune.spec.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L3-DESKTOP-BOOT-001",
+      "level": "L3",
+      "nodeHash": "b6aee866bdf27591584b94f30d7c95c762ae2c3ba4210ea5fdf2fdbd43f66f59",
+      "codeTargets": [
+        "src/routes/+page.svelte",
+        "playwright.config.ts"
+      ],
+      "testTargets": [
+        "src/lib/components/SidebarLazyMount.test.ts",
+        "tests/e2e/commune.spec.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L3-REMOTE-SMOOTHNESS-001",
+      "level": "L3",
+      "nodeHash": "515a5fea42395c563f486d47e5c71e4841526ac7c2d7073d6351d92f431399d0",
+      "codeTargets": [
+        "src/remote/MainApp.svelte",
+        "src/remote/lib/paneFeedScheduler.ts",
+        "packages/remote/src/shared/terminal/manager.ts",
+        "packages/remote/src/shared/transport/**"
+      ],
+      "testTargets": [
+        "src/remote/lib/paneFeedScheduler.test.ts",
+        "packages/remote/src/shared/**"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L3-RUNTIME-DISCOVERY-001",
+      "level": "L3",
+      "nodeHash": "086679df8c76c7f82a90d882122662843eafda2c716bfde19893c1fdd72ade0e",
+      "codeTargets": [
+        "src-tauri/src/teammate/autodiscover.rs"
+      ],
+      "testTargets": [
+        "src-tauri/src/teammate/autodiscover.rs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-AGENT-ACTIVITY-001",
+      "level": "L4",
+      "nodeHash": "d7c1ae1bdc293d5ef4bd23dc927fe52cc79a511e45eda3061a8da2b3aafd178a",
+      "codeTargets": [
+        "src-tauri/src/commands/teammate.rs",
+        "src/lib/teammate/agentPaneHighlightSync.ts",
+        "src/lib/teammate/AgentPaneHighlightSync.svelte"
+      ],
+      "testTargets": [
+        "src/lib/teammate/agentPaneHighlightSync.test.ts",
+        "src/lib/components/SplitContainer.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-AGENT-CARD-001",
+      "level": "L4",
+      "nodeHash": "36f72979fce32d7af6631355ef9fe5018a4b1fe63d746e2ea8956fe8e9b28d6e",
+      "codeTargets": [
+        "src/lib/teammate/AgentMemberRow.svelte"
+      ],
+      "testTargets": [
+        "src/lib/components/SplitContainer.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-REMOTE-GPU-COMPAT-001",
+      "level": "L4",
+      "nodeHash": "cdcae81f98823fcc4096c6d808722ae73d0af2de65103e2aed4f503dd6a36452",
+      "codeTargets": [
+        "packages/ridge-term/Cargo.toml",
+        "packages/ridge-term/README.md",
+        "packages/ridge-term/build.mjs",
+        "packages/ridge-term/src/lib.rs",
+        "packages/ridge-term/src/render/gpu_context.rs",
+        "packages/ridge-term/src/render/surface_host.rs",
+        "packages/ridge-term/src/render/webgpu.rs",
+        "packages/remote/src/shared/terminal/manager.ts",
+        "src/remote/MainApp.svelte",
+        "src/remote/lib/TerminalCanvas.svelte",
+        "scripts/cdp-term-render-e2e.mjs",
+        "scripts/mobile-keyboard-e2e.mjs"
+      ],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/manager.attach.test.ts",
+        "src/remote/lib/TerminalCanvas.test.ts",
+        "scripts/cdp-term-render-e2e.mjs",
+        "scripts/mobile-keyboard-e2e.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-REMOTE-PERFORMANCE-GATE-001",
+      "level": "L4",
+      "nodeHash": "179f527298c4681dbc00a6c64676205425cb53940d021b2fe5c6ac5bb5fd4470",
+      "codeTargets": [
+        "src/remote/**",
+        "packages/remote/src/**"
+      ],
+      "testTargets": [
+        "tests/e2e/**",
+        "scripts/perf-bench.ps1"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-RUNTIME-DISCOVERY-001",
+      "level": "L4",
+      "nodeHash": "cf9a7b73fddcd9b35437b6d21fc03ca741841bf00bcae736ed02338c67abd9a7",
+      "codeTargets": [
+        "src-tauri/src/teammate/autodiscover.rs"
+      ],
+      "testTargets": [
+        "src-tauri/src/teammate/autodiscover.rs"
       ],
       "status": "LOCKED"
     }
   ],
   "allowedPaths": [
-    "packages/ridge-term/src/render/glyph_atlas.rs",
-    "packages/ridge-term/src/render/shaders/cell.wgsl",
+    "packages/remote/src/**",
+    "packages/remote/src/shared/**",
+    "packages/remote/src/shared/terminal/manager.attach.test.ts",
+    "packages/remote/src/shared/terminal/manager.ts",
+    "packages/remote/src/shared/transport/**",
+    "packages/ridge-term/Cargo.toml",
+    "packages/ridge-term/README.md",
+    "packages/ridge-term/build.mjs",
+    "packages/ridge-term/src/lib.rs",
+    "packages/ridge-term/src/render/gpu_context.rs",
+    "packages/ridge-term/src/render/surface_host.rs",
     "packages/ridge-term/src/render/webgpu.rs",
-    "packages/ridge-term/src/term/wcwidth.rs",
-    "scripts/cdp-term-render-e2e.mjs"
+    "playwright.config.ts",
+    "scripts/cdp-term-render-e2e.mjs",
+    "scripts/mobile-keyboard-e2e.mjs",
+    "scripts/perf-bench.ps1",
+    "src-tauri/src/commands/teammate.rs",
+    "src-tauri/src/teammate/autodiscover.rs",
+    "src/lib/components/SidebarLazyMount.test.ts",
+    "src/lib/components/SplitContainer.test.ts",
+    "src/lib/stores/paneTree.ts",
+    "src/lib/teammate/AgentCenterPanel.svelte",
+    "src/lib/teammate/AgentMemberRow.svelte",
+    "src/lib/teammate/AgentPaneHighlightSync.svelte",
+    "src/lib/teammate/agentPaneHighlightSync.test.ts",
+    "src/lib/teammate/agentPaneHighlightSync.ts",
+    "src/remote/**",
+    "src/remote/MainApp.svelte",
+    "src/remote/lib/TerminalCanvas.svelte",
+    "src/remote/lib/TerminalCanvas.test.ts",
+    "src/remote/lib/paneFeedScheduler.test.ts",
+    "src/remote/lib/paneFeedScheduler.ts",
+    "src/routes/+page.svelte",
+    "tests/e2e/**",
+    "tests/e2e/commune.spec.ts"
   ],
   "testCommand": [
     "pnpm",
@@ -58,7 +208,7 @@
     "Cargo.lock": "3265f28f2c1a60971b963e21104888c8827c8b828263c2e39c5be499126524d6",
     "Cargo.toml": "9cccba0a8b7bcab6a2fafaf06c63f219a6f9c2a81604d0a408ae593074d8ddcc",
     "CHANGELOG.md": "9cc8bcb03103a188be909cc3b1628885ae0243484635aeca71c23ad1cb57429d",
-    "changes/CHG-001.md": "2b884da443b71c5574298a7cc636586d13d0cfabdf97186e4cb2409e41420ea9",
+    "changes/CHG-001.md": "8f51abec639e0dec16f610aabdf1c5abbd8bc189304262a991bc18d65af04e04",
     "changes/CHG-002.md": "e6928b9317666927b0c99f12cf71621b523feae579af3e013b84cb45906adcc4",
     "changes/CHG-003.md": "17a65ecbcd2d769d498672de32b3bf901bee7532eb0382bc7750e90acd83f41d",
     "changes/CHG-004.md": "f15640b963d7b5afc24b659240ad940d7644595bd4c372534de7ffc30b8557aa",
@@ -1597,6 +1747,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-990d24800cb1",
-  "manifestHash": "990d24800cb1dd9fee729f4cdc924157a187663ee02b63233d378783f25a99ab"
+  "buildId": "BUILD-11f9615b8b40",
+  "manifestHash": "11f9615b8b406a025c83728a6c2f1bfb8e0de7e09a6e08342f78bddd5be8b973"
 }
