@@ -24,6 +24,13 @@ const requestedDpr = Number.parseFloat(process.env.RIDGE_TERM_E2E_DPR || '');
 const emulatedDpr = Number.isFinite(requestedDpr) && requestedDpr > 0 ? requestedDpr : null;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const timeoutMs = Number.parseInt(process.env.RIDGE_TERM_E2E_TIMEOUT_MS || '240000', 10);
+const requestedCdpCommandTimeoutMs = Number.parseInt(
+  process.env.RIDGE_TERM_E2E_CDP_COMMAND_TIMEOUT_MS || '30000',
+  10,
+);
+const cdpCommandTimeoutMs = Number.isFinite(requestedCdpCommandTimeoutMs)
+  ? Math.min(Math.max(requestedCdpCommandTimeoutMs, 1000), timeoutMs)
+  : Math.min(30_000, timeoutMs);
 const artifactDir = path.resolve(process.env.RIDGE_TERM_E2E_ARTIFACT_DIR || '.iteration/artifacts/term-render');
 const fixtureOnly = process.env.RIDGE_TERM_E2E_FIXTURE_ONLY === '1';
 const expectWebgpuFailure = process.env.RIDGE_TERM_E2E_EXPECT_WEBGPU_FAILURE === '1';
@@ -106,13 +113,15 @@ const codexLaunch = codexHomePrefix + [
 
 function httpJson(route) {
   return new Promise((resolve, reject) => {
-    http.get({ host: '127.0.0.1', port, path: route, timeout: 3000 }, (response) => {
+    const request = http.get({ host: '127.0.0.1', port, path: route, timeout: 3000 }, (response) => {
       let body = '';
       response.on('data', (chunk) => (body += chunk));
       response.on('end', () => {
         try { resolve(JSON.parse(body)); } catch (error) { reject(error); }
       });
-    }).on('error', reject);
+    });
+    request.on('timeout', () => request.destroy(new Error(`CDP HTTP timeout: ${route}`)));
+    request.on('error', reject);
   });
 }
 
@@ -130,11 +139,20 @@ class Cdp {
   async open() {
     await new Promise((resolve, reject) => {
       let opened = false;
+      const timer = setTimeout(() => {
+        const error = this.transportError(`CDP WebSocket open timed out after ${cdpCommandTimeoutMs}ms`);
+        this.fail(error);
+        reject(error);
+      }, cdpCommandTimeoutMs);
       const failOpen = (error) => {
-        if (!opened) reject(error);
+        if (!opened) {
+          clearTimeout(timer);
+          reject(error);
+        }
       };
       this.ws.onopen = () => {
         opened = true;
+        clearTimeout(timer);
         resolve();
       };
       this.ws.onerror = (event) => {
@@ -156,6 +174,7 @@ class Cdp {
           const pending = this.pending.get(message.id);
           if (pending) {
             this.pending.delete(message.id);
+            clearTimeout(pending.timer);
             if (message.error) pending.reject(new Error(`${pending.method}: ${JSON.stringify(message.error)}`));
             else pending.resolve(message);
           } else if (message.method) {
@@ -169,7 +188,7 @@ class Cdp {
     });
   }
 
-  send(method, params = {}) {
+  send(method, params = {}, commandTimeoutMs = cdpCommandTimeoutMs) {
     if (this.connectionError) return Promise.reject(this.connectionError);
     if (this.ws.readyState !== WebSocket.OPEN) {
       const error = this.transportError(`CDP WebSocket is not open for ${method}: readyState=${this.ws.readyState}`);
@@ -178,10 +197,18 @@ class Cdp {
     }
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { method, resolve, reject });
+      const timer = setTimeout(() => {
+        if (!this.pending.delete(id)) return;
+        const error = new Error(`CDP command timed out after ${commandTimeoutMs}ms: ${method}`);
+        error.code = 'ERR_CDP_COMMAND_TIMEOUT';
+        reject(error);
+      }, commandTimeoutMs);
+      this.pending.set(id, { method, resolve, reject, timer });
       try {
         this.ws.send(JSON.stringify({ id, method, params }));
       } catch (error) {
+        const pending = this.pending.get(id);
+        if (pending) clearTimeout(pending.timer);
         this.pending.delete(id);
         const failure = this.transportError(`CDP WebSocket send failed for ${method}: ${error.message || error}`);
         this.fail(failure);
@@ -199,7 +226,10 @@ class Cdp {
 
   fail(error, replace = false) {
     if (replace || !this.connectionError) this.connectionError = error;
-    for (const pending of this.pending.values()) pending.reject(this.connectionError);
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(this.connectionError);
+    }
     this.pending.clear();
   }
 
@@ -642,23 +672,65 @@ async function testPaneLastRowWrapIsolation(cdp, workspaceId, sourcePaneId) {
 }
 
 async function capture(cdp, name, clip = null) {
-  const response = await cdp.send('Page.captureScreenshot', {
-    format: 'png',
-    ...(clip ? { clip } : {}),
-  });
-  if (!response.result?.data) throw new Error(`no screenshot data for ${name}`);
+  const eventStart = cdp.events.length;
+  await cdp.send('Page.startScreencast', { format: 'png', quality: 100, everyNthFrame: 1 });
+  let image;
+  try {
+    const frame = await waitUntil(
+      () => cdp.events.slice(eventStart).find((event) => event.method === 'Page.screencastFrame'),
+      `screencast frame for ${name}`,
+      10_000,
+    );
+    image = Buffer.from(frame.params.data, 'base64');
+    await cdp.send('Page.screencastFrameAck', { sessionId: frame.params.sessionId });
+  } finally {
+    await cdp.send('Page.stopScreencast').catch(() => {});
+  }
+  if (clip) {
+    const [metadata, viewport] = await Promise.all([
+      sharp(image).metadata(),
+      cdp.evaluate('({ width: innerWidth, height: innerHeight })'),
+    ]);
+    const scaleX = (metadata.width || viewport.width) / Math.max(1, viewport.width);
+    const scaleY = (metadata.height || viewport.height) / Math.max(1, viewport.height);
+    const left = Math.max(0, Math.round(clip.x * scaleX));
+    const top = Math.max(0, Math.round(clip.y * scaleY));
+    const width = Math.max(1, Math.min(
+      (metadata.width || 1) - left,
+      Math.round(clip.width * scaleX),
+    ));
+    const height = Math.max(1, Math.min(
+      (metadata.height || 1) - top,
+      Math.round(clip.height * scaleY),
+    ));
+    const outputScale = Number.isFinite(clip.scale) && clip.scale > 0 ? clip.scale : 1;
+    image = await sharp(image)
+      .extract({ left, top, width, height })
+      .resize({
+        width: Math.max(1, Math.round(clip.width * outputScale)),
+        height: Math.max(1, Math.round(clip.height * outputScale)),
+        kernel: sharp.kernel.nearest,
+      })
+      .png()
+      .toBuffer();
+  }
   const target = path.join(artifactDir, name);
-  fs.writeFileSync(target, Buffer.from(response.result.data, 'base64'));
+  fs.writeFileSync(target, image);
   return target;
 }
 
-async function measureMonochromeSharpness(file, clip) {
+async function measureMonochromeSharpness(file, clip, viewport) {
+  const metadata = await sharp(file).metadata();
+  const scaleX = (metadata.width || viewport.width) / Math.max(1, viewport.width);
+  const scaleY = (metadata.height || viewport.height) / Math.max(1, viewport.height);
+  const left = Math.max(0, Math.round(clip.x * scaleX));
+  const top = Math.max(0, Math.round(clip.y * scaleY));
   const { data, info } = await sharp(file)
     .extract({
-      left: Math.max(0, Math.round(clip.x)),
-      top: Math.max(0, Math.round(clip.y)),
-      width: Math.max(1, Math.round(clip.width)),
-      height: Math.max(1, Math.round(clip.height)),
+      left,
+      top,
+      width: Math.max(1, Math.min((metadata.width || 1) - left, Math.round(clip.width * scaleX))),
+      height: Math.max(1, Math.min((metadata.height || 1) - top, Math.round(clip.height * scaleY))),
     })
     .raw()
     .toBuffer({ resolveWithObject: true });
@@ -1778,16 +1850,21 @@ try {
       scale: 4,
     }));
     const dpr = await cdp.evaluate('devicePixelRatio');
+    // WebView2 screencast normalizes fractional-DPR frames back to CSS
+    // dimensions, adding a video downsample that is not present on screen.
+    // Quantify only the 1:1 capture; fractional DPR remains a glyph/geometry
+    // completeness gate below.
     if (Math.abs(dpr - 1) < 0.01) {
+      const viewport = await cdp.evaluate('({ width: innerWidth, height: innerHeight })');
       const sharpness = await measureMonochromeSharpness(nativeGlyphScreenshot, {
         x: gridLeft,
         y: gridTop,
         width: Math.min(nativeGlyphGeometry.rect.width, 42 * nativeGlyphGeometry.anchor.cellW),
         height: 2 * nativeGlyphGeometry.anchor.cellH,
-      });
+      }, viewport);
       summary.nativeGlyphFixture.sharpness = { dpr, ...sharpness };
-      if (sharpness.solidRatio < 0.7 || sharpness.transitionRatio > 0.3) {
-        throw new Error(`monochrome glyph sharpness regressed (solid >= 0.7, transition <= 0.3): ${JSON.stringify(sharpness)}`);
+      if (sharpness.solidRatio < 0.8 || sharpness.transitionRatio > 0.2) {
+        throw new Error(`monochrome glyph sharpness regressed (solid >= 0.8, transition <= 0.2): ${JSON.stringify(sharpness)}`);
       }
     }
   }
