@@ -5,14 +5,16 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { systemTool } from './lib/toolPath.mjs';
+import { pnpmInvocation } from './lib/toolPath.mjs';
+import { validateWeakNetMetrics } from './lib/weakNetMetrics.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 try {
+  const pnpm = pnpmInvocation();
   execFileSync(
-    systemTool('pnpm'),
-    ['exec', 'vitest', 'run', 'packages/remote/src/shared/cloud/weakNetLab.test.ts'],
-    { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' },
+    pnpm.command,
+    [...pnpm.args, 'exec', 'vitest', 'run', 'packages/remote/src/shared/cloud/weakNetLab.test.ts'],
+    { cwd: root, stdio: 'inherit' },
   );
 } catch {
   console.error('weak-net lab 场景未全绿');
@@ -25,11 +27,9 @@ const fail = (msg) => {
   console.error(`metrics 结构校验失败: ${msg}`);
   process.exit(1);
 };
-if (m.model !== 'deterministic-lab') fail('model 非 deterministic-lab');
-if (typeof m.disclaimer !== 'string' || !m.disclaimer.includes('非真机')) fail('缺 disclaimer');
-if (!Array.isArray(m.scenarios) || m.scenarios.length < 9) fail(`场景数 ${m.scenarios?.length} < 9`);
-for (const s of m.scenarios) {
-  if (!s.family || typeof s.params !== 'object' || typeof s.observed !== 'object')
-    fail(`场景缺字段: ${JSON.stringify(s)}`);
+try {
+  validateWeakNetMetrics(m);
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
 }
 console.log(`weak-net lab 全绿：${m.scenarios.length} 场景 → ${path}`);

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cargoTool } from './toolPath.mjs';
+import { cargoTool, pnpmInvocation } from './toolPath.mjs';
 
 const extension = process.platform === 'win32' ? '.exe' : '';
 const tempDirs = [];
@@ -42,5 +42,21 @@ describe('cargoTool', () => {
     vi.stubEnv('PATH', pathDir);
 
     expect(cargoTool('wasm-pack')).toBe(pathTool);
+  });
+});
+
+describe('pnpmInvocation', () => {
+  it('uses the pnpm JavaScript entry point without a Windows shell', () => {
+    if (process.platform !== 'win32') return;
+    const dir = mkdtempSync(join(tmpdir(), 'ridge-pnpm-path-'));
+    tempDirs.push(dir);
+    const command = join(dir, 'pnpm.cmd');
+    const cli = join(dir, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs');
+    mkdirSync(join(dir, 'node_modules', 'pnpm', 'bin'), { recursive: true });
+    writeFileSync(command, '@echo off');
+    writeFileSync(cli, '');
+    vi.stubEnv('RIDGE_PNPM_PATH', command);
+
+    expect(pnpmInvocation()).toEqual({ command: process.execPath, args: [cli] });
   });
 });
