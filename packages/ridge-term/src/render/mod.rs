@@ -11,6 +11,8 @@ pub mod glyph_atlas;
 pub mod glyph_rasterizer;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod gpu_context;
+#[cfg(feature = "webgpu")]
+mod gpu_limits;
 pub mod renderer;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod surface_host;

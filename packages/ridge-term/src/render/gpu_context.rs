@@ -47,6 +47,7 @@ use web_sys::HtmlCanvasElement;
 
 use super::glyph_atlas::{pick_evictable_layer, GlyphAtlas, GlyphEntry, GlyphKey};
 use super::glyph_rasterizer::{GlyphRasterizer, RasterizedGlyph};
+use super::gpu_limits::fit_required_limits;
 
 /// Atlas slot dimension floors in device pixels. `slot_w` is rounded up
 /// to a power of two so `bytes_per_row = slot_w × 4` automatically
@@ -400,15 +401,22 @@ impl GpuContext {
         // bounded while giving Claude-style TUIs (CJK + box-drawing
         // + spinner glyphs) enough cache headroom to avoid LRU thrash.
         let adapter_limits = adapter.limits();
-        let atlas_layers: u32 = adapter_limits
+        if adapter_limits.max_texture_array_layers < ATLAS_LAYERS_MIN {
+            return Err(format!(
+                "GpuContext: adapter exposes {} texture-array layers; {} required",
+                adapter_limits.max_texture_array_layers, ATLAS_LAYERS_MIN
+            ));
+        }
+        let atlas_layers = adapter_limits
             .max_texture_array_layers
-            .clamp(ATLAS_LAYERS_MIN, ATLAS_LAYERS_MAX);
-        let mut required_limits = if adapter_info.backend == wgpu::Backend::Gl {
+            .min(ATLAS_LAYERS_MAX);
+        let required_limits = if adapter_info.backend == wgpu::Backend::Gl {
             wgpu::Limits::downlevel_webgl2_defaults()
         } else {
             wgpu::Limits::downlevel_defaults()
         }
-        .using_resolution(adapter_limits);
+        .using_resolution(adapter_limits.clone());
+        let mut required_limits = fit_required_limits(required_limits, &adapter_limits);
         required_limits.max_texture_array_layers = atlas_layers;
 
         let (device, queue) = adapter
