@@ -1,196 +1,46 @@
 {
   "version": 1,
-  "changeId": "CHG-001",
-  "specHash": "1041207a9a977adeacd16965ab6f3f69026609e6ca443ca21129dc2490082914",
+  "changeId": "CHG-016",
+  "specHash": "4d1ac9dc8d08c6d071bf67368a0a0456854653d30039bcfa9cd6bda0a70ba8ce",
   "units": [
     {
-      "id": "L3-AGENT-ACTIVITY-001",
+      "id": "L3-TERMINAL-GLYPH-001",
       "level": "L3",
-      "nodeHash": "1cf45c9dbc376029c7e23479910e28b37d7ac642c75fcf3c91ca191bdf3da0f1",
+      "nodeHash": "bdeabd8980b88f74f5e30d31352a86792935f17873cd8d5b817c040ada120e57",
       "codeTargets": [
-        "src-tauri/src/commands/teammate.rs",
-        "src/lib/teammate/agentPaneHighlightSync.ts",
-        "src/lib/teammate/AgentPaneHighlightSync.svelte",
-        "src/lib/stores/paneTree.ts"
-      ],
-      "testTargets": [
-        "src/lib/teammate/agentPaneHighlightSync.test.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L3-AGENT-CARD-001",
-      "level": "L3",
-      "nodeHash": "f4f65681a84976e29080ea9ccc7652bcb6aa66089e243748e94b2f35516d6205",
-      "codeTargets": [
-        "src/lib/teammate/AgentCenterPanel.svelte",
-        "src/lib/teammate/AgentMemberRow.svelte",
-        "src/routes/+page.svelte"
-      ],
-      "testTargets": [
-        "src/lib/components/SplitContainer.test.ts",
-        "tests/e2e/commune.spec.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L3-DESKTOP-BOOT-001",
-      "level": "L3",
-      "nodeHash": "b6aee866bdf27591584b94f30d7c95c762ae2c3ba4210ea5fdf2fdbd43f66f59",
-      "codeTargets": [
-        "src/routes/+page.svelte",
-        "playwright.config.ts"
-      ],
-      "testTargets": [
-        "src/lib/components/SidebarLazyMount.test.ts",
-        "tests/e2e/commune.spec.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L3-REMOTE-SMOOTHNESS-001",
-      "level": "L3",
-      "nodeHash": "515a5fea42395c563f486d47e5c71e4841526ac7c2d7073d6351d92f431399d0",
-      "codeTargets": [
-        "src/remote/MainApp.svelte",
-        "src/remote/lib/paneFeedScheduler.ts",
-        "packages/remote/src/shared/terminal/manager.ts",
-        "packages/remote/src/shared/transport/**"
-      ],
-      "testTargets": [
-        "src/remote/lib/paneFeedScheduler.test.ts",
-        "packages/remote/src/shared/**"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L3-RUNTIME-DISCOVERY-001",
-      "level": "L3",
-      "nodeHash": "086679df8c76c7f82a90d882122662843eafda2c716bfde19893c1fdd72ade0e",
-      "codeTargets": [
-        "src-tauri/src/teammate/autodiscover.rs"
-      ],
-      "testTargets": [
-        "src-tauri/src/teammate/autodiscover.rs"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L4-AGENT-ACTIVITY-001",
-      "level": "L4",
-      "nodeHash": "d7c1ae1bdc293d5ef4bd23dc927fe52cc79a511e45eda3061a8da2b3aafd178a",
-      "codeTargets": [
-        "src-tauri/src/commands/teammate.rs",
-        "src/lib/teammate/agentPaneHighlightSync.ts",
-        "src/lib/teammate/AgentPaneHighlightSync.svelte"
-      ],
-      "testTargets": [
-        "src/lib/teammate/agentPaneHighlightSync.test.ts",
-        "src/lib/components/SplitContainer.test.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L4-AGENT-CARD-001",
-      "level": "L4",
-      "nodeHash": "36f72979fce32d7af6631355ef9fe5018a4b1fe63d746e2ea8956fe8e9b28d6e",
-      "codeTargets": [
-        "src/lib/teammate/AgentMemberRow.svelte"
-      ],
-      "testTargets": [
-        "src/lib/components/SplitContainer.test.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L4-REMOTE-GPU-COMPAT-001",
-      "level": "L4",
-      "nodeHash": "cdcae81f98823fcc4096c6d808722ae73d0af2de65103e2aed4f503dd6a36452",
-      "codeTargets": [
-        "packages/ridge-term/Cargo.toml",
-        "packages/ridge-term/README.md",
-        "packages/ridge-term/build.mjs",
-        "packages/ridge-term/src/lib.rs",
-        "packages/ridge-term/src/render/gpu_context.rs",
-        "packages/ridge-term/src/render/surface_host.rs",
+        "packages/ridge-term/src/render/glyph_atlas.rs",
+        "packages/ridge-term/src/render/shaders/cell.wgsl",
         "packages/ridge-term/src/render/webgpu.rs",
-        "packages/remote/src/shared/terminal/manager.ts",
-        "src/remote/MainApp.svelte",
-        "src/remote/lib/TerminalCanvas.svelte",
-        "scripts/cdp-term-render-e2e.mjs",
-        "scripts/mobile-keyboard-e2e.mjs"
+        "packages/ridge-term/src/term/wcwidth.rs"
       ],
       "testTargets": [
-        "packages/remote/src/shared/terminal/manager.attach.test.ts",
-        "src/remote/lib/TerminalCanvas.test.ts",
-        "scripts/cdp-term-render-e2e.mjs",
-        "scripts/mobile-keyboard-e2e.mjs"
+        "packages/ridge-term/src/render/glyph_atlas.rs",
+        "packages/ridge-term/src/term/wcwidth.rs",
+        "scripts/cdp-term-render-e2e.mjs"
       ],
       "status": "LOCKED"
     },
     {
-      "id": "L4-REMOTE-PERFORMANCE-GATE-001",
+      "id": "L4-EMOJI-GEOMETRY-001",
       "level": "L4",
-      "nodeHash": "179f527298c4681dbc00a6c64676205425cb53940d021b2fe5c6ac5bb5fd4470",
+      "nodeHash": "fb773b718b7c18be58d757d0fbd26faaa061824bb10104d06add41167d0e4719",
       "codeTargets": [
-        "src/remote/**",
-        "packages/remote/src/**"
+        "packages/ridge-term/src/render/glyph_atlas.rs",
+        "packages/ridge-term/src/render/webgpu.rs"
       ],
       "testTargets": [
-        "tests/e2e/**",
-        "scripts/perf-bench.ps1"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L4-RUNTIME-DISCOVERY-001",
-      "level": "L4",
-      "nodeHash": "cf9a7b73fddcd9b35437b6d21fc03ca741841bf00bcae736ed02338c67abd9a7",
-      "codeTargets": [
-        "src-tauri/src/teammate/autodiscover.rs"
-      ],
-      "testTargets": [
-        "src-tauri/src/teammate/autodiscover.rs"
+        "packages/ridge-term/src/render/glyph_atlas.rs",
+        "packages/ridge-term/src/term/wcwidth.rs"
       ],
       "status": "LOCKED"
     }
   ],
   "allowedPaths": [
-    "packages/remote/src/**",
-    "packages/remote/src/shared/**",
-    "packages/remote/src/shared/terminal/manager.attach.test.ts",
-    "packages/remote/src/shared/terminal/manager.ts",
-    "packages/remote/src/shared/transport/**",
-    "packages/ridge-term/Cargo.toml",
-    "packages/ridge-term/README.md",
-    "packages/ridge-term/build.mjs",
-    "packages/ridge-term/src/lib.rs",
-    "packages/ridge-term/src/render/gpu_context.rs",
-    "packages/ridge-term/src/render/surface_host.rs",
+    "packages/ridge-term/src/render/glyph_atlas.rs",
+    "packages/ridge-term/src/render/shaders/cell.wgsl",
     "packages/ridge-term/src/render/webgpu.rs",
-    "playwright.config.ts",
-    "scripts/cdp-term-render-e2e.mjs",
-    "scripts/mobile-keyboard-e2e.mjs",
-    "scripts/perf-bench.ps1",
-    "src-tauri/src/commands/teammate.rs",
-    "src-tauri/src/teammate/autodiscover.rs",
-    "src/lib/components/SidebarLazyMount.test.ts",
-    "src/lib/components/SplitContainer.test.ts",
-    "src/lib/stores/paneTree.ts",
-    "src/lib/teammate/AgentCenterPanel.svelte",
-    "src/lib/teammate/AgentMemberRow.svelte",
-    "src/lib/teammate/AgentPaneHighlightSync.svelte",
-    "src/lib/teammate/agentPaneHighlightSync.test.ts",
-    "src/lib/teammate/agentPaneHighlightSync.ts",
-    "src/remote/**",
-    "src/remote/MainApp.svelte",
-    "src/remote/lib/TerminalCanvas.svelte",
-    "src/remote/lib/TerminalCanvas.test.ts",
-    "src/remote/lib/paneFeedScheduler.test.ts",
-    "src/remote/lib/paneFeedScheduler.ts",
-    "src/routes/+page.svelte",
-    "tests/e2e/**",
-    "tests/e2e/commune.spec.ts"
+    "packages/ridge-term/src/term/wcwidth.rs",
+    "scripts/cdp-term-render-e2e.mjs"
   ],
   "testCommand": [
     "pnpm",
@@ -205,16 +55,25 @@
     ".mcp.json": "9094342c1182357eebb9e98dedaa94efc96fffdecd2b31e92b84ecba09c9ea01",
     ".npmrc": "03d8c2004616576994a079ab45a218ffe758d646b7197907edcbbf671c2248b1",
     "AGENTS.md": "39e39a4db7a0df8af3677a86c70fa42bed693cc4932ad0c40b731596465396b4",
-    "Cargo.lock": "3265f28f2c1a60971b963e21104888c8827c8b828263c2e39c5be499126524d6",
+    "Cargo.lock": "d679e8261594d0288df6694f83ef942bdd2032435305bc10ed8ac8b7768b6bb6",
     "Cargo.toml": "9cccba0a8b7bcab6a2fafaf06c63f219a6f9c2a81604d0a408ae593074d8ddcc",
     "CHANGELOG.md": "9cc8bcb03103a188be909cc3b1628885ae0243484635aeca71c23ad1cb57429d",
     "changes/CHG-001.md": "8f51abec639e0dec16f610aabdf1c5abbd8bc189304262a991bc18d65af04e04",
-    "changes/CHG-002.md": "e6928b9317666927b0c99f12cf71621b523feae579af3e013b84cb45906adcc4",
+    "changes/CHG-002.md": "6dde48fcf6378c15ad7052f70eedff9a38be3dcf6c54bd9883a75f62f12b660a",
     "changes/CHG-003.md": "17a65ecbcd2d769d498672de32b3bf901bee7532eb0382bc7750e90acd83f41d",
     "changes/CHG-004.md": "f15640b963d7b5afc24b659240ad940d7644595bd4c372534de7ffc30b8557aa",
     "changes/CHG-005.md": "a15c67ed021e88bbee4eab31920be2aef8a047d8d532ed4ce56566e79feefece",
     "changes/CHG-006.md": "b9f2c86c179d6a286c543073bee668f0690e68583d8965857fc989b55029c057",
     "changes/CHG-007.md": "a66cbbda9450358574902e2b4cef79778ebdbe3adc63d3190d801d546ff52409",
+    "changes/CHG-008.md": "e8b3843b086648e4207e073e4fa346ca83d6b9b3f87706dd249023f4d5b44fbb",
+    "changes/CHG-009.md": "d632df7b1225fbbf807217babc6299ce5d640d93b3095cc72adf40d4a707d13e",
+    "changes/CHG-010.md": "6859fc449fccbbb86a95664a1cfb80d1dd83a209d12d993df6fb75fc0a332b21",
+    "changes/CHG-011.md": "9b8197bfe5e9bb79937eddedf9f193c6cdd04c9431de7ff2cb957d2c0977b4e4",
+    "changes/CHG-012.md": "1c2040117437dc4f68cfd393d67bd158e78cb846e2a10e747ee35de90d40a075",
+    "changes/CHG-013.md": "dfd2ca904819227cfa49cee0ed31c13cf624ad480beaf0c5abf73ec984dccd75",
+    "changes/CHG-014.md": "a3dedac697a1087a36068216177dd2ea52202f52461f2fd5f4d33ed184e96236",
+    "changes/CHG-015.md": "aadb97036876b99a3fa1de22524a174e1cbb7e0e54a4e45b85dfa65d89b1cac0",
+    "changes/CHG-016.md": "c21fd94de35abd316852f36f985bb6fff6af1c49ba7fbc7c50eb67f58b9b9f5e",
     "CLAUDE.md": "1f07d1b3dcd28c80ef7f2255ae8d6135717c98e75a2b7630dc246902148bfd21",
     "docs/_team-archive/site-revamp-2026-04-30/content-brief.md": "ae3ffae60b3037e595e0b0e976675cbbf49edb74ed01ce44e7188b9862a26bfc",
     "docs/_team-archive/site-revamp-2026-04-30/decisions.md": "63b66c909323ed7acc6cce207b8de7395579a5d6636fc00abb62b3502e4f4629",
@@ -757,7 +616,7 @@
     "packages/remote/src/shared/cloud/signaling/generated/SignalMsg.ts": "e7742a8b44790c8b64ef74e258008be39c1d7127a1f462ff6898f5b5408d63d5",
     "packages/remote/src/shared/cloud/signaling/index.ts": "60086c69c17bcb41beb0bbb25de3e24c7081bc610df596c6e3defb78e1439cb8",
     "packages/remote/src/shared/cloud/signaling/SOURCE_REV": "d9d49484f5f16e3770d5d50fb4c43a5e91e64ea366bfcd674f002c6abc647974",
-    "packages/remote/src/shared/cloud/weakNetLab.test.ts": "9f384dfbd5e4439ec91c75390e115f810712086eb381672f8b5c531a3c0aea10",
+    "packages/remote/src/shared/cloud/weakNetLab.test.ts": "df8283abb34d85734a646b739ee2aebbaf9925683a800cc9b1a462a909a11b8c",
     "packages/remote/src/shared/cloud/workspaceScope.test.ts": "224338c11158c457c70a19f5f253788d7f9a22c49b8dfb14262aa36c37ff956a",
     "packages/remote/src/shared/cloud/workspaceScope.ts": "1488f042720853afd315bc46b032b262864073bb9ff4bd130819b860403a0202",
     "packages/remote/src/shared/hosts/foreignPaneStatus.test.ts": "ecd8ed031c0a91349a81afd5edde8f3a33d29321ae3095839f6d554d226ac479",
@@ -796,8 +655,8 @@
     "packages/remote/src/shared/terminal/linkSpans.test.ts": "df99d998c41be0d5270b47dc950b16935bd93286b4b79d866d95a0f32e2d5989",
     "packages/remote/src/shared/terminal/linkSpans.ts": "0dbea595b6c6eb87bd6aac200d22b13115f7510b9f22afb27461c24d6b315056",
     "packages/remote/src/shared/terminal/manager.attach.test.ts": "9a5ff846e7baf88d72e13d2603d59c92cd589166284dc45eabb9a0d3e3617557",
-    "packages/remote/src/shared/terminal/manager.test.ts": "93ff2af07cb6b6ed607ca6985bc290c9907570b8fe456bb96ba9fc6e3a06a859",
-    "packages/remote/src/shared/terminal/manager.ts": "e22ca1d126aedf9e9081fa3ec5e8b1e9e24bc695387f9b4d84f04351c93b6fd1",
+    "packages/remote/src/shared/terminal/manager.test.ts": "8b4d2cae8e139ac6007e662aefe480437717f4f97915ec1240c70050146f8f36",
+    "packages/remote/src/shared/terminal/manager.ts": "3828ab7ceb9a07a7909d373ecab8d0ae563142cec53176ed599ae95fd2b51aad",
     "packages/remote/src/shared/terminal/mobileCopy.test.ts": "b23fbcedeb74e00efcbc21b521a45328cec76af32ef4d7db351cd37c86d1a143",
     "packages/remote/src/shared/terminal/mobileCopy.ts": "53d24a89916d6599a2433aa031370c0c020d8a8abafdc7fe0e4ef0bdf1a79f88",
     "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts": "b578ca4a89c3aaaddb896f16dbdb0e3c047b4e8d8ca89a89c6eea4ab3fdbfe29",
@@ -1036,19 +895,20 @@
     "packages/ridge-term/build.mjs": "ea43e2da9e2cdcd70501cad38ff3293fdca94f4ef770485848d2fa08c3ee0f96",
     "packages/ridge-term/build.sh": "e1f2beba00ccc999548e155b447919051887dd59ce5bbf53415d0ee2bd68dfaa",
     "packages/ridge-term/Cargo.lock": "a355750e35176d1ae5803c03d859d9d01ee293f77f37a0a7e63eb99dba8655ea",
-    "packages/ridge-term/Cargo.toml": "37d8d41e160c923bcf9e0b49449ffac9e6375a8f2bf7a1565e77e691020b72d8",
+    "packages/ridge-term/Cargo.toml": "a4b2615d532b0adc4fabd0acc0f181877c6575dadfb1d85ae25db38f04d13e7a",
     "packages/ridge-term/README.md": "d1137c6ba020f49f012513e0430cf5fd4792b2be544233caa7fc4e0afdbbb003",
     "packages/ridge-term/src/input.rs": "c5ed0b2b6f56ab72dcc1a5ba785314a94a9c72992ccdcf3512c1414da3a49fe0",
-    "packages/ridge-term/src/lib.rs": "c329fb26e96e66b494a756dd529a020029631c86a0503e78b496ca9ed0084957",
+    "packages/ridge-term/src/lib.rs": "e0aa4f5e89fb5f225266b0e0336fad065ed3d276919dfffd99c5ace35c29e6c2",
     "packages/ridge-term/src/render/backend.rs": "94138c8e8de85f56226487b880332e0dc689245fd71ab68b8144dff7f0af602c",
     "packages/ridge-term/src/render/glyph_atlas.rs": "dbbc394a662192785ed5fdbbdff338785cdc8fad1ceb70ebfcb281fe516ba56f",
     "packages/ridge-term/src/render/glyph_rasterizer.rs": "ee9557599acb22bc6cc72cf6874e5f5e9df0e1266cee215928e046b4f7beca7b",
-    "packages/ridge-term/src/render/gpu_context.rs": "8d64cbcd32b70f8f04c414aacef4c301347619e2319105619ce9db3067b270e4",
-    "packages/ridge-term/src/render/mod.rs": "24e2553b6c4ac47e0d27b60d4e610c3d656320ae7fd06751623cfa865da12213",
+    "packages/ridge-term/src/render/gpu_context.rs": "570c2181b58b4510e291be67525007b5a60c8c474a9d7a5816f16c9c8a17719e",
+    "packages/ridge-term/src/render/gpu_limits.rs": "d4c363bea59de071255d580d92f3f7f93526314baa329f3e49d380eef64cc93e",
+    "packages/ridge-term/src/render/mod.rs": "ed7db3be683c1511a80cd9f2977250426de476a751615f1d0e05870605b56fa0",
     "packages/ridge-term/src/render/renderer.rs": "f8f0a67968ce951c5dc91efcefe9c549a06a4275817c62ea87e163611a5ddd13",
-    "packages/ridge-term/src/render/shaders/cell.wgsl": "d64e14e136eab521081cd7a2373e2e27b15774102b6217aabc8084494f50baed",
+    "packages/ridge-term/src/render/shaders/cell.wgsl": "31e3c9a84bcc2df4fe6c63ffbd668fe94e6d471585062b587d58efed65b5ab75",
     "packages/ridge-term/src/render/shaders/wallpaper.wgsl": "0bbeff392870654082ddaee0cc67e77695e5bd498737b6f8ba7baba85fdb9208",
-    "packages/ridge-term/src/render/surface_host.rs": "00cf777c62c5cd12666cc111373f15b81205ecd2e69ce8652ffcd2fc097e9644",
+    "packages/ridge-term/src/render/surface_host.rs": "50eb0bfdaf56165a68b7108853fa11c28cd08997811833d9373d7f2ff6795efa",
     "packages/ridge-term/src/render/wallpaper.rs": "1a2ed3eeee5fed42ca98cca868be91d404610b893ad4150b68606ad278f03a2c",
     "packages/ridge-term/src/render/webgpu.rs": "a2d74f1723fc89970f071ccee6c3940f2c90498ef87dbfd16a92c9585fa9ef3b",
     "packages/ridge-term/src/search.rs": "3999337e00727ff988cfecb1786ff02598a1007b6d06f4fcd1e3d387e46fcbb3",
@@ -1113,7 +973,7 @@
     "scripts/cdp-teammate-e2e.mjs": "b449b0aed6d5bd2143f727632ea7291bbe7efa30a33c740e7d0ca2a00b2606db",
     "scripts/cdp-teammate-mcp-e2e.mjs": "c141637afb18c7f27fac8276c7bbf9c24180f40274bb2f919c8f85831002a4b7",
     "scripts/cdp-term-input.mjs": "64d975e19d59f5a3a2a0a8da2df2c527c05bb15b3aaad7ce89b233d4439c5bf7",
-    "scripts/cdp-term-render-e2e.mjs": "8346d18cd47e93bb2e787277d1d7f59d25067951761535272dcb8e2bacf4a098",
+    "scripts/cdp-term-render-e2e.mjs": "636e6731c6c30fc272a653f5273cd3d2f3783b257cb1e619668ab62896a386d8",
     "scripts/cdp-wait-and-enable.mjs": "00edd32a2e50a73bc74edded05a2335881e19dfafd5512c05789b84808fb7b7e",
     "scripts/check-capability-matrix.mjs": "f5080b78ac4f3d9a80dcc150ed5dd91cd51089d27d3d0b43f9b285fe76559934",
     "scripts/check-desktop-only-hosts.mjs": "c7083988aba4fce97cb65a7ca5cda7f75bdfb9fefc17fcbf1bbbd3a72953acc6",
@@ -1137,8 +997,10 @@
     "scripts/lib/cdpTarget.test.mjs": "67c0515037fe12b3365b6e343c89904c1fc85352496516c63f3907399abecba2",
     "scripts/lib/remoteArtifactBundle.mjs": "40a676ffa4bddef69a064942deac65ab02017b9472344d75cec1b12605215691",
     "scripts/lib/remoteArtifactBundle.test.mjs": "d9f6b7531f8cb6b4f5609d1558eae19c1cc581a143ce92472d0d39144c299aef",
-    "scripts/lib/toolPath.mjs": "e62980e22232b8e4ef684fb694a983db6dcd7f2d72cb00deae8812ea4acc90d5",
-    "scripts/lib/toolPath.test.mjs": "99aa3b70a024977db2135e959b8cfa23a64357ebf099b3d6364f22af67c1d115",
+    "scripts/lib/toolPath.mjs": "795a096307237a42ba1d25564fbb4afa460588fcc265f463dd9098a499ed601c",
+    "scripts/lib/toolPath.test.mjs": "4672883ed636c57c4a7eb4273416717efbbbfb92a7bae2b82fb59d60f70ff4f1",
+    "scripts/lib/weakNetMetrics.mjs": "a1e82e1928dcf6b26f670ac61ff9b6199e2c3cf101c47194bd05432522e41478",
+    "scripts/lib/weakNetMetrics.test.mjs": "11076f7579ec9ca7b39f5e5f6fdd4f644d0fb7f73753705b0408ef72b0840d5c",
     "scripts/mobile-keyboard-e2e.mjs": "54abe0c31764b633e8179df6b404a6f004ee036ff9d3b76d86bf9499178a9560",
     "scripts/normalize-lcov.mjs": "5c952f930019ecd6a01372d0b834a50f4eae9aae5d587abd63423fbc0ecbf056",
     "scripts/perf-bench.ps1": "d80716d62dedcec475cc0c6454642a3920f619a8cefec436fb5ff350214965d6",
@@ -1168,7 +1030,7 @@
     "scripts/remote-state-e2e.mjs": "9c5cb61ae29e598b0d8fac981de471524c38058bea0c1f15a1536a20d59620d5",
     "scripts/remote-verify-fix.mjs": "26719a53e9fb872118c862bcd0125d33c793de8349d8a0e7d39aaf2d325a0ef8",
     "scripts/ridge-tmux-log-setup.ps1": "6dea5f56ebba87f458772b94bd9b97ef91f68b4e8f2c88a5187daa1eca8a7939",
-    "scripts/run-weaknet-lab.mjs": "3e90b13af20388a97823f043e42f86cb1e9c675f9348f4e5f3cc3e0112118922",
+    "scripts/run-weaknet-lab.mjs": "c7ed9e1cbdb8dfc00017e4d2e8b808a9468042195cb37bf817d5f06bb1c831c5",
     "scripts/start-all.sh": "d88870995e132bb17a7689df0b39988c77c9581f315ba3c6684626f70cd51f34",
     "scripts/start-remote-dev.mjs": "d20fa8db0b57e452a34f76b93b3b58e25e08dc98bb67d47ec322649dc08a32a1",
     "scripts/start-vite-dev.mjs": "c4ed2a03ebfea69d09280b514e0a7fbd02b391e094cad1abcda89abfb58409ed",
@@ -1221,23 +1083,27 @@
     "skills/windows-security-settings.md": "9a4a7eea785a3b2e2b9821b21ff27d6cbdeebe9b48e721458a703fc79172c377",
     "skills/windows-system-maintenance.md": "f8bce736871c9e18ebeaa4a2a80d9a9caabb07d1c757889ba97d087bcf9763f5",
     "sonar-project.properties": "f1b7de7c6d1d81b0d0607d999a0c5854700cb9979d56cd3cd9ea023658d08da9",
-    "specs/l2-agent-commune.md": "0f7c9e4d2b45c811e27a19dfa0ef1ad4060e7006c5d22fb0590cb6877a53ce28",
+    "specs/l2-agent-commune.md": "3711e242335c9b8b5179c643c0be87f3a07f1e6ba71e43f85e6ff27706ab5cd4",
+    "specs/l2-app-shell.md": "7ef7209699edfd00aefc8fb3f57103aa025c73b4a5e49d0aca8657c06a30183c",
+    "specs/l2-automation.md": "7ea71c4a9bf277241115467ee9c9c9d73d4f127c78e97fef595a42b7b2ba1808",
+    "specs/l2-host-integration.md": "c435ced9143878433a4934f28b0f66c4494d45000ef457f40badf31f93cf2c8e",
     "specs/l2-remote-experience.md": "b76c8bb866fb165325539c01645fcde8c8835ed4a121c2722baeadd78a48d5a3",
     "specs/l2-runtime-quality.md": "842401800eb3b5414b5e1df785e29128d14ce8ed9ca49ae0dc9bbe48699c04f4",
     "specs/l2-spectree-control.md": "5c43f463673469995c957b7b0e7cca90a4f991aef7b970a5285bac3c82d01a31",
     "specs/l3-agent-activity.md": "588a1acdfe920b529c6c8cb2bf92b4262275a25fb4ae10519536ed8a66ce0dce",
     "specs/l3-agent-card.md": "40571bd88a26823258db8a9f8344efdcd3369c8c595ce1c7896ea8b22a8ef1a8",
+    "specs/l3-agent-hitl.md": "8052829560003511d1b4d59bf634ab5f9fc78b1d5ba6859830618b2bbb9d2ae3",
     "specs/l3-desktop-boot.md": "15f679ff509c729ae267d86a717a11f0ec3e37505883c36b58cd7ed4f25faf77",
     "specs/l3-remote-smoothness.md": "a8f99de0b3f27e07711e01319f31096c55549a4a352c21a6e063ac2e34ef15bb",
     "specs/l3-runtime-discovery.md": "42ab19ac403124c1efcb4352fa293f9d111deabe66ede5a2cad9e0638a70fead",
-    "specs/l3-terminal-glyph-rendering.md": "a6b2782d4671e40dda62b2510a5cb2d14f3b01336209c3e88603743796a10347",
-    "specs/l4-agent-activity.md": "793af4db95e6e3b5517c768b87b4ffb570fc1feffd6677b43f20b16ebe59055d",
+    "specs/l3-terminal-glyph-rendering.md": "739e6412189dc9e81228b1fd473c9043232da6f38f2f5eb0d7720a4b1cf8489a",
+    "specs/l4-agent-activity.md": "c83c805c8014dd4b34a459a53d02ffe19283f8b8e6c2d479575fd41ae5fc8e4c",
     "specs/l4-agent-card.md": "e051a80b80b107612c4f4eab5089c498f4f3e22c4ce087eb7c5ea79220d294d9",
     "specs/l4-emoji-geometry-gate.md": "181b1f7991fe4b398ba26c79f99c8fdca50a803f3f60d163350718f2efd73544",
-    "specs/l4-remote-gpu-compat.md": "317f980dd26687a17bbcc191bf09b37f79b4c4b9e63d004611156c635b079c2a",
-    "specs/l4-remote-performance-gate.md": "9c9fa66b464fbadb00a2a9696b7328ae38b97922f0a291101a43605043730999",
+    "specs/l4-remote-gpu-compat.md": "af8b92eefd2ba194d40ecd6d49ef74fc6563912f9af428071f45cbb2e4ff76da",
+    "specs/l4-remote-performance-gate.md": "c121342cb6656443144b2807536794a888abb8d252b28238be04fa9c2283514d",
     "specs/l4-runtime-discovery.md": "7f3eafc3c49d1e75060aab8f2253af53ff192fb5e1b8aa289f2b09bd7ba46347",
-    "specs/project.md": "3389e8088cd09e9602620340915f2580b01014f7a86a2966b8e7c9be1ae0ba76",
+    "specs/project.md": "d29d6bf354e7311a160ecbd418d912cb5ea898a9dfdf442a5baa0a5a38cde21c",
     "src/app.css": "3d925af33ee323225709e1d64712248b60af2cb65920f4271942eb28b0ab593c",
     "src/app.html": "ee22a2d2237a50519df6b9e1350521ba946a4f186c3e4558983657d516d27f4d",
     "src/bash.exe.stackdump": "0072f4271d656357109d55b4f1d3a4642f0459ed1c34b75c30c2d4ca395e07cc",
@@ -1747,6 +1613,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-11f9615b8b40",
-  "manifestHash": "11f9615b8b406a025c83728a6c2f1bfb8e0de7e09a6e08342f78bddd5be8b973"
+  "buildId": "BUILD-3af39bfa70c5",
+  "manifestHash": "3af39bfa70c5f375f5ce4a1c333f3db333a7011a954116a109766dd6d16c5c88"
 }
