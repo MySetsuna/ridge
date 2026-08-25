@@ -3,19 +3,24 @@
   "specs": "specs",
   "changes": "changes",
   "baselineIgnore": [
-    ".claude/worktrees",
+    ".agents",
+    ".baseline",
+    ".claude",
     ".codegraph",
+    ".env",
     ".opencode",
     ".remember",
     ".ridge",
     ".scannerwork",
     ".svelte-kit",
     ".tools",
+    ".vscode",
     ".webview2-cloud-e2e",
     ".webview2-dev-cdp",
     ".webview2-probe",
     "artifacts",
     "build",
+    "coverage",
     "packages/remote/node_modules",
     "packages/rg-split/node_modules",
     "packages/ridge-cli/target",
@@ -24,7 +29,8 @@
     "release",
     "remote-dist",
     "ridge-code",
-    "target"
+    "target",
+    "test-results"
   ],
   "testCommand": ["pnpm", "test"]
 }

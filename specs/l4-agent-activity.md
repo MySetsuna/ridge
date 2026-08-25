@@ -2,7 +2,7 @@
 id: L4-AGENT-ACTIVITY-001
 level: L4
 title: Refresh and latch Agent activity
-status: DRAFT
+status: LOCKED
 parent: L3-AGENT-ACTIVITY-001
 artifact: PSEUDOCODE
 code_targets:

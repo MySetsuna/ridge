@@ -2,7 +2,7 @@
 id: L3-AGENT-CARD-001
 level: L3
 title: Reply-first Agent card experience
-status: DRAFT
+status: LOCKED
 parent: L2-AGENT-COMMUNE-001
 depends_on:
   - L3-AGENT-ACTIVITY-001
