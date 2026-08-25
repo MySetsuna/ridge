@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 
 const extension = process.platform === 'win32' ? '.exe' : '';
 
@@ -55,4 +55,16 @@ export function systemTool(name) {
   if (name === 'docker') return '/usr/bin/docker';
   if (name === 'pnpm') return '/usr/local/bin/pnpm';
   throw new Error(`unsupported system tool: ${name}`);
+}
+
+/** Return a shell-free pnpm process invocation on every platform. */
+export function pnpmInvocation() {
+  const command = systemTool('pnpm');
+  if (process.platform !== 'win32' || !command.toLowerCase().endsWith('.cmd')) {
+    return { command, args: [] };
+  }
+
+  const cli = join(dirname(resolve(command)), 'node_modules', 'pnpm', 'bin', 'pnpm.cjs');
+  if (!existsSync(cli)) throw new Error(`pnpm CLI not found beside ${command}`);
+  return { command: process.execPath, args: [cli] };
 }

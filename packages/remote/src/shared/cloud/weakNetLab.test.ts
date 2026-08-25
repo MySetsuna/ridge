@@ -46,6 +46,7 @@ afterAll(() => {
     JSON.stringify(
       {
         model: 'deterministic-lab',
+        evidenceScope: 'deterministic-lab-only',
         disclaimer:
           '实验室确定性模型（fake RTC/WS/timers）；不是真机/真实网络结论，不得用于宣称双平台或生产弱网表现。',
         scenarios: metrics,
