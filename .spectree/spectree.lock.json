@@ -1,12 +1,12 @@
 {
   "version": 1,
-  "changeId": "CHG-006",
-  "specHash": "f33b50e0163f27a0323818640bfb4c5e92d2bb0f5f414c31b41d6823250fd8c3",
+  "changeId": "CHG-007",
+  "specHash": "015389ab394c12e71a0d2fc5d0ce093dd4a55b63f037696bbd71cb6f2e09810c",
   "units": [
     {
       "id": "L3-TERMINAL-GLYPH-001",
       "level": "L3",
-      "nodeHash": "534a796283eae3a04aca35e241d1b9544d74e72b4407b49cecdb411d227e8a57",
+      "nodeHash": "dc8fcf3d24bcb7e2c8fbc8fcd9ca13b551b690bc8e6a9b2bba25a10ae16a2fd6",
       "codeTargets": [
         "packages/ridge-term/src/render/glyph_atlas.rs",
         "packages/ridge-term/src/render/shaders/cell.wgsl",
@@ -64,6 +64,7 @@
     "changes/CHG-004.md": "f15640b963d7b5afc24b659240ad940d7644595bd4c372534de7ffc30b8557aa",
     "changes/CHG-005.md": "a15c67ed021e88bbee4eab31920be2aef8a047d8d532ed4ce56566e79feefece",
     "changes/CHG-006.md": "b9f2c86c179d6a286c543073bee668f0690e68583d8965857fc989b55029c057",
+    "changes/CHG-007.md": "a66cbbda9450358574902e2b4cef79778ebdbe3adc63d3190d801d546ff52409",
     "CLAUDE.md": "1f07d1b3dcd28c80ef7f2255ae8d6135717c98e75a2b7630dc246902148bfd21",
     "docs/_team-archive/site-revamp-2026-04-30/content-brief.md": "ae3ffae60b3037e595e0b0e976675cbbf49edb74ed01ce44e7188b9862a26bfc",
     "docs/_team-archive/site-revamp-2026-04-30/decisions.md": "63b66c909323ed7acc6cce207b8de7395579a5d6636fc00abb62b3502e4f4629",
@@ -895,7 +896,7 @@
     "packages/ridge-term/src/render/gpu_context.rs": "8d64cbcd32b70f8f04c414aacef4c301347619e2319105619ce9db3067b270e4",
     "packages/ridge-term/src/render/mod.rs": "24e2553b6c4ac47e0d27b60d4e610c3d656320ae7fd06751623cfa865da12213",
     "packages/ridge-term/src/render/renderer.rs": "f8f0a67968ce951c5dc91efcefe9c549a06a4275817c62ea87e163611a5ddd13",
-    "packages/ridge-term/src/render/shaders/cell.wgsl": "df3c8780150e106ca34485a6b42069c966e81387a5db32a950b0e6896f601a37",
+    "packages/ridge-term/src/render/shaders/cell.wgsl": "d64e14e136eab521081cd7a2373e2e27b15774102b6217aabc8084494f50baed",
     "packages/ridge-term/src/render/shaders/wallpaper.wgsl": "0bbeff392870654082ddaee0cc67e77695e5bd498737b6f8ba7baba85fdb9208",
     "packages/ridge-term/src/render/surface_host.rs": "00cf777c62c5cd12666cc111373f15b81205ecd2e69ce8652ffcd2fc097e9644",
     "packages/ridge-term/src/render/wallpaper.rs": "1a2ed3eeee5fed42ca98cca868be91d404610b893ad4150b68606ad278f03a2c",
@@ -962,7 +963,7 @@
     "scripts/cdp-teammate-e2e.mjs": "b449b0aed6d5bd2143f727632ea7291bbe7efa30a33c740e7d0ca2a00b2606db",
     "scripts/cdp-teammate-mcp-e2e.mjs": "c141637afb18c7f27fac8276c7bbf9c24180f40274bb2f919c8f85831002a4b7",
     "scripts/cdp-term-input.mjs": "64d975e19d59f5a3a2a0a8da2df2c527c05bb15b3aaad7ce89b233d4439c5bf7",
-    "scripts/cdp-term-render-e2e.mjs": "a8f799e79362d4424919942a666d0342d172100c1f8e960643d4cb29f83c22c8",
+    "scripts/cdp-term-render-e2e.mjs": "8346d18cd47e93bb2e787277d1d7f59d25067951761535272dcb8e2bacf4a098",
     "scripts/cdp-wait-and-enable.mjs": "00edd32a2e50a73bc74edded05a2335881e19dfafd5512c05789b84808fb7b7e",
     "scripts/check-capability-matrix.mjs": "f5080b78ac4f3d9a80dcc150ed5dd91cd51089d27d3d0b43f9b285fe76559934",
     "scripts/check-desktop-only-hosts.mjs": "c7083988aba4fce97cb65a7ca5cda7f75bdfb9fefc17fcbf1bbbd3a72953acc6",
@@ -1079,7 +1080,7 @@
     "specs/l3-desktop-boot.md": "15f679ff509c729ae267d86a717a11f0ec3e37505883c36b58cd7ed4f25faf77",
     "specs/l3-remote-smoothness.md": "a8f99de0b3f27e07711e01319f31096c55549a4a352c21a6e063ac2e34ef15bb",
     "specs/l3-runtime-discovery.md": "42ab19ac403124c1efcb4352fa293f9d111deabe66ede5a2cad9e0638a70fead",
-    "specs/l3-terminal-glyph-rendering.md": "0ec25dc84a61ca28d115b825ed0c283c75874f492c263e41004108a59f977c62",
+    "specs/l3-terminal-glyph-rendering.md": "a6b2782d4671e40dda62b2510a5cb2d14f3b01336209c3e88603743796a10347",
     "specs/l4-agent-activity.md": "793af4db95e6e3b5517c768b87b4ffb570fc1feffd6677b43f20b16ebe59055d",
     "specs/l4-agent-card.md": "e051a80b80b107612c4f4eab5089c498f4f3e22c4ce087eb7c5ea79220d294d9",
     "specs/l4-emoji-geometry-gate.md": "181b1f7991fe4b398ba26c79f99c8fdca50a803f3f60d163350718f2efd73544",
@@ -1596,6 +1597,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-68afaaf8b4be",
-  "manifestHash": "68afaaf8b4be40ea45b6d0601bcbd0f38229ea83d9e34986679ef378a320dff7"
+  "buildId": "BUILD-990d24800cb1",
+  "manifestHash": "990d24800cb1dd9fee729f4cdc924157a187663ee02b63233d378783f25a99ab"
 }

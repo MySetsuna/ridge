@@ -24,3 +24,6 @@ use one em-sized maximum extent, and remain centered without clipping. Local,
 Remote, and Cloud surfaces share this contract without external font installs.
 The shared GPU compositor sharpens monochrome antialiasing coverage without
 altering color emoji alpha or introducing a non-GPU presentation path.
+At DPR 1 the native glyph fixture requires at least 70% solid monochrome
+coverage and at most 30% transition coverage; DPR 1.25 remains a visual and
+geometry regression gate.
