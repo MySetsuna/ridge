@@ -26,8 +26,6 @@
 
 use std::collections::{hash_map::Entry, HashMap};
 
-use super::fit_glyph_box;
-
 /// Cache key. Identifies a glyph variant by (font, size, raster density,
 /// codepoint or font-internal id, weight/slant flags).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -90,10 +88,11 @@ pub struct GlyphEntry {
     /// Vertical offset from cell top to glyph baseline. Backend uses
     /// this to position the bitmap inside the cell box.
     pub ascent_offset: f32,
+    /// Horizontal offset from the logical cell origin to the bitmap left.
+    /// Negative values retain native left overhang.
+    pub left_offset: f32,
     /// Native device-pixel bitmap dimensions after removing any atlas-only
-    /// supersample factor. The draw quad preserves this extent unless the
-    /// bitmap exceeds its terminal cell or a wide/color glyph needs to fill
-    /// its reserved cell box.
+    /// supersample factor. Draw quads always preserve this extent.
     pub px_w: u16,
     pub px_h: u16,
     /// True when the glyph carries a color-emoji palette in its atlas
@@ -104,25 +103,20 @@ pub struct GlyphEntry {
     pub is_color: bool,
 }
 
-/// Place a glyph inside its terminal cell without letting fallback faces
-/// overflow neighboring cells.
+/// Place a glyph at its native raster size, including font overhang.
 #[allow(dead_code)]
 pub(crate) fn glyph_quad_geometry(
     pixel_x: f32,
     pixel_y: f32,
     entry: &GlyphEntry,
-    box_w: f32,
-    box_h: f32,
-    allow_upscale: bool,
 ) -> ([f32; 2], [f32; 2]) {
-    let (cell_xy, cell_size, _) =
-        glyph_quad_geometry_with_uv(pixel_x, pixel_y, entry, box_w, box_h, allow_upscale);
+    let (cell_xy, cell_size, _) = glyph_quad_geometry_with_uv(pixel_x, pixel_y, entry);
     (cell_xy, cell_size)
 }
 
-/// Return native-size glyph geometry plus the UV crop needed to keep a
-/// glyph inside its cell. Narrow glyphs must not be uniformly scaled merely
-/// because Canvas2D included a one-pixel antialiasing overhang in its bitmap.
+/// Return native-size glyph geometry and the complete atlas UV rectangle.
+/// Terminal width controls layout only; later cells naturally overpaint any
+/// visual overflow, matching native terminal overlap behavior.
 #[cfg_attr(
     not(any(test, all(target_arch = "wasm32", feature = "webgpu"))),
     allow(dead_code)
@@ -131,45 +125,14 @@ pub(crate) fn glyph_quad_geometry_with_uv(
     pixel_x: f32,
     pixel_y: f32,
     entry: &GlyphEntry,
-    box_w: f32,
-    box_h: f32,
-    allow_upscale: bool,
 ) -> ([f32; 2], [f32; 2], [f32; 4]) {
-    let native_w = (entry.px_w as f32).max(1.0);
-    let native_h = (entry.px_h as f32).max(1.0);
-    if allow_upscale {
-        let (draw_x, draw_y, draw_w, draw_h) = fit_glyph_box(
-            native_w,
-            native_h,
-            box_w.max(1.0),
-            box_h.max(1.0),
-            pixel_x,
-            pixel_y,
-            true,
-        );
-        return (
-            [draw_x, draw_y],
-            [draw_w.max(1.0), draw_h.max(1.0)],
-            entry.uv,
-        );
-    }
-
-    let box_w = box_w.max(1.0);
-    let box_h = box_h.max(1.0);
-    let draw_y = pixel_y + entry.ascent_offset;
-    let draw_w = native_w.min(box_w);
-    let draw_h = native_h.min((pixel_y + box_h - draw_y).max(1.0));
-    let uv_w = (entry.uv[2] - entry.uv[0]) * (draw_w / native_w);
-    let uv_h = (entry.uv[3] - entry.uv[1]) * (draw_h / native_h);
     (
-        [pixel_x, draw_y],
-        [draw_w.max(1.0), draw_h.max(1.0)],
+        [pixel_x + entry.left_offset, pixel_y + entry.ascent_offset],
         [
-            entry.uv[0],
-            entry.uv[1],
-            entry.uv[0] + uv_w,
-            entry.uv[1] + uv_h,
+            (entry.px_w as f32).max(1.0),
+            (entry.px_h as f32).max(1.0),
         ],
+        entry.uv,
     )
 }
 
@@ -412,6 +375,7 @@ mod tests {
             uv: [0.0, 0.0, 1.0, 1.0],
             advance: 8.0,
             ascent_offset: 12.0,
+            left_offset: 0.0,
             px_w: 8,
             px_h: 16,
             is_color: false,
@@ -445,18 +409,19 @@ mod tests {
     fn glyph_quad_preserves_native_bitmap_extent_and_vertical_offset_when_contained() {
         let glyph = GlyphEntry {
             ascent_offset: 3.0,
+            left_offset: -2.0,
             px_w: 7,
             px_h: 11,
             ..entry(0)
         };
         assert_eq!(
-            glyph_quad_geometry(10.0, 20.0, &glyph, 20.0, 20.0, false),
-            ([10.0, 23.0], [7.0, 11.0])
+            glyph_quad_geometry(10.0, 20.0, &glyph),
+            ([8.0, 23.0], [7.0, 11.0])
         );
     }
 
     #[test]
-    fn glyph_quad_crops_oversized_fallback_bitmap_without_scaling() {
+    fn glyph_quad_keeps_oversized_fallback_bitmap_and_complete_uv() {
         let glyph = GlyphEntry {
             ascent_offset: 0.0,
             px_w: 16,
@@ -464,17 +429,17 @@ mod tests {
             ..entry(0)
         };
         assert_eq!(
-            glyph_quad_geometry(10.0, 20.0, &glyph, 8.0, 16.0, false),
-            ([10.0, 20.0], [8.0, 16.0])
+            glyph_quad_geometry(10.0, 20.0, &glyph),
+            ([10.0, 20.0], [16.0, 20.0])
         );
         assert_eq!(
-            glyph_quad_geometry_with_uv(10.0, 20.0, &glyph, 8.0, 16.0, false).2,
-            [0.0, 0.0, 0.5, 0.8]
+            glyph_quad_geometry_with_uv(10.0, 20.0, &glyph).2,
+            [0.0, 0.0, 1.0, 1.0]
         );
     }
 
     #[test]
-    fn wide_glyph_can_fill_its_reserved_cell_box() {
+    fn wide_glyph_is_not_scaled_to_its_reserved_cell_box() {
         let glyph = GlyphEntry {
             ascent_offset: 0.0,
             px_w: 8,
@@ -482,8 +447,8 @@ mod tests {
             ..entry(0)
         };
         assert_eq!(
-            glyph_quad_geometry(0.0, 0.0, &glyph, 16.0, 16.0, true),
-            ([0.0, 0.0], [16.0, 16.0])
+            glyph_quad_geometry(0.0, 0.0, &glyph),
+            ([0.0, 0.0], [8.0, 8.0])
         );
     }
 

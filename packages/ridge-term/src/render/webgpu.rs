@@ -813,14 +813,11 @@ impl WebGpuPaneBackend {
         entry: Option<GlyphEntry>,
         pixel_x: f32,
         pixel_y: f32,
-        box_w: f32,
-        box_h: f32,
-        allow_upscale: bool,
         fg: [u8; 4],
     ) {
         if let Some(entry) = entry {
             let (cell_xy, cell_size, atlas_uv) =
-                glyph_quad_geometry_with_uv(pixel_x, pixel_y, &entry, box_w, box_h, allow_upscale);
+                glyph_quad_geometry_with_uv(pixel_x, pixel_y, &entry);
             instances.push(CellInstance {
                 cell_xy,
                 cell_size,
@@ -836,8 +833,7 @@ impl WebGpuPaneBackend {
     fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
         let row_idx = row.row_index;
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).max(1.0);
-        let (pixel_y, pixel_y_bot) = self.row_pixel_bounds(row_idx);
-        let row_h_int = pixel_y_bot - pixel_y;
+        let (pixel_y, _) = self.row_pixel_bounds(row_idx);
         let tui_mode = self.metrics.tui_mode;
         let (font_family_hash, font_size_q) = self.font_key();
 
@@ -854,12 +850,9 @@ impl WebGpuPaneBackend {
                 crate::render::backend::resolve_cell_colors(cell, attrs_table, theme, tui_mode)
             };
 
-            let cell_span = cell.width.max(1) as usize;
-
             // Pixel-aligned positions — floor(pos + 0.5) prevents sub-pixel
             // seams between adjacent cells that would show as hairline gaps.
             let pixel_x = (col as f32 * cell_w + 0.5).floor();
-            let pixel_x_right = ((col + cell_span) as f32 * cell_w + 0.5).floor();
 
             // ── Fast-path skip: for pure ASCII lines, no cluster lookup
             // is needed. This avoids the linear scan through `row.clusters`
@@ -887,9 +880,6 @@ impl WebGpuPaneBackend {
                 entry,
                 pixel_x,
                 pixel_y,
-                pixel_x_right - pixel_x,
-                row_h_int,
-                cell_span > 1,
                 fg,
             );
         }
@@ -934,8 +924,6 @@ impl WebGpuPaneBackend {
             cursor,
             effective_col,
             cell_w,
-            span_w,
-            cell_h_int,
             pixel_y,
             cursor_color,
         );
@@ -968,8 +956,6 @@ impl WebGpuPaneBackend {
         cursor: &CursorDraw,
         effective_col: f64,
         cell_w: f32,
-        box_w: f32,
-        box_h: f32,
         pixel_y: f32,
         cursor_color: [f32; 4],
     ) {
@@ -999,9 +985,6 @@ impl WebGpuPaneBackend {
             gx,
             pixel_y,
             &entry,
-            box_w,
-            box_h,
-            entry.is_color || box_w > cell_w,
         );
         self.pending_instances.push(CellInstance {
             cell_xy,
@@ -1123,7 +1106,6 @@ impl WebGpuPaneBackend {
             fg_color,
             font_family_hash,
             font_size_q,
-            (self.metrics.cell_h * self.metrics.dpr).round().max(1.0),
         );
 
         // 3) Underline — IME preedit convention. 1 device-px tall, bottom
@@ -1152,7 +1134,6 @@ impl WebGpuPaneBackend {
         fg_color: [f32; 4],
         font_family_hash: u64,
         font_size_q: u16,
-        cell_h: f32,
     ) {
         let mut cell_offset = 0usize;
         for (ch, width) in char_widths {
@@ -1186,10 +1167,6 @@ impl WebGpuPaneBackend {
                     ((col + cell_offset) as f32 * cell_w + 0.5).floor(),
                     pixel_y,
                     &entry,
-                    ((col + cell_offset + *width as usize) as f32 * cell_w + 0.5).floor()
-                        - ((col + cell_offset) as f32 * cell_w + 0.5).floor(),
-                    cell_h,
-                    entry.is_color || *width > 1,
                 );
                 self.pending_instances.push(CellInstance {
                     cell_xy,
@@ -1448,8 +1425,6 @@ impl WebGpuPaneBackend {
                 ch,
                 row_y,
                 inner_x + cell_offset as f32 * cell_w,
-                ch_width as f32 * cell_w,
-                cell_w,
                 glyph_color,
                 font_family_hash,
                 font_size_q,
@@ -1463,8 +1438,6 @@ impl WebGpuPaneBackend {
         ch: char,
         row_y: f32,
         pixel_x: f32,
-        box_w: f32,
-        cell_w: f32,
         glyph_color: [f32; 4],
         font_family_hash: u64,
         font_size_q: u16,
@@ -1501,9 +1474,6 @@ impl WebGpuPaneBackend {
             pixel_x,
             row_y,
             &entry,
-            box_w,
-            (self.metrics.cell_h * self.metrics.dpr).round().max(1.0),
-            entry.is_color || box_w > cell_w,
         );
         self.pending_instances.push(CellInstance {
             cell_xy,

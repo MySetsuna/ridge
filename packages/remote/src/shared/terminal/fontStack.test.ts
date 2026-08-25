@@ -8,6 +8,7 @@ import {
   SYMBOL_FALLBACK,
   EMOJI_FALLBACK,
   SYSTEM_EMOJI_FALLBACK,
+  CJK_FALLBACK,
 } from './fontStack';
 
 describe('withEmojiFallback (system symbols and emoji)', () => {
@@ -21,25 +22,25 @@ describe('withEmojiFallback (system symbols and emoji)', () => {
 
   it('user mono font → mono + system emoji chain + generic', () => {
     expect(withEmojiFallback("'Fira Code'")).toBe(
-      `'Fira Code',${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`,
+      `'Fira Code',${CJK_FALLBACK},${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`,
     );
   });
 
   it('strips a stale system emoji family and re-appends the chain', () => {
     expect(withEmojiFallback("'Fira Code','Segoe UI Emoji'")).toBe(
-      `'Fira Code',${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`,
+      `'Fira Code',${CJK_FALLBACK},${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`,
     );
   });
 
   it('strips a stale symbol family and re-appends the chain', () => {
     expect(withEmojiFallback("'Fira Code','Segoe UI Symbol'")).toBe(
-      `'Fira Code',${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`,
+      `'Fira Code',${CJK_FALLBACK},${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`,
     );
   });
 
   it('strips a legacy bundled Noto family from user settings', () => {
     expect(withEmojiFallback("'Fira Code','Noto Color Emoji'")).toBe(
-      `'Fira Code',${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`,
+      `'Fira Code',${CJK_FALLBACK},${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`,
     );
   });
 
@@ -51,6 +52,7 @@ describe('withEmojiFallback (system symbols and emoji)', () => {
 describe('font-stack constants', () => {
   it('uses system fallback faces, not bundled font assets', () => {
     expect(DEFAULT_TERM_FONT).toContain(TEXT_FALLBACK);
+    expect(DEFAULT_TERM_FONT).toContain(CJK_FALLBACK);
     expect(DEFAULT_TERM_FONT).toContain('Noto Color Emoji');
     expect(EMOJI_FALLBACK).toContain('Noto Color Emoji');
   });
@@ -63,7 +65,7 @@ describe('font-stack constants', () => {
   it('withRemoteEmojiFallback is a back-compat alias of withEmojiFallback', () => {
     expect(withRemoteEmojiFallback).toBe(withEmojiFallback);
     expect(withRemoteEmojiFallback("'Fira Code'")).toBe(
-      `'Fira Code',${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`,
+      `'Fira Code',${CJK_FALLBACK},${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`,
     );
   });
 });

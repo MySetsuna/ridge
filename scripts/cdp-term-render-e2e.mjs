@@ -392,6 +392,49 @@ async function testRoundedBoxDecstbmFixture(cdp, workspaceId, paneId) {
   };
 }
 
+async function testNativeGlyphFixture(cdp, workspaceId, paneId) {
+  const command = [
+    '$e=[char]27',
+    '[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)',
+    '$zh=[string][char]0x4E2D+[string][char]0x6587+[string][char]0x6548+[string][char]0x679C',
+    '$face=[char]::ConvertFromUtf32(0x1F600)',
+    '$cake=[char]::ConvertFromUtf32(0x1F382)',
+    '$rocket=[char]::ConvertFromUtf32(0x1F680)',
+    '$heart=[string][char]0x2764+[string][char]0xFE0F',
+    '$keycap="1"+[string][char]0xFE0F+[string][char]0x20E3',
+    '$woman=[char]::ConvertFromUtf32(0x1F469)',
+    '$laptop=[char]::ConvertFromUtf32(0x1F4BB)',
+    '$womanDev=$woman+[string][char]0x200D+$laptop',
+    '$symbol=[string][char]0x2194+" "+[string][char]0x2713',
+    '[Console]::Write($e+"[2J"+$e+"[H"+"RIDGE_NATIVE_GLYPH`r`n"+"CJK: "+$zh+" |`r`n"+"EMOJI: "+$face+$cake+$rocket+"|`r`n"+"CLUSTER: "+$heart+" "+$keycap+" "+$womanDev+"|`r`n"+"SYMBOL: "+$symbol+"|`r`n")',
+  ].join(';');
+  await writePty(cdp, workspaceId, paneId, `${command}\r`);
+
+  const expected = {
+    marker: 'RIDGE_NATIVE_GLYPH',
+    cjk: 'CJK: \u4e2d\u6587\u6548\u679c |',
+    emoji: 'EMOJI: \u{1f600}\u{1f382}\u{1f680}|',
+    // visibleText exposes the base cell; variation selectors and ZWJ tails
+    // remain in the grapheme sidecar consumed by the rasterizer.
+    cluster: 'CLUSTER: \u2764 1 \u{1f469}|',
+    symbol: 'SYMBOL: \u2194 \u2713|',
+  };
+  const rows = await waitUntil(async () => {
+    const nextRows = await visibleRows(cdp, paneId);
+    const text = (nextRows ?? []).join('\n');
+    return Object.values(expected).every((value) => text.includes(value)) ? nextRows : null;
+  }, 'native CJK and emoji glyph fixture', 10_000);
+
+  const rowIndices = Object.fromEntries(Object.entries(expected).map(([key, value]) => [
+    key,
+    rows.findIndex((line) => line.includes(value)),
+  ]));
+  if (Object.values(rowIndices).some((row) => row < 0)) {
+    throw new Error(`native glyph fixture rows missing: ${JSON.stringify(rowIndices)}`);
+  }
+  return { expected, rowIndices };
+}
+
 async function foreground(cdp, workspaceId, paneId) {
   return invoke(cdp, 'get_pane_foreground_process', { workspaceId, paneId });
 }
@@ -908,6 +951,11 @@ async function exitCodex(cdp, workspaceId, paneId, promptSummary = null) {
     owner = 'codex';
   }
   if (owner !== 'codex') {
+    // A previous fixture may leave PowerShell on a cleared screen with no
+    // visible prompt. Ctrl-C asks the shell to repaint before declaring the
+    // pane owner unknown; it also safely interrupts a stale child command.
+    await writePty(cdp, workspaceId, paneId, '\x03');
+    if (await waitForShellPrompt(2_000)) return probeShell();
     throw new Error(`neither PowerShell nor Codex owns the pane: ${JSON.stringify(last)}`);
   }
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -1396,6 +1444,7 @@ const summary = {
   backend: null,
   font: null,
   rasterFixture: null,
+  nativeGlyphFixture: null,
   gray: null,
   theme: null,
   resize: null,
@@ -1638,6 +1687,22 @@ try {
       y: gridTop + screenshotFrameRows.top * rasterGeometry.anchor.cellH,
       width: Math.min(rasterGeometry.rect.width, 20 * rasterGeometry.anchor.cellW),
       height: 3 * rasterGeometry.anchor.cellH,
+      scale: 4,
+    }));
+  }
+  summary.nativeGlyphFixture = await testNativeGlyphFixture(cdp, workspaceId, paneId);
+  summary.screenshots.push(await capture(cdp, '11-native-cjk-emoji.png'));
+  const nativeGlyphGeometry = await paneProbe(cdp, paneId);
+  if (nativeGlyphGeometry) {
+    const gridLeft = nativeGlyphGeometry.rect.left + nativeGlyphGeometry.anchor.x
+      - nativeGlyphGeometry.anchor.col * nativeGlyphGeometry.anchor.cellW;
+    const gridTop = nativeGlyphGeometry.rect.top + nativeGlyphGeometry.anchor.y
+      - nativeGlyphGeometry.anchor.row * nativeGlyphGeometry.anchor.cellH;
+    summary.screenshots.push(await capture(cdp, '11-native-cjk-emoji-4x.png', {
+      x: gridLeft,
+      y: gridTop,
+      width: Math.min(nativeGlyphGeometry.rect.width, 42 * nativeGlyphGeometry.anchor.cellW),
+      height: 5 * nativeGlyphGeometry.anchor.cellH,
       scale: 4,
     }));
   }

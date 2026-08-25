@@ -12,6 +12,10 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 use super::glyph_atlas::GlyphKey;
+use crate::term::wcwidth::is_emoji_presentation;
+
+const SYSTEM_EMOJI_FONT_FAMILY: &str =
+    "emoji,'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji'";
 
 #[derive(Debug, Clone)]
 pub struct RasterizedGlyph {
@@ -25,6 +29,9 @@ pub struct RasterizedGlyph {
     pub advance: f32,
     /// Device-pixel offset from cell top to the cropped bitmap top.
     pub ascent_offset: f32,
+    /// Device-pixel offset from the cell origin to the packed bitmap left.
+    /// May be negative for italic or emoji overhang.
+    pub left_offset: f32,
     /// True when Canvas2D supplied native color pixels (normally emoji).
     pub is_color: bool,
 }
@@ -97,16 +104,25 @@ impl GlyphRasterizer {
         let line_height = (line_ascent + line_descent).max((device_size as f64) * 1.2);
         let baseline = ((line_height + line_ascent - line_descent) * 0.5).clamp(0.0, height);
 
+        let emoji_presentation = is_emoji_presentation(glyph_text);
+        if emoji_presentation {
+            // Ask CSS for the platform emoji face directly. Keeping this out
+            // of the general symbol fallback prevents symbol fonts from
+            // stealing emoji presentation codepoints.
+            self.set_font(SYSTEM_EMOJI_FONT_FAMILY, device_size, 0);
+        }
+
         let metrics = self
             .context
             .measure_text(glyph_text)
             .map_err(|error| js_error("cannot measure terminal glyph", error))?;
-        let left = metrics.actual_bounding_box_left();
-        let draw_x = if left.is_finite() {
-            (-left).max(0.0)
-        } else {
-            0.0
-        };
+        // Reserve one primary-cell advance on the left. Scanning the painted
+        // pixels afterwards retains both side bearings and any glyph overhang
+        // instead of aligning ink to x=0 and cropping at the logical cell.
+        let draw_x = finite_non_negative(line_metrics.width())
+            .unwrap_or(device_size as f64 * 0.6)
+            .ceil()
+            .clamp(1.0, (width - 1.0).max(1.0));
         self.context
             .fill_text(glyph_text, draw_x, baseline)
             .map_err(|error| js_error("cannot rasterize terminal glyph", error))?;
@@ -123,10 +139,11 @@ impl GlyphRasterizer {
             );
         }
 
+        let mut min_x = self.slot_w as usize;
         let mut min_y = self.slot_h as usize;
         let mut max_x = 0_usize;
         let mut max_y = 0_usize;
-        let mut is_color = false;
+        let mut is_color = emoji_presentation;
         for index in 0..pixel_count {
             let offset = index * 4;
             let alpha = pixels[offset + 3];
@@ -135,6 +152,7 @@ impl GlyphRasterizer {
             }
             let x = index % self.slot_w as usize;
             let y = index / self.slot_w as usize;
+            min_x = min_x.min(x);
             min_y = min_y.min(y);
             max_x = max_x.max(x + 1);
             max_y = max_y.max(y + 1);
@@ -152,21 +170,26 @@ impl GlyphRasterizer {
                 height: 1,
                 advance,
                 ascent_offset: 0.0,
+                left_offset: 0.0,
                 is_color: false,
             });
         }
 
-        // UVs begin at the first atlas row. Pack the painted rows there and
-        // keep the original device-pixel offset in `ascent_offset`; otherwise
-        // the shader would sample transparent top rows and lose most glyphs.
-        let packed_width = (max_x as u16).max(1);
+        // Preserve the logical advance as transparent side bearing while also
+        // retaining painted pixels outside it. The renderer then places this
+        // native bitmap without scaling or cell clipping.
+        let crop_left = min_x.min(draw_x.floor().max(0.0) as usize);
+        let advance_right = (draw_x + advance_dev).ceil().max(1.0) as usize;
+        let crop_right = max_x.max(advance_right).min(self.slot_w as usize);
+        let packed_width = (crop_right.saturating_sub(crop_left) as u16).max(1);
         let packed_height = (max_y - min_y) as u16;
         let mut rgba = vec![0; packed_width as usize * packed_height as usize * 4];
         for source_y in min_y..max_y {
             let dest_y = source_y - min_y;
-            for x in 0..packed_width as usize {
-                let source = (source_y * self.slot_w as usize + x) * 4;
-                let dest = (dest_y * packed_width as usize + x) * 4;
+            for dest_x in 0..packed_width as usize {
+                let source_x = crop_left + dest_x;
+                let source = (source_y * self.slot_w as usize + source_x) * 4;
+                let dest = (dest_y * packed_width as usize + dest_x) * 4;
                 let alpha = pixels[source + 3];
                 if alpha == 0 {
                     continue;
@@ -190,6 +213,7 @@ impl GlyphRasterizer {
             height: packed_height,
             advance,
             ascent_offset: min_y as f32,
+            left_offset: crop_left as f32 - draw_x as f32,
             is_color,
         })
     }

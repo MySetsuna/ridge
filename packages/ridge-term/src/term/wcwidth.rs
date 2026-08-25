@@ -316,6 +316,45 @@ fn is_emoji_capable_codepoint(cp: u32) -> bool {
     false
 }
 
+/// True when a grapheme requests emoji presentation. This is intentionally
+/// separate from terminal cell width: CJK is wide but must keep the text font,
+/// while VS16/keycap/flag sequences must use the platform emoji font.
+#[inline]
+#[cfg_attr(
+    not(all(target_arch = "wasm32", feature = "webgpu")),
+    allow(dead_code)
+)]
+pub(crate) fn is_emoji_presentation(s: &str) -> bool {
+    if s.is_empty() || s.chars().any(|c| c as u32 == 0xFE0E) {
+        return false;
+    }
+
+    let codepoints: Vec<u32> = s.chars().map(|c| c as u32).collect();
+    if codepoints.len() >= 2
+        && codepoints[..2]
+            .iter()
+            .all(|cp| (0x1F1E6..=0x1F1FF).contains(cp))
+    {
+        return true;
+    }
+    if codepoints.contains(&0x20E3) {
+        return true;
+    }
+    if codepoints.contains(&0xFE0F)
+        && codepoints
+            .iter()
+            .copied()
+            .any(is_emoji_capable_codepoint)
+    {
+        return true;
+    }
+
+    codepoints
+        .iter()
+        .copied()
+        .any(|cp| is_emoji_capable_codepoint(cp) && wcwidth(cp) == 2)
+}
+
 /// §A.6 (2026-05-08) — `true` when a width=1 codepoint should still be
 /// RENDERED with a 2-cell visual advance so the glyph isn't horizontally
 /// compressed by the renderer's narrow-cell quad.
@@ -419,6 +458,17 @@ mod tests {
         assert_eq!(wcwidth(0x1f600), 2); // 😀
         assert_eq!(wcwidth(0x1f680), 2); // 🚀
         assert_eq!(wcwidth(0x2705), 2); // ✅
+    }
+
+    #[test]
+    fn emoji_presentation_is_distinct_from_wide_text() {
+        assert!(is_emoji_presentation("\u{1f600}"));
+        assert!(is_emoji_presentation("\u{2764}\u{fe0f}"));
+        assert!(is_emoji_presentation("1\u{fe0f}\u{20e3}"));
+        assert!(is_emoji_presentation("\u{1f1fa}\u{1f1f8}"));
+        assert!(!is_emoji_presentation("\u{4e2d}"));
+        assert!(!is_emoji_presentation("\u{2764}"));
+        assert!(!is_emoji_presentation("\u{2764}\u{fe0e}"));
     }
 
     #[test]
