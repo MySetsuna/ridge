@@ -96,10 +96,8 @@ pub struct GlyphEntry {
     pub px_w: u16,
     pub px_h: u16,
     /// True when the glyph carries a color-emoji palette in its atlas
-    /// pixels (per `RasterizedGlyph::is_color`). Renderer uses this to
-    /// stretch the cell quad to the full 2-cell width on wide cells —
-    /// emoji fonts target ~1em advance, narrower than 2 latin cells,
-    /// and would otherwise leave a visible gap.
+    /// pixels (per `RasterizedGlyph::is_color`). The renderer fits the
+    /// complete bitmap into one stable em box inside its reserved cells.
     pub is_color: bool,
 }
 
@@ -128,10 +126,41 @@ pub(crate) fn glyph_quad_geometry_with_uv(
 ) -> ([f32; 2], [f32; 2], [f32; 4]) {
     (
         [pixel_x + entry.left_offset, pixel_y + entry.ascent_offset],
+        [(entry.px_w as f32).max(1.0), (entry.px_h as f32).max(1.0)],
+        entry.uv,
+    )
+}
+
+/// Normalize color emoji to one em-sized maximum extent. The complete bitmap
+/// remains visible; only its WebGPU quad changes. Monochrome glyphs keep native
+/// font geometry, including overhang.
+pub(crate) fn glyph_quad_geometry_for_cell(
+    pixel_x: f32,
+    pixel_y: f32,
+    entry: &GlyphEntry,
+    allocation_w: f32,
+    allocation_h: f32,
+    em_px: f32,
+) -> ([f32; 2], [f32; 2], [f32; 4]) {
+    if !entry.is_color {
+        return glyph_quad_geometry_with_uv(pixel_x, pixel_y, entry);
+    }
+
+    let source_w = (entry.px_w as f32).max(1.0);
+    let source_h = (entry.px_h as f32).max(1.0);
+    let box_w = allocation_w.max(1.0);
+    let box_h = allocation_h.max(1.0);
+    let target_extent = em_px.max(1.0).min(box_w).min(box_h);
+    let scale = target_extent / source_w.max(source_h);
+    let render_w = source_w * scale;
+    let render_h = source_h * scale;
+
+    (
         [
-            (entry.px_w as f32).max(1.0),
-            (entry.px_h as f32).max(1.0),
+            pixel_x + (box_w - render_w) * 0.5,
+            pixel_y + (box_h - render_h) * 0.5,
         ],
+        [render_w, render_h],
         entry.uv,
     )
 }
@@ -449,6 +478,60 @@ mod tests {
         assert_eq!(
             glyph_quad_geometry(0.0, 0.0, &glyph),
             ([0.0, 0.0], [8.0, 8.0])
+        );
+    }
+
+    #[test]
+    fn color_emoji_share_one_centered_em_extent_without_clipping() {
+        let small = GlyphEntry {
+            px_w: 8,
+            px_h: 8,
+            is_color: true,
+            ..entry(0)
+        };
+        let decorated = GlyphEntry {
+            px_w: 24,
+            px_h: 24,
+            is_color: true,
+            ..entry(1)
+        };
+
+        let small_quad = glyph_quad_geometry_for_cell(10.0, 20.0, &small, 16.0, 18.0, 14.0);
+        let decorated_quad = glyph_quad_geometry_for_cell(10.0, 20.0, &decorated, 16.0, 18.0, 14.0);
+        assert_eq!(small_quad, ([11.0, 22.0], [14.0, 14.0], small.uv));
+        assert_eq!(decorated_quad, small_quad);
+    }
+
+    #[test]
+    fn color_emoji_preserve_aspect_ratio_and_complete_uv() {
+        let glyph = GlyphEntry {
+            uv: [0.0, 0.0, 0.75, 0.5],
+            px_w: 24,
+            px_h: 12,
+            is_color: true,
+            ..entry(0)
+        };
+
+        let (xy, size, uv) = glyph_quad_geometry_for_cell(4.0, 6.0, &glyph, 16.0, 18.0, 14.0);
+        assert_eq!(xy, [5.0, 11.5]);
+        assert_eq!(size, [14.0, 7.0]);
+        assert_eq!(uv, glyph.uv);
+        assert!(xy[0] >= 4.0 && xy[0] + size[0] <= 20.0);
+        assert!(xy[1] >= 6.0 && xy[1] + size[1] <= 24.0);
+    }
+
+    #[test]
+    fn monochrome_cell_geometry_remains_native() {
+        let glyph = GlyphEntry {
+            ascent_offset: 3.0,
+            left_offset: -2.0,
+            px_w: 7,
+            px_h: 11,
+            ..entry(0)
+        };
+        assert_eq!(
+            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 16.0, 18.0, 14.0),
+            ([8.0, 23.0], [7.0, 11.0], glyph.uv)
         );
     }
 
