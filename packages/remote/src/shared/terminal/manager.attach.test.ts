@@ -204,7 +204,7 @@ describe('TerminalManager attach lifecycle', () => {
 		expect((window as any).__ridgeAtlasRace()).toEqual({ overwriteAfterCite: 7 });
 	});
 
-	it('uses WebGPU-only handles and surfaces constructor failure', async () => {
+	it('accepts WebGPU/WebGL2 handles and surfaces constructor failure', async () => {
 		const manager = TerminalManager.instance({
 			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200,
 		});
@@ -215,6 +215,17 @@ describe('TerminalManager attach lifecycle', () => {
 			const preferred = new wasm.FakeRenderHandle();
 			ctor.newWithWebgpuFirst = vi.fn(async () => preferred);
 			await expect((manager as any)._makeHandle(new FakeCanvas(), wasm.host)).resolves.toBe(preferred);
+
+			const fallback = new wasm.FakeRenderHandle();
+			fallback.backendName.mockReturnValue('WebGL2');
+			ctor.newWithWebgpuFirst = vi.fn(async () => fallback);
+			await expect((manager as any)._makeHandle(new FakeCanvas(), wasm.host)).resolves.toBe(fallback);
+
+			const invalid = new wasm.FakeRenderHandle();
+			invalid.backendName.mockReturnValue('Canvas2D');
+			ctor.newWithWebgpuFirst = vi.fn(async () => invalid);
+			await expect((manager as any)._makeHandle(new FakeCanvas(), wasm.host))
+				.rejects.toThrow('unexpected backend Canvas2D');
 
 			ctor.newWithWebgpuFirst = vi.fn(async () => { throw new Error('adapter unavailable'); });
 			await expect((manager as any)._makeHandle(new FakeCanvas(), wasm.host))

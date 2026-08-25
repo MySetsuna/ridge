@@ -26,6 +26,7 @@ const timeoutMs = Number.parseInt(process.env.RIDGE_TERM_E2E_TIMEOUT_MS || '2400
 const artifactDir = path.resolve(process.env.RIDGE_TERM_E2E_ARTIFACT_DIR || '.iteration/artifacts/term-render');
 const fixtureOnly = process.env.RIDGE_TERM_E2E_FIXTURE_ONLY === '1';
 const expectWebgpuFailure = process.env.RIDGE_TERM_E2E_EXPECT_WEBGPU_FAILURE === '1';
+const expectWebglFallback = process.env.RIDGE_TERM_E2E_EXPECT_WEBGL_FALLBACK === '1';
 const requestedBurstLines = Number.parseInt(process.env.RIDGE_TERM_E2E_BURST_LINES || '120', 10);
 const burstLines = Number.isFinite(requestedBurstLines)
   ? Math.min(Math.max(requestedBurstLines, 0), 10_000)
@@ -650,27 +651,35 @@ async function capture(cdp, name, clip = null) {
   return target;
 }
 
-async function testWebgpuUnavailable(cdp) {
-  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+async function forceWebgpuUnavailable(cdp, { disableWebgl = false } = {}) {
+  const response = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
     Object.defineProperty(Navigator.prototype, 'gpu', {
       configurable: true,
       get: () => undefined,
     });
     const originalGetContext = HTMLCanvasElement.prototype.getContext;
     window.__ridge2dContextCalls = [];
+    window.__ridgeGpuContextCalls = [];
     HTMLCanvasElement.prototype.getContext = function(type, ...args) {
-      if (String(type).toLowerCase() === '2d') {
+      const normalized = String(type).toLowerCase();
+      window.__ridgeGpuContextCalls.push(normalized);
+      if (normalized === '2d') {
         window.__ridge2dContextCalls.push({
           width: this.width,
           height: this.height,
           stack: new Error('Canvas2D context requested').stack ?? '',
         });
       }
+      if (${JSON.stringify(disableWebgl)} && (normalized === 'webgl' || normalized === 'webgl2')) return null;
       return originalGetContext.call(this, type, ...args);
     };
   })();` });
   cdp.events.length = 0;
   await cdp.send('Page.reload', { ignoreCache: true });
+  return response.result?.identifier ?? null;
+}
+
+async function testWebgpuUnavailable(cdp) {
   const state = await waitUntil(async () => cdp.evaluate(`(() => {
     const alert = [...document.querySelectorAll('[role="alert"]')]
       .find((element) => element.textContent?.includes('WEBGPU_INIT_FAILED'));
@@ -682,6 +691,7 @@ async function testWebgpuUnavailable(cdp) {
       alert: alert.textContent?.trim() ?? '',
       navigatorGpuAvailable: Boolean(navigator.gpu),
       canvas2dCalls: window.__ridge2dContextCalls ?? [],
+      gpuContextCalls: window.__ridgeGpuContextCalls ?? [],
       backendNames: paneIds.map((paneId) => window.__windE2E?.backendName?.(paneId) ?? null),
       backendAttributes: [...document.querySelectorAll('[data-rg-backend]')]
         .map((element) => element.dataset.rgBackend ?? null),
@@ -1436,7 +1446,9 @@ const summary = {
   workspaceId: null,
   foregroundProcess: null,
   expectedWebgpuFailure: expectWebgpuFailure,
+  expectedWebglFallback: expectWebglFallback,
   webgpuFailure: null,
+  webglFallback: null,
   modelOutputProven: false,
   fixtureOutputProven: false,
   commandEchoExcluded: true,
@@ -1501,6 +1513,7 @@ let workspaceId;
 let retainedExpected = expected;
 let originalDpr = null;
 let deviceMetricsOverridden = false;
+let gpuOverrideScriptId = null;
 try {
   const target = await findTarget();
   cdp = new Cdp(target.webSocketDebuggerUrl);
@@ -1522,7 +1535,14 @@ try {
     await cdp.send('Page.reload');
     await sleep(500);
   }
+  if (expectWebgpuFailure && expectWebglFallback) {
+    throw new Error('choose either WebGPU failure or WebGL fallback fixture');
+  }
+  if (expectWebglFallback) {
+    gpuOverrideScriptId = await forceWebgpuUnavailable(cdp);
+  }
   if (expectWebgpuFailure) {
+    gpuOverrideScriptId = await forceWebgpuUnavailable(cdp, { disableWebgl: true });
     summary.webgpuFailure = await testWebgpuUnavailable(cdp);
     summary.screenshots.push(await capture(cdp, '09-webgpu-unavailable.png'));
     summary.runtimeErrors = summary.webgpuFailure.runtimeExceptions;
@@ -1541,6 +1561,20 @@ try {
   summary.workspaceId = workspaceId;
   summary.paneId = paneId;
   summary.backend = await hookCall(cdp, 'backendName', paneId);
+  if (expectWebglFallback) {
+    if (summary.backend?.toLowerCase() !== 'webgl2') {
+      throw new Error(`expected WebGL2 fallback, got ${summary.backend ?? 'no backend'}`);
+    }
+    summary.webglFallback = await cdp.evaluate(`({
+      navigatorGpuAvailable: Boolean(navigator.gpu),
+      contextCalls: window.__ridgeGpuContextCalls ?? [],
+      visibleFailure: [...document.querySelectorAll('[role="alert"]')]
+        .some((element) => element.textContent?.includes('WEBGPU_INIT_FAILED')),
+    })`);
+    if (summary.webglFallback.navigatorGpuAvailable || summary.webglFallback.visibleFailure) {
+      throw new Error(`WebGL2 fallback fixture violated contract: ${JSON.stringify(summary.webglFallback)}`);
+    }
+  }
   summary.font = await cdp.evaluate(`({
     configuredFamily: getComputedStyle(document.documentElement).getPropertyValue('--rg-term-font-family').trim(),
     configuredSize: getComputedStyle(document.documentElement).getPropertyValue('--rg-term-font-size').trim(),
@@ -1791,6 +1825,13 @@ try {
           5_000,
         );
       } catch { /* connection may already be gone; CDP also clears override on detach */ }
+    }
+    if (gpuOverrideScriptId) {
+      try {
+        await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: gpuOverrideScriptId });
+        await cdp.send('Page.reload', { ignoreCache: true });
+        await sleep(500);
+      } catch { /* target may already be gone */ }
     }
     summary.cdpError = cdp.connectionError?.message || null;
     cdp.close();

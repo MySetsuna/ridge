@@ -729,8 +729,8 @@ export class TerminalManager {
 	private readonly _lastPreeditCall: Map<string, { row: number; col: number; text: string }> = new Map();
 	/** In-flight `attachHost` init promise. Concurrent pane `attach()` /
 	 *  `unpark()` calls await this so they don't race ahead of WebGPU
-	 *  initialisation. Initialization failures reject and remain visible to
-	 *  the attach caller; there is no alternate presentation path. */
+	 *  initialisation. Initialization failures reject only after wgpu's
+	 *  WebGPU-first, WebGL2-second selection cannot produce a device. */
 	private attachHostPromise: Promise<void> | null = null;
 	/** Document `visibilitychange` listener installed once on first pane
 	 *  attach; removed on last detach. Hidden tabs throttle RAF anyway,
@@ -870,9 +870,8 @@ export class TerminalManager {
 
 	static instance(opts?: ManagerOptions): TerminalManager {
 		if (!TerminalManager._instance) {
-			// WebGPU is the only terminal presentation backend. The wasm
-			// constructor and shared host both surface initialization failures;
-			// no browser capability is silently downgraded.
+			// One wgpu renderer serves both browser backends: WebGPU first,
+			// WebGL2 when WebGPU is unavailable.
 			//
 			TerminalManager._instance = new TerminalManager(
 				opts ?? {
@@ -961,7 +960,7 @@ export class TerminalManager {
 	}
 
 	/** Construct a WebGPU handle. Missing host/constructor and adapter errors
-	 *  are surfaced to the caller; there is no presentation fallback. */
+	 *  are surfaced after the WebGPU/WebGL2 selection fails. */
 	private async _makeHandle(
 		canvas: HTMLCanvasElement,
 		surfaceHost?: SurfaceHostHandle,
@@ -990,7 +989,7 @@ export class TerminalManager {
 					: surfaceHost;
 			const handle = await HandleCtor.newWithWebgpuFirst(canvas, hostArg);
 			const name = (handle as unknown as { backendName?: () => string }).backendName?.();
-			if (name && name.toLowerCase() !== 'webgpu') {
+			if (name && !['webgpu', 'webgl2'].includes(name.toLowerCase())) {
 				throw new Error(`WEBGPU_INIT_FAILED: unexpected backend ${name}`);
 			}
 			return handle;
@@ -1265,7 +1264,7 @@ export class TerminalManager {
 	}
 
 	private _restoreMemoryParked(workspaceId: string | null): Promise<void> {
-		// Do not fan out N WebGPU adapter/device creations from one tab click.
+		// Do not fan out N browser GPU adapter/device creations from one tab click.
 		// A serial queue also lets a newer active workspace supersede a stale
 		// restore before the next pane is touched.
 		const run = async (): Promise<void> => {
@@ -1633,7 +1632,7 @@ export class TerminalManager {
 	 * Throws if the manager isn't ready (caller must `await ready()` first)
 	 * or if `paneId` is already attached.
 	 *
-	 * Async because the WebGPU adapter/device request is asynchronous.
+	 * Async because browser GPU adapter/device selection is asynchronous.
 	 */
 	private _forwardPointerMotion(
 		entry: PaneEntry,

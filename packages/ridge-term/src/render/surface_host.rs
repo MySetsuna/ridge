@@ -41,7 +41,7 @@ use web_sys::HtmlCanvasElement;
 use crate::term::grid::ScrollOp;
 
 use super::backend::{scroll_copy_plan, ScrollCopyResult};
-use super::gpu_context::{GpuContext, CANVAS_FORMAT, WALLPAPER_UNIFORM_SIZE};
+use super::gpu_context::{GpuContext, WALLPAPER_UNIFORM_SIZE};
 use super::wallpaper::cover_uv_transform;
 
 /// Pane viewport rectangle in **host-canvas device-pixel coordinates**.
@@ -163,6 +163,7 @@ fn create_frame_target(
     device: &wgpu::Device,
     width: u32,
     height: u32,
+    format: wgpu::TextureFormat,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("ridge-host-frame-store"),
@@ -174,7 +175,7 @@ fn create_frame_target(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: CANVAS_FORMAT,
+        format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_SRC
@@ -194,7 +195,12 @@ struct QueuedPane {
     instance_count: u32,
 }
 
-fn create_scroll_scratch(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
+fn create_scroll_scratch(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("ridge-host-scroll-scratch"),
         size: wgpu::Extent3d {
@@ -205,7 +211,7 @@ fn create_scroll_scratch(device: &wgpu::Device, width: u32, height: u32) -> wgpu
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: CANVAS_FORMAT,
+        format,
         usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     })
@@ -214,6 +220,7 @@ fn create_scroll_scratch(device: &wgpu::Device, width: u32, height: u32) -> wgpu
 fn create_blit_resources(
     device: &wgpu::Device,
     frame_view: &wgpu::TextureView,
+    format: wgpu::TextureFormat,
 ) -> (
     wgpu::BindGroupLayout,
     wgpu::Sampler,
@@ -282,7 +289,7 @@ fn create_blit_resources(
             entry_point: Some("fs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
-                format: CANVAS_FORMAT,
+                format,
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -309,6 +316,7 @@ fn create_blit_resources(
 
 fn create_solid_resources(
     device: &wgpu::Device,
+    format: wgpu::TextureFormat,
 ) -> (wgpu::Buffer, wgpu::RenderPipeline, wgpu::BindGroup) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("ridge-host-solid-shader"),
@@ -366,7 +374,7 @@ fn create_solid_resources(
             entry_point: Some("fs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
-                format: CANVAS_FORMAT,
+                format,
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -381,7 +389,7 @@ fn create_solid_resources(
 pub struct SurfaceHost {
     /// Borrowed reference to the shared GPU stack (device / queue /
     /// pipeline / atlas). Initialised before the host is constructed —
-    /// `init` calls `GpuContext::get_or_init().await?` first so all
+    /// `init` calls `GpuContext::get_or_init_for_canvas().await?` first so all
     /// resources share one Device.
     ctx: Rc<RefCell<GpuContext>>,
     surface: wgpu::Surface<'static>,
@@ -432,19 +440,16 @@ impl SurfaceHost {
     /// atlas / rasterizer / sampler) stays a process-wide singleton —
     /// only the `Surface` + per-frame transients are per-workspace.
     /// Memory cost: ~14 MiB per workspace at typical resolution
-    /// (2 swap-chain textures × BGRA × ~4 MP).
+    /// (2 swap-chain textures × RGBA/BGRA × ~4 MP).
     ///
-    /// Returns `Err` if the WebGPU adapter / device acquisition fails or
+    /// Returns `Err` if WebGPU/WebGL2 adapter or device acquisition fails, or
     /// `instance.create_surface` rejects the canvas. JS surfaces this as an
     /// actionable `WEBGPU_INIT_FAILED`; no panic crosses the wasm boundary.
     pub async fn init(canvas: HtmlCanvasElement) -> Result<Rc<RefCell<Self>>, String> {
-        let ctx = GpuContext::get_or_init().await?;
-        let surface = {
+        let (ctx, surface) = GpuContext::get_or_init_for_canvas(canvas).await?;
+        let (surface_format, surface_alpha_mode) = {
             let ctx_b = ctx.borrow();
-            ctx_b
-                .instance
-                .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-                .map_err(|e| format!("SurfaceHost: create_surface failed: {e:?}"))?
+            (ctx_b.surface_format, ctx_b.surface_alpha_mode)
         };
         // Seed config with size 1×1 — JS calls `resize(w, h, dpr)`
         // synchronously after `init` to apply the real dimensions, so
@@ -452,22 +457,14 @@ impl SurfaceHost {
         // configure before get_current_texture" rule.
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: CANVAS_FORMAT,
+            format: surface_format,
             width: 1,
             height: 1,
             present_mode: wgpu::PresentMode::Fifo,
-            // PreMultiplied (not Auto) — on WebView2/Chromium, `Auto`
-            // resolves to `Opaque`, which makes the compositor ignore
-            // the swap-chain alpha entirely: idle frames (or zero-init
-            // textures after WebView2 recycles the swap chain in idle
-            // periods) display as RGB=(0,0,0) opaque black, regardless
-            // of what the DOM parent stack looks like. Explicit
-            // `PreMultiplied` makes transparent pixels actually
-            // transparent at composite time, so splitter strips show
-            // their SplitContainer DOM bg and idle/recycled regions
-            // fall through to the canvas's CSS parents instead of
-            // turning black.
-            alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
+            // WebGPU prefers premultiplied alpha so compositor-recycled
+            // pixels can fall through to the DOM. WebGL2 currently exposes
+            // opaque only; choose the mode advertised by its surface.
+            alpha_mode: surface_alpha_mode,
             view_formats: vec![],
             // The persistent offscreen frame store owns incremental damage;
             // the acquired surface is only a presentation target. Latency 1
@@ -492,18 +489,19 @@ impl SurfaceHost {
             solid_bind_group,
         ) = {
             let ctx_b = ctx.borrow();
-            let (frame_store, frame_store_view) = create_frame_target(&ctx_b.device, 1, 1);
+            let (frame_store, frame_store_view) =
+                create_frame_target(&ctx_b.device, 1, 1, ctx_b.surface_format);
             let (blit_bind_group_layout, blit_sampler, blit_pipeline, blit_bind_group) =
-                create_blit_resources(&ctx_b.device, &frame_store_view);
+                create_blit_resources(&ctx_b.device, &frame_store_view, ctx_b.surface_format);
             let (solid_color_buffer, solid_pipeline, solid_bind_group) =
-                create_solid_resources(&ctx_b.device);
+                create_solid_resources(&ctx_b.device, ctx_b.surface_format);
             ctx_b
                 .queue
                 .write_buffer(&solid_color_buffer, 0, &rgba_uniform_bytes([0, 0, 0, 255]));
             (
                 frame_store,
                 frame_store_view,
-                create_scroll_scratch(&ctx_b.device, 1, 1),
+                create_scroll_scratch(&ctx_b.device, 1, 1, ctx_b.surface_format),
                 blit_bind_group_layout,
                 blit_sampler,
                 blit_pipeline,
@@ -568,11 +566,11 @@ impl SurfaceHost {
         let (frame_store, frame_store_view, frame_scroll_scratch) = {
             let ctx = self.ctx.borrow();
             let (frame_store, frame_store_view) =
-                create_frame_target(&ctx.device, backing_w, backing_h);
+                create_frame_target(&ctx.device, backing_w, backing_h, ctx.surface_format);
             (
                 frame_store,
                 frame_store_view,
-                create_scroll_scratch(&ctx.device, backing_w, backing_h),
+                create_scroll_scratch(&ctx.device, backing_w, backing_h, ctx.surface_format),
             )
         };
         let blit_bind_group = {
@@ -608,6 +606,10 @@ impl SurfaceHost {
     /// transaction. Outside it, Renderer retains the exact row repaint path.
     pub fn is_frame_open(&self) -> bool {
         self.current_encoder.is_some()
+    }
+
+    pub(crate) fn gpu_context(&self) -> Rc<RefCell<GpuContext>> {
+        self.ctx.clone()
     }
 
     /// Let the scheduler replay every visible pane when an internal surface

@@ -8,7 +8,7 @@
 //     `pnpm add file:...` ends up with the wrong package name.
 //
 // Usage:
-//   node build.mjs                   # release, WebGPU-only
+//   node build.mjs                   # release, WebGPU-first + WebGL2 fallback
 //   node build.mjs --dev             # dev (faster compile, larger wasm)
 //
 // Note: `--webgpu` (legacy flag from round 4.5) is still accepted but is
@@ -24,12 +24,12 @@ import { cargoTool } from '../../scripts/lib/toolPath.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.argv.includes('--dev');
 if (process.argv.includes('--no-webgpu')) {
-	console.error('[ridge-term] --no-webgpu is unsupported: terminal presentation is WebGPU-only');
+	console.error('[ridge-term] --no-webgpu is unsupported: the shared GPU renderer is required');
 	process.exit(2);
 }
 
 console.log(
-	`[ridge-term] ${isDev ? 'dev' : 'release'} build (WebGPU-only)`,
+	`[ridge-term] ${isDev ? 'dev' : 'release'} build (WebGPU-first + WebGL2 fallback)`,
 );
 
 // 1. Run wasm-pack from the explicit Cargo bin directory (or an explicit

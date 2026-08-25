@@ -1271,8 +1271,8 @@ mod renderer_js {
 
     #[wasm_bindgen]
     impl RenderHandle {
-        /// Async WebGPU-only constructor. `surface_host` owns the shared
-        /// presentation surface; initialization failures are returned to
+        /// Async WebGPU-first constructor with wgpu WebGL2 fallback.
+        /// `surface_host` owns the shared presentation surface; failures are returned to
         /// JavaScript with the stable `WEBGPU_INIT_FAILED:` prefix.
         #[wasm_bindgen(js_name = newWithWebgpuFirst)]
         pub async fn new_with_webgpu_first(
@@ -1579,7 +1579,7 @@ mod renderer_js {
         /// Return the active rendering backend name.
         #[wasm_bindgen(js_name = backendName)]
         pub fn backend_name(&self) -> String {
-            "WebGPU".to_string()
+            self.renderer.backend().backend_name().to_string()
         }
     }
 
@@ -1643,8 +1643,8 @@ mod renderer_js {
         /// keyed by workspace id and passes the matching handle to
         /// each pane's `RenderHandle.newWithWebgpuFirst(canvas, host)`.
         ///
-        /// Returns `Err` (rejected promise on the JS side) when the
-        /// WebGPU adapter / device acquisition fails or
+        /// Returns `Err` (rejected promise on the JS side) when both browser
+        /// GPU backends fail adapter/device acquisition or
         /// `instance.create_surface` rejects the canvas. JS catches
         /// and surfaces a structured initialization error to JavaScript.
         #[wasm_bindgen(js_name = init)]

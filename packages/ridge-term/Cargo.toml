@@ -39,9 +39,8 @@ crate-type = ["cdylib", "rlib"]
 [features]
 # Default: ship the WebGpuBackend module so wasm bundles include the
 # GPU path out of the box. The JS-side `RenderHandle.newWithWebgpuFirst`
-# requires WebGPU at attach time; unsupported initialization is explicit and
-# browser / GPU adapter is unavailable, so this is safe to enable for
-# every target — there is no software presentation fallback.
+# prefers WebGPU and falls back to wgpu's WebGL2 backend when unavailable.
+# There is no Canvas2D or software presentation fallback.
 # (User feedback 2026-05-05: don't require a build flag or localStorage
 # opt-in to use the GPU; runtime adapter detection should drive it.)
 default = ["webgpu"]
@@ -108,7 +107,7 @@ web-sys = { version = "0.3", features = [
 # Vulkan/Metal/DX12), keeping the wasm bundle as small as possible
 # for a GPU-rendering crate. `default-features = false` prunes
 # native-OS bits that wouldn't link in wasm32 anyway.
-wgpu = { version = "23", default-features = false, features = ["webgpu", "wgsl"], optional = true }
+wgpu = { version = "23", default-features = false, features = ["webgpu", "webgl", "wgsl"], optional = true }
 # wasm-bindgen-futures lets WebGpuBackend::new use `.await` on the
 # adapter / device request promises that wgpu returns through
 # wasm-bindgen.
