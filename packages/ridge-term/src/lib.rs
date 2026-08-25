@@ -1658,8 +1658,11 @@ mod renderer_js {
         /// Resize the host swap chain. JS drives this from a
         /// ResizeObserver on the host canvas's parent so the surface
         /// always matches the visible workspace area.
-        pub fn resize(&self, width_css: u32, height_css: u32, dpr: f32) {
-            self.host.borrow_mut().resize(width_css, height_css, dpr);
+        pub fn resize(&self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), JsValue> {
+            self.host
+                .borrow_mut()
+                .resize(width_css, height_css, dpr)
+                .map_err(JsValue::from)
         }
 
         /// Mark the next frame for a fresh `LoadOp::Clear`. JS calls

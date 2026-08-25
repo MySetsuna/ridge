@@ -1061,6 +1061,26 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(internal.globalHost).toBeNull();
 	});
 
+	it('rolls back canvas dimensions when GPU surface resize rejects the viewport', () => {
+		const { manager, fixture, internal } = makeManager();
+		internal.panes.clear();
+		fixture.pane.canvas.width = 80;
+		fixture.pane.canvas.height = 24;
+		fixture.pane.canvas.style.width = '80px';
+		fixture.pane.canvas.style.height = '24px';
+		const host = {
+			resize: vi.fn(() => { throw new Error('WEBGPU_INIT_FAILED: WebGL2 surface exceeds adapter maximum'); }),
+			invalidate: vi.fn(),
+		};
+		internal.globalHost = { canvas: fixture.pane.canvas, host };
+
+		expect(() => manager.resizeHost({ wCss: 3100, hCss: 1348 }))
+			.toThrow('WEBGPU_INIT_FAILED: WebGL2 surface exceeds adapter maximum');
+		expect(fixture.pane.canvas).toMatchObject({ width: 80, height: 24 });
+		expect(fixture.pane.canvas.style).toMatchObject({ width: '80px', height: '24px' });
+		expect(host.invalidate).not.toHaveBeenCalled();
+	});
+
 	it('follows the live shell cursor but locks TUI composition to its start cell', () => {
 		const { manager, fixture } = makeManager();
 		fixture.kernel.cursorRow.mockReturnValue(3);

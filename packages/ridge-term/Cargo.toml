@@ -83,6 +83,7 @@ serde-wasm-bindgen = "0.6"
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 
 console_error_panic_hook = "0.1"
+wgpu-types = "23"
 
 # The WebGPU renderer uses web-sys. The render
 # module itself is gated on `target_arch = "wasm32"`, so native `cargo

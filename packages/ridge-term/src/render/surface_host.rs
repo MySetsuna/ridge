@@ -42,6 +42,7 @@ use crate::term::grid::ScrollOp;
 
 use super::backend::{scroll_copy_plan, ScrollCopyResult};
 use super::gpu_context::{GpuContext, WALLPAPER_UNIFORM_SIZE};
+use super::gpu_limits::validate_surface_extent;
 use super::wallpaper::cover_uv_transform;
 
 /// Pane viewport rectangle in **host-canvas device-pixel coordinates**.
@@ -553,12 +554,21 @@ impl SurfaceHost {
     /// `(width_css * dpr, height_css * dpr)`. JS is responsible for
     /// updating `canvas.width / canvas.height` in lockstep so the
     /// surface configure matches the HTML element's allocation.
-    pub fn resize(&mut self, width_css: u32, height_css: u32, dpr: f32) {
+    pub fn resize(&mut self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), String> {
         let backing_w = ((width_css as f32) * dpr).round().max(1.0) as u32;
         let backing_h = ((height_css as f32) * dpr).round().max(1.0) as u32;
         if self.config.width == backing_w && self.config.height == backing_h {
-            return;
+            return Ok(());
         }
+        let (backend_name, max_texture_dimension_2d) = {
+            let ctx = self.ctx.borrow();
+            (
+                ctx.backend_name,
+                ctx.device.limits().max_texture_dimension_2d,
+            )
+        };
+        validate_surface_extent(backing_w, backing_h, max_texture_dimension_2d)
+            .map_err(|error| format!("WEBGPU_INIT_FAILED: {backend_name} {error}"))?;
         self.config.width = backing_w;
         self.config.height = backing_h;
         self.surface
@@ -595,6 +605,7 @@ impl SurfaceHost {
         self.frame_scroll_scratch = frame_scroll_scratch;
         self.blit_bind_group = blit_bind_group;
         self.needs_full_seed = true;
+        Ok(())
     }
 
     /// Mark the persistent frame store for one structural repaint.

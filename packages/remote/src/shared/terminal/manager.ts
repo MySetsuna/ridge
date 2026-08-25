@@ -1065,7 +1065,16 @@ export class TerminalManager {
 				throw failure;
 			}
 			this.globalHost = { canvas, host };
-			this.resizeHost(); // initial swap-chain configure
+			try {
+				this.resizeHost(); // initial swap-chain configure
+			} catch (error) {
+				this.globalHost = null;
+				const failure = error instanceof Error
+					? error
+					: new Error(`WEBGPU_INIT_FAILED: ${unknownText(error)}`);
+				console.error('[ridge-term] terminal GPU surface resize failed', failure);
+				throw failure;
+			}
 		})();
 		this.attachHostPromise = promise;
 		return promise;
@@ -1197,11 +1206,27 @@ export class TerminalManager {
 		const wDev = Math.max(1, Math.round(wCss * dpr));
 		const hDev = Math.max(1, Math.round(hCss * dpr));
 		if (canvas.width === wDev && canvas.height === hDev) return;
+		const previous = {
+			width: canvas.width,
+			height: canvas.height,
+			styleWidth: canvas.style.width,
+			styleHeight: canvas.style.height,
+		};
 		canvas.width = wDev;
 		canvas.height = hDev;
 		canvas.style.width = `${wCss}px`;
 		canvas.style.height = `${hCss}px`;
-		host.resize(wCss, hCss, dpr);
+		try {
+			host.resize(wCss, hCss, dpr);
+		} catch (error) {
+			canvas.width = previous.width;
+			canvas.height = previous.height;
+			canvas.style.width = previous.styleWidth;
+			canvas.style.height = previous.styleHeight;
+			throw error instanceof Error
+				? error
+				: new Error(`WEBGPU_INIT_FAILED: ${unknownText(error)}`);
+		}
 		for (const e of this.panes.values()) {
 			if (e.parked) continue;
 			this._recomputeViewport(e);
