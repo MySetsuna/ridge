@@ -4,6 +4,8 @@ level: L2
 title: Agent coordination and Commune
 status: LOCKED
 parent: L1-PROJECT-001
+depends_on:
+  - L4-AGENT-ACTIVITY-001
 code_targets:
   - src/lib/teammate/**
   - src-tauri/src/commands/teammate.rs

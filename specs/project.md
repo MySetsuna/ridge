@@ -7,7 +7,6 @@ code_targets:
   - src/**
   - packages/**
   - src-tauri/**
-  - scripts/**
   - tests/**
   - static/**
   - site/**

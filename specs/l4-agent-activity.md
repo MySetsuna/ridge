@@ -9,6 +9,8 @@ code_targets:
   - src-tauri/src/commands/teammate.rs
   - src/lib/teammate/agentPaneHighlightSync.ts
   - src/lib/teammate/AgentPaneHighlightSync.svelte
+  - src/lib/teammate/agentCommuneModel*
+  - src/lib/teammate/teammateModel*
 test_targets:
   - src/lib/teammate/agentPaneHighlightSync.test.ts
   - src/lib/components/SplitContainer.test.ts
