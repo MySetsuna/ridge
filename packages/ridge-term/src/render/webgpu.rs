@@ -40,8 +40,8 @@
 //!
 //! ## Adapter-miss policy
 //!
-//! `new(host)` returns `Err` when `GpuContext::get_or_init` fails (no
-//! WebGPU adapter). `RenderHandle::newWithWebgpuFirst` propagates the
+//! `new(host)` returns `Err` when shared browser GPU setup fails.
+//! `RenderHandle::newWithWebgpuFirst` propagates the
 //! explicit initialization error so the host can surface the failure.
 
 #![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
@@ -297,7 +297,7 @@ fn glyph_id_for(cluster_text: Option<&str>, character: char) -> u32 {
 impl WebGpuPaneBackend {
     /// Acquire (or reuse) the shared `GpuContext` + `SurfaceHost`, then
     /// allocate this pane's per-pane buffers + bind group. Async
-    /// because the first call performs the full WebGPU adapter /
+    /// because the first call performs the browser GPU adapter /
     /// device bootstrap; subsequent calls return the cached `Rc`
     /// immediately.
     ///
@@ -306,7 +306,7 @@ impl WebGpuPaneBackend {
     /// pane's workspace tab — no thread-local lookup, multiple
     /// SurfaceHost instances coexist, one per workspace canvas.
     pub async fn new(host: Rc<RefCell<SurfaceHost>>) -> Result<Self, String> {
-        let ctx = GpuContext::get_or_init().await?;
+        let ctx = host.borrow().gpu_context();
         let (frame_uniform, instance_buffer, bind_group, atlas_generation_seen, frame_pinned) = {
             let ctx_b = ctx.borrow();
 
@@ -375,6 +375,10 @@ impl WebGpuPaneBackend {
         self.ctx
             .borrow_mut()
             .set_font_config(font_family, font_size_px);
+    }
+
+    pub fn backend_name(&self) -> &'static str {
+        self.ctx.borrow().backend_name
     }
 
     /// Update the pane's `(x, y)` position on the host canvas, in device

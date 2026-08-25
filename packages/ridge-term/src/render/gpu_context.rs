@@ -31,21 +31,19 @@
 //! This is the cross-pane invalidation rule that lets a pane-A grow
 //! event propagate correctly into pane B's next frame.
 //!
-//! ## Hardcoded surface format
+//! ## Browser GPU selection
 //!
-//! `Bgra8UnormSrgb` is a WebGPU-required format (canvas swap chains must
-//! support it on every implementation). Hardcoding lets us build the
-//! cell pipeline at GpuContext construction time without waiting for the
-//! first per-pane surface — which in turn lets `request_adapter` skip
-//! the `compatible_surface` hint, so we never need to allocate (and
-//! later drop) a bootstrap surface that would race with the per-pane
-//! `WebGpuBackend::new` surface creation on the same canvas.
+//! The first host canvas supplies the compatible surface required by WebGL2.
+//! `wgpu` probes WebGPU first and removes it when no real adapter exists, then
+//! uses WebGL2 through the same renderer API. Surface format, alpha mode, and
+//! device resolution limits come from that adapter and surface.
 
 #![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use web_sys::HtmlCanvasElement;
 
 use super::glyph_atlas::{pick_evictable_layer, GlyphAtlas, GlyphEntry, GlyphKey};
 use super::glyph_rasterizer::{GlyphRasterizer, RasterizedGlyph};
@@ -88,29 +86,18 @@ pub const ATLAS_RESERVED_LAYERS: u32 = 1;
 /// path can be measured independently.
 pub const ATLAS_SUPERSAMPLE: u32 = 1;
 
-/// Format passed to `GPUCanvasContext.configure()` (i.e. the
-/// `wgpu::SurfaceConfiguration.format` field). The WebGPU spec restricts
-/// canvas configure to `bgra8unorm`, `rgba8unorm`, or `rgba16float` —
-/// sRGB variants are texture-only and Chrome rejects them with
-/// `TypeError: Unsupported canvas context format 'bgra8unorm-srgb'`.
-/// We therefore configure the canvas as linear `Bgra8Unorm` and create
-/// an sRGB texture view per frame for the pipeline to render through
-/// (see `view_formats` on the surface config + the explicit `format` on
-/// the per-frame `create_view` call in `webgpu.rs`).
-pub const CANVAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
-
-/// Render-target format the cell pipeline writes through, and the format
-/// of the per-frame `TextureView` we render INTO. Same as `CANVAS_FORMAT`
-/// (linear `Bgra8Unorm`) so the byte values the shader writes show up
-/// on screen unchanged — `theme.bg = #1e1e2e` produces pixels at exactly
-/// `#1e1e2e`, matching the host's CSS `rgba()` theme values. Earlier this was
-/// `Bgra8UnormSrgb` so the ROP would gamma-encode the shader's linear
-/// output, but that produced a darker background than the theme
-/// asked for and wasn't visually consistent with the rest of the app
-/// (CSS `rgb(...)` colors are sRGB byte values too). Trade-off: the
-/// shader's alpha blending happens in sRGB space rather than linear
-/// space, matching the host's DOM compositing semantics.
-pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+/// Prefer linear BGRA for WebGPU and linear RGBA for WebGL2. Keeping a
+/// capabilities fallback lets future browser formats fail at pipeline
+/// validation rather than at adapter selection.
+fn select_surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
+    [
+        wgpu::TextureFormat::Bgra8Unorm,
+        wgpu::TextureFormat::Rgba8Unorm,
+    ]
+    .into_iter()
+    .find(|candidate| formats.contains(candidate))
+    .or_else(|| formats.first().copied())
+}
 
 /// std140 size of `WallpaperUniform`: vec2(8) + vec2(8) + vec3-padded-to-vec4(16) = 32 bytes.
 pub const WALLPAPER_UNIFORM_SIZE: u64 = 32;
@@ -217,6 +204,8 @@ pub struct GpuContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub surface_format: wgpu::TextureFormat,
+    pub surface_alpha_mode: wgpu::CompositeAlphaMode,
+    pub backend_name: &'static str,
 
     pub cell_shader: wgpu::ShaderModule,
     pub cell_bind_group_layout: wgpu::BindGroupLayout,
@@ -307,7 +296,7 @@ pub struct GpuContext {
 
 thread_local! {
     /// Process-wide singleton. `None` until the first
-    /// `GpuContext::get_or_init` call succeeds; cached `Some` thereafter.
+    /// `GpuContext::get_or_init_for_canvas` call succeeds; cached thereafter.
     /// Failure is *not* cached — each call re-attempts so a transient
     /// adapter miss does not permanently lock the session out of WebGPU.
     static SHARED_GPU: RefCell<Option<Rc<RefCell<GpuContext>>>> = const { RefCell::new(None) };
@@ -330,7 +319,7 @@ pub fn atlas_overwrite_after_cite_count() -> u64 {
 /// cross-frame switch-workspace garble). 0 before the GPU context inits.
 impl GpuContext {
     /// Lazily acquire the shared GPU context. First call performs the
-    /// full WebGPU bootstrap (instance + adapter + device + pipeline +
+    /// full browser GPU bootstrap (instance + adapter + device + pipeline +
     /// atlas); subsequent calls return the cached `Rc`.
     ///
     /// Returns `Err` on adapter / device acquisition failure so the
@@ -338,34 +327,70 @@ impl GpuContext {
     /// ::newWithWebgpuFirst`) can report an explicit initialization error.
     /// Failure is not memoized — a flaky adapter on call N can succeed on
     /// call N+1.
-    pub async fn get_or_init() -> Result<Rc<RefCell<Self>>, String> {
+    pub async fn get_or_init_for_canvas(
+        canvas: HtmlCanvasElement,
+    ) -> Result<(Rc<RefCell<Self>>, wgpu::Surface<'static>), String> {
         if let Some(rc) = SHARED_GPU.with(|cell| cell.borrow().clone()) {
-            return Ok(rc);
+            let surface = rc
+                .borrow()
+                .instance
+                .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+                .map_err(|e| format!("GpuContext: create_surface failed: {e:?}"))?;
+            return Ok((rc, surface));
         }
-        let ctx = Self::new().await?;
+
+        let instance = wgpu::util::new_instance_with_webgpu_detection(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL,
+            ..Default::default()
+        })
+        .await;
+        let surface = instance
+            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+            .map_err(|e| format!("GpuContext: create_surface failed: {e:?}"))?;
+        let ctx = Self::new(instance, &surface).await?;
         let rc = Rc::new(RefCell::new(ctx));
         SHARED_GPU.with(|cell| *cell.borrow_mut() = Some(rc.clone()));
-        Ok(rc)
+        Ok((rc, surface))
     }
 
     /// Bootstrap. Creates instance + adapter + device, then builds the
     /// shader / pipeline / atlas / rasterizer / sampler.
-    async fn new() -> Result<Self, String> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::BROWSER_WEBGPU,
-            ..Default::default()
-        });
-
-        // No `compatible_surface` hint — we don't have a canvas at this
-        // layer. Browser WebGPU exposes one adapter; this is sufficient.
+    async fn new(
+        instance: wgpu::Instance,
+        compatible_surface: &wgpu::Surface<'_>,
+    ) -> Result<Self, String> {
+        // WebGL2 requires adapter selection against the canvas surface;
+        // WebGPU also benefits from rejecting incompatible adapters here.
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: None,
+                compatible_surface: Some(compatible_surface),
                 force_fallback_adapter: false,
             })
             .await
-            .ok_or_else(|| "GpuContext: no WebGPU adapter available".to_string())?;
+            .ok_or_else(|| "GpuContext: no WebGPU or WebGL2 adapter available".to_string())?;
+
+        let adapter_info = adapter.get_info();
+        let backend_name = match adapter_info.backend {
+            wgpu::Backend::BrowserWebGpu => "WebGPU",
+            wgpu::Backend::Gl => "WebGL2",
+            _ => "GPU",
+        };
+        let capabilities = compatible_surface.get_capabilities(&adapter);
+        let surface_format = select_surface_format(&capabilities.formats)
+            .ok_or_else(|| "GpuContext: surface exposes no texture format".to_string())?;
+        let surface_alpha_mode = if capabilities
+            .alpha_modes
+            .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+        {
+            wgpu::CompositeAlphaMode::PreMultiplied
+        } else {
+            capabilities
+                .alpha_modes
+                .first()
+                .copied()
+                .ok_or_else(|| "GpuContext: surface exposes no alpha mode".to_string())?
+        };
 
         // Pick texture-array depth before requesting the device — wgpu
         // only honors `max_texture_array_layers` up to whatever we
@@ -374,11 +399,16 @@ impl GpuContext {
         // [`ATLAS_LAYERS_MIN`, `ATLAS_LAYERS_MAX`] so memory stays
         // bounded while giving Claude-style TUIs (CJK + box-drawing
         // + spinner glyphs) enough cache headroom to avoid LRU thrash.
-        let atlas_layers: u32 = adapter
-            .limits()
+        let adapter_limits = adapter.limits();
+        let atlas_layers: u32 = adapter_limits
             .max_texture_array_layers
             .clamp(ATLAS_LAYERS_MIN, ATLAS_LAYERS_MAX);
-        let mut required_limits = wgpu::Limits::downlevel_defaults();
+        let mut required_limits = if adapter_info.backend == wgpu::Backend::Gl {
+            wgpu::Limits::downlevel_webgl2_defaults()
+        } else {
+            wgpu::Limits::downlevel_defaults()
+        }
+        .using_resolution(adapter_limits);
         required_limits.max_texture_array_layers = atlas_layers;
 
         let (device, queue) = adapter
@@ -516,7 +546,7 @@ impl GpuContext {
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: SURFACE_FORMAT,
+                    format: surface_format,
                     // §B.4 (2026-05-08) — switched from ALPHA_BLENDING
                     // (straight) to PREMULTIPLIED_ALPHA_BLENDING because
                     // the cell shader now outputs premultiplied color
@@ -630,7 +660,7 @@ impl GpuContext {
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: SURFACE_FORMAT,
+                    format: surface_format,
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -703,7 +733,9 @@ impl GpuContext {
             instance,
             device,
             queue,
-            surface_format: SURFACE_FORMAT,
+            surface_format,
+            surface_alpha_mode,
+            backend_name,
             cell_shader,
             cell_bind_group_layout,
             cell_pipeline,
@@ -1197,7 +1229,7 @@ impl GpuContext {
 mod tests {
     use super::*;
 
-    // GpuContext construction requires a live WebGPU adapter — not
+    // GpuContext construction requires a live browser GPU adapter — not
     // available in `cargo test --lib` (host target). These tests cover
     // pure logic that doesn't need the GPU: the slot-dim heuristic and
     // the pin-aware eviction walk. Browser smoke (plan §Verification)

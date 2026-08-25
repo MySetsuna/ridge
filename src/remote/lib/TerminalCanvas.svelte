@@ -121,7 +121,7 @@
   function formatWebgpuInitError(error: unknown): string {
     const detail = error instanceof Error ? error.message : String(error);
     const prefix = detail.includes('WEBGPU_INIT_FAILED') ? detail : `WEBGPU_INIT_FAILED: ${detail}`;
-    return `${prefix}. Enable WebGPU or update graphics drivers, then reload.`;
+    return `${prefix}. WebGPU and WebGL2 are unavailable; update the browser or OS, then reload.`;
   }
 
   function flushPendingStdin(): void {
@@ -1269,6 +1269,7 @@
   class="container"
   class:agent-needs-attention={agentNeedsAttention}
   data-agent-state={agentState ?? ''}
+  data-renderer-backend={backendName}
   bind:this={containerEl}
   role="application"
   aria-busy={scrollbackLoading}

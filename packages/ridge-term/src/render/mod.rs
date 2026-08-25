@@ -182,4 +182,3 @@ mod wgsl_validation_tests {
         );
     }
 }
-

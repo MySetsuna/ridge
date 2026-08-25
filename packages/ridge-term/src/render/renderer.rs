@@ -615,7 +615,7 @@ impl<B: RenderBackend> Renderer<B> {
         // handled growth, so a narrowing resize left the dirty-row cache sized
         // to the old grid and never marked trailing pixels for redraw. Those
         // stale pixels resurfaced when the size was restored (§1.26).
-        // Current WebGPU-only rendering keeps the invariant: snapshot
+        // Current shared GPU rendering keeps the invariant: snapshot
         // cardinality must track `rows_n`, so the next frame re-snapshots each
         // source revision and paints blanks over every former cell.
         self.update_snapshot_size(rows_n);

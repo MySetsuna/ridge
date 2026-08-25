@@ -1,50 +1,12 @@
 {
   "version": 1,
-  "changeId": "CHG-004",
-  "specHash": "fd9f51016da564908b7ef0b0cd20828340595d3a1e737a90f527cce04290d523",
+  "changeId": "CHG-005",
+  "specHash": "c0b09751d0c5e9199e1f282fd77e65d50da5455c215f58dfffff1df39f218f1e",
   "units": [
-    {
-      "id": "L1-PROJECT-001",
-      "level": "L1",
-      "nodeHash": "09fbb3d9edf39bb2c6e270a9a9ab5492f8e183b981932f3638570c3ad93e1ee2",
-      "codeTargets": [
-        "src/**",
-        "packages/**",
-        "src-tauri/**",
-        "scripts/**",
-        "tests/**",
-        "static/**",
-        "site/**",
-        "docs/**",
-        "todos/**",
-        "skills/**",
-        ".github/**",
-        "*"
-      ],
-      "testTargets": [
-        "**/*.test.ts",
-        "**/*.test.mjs",
-        "tests/**"
-      ],
-      "status": "DRAFT"
-    },
-    {
-      "id": "L2-AGENT-COMMUNE-001",
-      "level": "L2",
-      "nodeHash": "a1f0224e44d6318226a073921b5efd6148006dde7627d262c9e113b7fd14e547",
-      "codeTargets": [
-        "src/lib/teammate/**",
-        "src-tauri/src/commands/teammate.rs"
-      ],
-      "testTargets": [
-        "src/lib/teammate/**"
-      ],
-      "status": "DRAFT"
-    },
     {
       "id": "L2-REMOTE-EXPERIENCE-001",
       "level": "L2",
-      "nodeHash": "08eb5b6eccc377c5639d1d79bd8cc62471a646ec676b9e752403c2b8501490d8",
+      "nodeHash": "07c6c430ceb2d231bf42eeae1bf203552ed57db66429863291caa7670da5ef0e",
       "codeTargets": [
         "src/remote/**",
         "packages/remote/src/**",
@@ -54,12 +16,12 @@
         "src/remote/**",
         "packages/remote/src/**"
       ],
-      "status": "DRAFT"
+      "status": "LOCKED"
     },
     {
       "id": "L2-RUNTIME-QUALITY-001",
       "level": "L2",
-      "nodeHash": "9a5dcc8c7b2f02c852c3a43d543150625dcd0941c2c9f3e55a04d7a253d3f2a4",
+      "nodeHash": "73d6a39fed0c17b0d9f47558c1c5ffa5b616305ca3e4da2552d4e3d4f7ad625c",
       "codeTargets": [
         "src-tauri/src/**",
         "packages/ridge-term/src/**"
@@ -68,64 +30,12 @@
         "src-tauri/src/**",
         "packages/ridge-term/src/**"
       ],
-      "status": "DRAFT"
-    },
-    {
-      "id": "L2-SPECTREE-CONTROL-001",
-      "level": "L2",
-      "nodeHash": "f55471aa4eeb57343cc5bb4478fb2623a05cad67f1749e93f5e4190a5611626e",
-      "codeTargets": [
-        ".spectree/config.json",
-        ".gitignore",
-        "specs/**",
-        "changes/**",
-        ".agents/**",
-        ".baseline/**",
-        ".claude/**",
-        ".vscode/**",
-        ".env",
-        "coverage/**",
-        "test-results/**"
-      ],
-      "testTargets": [
-        "package.json"
-      ],
-      "status": "DRAFT"
-    },
-    {
-      "id": "L3-AGENT-ACTIVITY-001",
-      "level": "L3",
-      "nodeHash": "a55f8dc73e6e40c76ea63c9bd0244cf89deb7aa9807263ab428ec554ab05c272",
-      "codeTargets": [
-        "src-tauri/src/commands/teammate.rs",
-        "src/lib/teammate/agentPaneHighlightSync.ts",
-        "src/lib/teammate/AgentPaneHighlightSync.svelte",
-        "src/lib/stores/paneTree.ts"
-      ],
-      "testTargets": [
-        "src/lib/teammate/agentPaneHighlightSync.test.ts"
-      ],
-      "status": "DRAFT"
-    },
-    {
-      "id": "L3-AGENT-CARD-001",
-      "level": "L3",
-      "nodeHash": "5cf054d2aba96aab58a15a0fefee62b8d40ad31b9c16d31178789fabdb02542f",
-      "codeTargets": [
-        "src/lib/teammate/AgentCenterPanel.svelte",
-        "src/lib/teammate/AgentMemberRow.svelte",
-        "src/routes/+page.svelte"
-      ],
-      "testTargets": [
-        "src/lib/components/SplitContainer.test.ts",
-        "tests/e2e/commune.spec.ts"
-      ],
-      "status": "DRAFT"
+      "status": "LOCKED"
     },
     {
       "id": "L3-DESKTOP-BOOT-001",
       "level": "L3",
-      "nodeHash": "0065b41494ff48fe76e84dd9ad13c295c335b09e2c8075367d547dcf95df767c",
+      "nodeHash": "b6aee866bdf27591584b94f30d7c95c762ae2c3ba4210ea5fdf2fdbd43f66f59",
       "codeTargets": [
         "src/routes/+page.svelte",
         "playwright.config.ts"
@@ -134,12 +44,12 @@
         "src/lib/components/SidebarLazyMount.test.ts",
         "tests/e2e/commune.spec.ts"
       ],
-      "status": "DRAFT"
+      "status": "LOCKED"
     },
     {
       "id": "L3-REMOTE-SMOOTHNESS-001",
       "level": "L3",
-      "nodeHash": "ff4562b64cee96c1cbb0fde6e443dea2f0874346947dbc5aa342f88f69cc63f9",
+      "nodeHash": "515a5fea42395c563f486d47e5c71e4841526ac7c2d7073d6351d92f431399d0",
       "codeTargets": [
         "src/remote/MainApp.svelte",
         "src/remote/lib/paneFeedScheduler.ts",
@@ -150,19 +60,19 @@
         "src/remote/lib/paneFeedScheduler.test.ts",
         "packages/remote/src/shared/**"
       ],
-      "status": "DRAFT"
+      "status": "LOCKED"
     },
     {
       "id": "L3-RUNTIME-DISCOVERY-001",
       "level": "L3",
-      "nodeHash": "06b30cd914247f1fbe255447cc124bd600a0033e7f329e76f005f45f7d9c7bca",
+      "nodeHash": "086679df8c76c7f82a90d882122662843eafda2c716bfde19893c1fdd72ade0e",
       "codeTargets": [
         "src-tauri/src/teammate/autodiscover.rs"
       ],
       "testTargets": [
         "src-tauri/src/teammate/autodiscover.rs"
       ],
-      "status": "DRAFT"
+      "status": "LOCKED"
     },
     {
       "id": "L3-TERMINAL-GLYPH-001",
@@ -180,33 +90,6 @@
       "status": "LOCKED"
     },
     {
-      "id": "L4-AGENT-ACTIVITY-001",
-      "level": "L4",
-      "nodeHash": "f67c8a15aeac17d822a01b9da5f3cbce71e46a63c68fbf8bb8b8b8edbf7f48c6",
-      "codeTargets": [
-        "src-tauri/src/commands/teammate.rs",
-        "src/lib/teammate/agentPaneHighlightSync.ts",
-        "src/lib/teammate/AgentPaneHighlightSync.svelte"
-      ],
-      "testTargets": [
-        "src/lib/teammate/agentPaneHighlightSync.test.ts",
-        "src/lib/components/SplitContainer.test.ts"
-      ],
-      "status": "DRAFT"
-    },
-    {
-      "id": "L4-AGENT-CARD-001",
-      "level": "L4",
-      "nodeHash": "2fa4eb22f5922dd373fa148746c3a23c38e6b6ad81fdca4abdfa468ebfd539f1",
-      "codeTargets": [
-        "src/lib/teammate/AgentMemberRow.svelte"
-      ],
-      "testTargets": [
-        "src/lib/components/SplitContainer.test.ts"
-      ],
-      "status": "DRAFT"
-    },
-    {
       "id": "L4-EMOJI-GEOMETRY-001",
       "level": "L4",
       "nodeHash": "fb773b718b7c18be58d757d0fbd26faaa061824bb10104d06add41167d0e4719",
@@ -221,9 +104,35 @@
       "status": "LOCKED"
     },
     {
+      "id": "L4-REMOTE-GPU-COMPAT-001",
+      "level": "L4",
+      "nodeHash": "6aac64aa27bb5975d6e3ee06797afdd1b08890fdff438cca325395f9969e576d",
+      "codeTargets": [
+        "packages/ridge-term/Cargo.toml",
+        "packages/ridge-term/README.md",
+        "packages/ridge-term/build.mjs",
+        "packages/ridge-term/src/lib.rs",
+        "packages/ridge-term/src/render/gpu_context.rs",
+        "packages/ridge-term/src/render/surface_host.rs",
+        "packages/ridge-term/src/render/webgpu.rs",
+        "packages/remote/src/shared/terminal/manager.ts",
+        "src/remote/MainApp.svelte",
+        "src/remote/lib/TerminalCanvas.svelte",
+        "scripts/cdp-term-render-e2e.mjs",
+        "scripts/mobile-keyboard-e2e.mjs"
+      ],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/manager.attach.test.ts",
+        "src/remote/lib/TerminalCanvas.test.ts",
+        "scripts/cdp-term-render-e2e.mjs",
+        "scripts/mobile-keyboard-e2e.mjs"
+      ],
+      "status": "DRAFT"
+    },
+    {
       "id": "L4-REMOTE-PERFORMANCE-GATE-001",
       "level": "L4",
-      "nodeHash": "5ec4de061414036be1bd559a728670d8b15e29826161da26bd6b1cedaa32bc9b",
+      "nodeHash": "179f527298c4681dbc00a6c64676205425cb53940d021b2fe5c6ac5bb5fd4470",
       "codeTargets": [
         "src/remote/**",
         "packages/remote/src/**"
@@ -232,78 +141,54 @@
         "tests/e2e/**",
         "scripts/perf-bench.ps1"
       ],
-      "status": "DRAFT"
+      "status": "LOCKED"
     },
     {
       "id": "L4-RUNTIME-DISCOVERY-001",
       "level": "L4",
-      "nodeHash": "658864c7c40d21c3670a2b4ca38075efddebe6f594bd48d352cf064d2ab31f3b",
+      "nodeHash": "cf9a7b73fddcd9b35437b6d21fc03ca741841bf00bcae736ed02338c67abd9a7",
       "codeTargets": [
         "src-tauri/src/teammate/autodiscover.rs"
       ],
       "testTargets": [
         "src-tauri/src/teammate/autodiscover.rs"
       ],
-      "status": "DRAFT"
+      "status": "LOCKED"
     }
   ],
   "allowedPaths": [
-    "*",
-    "**/*.test.mjs",
-    "**/*.test.ts",
-    ".agents/**",
-    ".baseline/**",
-    ".claude/**",
-    ".env",
-    ".github/**",
-    ".gitignore",
-    ".spectree/config.json",
-    ".vscode/**",
-    "changes/**",
-    "coverage/**",
-    "docs/**",
-    "package.json",
-    "packages/**",
     "packages/remote/src/**",
     "packages/remote/src/shared/**",
+    "packages/remote/src/shared/terminal/manager.attach.test.ts",
     "packages/remote/src/shared/terminal/manager.ts",
     "packages/remote/src/shared/transport/**",
+    "packages/ridge-term/Cargo.toml",
+    "packages/ridge-term/README.md",
+    "packages/ridge-term/build.mjs",
     "packages/ridge-term/src/**",
+    "packages/ridge-term/src/lib.rs",
     "packages/ridge-term/src/render/glyph_atlas.rs",
+    "packages/ridge-term/src/render/gpu_context.rs",
+    "packages/ridge-term/src/render/surface_host.rs",
     "packages/ridge-term/src/render/webgpu.rs",
     "packages/ridge-term/src/term/wcwidth.rs",
     "playwright.config.ts",
-    "scripts/**",
+    "scripts/cdp-term-render-e2e.mjs",
+    "scripts/mobile-keyboard-e2e.mjs",
     "scripts/perf-bench.ps1",
-    "site/**",
-    "skills/**",
-    "specs/**",
-    "src-tauri/**",
     "src-tauri/src/**",
-    "src-tauri/src/commands/teammate.rs",
     "src-tauri/src/remote_host_impl.rs",
     "src-tauri/src/teammate/autodiscover.rs",
-    "src/**",
     "src/lib/components/SidebarLazyMount.test.ts",
-    "src/lib/components/SplitContainer.test.ts",
-    "src/lib/stores/paneTree.ts",
-    "src/lib/teammate/**",
-    "src/lib/teammate/AgentCenterPanel.svelte",
-    "src/lib/teammate/AgentMemberRow.svelte",
-    "src/lib/teammate/AgentPaneHighlightSync.svelte",
-    "src/lib/teammate/agentPaneHighlightSync.test.ts",
-    "src/lib/teammate/agentPaneHighlightSync.ts",
     "src/remote/**",
     "src/remote/MainApp.svelte",
+    "src/remote/lib/TerminalCanvas.svelte",
+    "src/remote/lib/TerminalCanvas.test.ts",
     "src/remote/lib/paneFeedScheduler.test.ts",
     "src/remote/lib/paneFeedScheduler.ts",
     "src/routes/+page.svelte",
-    "static/**",
-    "test-results/**",
-    "tests/**",
     "tests/e2e/**",
-    "tests/e2e/commune.spec.ts",
-    "todos/**"
+    "tests/e2e/commune.spec.ts"
   ],
   "testCommand": [
     "pnpm",
@@ -325,6 +210,7 @@
     "changes/CHG-002.md": "e6928b9317666927b0c99f12cf71621b523feae579af3e013b84cb45906adcc4",
     "changes/CHG-003.md": "17a65ecbcd2d769d498672de32b3bf901bee7532eb0382bc7750e90acd83f41d",
     "changes/CHG-004.md": "f15640b963d7b5afc24b659240ad940d7644595bd4c372534de7ffc30b8557aa",
+    "changes/CHG-005.md": "639d1149b0f735e5af622589a569e20e58f31994b528f57e0e20ba5d4c3b4053",
     "CLAUDE.md": "1f07d1b3dcd28c80ef7f2255ae8d6135717c98e75a2b7630dc246902148bfd21",
     "docs/_team-archive/site-revamp-2026-04-30/content-brief.md": "ae3ffae60b3037e595e0b0e976675cbbf49edb74ed01ce44e7188b9862a26bfc",
     "docs/_team-archive/site-revamp-2026-04-30/decisions.md": "63b66c909323ed7acc6cce207b8de7395579a5d6636fc00abb62b3502e4f4629",
@@ -905,9 +791,9 @@
     "packages/remote/src/shared/terminal/linkOpenHost.ts": "ba17bf98a82b2039c361a426054bbbae97d543506beaea66a029f67b924f4cb4",
     "packages/remote/src/shared/terminal/linkSpans.test.ts": "df99d998c41be0d5270b47dc950b16935bd93286b4b79d866d95a0f32e2d5989",
     "packages/remote/src/shared/terminal/linkSpans.ts": "0dbea595b6c6eb87bd6aac200d22b13115f7510b9f22afb27461c24d6b315056",
-    "packages/remote/src/shared/terminal/manager.attach.test.ts": "ad561d07e857b7f9d74fa5985b453293f8d2ae5a94983f0f3b63ca9148630192",
+    "packages/remote/src/shared/terminal/manager.attach.test.ts": "9a5ff846e7baf88d72e13d2603d59c92cd589166284dc45eabb9a0d3e3617557",
     "packages/remote/src/shared/terminal/manager.test.ts": "93ff2af07cb6b6ed607ca6985bc290c9907570b8fe456bb96ba9fc6e3a06a859",
-    "packages/remote/src/shared/terminal/manager.ts": "9de61484babcc0f2f21f8d1c4cfae9458ff9ff75ce23e8e57ff055dd6cf3a44a",
+    "packages/remote/src/shared/terminal/manager.ts": "e22ca1d126aedf9e9081fa3ec5e8b1e9e24bc695387f9b4d84f04351c93b6fd1",
     "packages/remote/src/shared/terminal/mobileCopy.test.ts": "b23fbcedeb74e00efcbc21b521a45328cec76af32ef4d7db351cd37c86d1a143",
     "packages/remote/src/shared/terminal/mobileCopy.ts": "53d24a89916d6599a2433aa031370c0c020d8a8abafdc7fe0e4ef0bdf1a79f88",
     "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts": "b578ca4a89c3aaaddb896f16dbdb0e3c047b4e8d8ca89a89c6eea4ab3fdbfe29",
@@ -1143,30 +1029,30 @@
     "packages/ridge-remote/tests/ua_fork_serve.rs": "2c00d546df64b7728c4a80949e6141ba14488eee2c7cc1effd0afb4daeda2e6d",
     "packages/ridge-term/.gitignore": "d7b4a1a278c52ee7a5bb20a5997bc79bb5e68d47e5bc8c26b7b7f41b09fd30b6",
     "packages/ridge-term/bash.exe.stackdump": "a76f7f4226cafe1660b32f67e93abe8f9872e6f9ef3dea5d68190993c46e9559",
-    "packages/ridge-term/build.mjs": "d6df9c902952f12d0e4fee465a74db3c91417d57f75317f18624d85e2683053e",
+    "packages/ridge-term/build.mjs": "ea43e2da9e2cdcd70501cad38ff3293fdca94f4ef770485848d2fa08c3ee0f96",
     "packages/ridge-term/build.sh": "e1f2beba00ccc999548e155b447919051887dd59ce5bbf53415d0ee2bd68dfaa",
     "packages/ridge-term/Cargo.lock": "a355750e35176d1ae5803c03d859d9d01ee293f77f37a0a7e63eb99dba8655ea",
-    "packages/ridge-term/Cargo.toml": "01bb32fc89f9ba3400412022caeb922751f30028ee9dfcf757fb0701a7e47750",
-    "packages/ridge-term/README.md": "159fd9f47ab6e998cc265a391dbf8edd86622ef0a30c220cb0d2a772fbd75157",
+    "packages/ridge-term/Cargo.toml": "37d8d41e160c923bcf9e0b49449ffac9e6375a8f2bf7a1565e77e691020b72d8",
+    "packages/ridge-term/README.md": "d1137c6ba020f49f012513e0430cf5fd4792b2be544233caa7fc4e0afdbbb003",
     "packages/ridge-term/src/input.rs": "c5ed0b2b6f56ab72dcc1a5ba785314a94a9c72992ccdcf3512c1414da3a49fe0",
-    "packages/ridge-term/src/lib.rs": "d2b4e4bdede2743be861ebbec0cd21dd7b0b117cdf40a07fe368561c7e56e23e",
+    "packages/ridge-term/src/lib.rs": "c329fb26e96e66b494a756dd529a020029631c86a0503e78b496ca9ed0084957",
     "packages/ridge-term/src/render/backend.rs": "94138c8e8de85f56226487b880332e0dc689245fd71ab68b8144dff7f0af602c",
     "packages/ridge-term/src/render/glyph_atlas.rs": "dbbc394a662192785ed5fdbbdff338785cdc8fad1ceb70ebfcb281fe516ba56f",
     "packages/ridge-term/src/render/glyph_rasterizer.rs": "ee9557599acb22bc6cc72cf6874e5f5e9df0e1266cee215928e046b4f7beca7b",
-    "packages/ridge-term/src/render/gpu_context.rs": "431812cb1244deb67007f5d9e46207d7dfcdce723761d69f6d032a19145e5573",
-    "packages/ridge-term/src/render/mod.rs": "6514e5e8c375bf3b6d0d2533d098251fe7058ab2ff91c29f15e4057b3f32911c",
-    "packages/ridge-term/src/render/renderer.rs": "bad72e677bcf3ba6ecfa632ad09a198a0c6b162f30016777d7fcf12c5bc5ea8b",
+    "packages/ridge-term/src/render/gpu_context.rs": "8d64cbcd32b70f8f04c414aacef4c301347619e2319105619ce9db3067b270e4",
+    "packages/ridge-term/src/render/mod.rs": "24e2553b6c4ac47e0d27b60d4e610c3d656320ae7fd06751623cfa865da12213",
+    "packages/ridge-term/src/render/renderer.rs": "f8f0a67968ce951c5dc91efcefe9c549a06a4275817c62ea87e163611a5ddd13",
     "packages/ridge-term/src/render/shaders/cell.wgsl": "fbbd99bbef6188e731a7e4baba512405755c7ddd5da7ae5e01af6c934f0a69ca",
     "packages/ridge-term/src/render/shaders/wallpaper.wgsl": "0bbeff392870654082ddaee0cc67e77695e5bd498737b6f8ba7baba85fdb9208",
-    "packages/ridge-term/src/render/surface_host.rs": "c29b8c7c99052802adebb1d093e949112efdfbfba4e0eeb62c58ddccebefcf97",
+    "packages/ridge-term/src/render/surface_host.rs": "00cf777c62c5cd12666cc111373f15b81205ecd2e69ce8652ffcd2fc097e9644",
     "packages/ridge-term/src/render/wallpaper.rs": "1a2ed3eeee5fed42ca98cca868be91d404610b893ad4150b68606ad278f03a2c",
-    "packages/ridge-term/src/render/webgpu.rs": "df3d0c9031104ed1a27634e02f88e7d45b12772d079d42bfae62f68dacba271f",
+    "packages/ridge-term/src/render/webgpu.rs": "a2d74f1723fc89970f071ccee6c3940f2c90498ef87dbfd16a92c9585fa9ef3b",
     "packages/ridge-term/src/search.rs": "3999337e00727ff988cfecb1786ff02598a1007b6d06f4fcd1e3d387e46fcbb3",
     "packages/ridge-term/src/selection.rs": "d4f541218c34b588ff2688ef737eb34f804a8ef58fb51b05d3a8b3b00f16e16e",
     "packages/ridge-term/src/term/attr_table.rs": "13a1613a741b14163d690c1192e58846fca2e70997c4fde33a69906785c656fb",
     "packages/ridge-term/src/term/attrs.rs": "acad71e6cb8d3e7c6b0a5cb06078ad8c4e30acc238b690408925b0727a455c11",
     "packages/ridge-term/src/term/bash.exe.stackdump": "1c779a0fde83bccc66216441dd44aa39e88c47eb4a9b2957da4d0d089a849003",
-    "packages/ridge-term/src/term/cell.rs": "acd05edc671a616a6bb60455fa5160a9c2486664f4022417a596cb544d034f5b",
+    "packages/ridge-term/src/term/cell.rs": "beafa24cc8a72f9254a961b0cec658ff48018483591c8311d2e6ad235db8157b",
     "packages/ridge-term/src/term/clock.rs": "2c71ff408ea34177947d033ea18d345506e7f01be43d4ee72c09db4bbbfaaebb",
     "packages/ridge-term/src/term/cursor.rs": "a907d8da86bb80bd944cc99ec0879496b01f80cd8f76cd490a773e755d134a4d",
     "packages/ridge-term/src/term/delta.rs": "108049934eec574ab9b1e0ad0e4a71f85325863712716e30093f26002df8663f",
@@ -1223,7 +1109,7 @@
     "scripts/cdp-teammate-e2e.mjs": "b449b0aed6d5bd2143f727632ea7291bbe7efa30a33c740e7d0ca2a00b2606db",
     "scripts/cdp-teammate-mcp-e2e.mjs": "c141637afb18c7f27fac8276c7bbf9c24180f40274bb2f919c8f85831002a4b7",
     "scripts/cdp-term-input.mjs": "64d975e19d59f5a3a2a0a8da2df2c527c05bb15b3aaad7ce89b233d4439c5bf7",
-    "scripts/cdp-term-render-e2e.mjs": "a86838af212c886133432dabcad8b6add11fd4c13dc37d6d0f0c210c964015cd",
+    "scripts/cdp-term-render-e2e.mjs": "3d0915668aff555a85baf73a92f30d8a7bf49f1a11482d26e5804de64e613af5",
     "scripts/cdp-wait-and-enable.mjs": "00edd32a2e50a73bc74edded05a2335881e19dfafd5512c05789b84808fb7b7e",
     "scripts/check-capability-matrix.mjs": "f5080b78ac4f3d9a80dcc150ed5dd91cd51089d27d3d0b43f9b285fe76559934",
     "scripts/check-desktop-only-hosts.mjs": "c7083988aba4fce97cb65a7ca5cda7f75bdfb9fefc17fcbf1bbbd3a72953acc6",
@@ -1249,7 +1135,7 @@
     "scripts/lib/remoteArtifactBundle.test.mjs": "d9f6b7531f8cb6b4f5609d1558eae19c1cc581a143ce92472d0d39144c299aef",
     "scripts/lib/toolPath.mjs": "e62980e22232b8e4ef684fb694a983db6dcd7f2d72cb00deae8812ea4acc90d5",
     "scripts/lib/toolPath.test.mjs": "99aa3b70a024977db2135e959b8cfa23a64357ebf099b3d6364f22af67c1d115",
-    "scripts/mobile-keyboard-e2e.mjs": "94c82c588e22d7962f7d8c6c9ed9414680ac51a9d81648ec72d0b11a23dc8de0",
+    "scripts/mobile-keyboard-e2e.mjs": "54abe0c31764b633e8179df6b404a6f004ee036ff9d3b76d86bf9499178a9560",
     "scripts/normalize-lcov.mjs": "5c952f930019ecd6a01372d0b834a50f4eae9aae5d587abd63423fbc0ecbf056",
     "scripts/perf-bench.ps1": "d80716d62dedcec475cc0c6454642a3920f619a8cefec436fb5ff350214965d6",
     "scripts/perf-compare.ps1": "d4959cf5ebd761f34ee880963295c44a2bb6b1e841a7ef04897749e99fab1b76",
@@ -1344,6 +1230,7 @@
     "specs/l4-agent-activity.md": "793af4db95e6e3b5517c768b87b4ffb570fc1feffd6677b43f20b16ebe59055d",
     "specs/l4-agent-card.md": "e051a80b80b107612c4f4eab5089c498f4f3e22c4ce087eb7c5ea79220d294d9",
     "specs/l4-emoji-geometry-gate.md": "181b1f7991fe4b398ba26c79f99c8fdca50a803f3f60d163350718f2efd73544",
+    "specs/l4-remote-gpu-compat.md": "317f980dd26687a17bbcc191bf09b37f79b4c4b9e63d004611156c635b079c2a",
     "specs/l4-remote-performance-gate.md": "9c9fa66b464fbadb00a2a9696b7328ae38b97922f0a291101a43605043730999",
     "specs/l4-runtime-discovery.md": "7f3eafc3c49d1e75060aab8f2253af53ff192fb5e1b8aa289f2b09bd7ba46347",
     "specs/project.md": "3389e8088cd09e9602620340915f2580b01014f7a86a2966b8e7c9be1ae0ba76",
@@ -1391,7 +1278,7 @@
     "src/lib/components/PaneShellSwitcher.svelte": "e54a96003933d6dcdc29702d168c64d4d8642ff82667db40f5139aabbcee04ae",
     "src/lib/components/QuickOpen.svelte": "77c2a3f8f2c5a31e545e8b72879dae61c5840bc5239b8a3505ac143c1fd291d7",
     "src/lib/components/RidgeDialog.svelte": "1c39ad434c3dd40a4cff8ddf95897b5c8efe3a6440c96194654431611c091d42",
-    "src/lib/components/RidgePane.svelte": "7a4c7ed032431114261eeeae68db937c6a55d4be67eb0808df700e6236bee7a0",
+    "src/lib/components/RidgePane.svelte": "d926d458c5b48b7a59391636e9eff1ef01b50d7fd1b7014845ef66d12129ee47",
     "src/lib/components/SaveWorkspaceDialog.svelte": "f264d16025dd2abe5bd6683177262ec7629ba04303f414b96860ef614e2521fa",
     "src/lib/components/SearchModal.svelte": "ea4b5eaec92cfd2d8460a9243f0dfe256663759e7993b742ce4bd33e23a0db21",
     "src/lib/components/SearchSidebar.svelte": "0aa0a5b38437d31d2ec57a7778f6cbd7be85f399bc10846aa167608c54781033",
@@ -1641,7 +1528,7 @@
     "src/remote/lib/SidebarTeamRoster.test.ts": "fe7764e5389d6a80cb6cba363e86ff708e82d844afba0987c5dfca0e7edb9f6b",
     "src/remote/lib/teamRosterScope.test.ts": "3e92991e10a3c39f2733132f86834555f0ce41cc0e6f324fd1bd75a389479582",
     "src/remote/lib/teamRosterScope.ts": "fee9ffda95569021e91a9a04338e0ad43b767d9eafe8eaca41ca262c8efd691b",
-    "src/remote/lib/TerminalCanvas.svelte": "2d86a791bffed6ac93658c430395e8734fe875de6adc7300afed7ad6de3f6129",
+    "src/remote/lib/TerminalCanvas.svelte": "9465ca6b321daae0f073d0d5c3476b95f3d44815eff225f86995ac994fcada17",
     "src/remote/lib/TerminalCanvas.test.ts": "3638c0ae4a023fbb10208bfbab3dbc76850058f3acbb2625c2baa81255ab57a4",
     "src/remote/lib/theme.test.ts": "e263c8426d8e7644a7df7b3f34ed15f192efc37a062b9ca4f25de28976ab375b",
     "src/remote/lib/theme.ts": "98173950d59022d6daa450fa3a723a1678332f792f252c421a0499d193d53d03",
@@ -1652,7 +1539,7 @@
     "src/remote/lib/WorkspaceTree.test.ts": "4db3ca3ee487689d84a40663e88c74fd285715ffa255cd9378508cfa983d3db3",
     "src/remote/main.test.ts": "298712a52148256facd81b94d06cb7fa6f5fdfc2d1a70a6471ebe633d9717b08",
     "src/remote/main.ts": "841d50bff786c76c1113f7d9e04b15f6492cf9fc6c19c0db6c3499a530f63dd6",
-    "src/remote/MainApp.svelte": "d6b49903128013f964f9a3f6192f3f2e0ffba2630ea00cf2e0f37d03efc2391a",
+    "src/remote/MainApp.svelte": "7f1b619ea1aba4f3a22c0c2284d7f830d318b64f1a5ebdba0dd084930649f687",
     "src/remote/MainApp.test.ts": "c7e148d172d17a8b4f7d5d9ed234d69b0febd45cba16965c85cf167e77c7b392",
     "src/remote/public/apple-touch-icon.png": "fcf04070e1ae0e72599b39cf3c118a81c57d01dbb98b894b6ba988bda26cc01e",
     "src/remote/public/favicon.png": "7b0d863efa5a660174ce0242b3b356c70cd952eceda2589da50819aa82cc02ac",
@@ -1856,6 +1743,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-27f3227f3e4a",
-  "manifestHash": "27f3227f3e4aa5b41cd1250392404d1a4c06553b6689e4c7ac5c5e6ebfef7f59"
+  "buildId": "BUILD-28c8366a5134",
+  "manifestHash": "28c8366a5134306270628787687a2804429d935297ecb6f0b44e9347d8598162"
 }

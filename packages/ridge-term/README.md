@@ -12,13 +12,14 @@ PTY bytes -> TerminalKernel (VT parser, primary/alternate grid, DECSTBM)
           RenderHandle.newWithWebgpuFirst(canvas, SurfaceHostHandle)
                          |
                          v
-              Renderer<WebGpuPaneBackend> -> WebGPU surface
+              Renderer<WebGpuPaneBackend> -> browser GPU surface
 ```
 
-There is one presentation backend: WebGPU. Adapter, device, or surface
-initialization failure returns an explicit `WEBGPU_INIT_FAILED` error and the
-pane remains unrendered. No Canvas2D presentation or software fallback is
-provided.
+There is one wgpu presentation pipeline. It prefers browser WebGPU and uses
+wgpu's WebGL2 backend when WebGPU is unavailable. Adapter, device, or surface
+initialization failure returns an explicit `WEBGPU_INIT_FAILED` error only
+when neither backend can render. No Canvas2D presentation or software fallback
+is provided.
 
 The glyph atlas may use a hidden browser 2D canvas solely as the system-font
 rasterization input required to produce WebGPU textures. That canvas never
@@ -36,8 +37,8 @@ presents terminal pixels and is not a renderer backend.
 ## Build
 
 ```bash
-node build.mjs           # release WebGPU-only wasm-pack build
-node build.mjs --dev     # development WebGPU-only build
+node build.mjs           # release WebGPU-first wasm-pack build
+node build.mjs --dev     # development WebGPU-first wasm-pack build
 ```
 
 `build.mjs` invokes wasm-pack, patches the package name to
@@ -45,8 +46,8 @@ node build.mjs --dev     # development WebGPU-only build
 consumed through the workspace link. `--no-webgpu` is rejected explicitly.
 
 Use the package from the Ridge frontend through `TerminalManager`. The
-manager attaches a shared `SurfaceHostHandle`, constructs WebGPU-only
-`RenderHandle` instances, and surfaces initialization errors to diagnostics.
+manager attaches a shared `SurfaceHostHandle`, constructs GPU `RenderHandle`
+instances, and surfaces initialization errors to diagnostics.
 
 ## Tests
 
@@ -57,4 +58,4 @@ cargo test --tests
 
 Rust renderer tests cover scroll-copy invariants for shell, inline TUI,
 alternate-screen, and partial DECSTBM regions. TypeScript tests cover the
-manager's WebGPU-only initialization and worker kernel protocol.
+manager's WebGPU/WebGL2 initialization and worker kernel protocol.

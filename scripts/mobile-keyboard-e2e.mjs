@@ -38,6 +38,7 @@ const EVIDENCE_FILE = resolve(
     join(ROOT, '.iteration', 'artifacts', 'rdg-remote-e2e', 'mobile-keyboard.json'),
 );
 const RDG = process.env.RIDGE_RDG || join(ROOT, 'target', 'debug', 'rdg.exe');
+const FORCE_WEBGL_FALLBACK = process.env.RIDGE_REMOTE_E2E_FORCE_WEBGL_FALLBACK === '1';
 const PORT_MIN = 28_000;
 const PORT_MAX = 29_499;
 
@@ -183,13 +184,16 @@ async function main() {
   host.unref();
   let browser;
   let context;
+  let page;
   const browserErrors = [];
   let result;
   try {
     const status = await waitReady(45_000, port, host.pid);
     const url = String(status.url_loopback).replace(/\/$/, '');
+    const executablePath = process.env.RIDGE_E2E_CHROMIUM_EXECUTABLE?.trim() || undefined;
     browser = await chromium.launch({
       headless: true,
+      executablePath,
       args: ['--ignore-certificate-errors', '--no-proxy-server', '--disable-extensions'],
     });
     context = await browser.newContext({
@@ -201,10 +205,22 @@ async function main() {
       isMobile: true,
       hasTouch: true,
     });
-    await context.addInitScript(() => {
+    await context.addInitScript((forceWebglFallback) => {
       localStorage.setItem('RIDGE_DIAG', '1');
-    });
-    const page = await context.newPage();
+      window.__ridgeCanvasContextCalls = [];
+      const getContext = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function patchedGetContext(type, ...args) {
+        window.__ridgeCanvasContextCalls.push(String(type));
+        return getContext.call(this, type, ...args);
+      };
+      if (forceWebglFallback) {
+        Object.defineProperty(Navigator.prototype, 'gpu', {
+          configurable: true,
+          get: () => undefined,
+        });
+      }
+    }, FORCE_WEBGL_FALLBACK);
+    page = await context.newPage();
     page.on('pageerror', (error) => browserErrors.push(`pageerror:${error.message}`));
     page.on('console', (message) => {
       if (message.type() === 'error') browserErrors.push(`console:${message.text()}`);
@@ -216,6 +232,10 @@ async function main() {
     await page.waitForSelector('.app-root', { timeout: 20_000 });
     await page.waitForSelector('canvas', { timeout: 20_000 });
     await page.locator('.hidden-input').waitFor({ state: 'attached', timeout: 5_000 });
+    if (FORCE_WEBGL_FALLBACK) {
+      await page.locator('.container[data-renderer-backend="WebGL2"]').first()
+        .waitFor({ state: 'visible', timeout: 20_000 });
+    }
     // Produce harmless shell output so the shared terminal manager has a
     // concrete cursor anchor near the lower viewport (an idle fresh PTY may
     // legitimately have none, which would correctly require no translation).
@@ -378,6 +398,7 @@ async function main() {
       port,
       url,
       browser: 'Chromium Playwright --disable-extensions',
+      backend: FORCE_WEBGL_FALLBACK ? 'WebGL2' : 'WebGPU-first',
       browserErrors,
       baseline,
       reduced,
@@ -395,11 +416,21 @@ async function main() {
       },
     };
   } catch (error) {
+    const diagnostics = await page?.evaluate(() => ({
+      bodyText: document.body?.innerText?.slice(0, 8_000) || '',
+      canvasContextCalls: window.__ridgeCanvasContextCalls || [],
+      navigatorGpuAvailable: Boolean(navigator.gpu),
+    })).catch(() => null);
+    await page?.screenshot({
+      path: resolve(EVIDENCE_FILE, '..', 'mobile-keyboard-failure.png'),
+      fullPage: true,
+    }).catch(() => {});
     result = {
       ok: false,
       emulation: 'Chromium mobile context; not physical-device evidence',
       port,
       browserErrors,
+      diagnostics,
       error: error instanceof Error ? error.message : String(error),
     };
   } finally {
