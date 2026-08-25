@@ -8,6 +8,8 @@ artifact: PSEUDOCODE
 code_targets:
   - src/remote/**
   - packages/remote/src/**
+  - src/lib/components/GitGraph.svelte
+  - src/shared/sidebar/types*
 test_targets:
   - tests/e2e/**
   - scripts/perf-bench.ps1
@@ -17,6 +19,7 @@ test_targets:
 
 ```text
 record client/host/relay latency, bytes, queue depth, CPU, and heap separately
+mark deterministic artifacts with a stable machine-readable evidence scope
 soak reconnect, pane switch, history replay, background/resume, and IME input
 assert queues and live timers/listeners/transports return to bounded baselines
 compare public-network and physical-device results with the deterministic lab
