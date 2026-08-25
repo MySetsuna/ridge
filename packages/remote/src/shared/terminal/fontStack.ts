@@ -18,7 +18,7 @@ export const SYMBOL_FALLBACK =
 	"'Segoe UI Symbol','Segoe UI Historic','Apple Symbols','Noto Sans Symbols 2','Noto Sans Symbols2','Noto Sans Math'";
 
 /** Color-emoji fonts (system fonts only). */
-export const EMOJI_FALLBACK = "'Noto Color Emoji','Apple Color Emoji','Segoe UI Emoji'";
+export const EMOJI_FALLBACK = "emoji,'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji'";
 
 /** Back-compat alias — identical to {@link EMOJI_FALLBACK} now that no bundled
  *  Noto exists. Kept so existing remote imports don't churn. */
@@ -26,10 +26,14 @@ export const SYSTEM_EMOJI_FALLBACK = EMOJI_FALLBACK;
 
 /** Monospace + CJK text fonts (no emoji), in priority order. */
 export const TEXT_MONO =
-	"'JetBrains Mono','Cascadia Code','SF Mono',ui-monospace,Consolas,'SimHei','Heiti SC','Microsoft YaHei'";
+	"'JetBrains Mono','Cascadia Code','SF Mono',ui-monospace,Consolas";
+
+/** Smooth platform CJK faces, kept ahead of generic proportional text. */
+export const CJK_FALLBACK =
+	"'Microsoft YaHei UI','Microsoft YaHei','PingFang SC','Hiragino Sans GB','Noto Sans CJK SC','Noto Sans Mono CJK SC','Heiti SC'";
 
 /** Full default terminal font stack: text → symbols → emoji → generic. */
-export const DEFAULT_TERM_FONT = `${TEXT_MONO},${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`;
+export const DEFAULT_TERM_FONT = `${TEXT_MONO},${CJK_FALLBACK},${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`;
 
 /** Back-compat alias of {@link DEFAULT_TERM_FONT} (desktop + remote now share
  *  one stack). Kept so remote imports/tests don't churn. */
@@ -40,6 +44,17 @@ const EMOJI_FAMILY_NAMES = new Set([
 	'apple color emoji',
 	'segoe ui emoji',
 	'flag emoji',
+	'emoji',
+]);
+
+const CJK_FAMILY_NAMES = new Set([
+	'microsoft yahei ui',
+	'microsoft yahei',
+	'pingfang sc',
+	'hiragino sans gb',
+	'noto sans cjk sc',
+	'noto sans mono cjk sc',
+	'heiti sc',
 ]);
 
 const SYMBOL_FAMILY_NAMES = new Set([
@@ -66,6 +81,7 @@ function stripCanonicalFallbacks(family: string): string[] {
 		.filter((p) => {
 			const bare = p.replace(/^["']|["']$/g, '').toLowerCase();
 			return !EMOJI_FAMILY_NAMES.has(bare)
+				&& !CJK_FAMILY_NAMES.has(bare)
 				&& !SYMBOL_FAMILY_NAMES.has(bare)
 				&& !TEXT_FAMILY_NAMES.has(bare)
 				&& bare !== 'monospace';
@@ -81,7 +97,7 @@ function stripCanonicalFallbacks(family: string): string[] {
  * SAME function, so both surfaces resolve the same installed family order.
  */
 export function withEmojiFallback(family: string): string {
-	const tail = `${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`;
+	const tail = `${CJK_FALLBACK},${TEXT_FALLBACK},${SYMBOL_FALLBACK},${EMOJI_FALLBACK},monospace`;
 	const trimmed = (family ?? '').trim();
 	if (trimmed === '') return `${TEXT_MONO},${tail}`;
 	const kept = stripCanonicalFallbacks(trimmed);

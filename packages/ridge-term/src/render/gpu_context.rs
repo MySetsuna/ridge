@@ -1107,9 +1107,7 @@ impl GpuContext {
         }
 
         // Glyph bitmaps are tightly packed by the rasterizer. Pad each row
-        // only to wgpu's copy alignment instead of uploading the entire atlas
-        // slot; the half-texel UV endpoint below keeps linear filtering away
-        // from stale pixels left outside this new bitmap on an evicted layer.
+        // only to wgpu's copy alignment instead of uploading the entire slot.
         let upload_width = u32::from(glyph.width.max(1));
         let upload_height = u32::from(glyph.height.max(1));
         let (upload, bytes_per_row) =
@@ -1138,8 +1136,10 @@ impl GpuContext {
             },
         );
 
-        let u1 = ((glyph.width as f32 - 0.5).max(0.5)) / (self.slot_w as f32);
-        let v1 = ((glyph.height as f32 - 0.5).max(0.5)) / (self.slot_h as f32);
+        // UV edges, not texel centres: the native-size quad maps each output
+        // device pixel to one source texel under the nearest sampler.
+        let u1 = glyph.width as f32 / self.slot_w as f32;
+        let v1 = glyph.height as f32 / self.slot_h as f32;
         // `glyph.width / glyph.height` are atlas bitmap pixels. The
         // renderer sizes quads in logical device pixels, so divide by
         // the explicit atlas density here. UV ratios stay unchanged.
@@ -1153,6 +1153,7 @@ impl GpuContext {
             // coordinates are native device pixels, so remove only the
             // explicit atlas supersample factor.
             ascent_offset: glyph.ascent_offset / ss,
+            left_offset: glyph.left_offset / ss,
             px_w: logical_px_w,
             px_h: logical_px_h,
             is_color: glyph.is_color,
@@ -1271,6 +1272,7 @@ mod tests {
             uv: [0.0, 0.0, 1.0, 1.0],
             advance: 8.0,
             ascent_offset: 12.0,
+            left_offset: 0.0,
             px_w: 8,
             px_h: 16,
             is_color: false,
