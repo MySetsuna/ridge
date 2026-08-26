@@ -151,23 +151,32 @@ pub(crate) fn glyph_quad_geometry_for_cell(
 ) -> ([f32; 2], [f32; 2], [f32; 4]) {
     if !entry.is_color {
         if entry.is_box_drawing {
+            let source_w = (entry.px_w as f32).max(1.0);
             let source_h = (entry.px_h as f32).max(1.0);
+            let native_left = pixel_x + entry.left_offset;
             let native_top = pixel_y + entry.ascent_offset;
+            let native_right = native_left + source_w;
             let native_bottom = native_top + source_h;
+            let cell_right = pixel_x + allocation_w.max(1.0);
             let row_bottom = pixel_y + allocation_h.max(1.0);
+            let draw_left = native_left.max(pixel_x);
             let draw_top = native_top.max(pixel_y);
+            let draw_right = native_right.min(cell_right);
             let draw_bottom = native_bottom.min(row_bottom);
-            if draw_bottom <= draw_top {
-                return ([pixel_x, pixel_y], [allocation_w.max(1.0), 0.0], entry.uv);
+            if draw_right <= draw_left || draw_bottom <= draw_top {
+                return ([pixel_x, pixel_y], [0.0, 0.0], entry.uv);
             }
 
+            let uv_width = entry.uv[2] - entry.uv[0];
             let uv_height = entry.uv[3] - entry.uv[1];
+            let u0 = entry.uv[0] + ((draw_left - native_left) / source_w) * uv_width;
+            let u1 = entry.uv[0] + ((draw_right - native_left) / source_w) * uv_width;
             let v0 = entry.uv[1] + ((draw_top - native_top) / source_h) * uv_height;
             let v1 = entry.uv[1] + ((draw_bottom - native_top) / source_h) * uv_height;
             return (
-                [pixel_x, draw_top],
-                [allocation_w.max(1.0), draw_bottom - draw_top],
-                [entry.uv[0], v0, entry.uv[2], v1],
+                [draw_left, draw_top],
+                [draw_right - draw_left, draw_bottom - draw_top],
+                [u0, v0, u1, v1],
             );
         }
         return glyph_quad_geometry_with_uv(pixel_x, pixel_y, entry);
@@ -564,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn box_drawing_uses_exact_snapped_cell_width() {
+    fn box_drawing_crops_to_snapped_cell_width_without_scaling() {
         let glyph = GlyphEntry {
             px_w: 11,
             px_h: 3,
@@ -574,7 +583,7 @@ mod tests {
         };
         assert_eq!(
             glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 10.0, 18.0, 14.0),
-            ([10.0, 27.0], [10.0, 3.0], glyph.uv)
+            ([10.0, 27.0], [10.0, 3.0], [0.0, 0.0, 10.0 / 11.0, 1.0])
         );
     }
 
@@ -593,7 +602,7 @@ mod tests {
             (
                 [10.0, 20.0],
                 [9.0, 22.0],
-                [0.0, 0.0, 0.5, 0.75 * 22.0 / 23.0]
+                [0.0, 0.0, 0.5 * 9.0 / 11.0, 0.75 * 22.0 / 23.0]
             )
         );
     }
@@ -610,7 +619,31 @@ mod tests {
         };
         assert_eq!(
             glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 10.0, 23.0, 14.0),
-            ([10.0, 20.0], [10.0, 23.0], [0.0, 0.75 / 24.0, 0.5, 0.75])
+            (
+                [10.0, 20.0],
+                [10.0, 23.0],
+                [0.0, 0.75 / 24.0, 0.5 * 10.0 / 11.0, 0.75]
+            )
+        );
+    }
+
+    #[test]
+    fn box_drawing_clips_native_horizontal_overhang_at_one_to_one_density() {
+        let glyph = GlyphEntry {
+            left_offset: -1.0,
+            px_w: 12,
+            px_h: 3,
+            ascent_offset: 7.0,
+            is_box_drawing: true,
+            ..entry(0)
+        };
+        assert_eq!(
+            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 10.0, 18.0, 14.0),
+            (
+                [10.0, 27.0],
+                [10.0, 3.0],
+                [1.0 / 12.0, 0.0, 11.0 / 12.0, 1.0]
+            )
         );
     }
 

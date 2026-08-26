@@ -567,12 +567,27 @@ fn stabilize_box_connector_edges(
     }
     .min(slot_h.saturating_sub(glyph_height));
     let top_connector = vertical_connector_pixels(rgba, width, glyph_height, center_x, false);
+    let bottom_connector = vertical_connector_pixels(rgba, width, glyph_height, center_x, true);
+    let shared_vertical_connector =
+        if sides & (CONNECT_TOP | CONNECT_BOTTOM) == (CONNECT_TOP | CONNECT_BOTTOM) {
+            if connector_profile_strength(&bottom_connector)
+                > connector_profile_strength(&top_connector)
+            {
+                &bottom_connector
+            } else {
+                &top_connector
+            }
+        } else if sides & CONNECT_TOP != 0 {
+            &top_connector
+        } else {
+            &bottom_connector
+        };
     let mut glyph_height = glyph_height;
-    if top_extension != 0 && !top_connector.is_empty() {
+    if top_extension != 0 && !shared_vertical_connector.is_empty() {
         rgba.resize((glyph_height + top_extension) * row_bytes, 0);
         rgba.copy_within(0..glyph_height * row_bytes, top_extension * row_bytes);
         rgba[..top_extension * row_bytes].fill(0);
-        for (x, pixel) in &top_connector {
+        for (x, pixel) in shared_vertical_connector {
             for y in 0..top_extension {
                 rgba[(y * width + x) * 4..(y * width + x + 1) * 4].copy_from_slice(pixel);
             }
@@ -591,10 +606,9 @@ fn stabilize_box_connector_edges(
         0
     }
     .min(slot_h.saturating_sub(glyph_height));
-    let bottom_connector = vertical_connector_pixels(rgba, width, glyph_height, center_x, true);
-    if bottom_extension != 0 && !bottom_connector.is_empty() {
+    if bottom_extension != 0 && !shared_vertical_connector.is_empty() {
         rgba.resize((glyph_height + bottom_extension) * row_bytes, 0);
-        for (x, pixel) in &bottom_connector {
+        for (x, pixel) in shared_vertical_connector {
             for y in glyph_height..glyph_height + bottom_extension {
                 rgba[(y * width + x) * 4..(y * width + x + 1) * 4].copy_from_slice(pixel);
             }
@@ -627,6 +641,12 @@ fn stabilize_box_connector_edges(
             true,
         );
     }
+}
+
+fn connector_profile_strength(profile: &[(usize, [u8; 4])]) -> (u8, u32) {
+    profile.iter().fold((0, 0), |(peak, total), (_, pixel)| {
+        (peak.max(pixel[3]), total + pixel[3] as u32)
+    })
 }
 
 fn vertical_connector_pixels(
@@ -818,6 +838,23 @@ mod tests {
         assert_eq!(&rgba[(4 * 5 + 2) * 4..(4 * 5 + 3) * 4], &[160; 4]);
         assert_eq!(&rgba[(5 * 5 + 2) * 4..(5 * 5 + 3) * 4], &[160; 4]);
         assert_eq!(&rgba[(2 * 5) * 4..(2 * 5 + 1) * 4], &[0; 4]);
+    }
+
+    #[test]
+    fn vertical_connector_reuses_one_profile_at_both_cell_edges() {
+        let mut rgba = vec![0; 3 * 2 * 4];
+        rgba[(1 * 4)..(2 * 4)].copy_from_slice(&[200; 4]);
+        rgba[(3 + 1) * 4..(3 + 2) * 4].copy_from_slice(&[240; 4]);
+        let mut height = 2;
+        let mut top = 1;
+
+        stabilize_box_connector_edges(&mut rgba, 3, &mut height, &mut top, 0, 3.0, 5.0, 6, "│");
+
+        assert_eq!(top, 0);
+        assert_eq!(height, 5);
+        assert_eq!(&rgba[(1 * 4)..(1 * 4 + 4)], &[240; 4]);
+        assert_eq!(&rgba[(3 * 3 + 1) * 4..(3 * 3 + 2) * 4], &[240; 4]);
+        assert_eq!(&rgba[(4 * 3 + 1) * 4..(4 * 3 + 2) * 4], &[240; 4]);
     }
 
     #[test]
