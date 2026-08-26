@@ -6,9 +6,12 @@ status: LOCKED
 parent: L3-TERMINAL-GLYPH-001
 code_targets:
   - packages/ridge-term/src/render/glyph_atlas.rs
+  - packages/ridge-term/src/render/glyph_rasterizer.rs
   - packages/ridge-term/src/render/webgpu.rs
+  - src-tauri/src/commands/terminal_font.rs
 test_targets:
   - packages/ridge-term/src/render/glyph_atlas.rs
+  - packages/ridge-term/src/render/glyph_rasterizer.rs
   - packages/ridge-term/src/term/wcwidth.rs
 ---
 
@@ -17,4 +20,6 @@ test_targets:
 Deterministic tests cover color bitmaps smaller than, larger than, and unequal
 to the em box. Every case keeps complete UVs, preserves aspect ratio, centers
 inside the reserved cells, and leaves monochrome geometry unchanged. A running
-WebGPU terminal fixture confirms decorated and ZWJ emoji are not clipped.
+WebGPU terminal fixture confirms decorated and ZWJ emoji are not clipped. A
+Host-font test resolves the platform color face from a long fallback stack, and
+the production Swash rasterizer proves the resulting bitmap contains color.

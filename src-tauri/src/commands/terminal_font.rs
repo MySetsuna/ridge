@@ -6,7 +6,7 @@ use fontdb::{Database, Family, Query, Stretch, Style, Weight};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-const MAX_FAMILIES: usize = 16;
+const MAX_FAMILIES: usize = 32;
 const MAX_FONT_FILES: usize = 32;
 const MAX_FONT_BYTES: usize = 96 * 1024 * 1024;
 const MAX_SINGLE_FONT_BYTES: usize = 32 * 1024 * 1024;
@@ -51,7 +51,22 @@ pub struct TerminalFontChunk {
 
 fn normalize_families(families: Vec<String>) -> Result<Vec<String>, String> {
     let mut unique = Vec::new();
-    for family in families {
+    let is_color_emoji = |family: &&String| {
+        matches!(
+            family
+                .trim()
+                .trim_matches(['\'', '"'])
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "segoe ui emoji" | "apple color emoji" | "noto color emoji"
+        )
+    };
+    for family in families
+        .iter()
+        .filter(|family| is_color_emoji(family))
+        .chain(families.iter().filter(|family| !is_color_emoji(family)))
+    {
         let family = family.trim().trim_matches(['\'', '"']).trim();
         if family.is_empty() {
             continue;
@@ -65,7 +80,7 @@ fn normalize_families(families: Vec<String>) -> Result<Vec<String>, String> {
         {
             unique.push(family.to_string());
         }
-        if unique.len() == MAX_FAMILIES {
+        if unique.len() == MAX_FAMILIES - 1 {
             break;
         }
     }
@@ -253,6 +268,33 @@ mod tests {
             normalize_families(vec![" 'Cascadia Code' ".into(), "Consolas".into()]).unwrap(),
             vec!["Cascadia Code", "Consolas", "monospace"]
         );
+    }
+
+    #[test]
+    fn retains_color_emoji_at_the_end_of_a_long_fallback_stack() {
+        let mut families = (0..40)
+            .map(|index| format!("Fallback {index}"))
+            .collect::<Vec<_>>();
+        families.push("Segoe UI Emoji".into());
+
+        let normalized = normalize_families(families).unwrap();
+        assert!(normalized.iter().any(|family| family == "Segoe UI Emoji"));
+        assert!(normalized.iter().any(|family| family == "monospace"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resolves_segoe_ui_emoji_from_a_long_host_stack() {
+        let mut families = (0..40)
+            .map(|index| format!("Fallback {index}"))
+            .collect::<Vec<_>>();
+        families.push("Segoe UI Emoji".into());
+
+        let response = resolve_terminal_font_faces(families, Vec::new()).unwrap();
+        assert!(response
+            .faces
+            .iter()
+            .any(|face| face.family.eq_ignore_ascii_case("Segoe UI Emoji")));
     }
 
     #[test]

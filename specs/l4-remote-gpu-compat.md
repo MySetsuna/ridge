@@ -18,12 +18,14 @@ code_targets:
   - packages/ridge-term/src/render/mod.rs
   - packages/ridge-term/src/render/surface_host.rs
   - packages/ridge-term/src/render/webgpu.rs
+  - packages/remote/src/shared/terminal/fontDataService.ts
   - packages/remote/src/shared/terminal/manager.ts
   - scripts/cdp-port*
   - scripts/lib/cdpTarget*
   - scripts/lib/toolPath*
   - src/remote/MainApp.svelte
   - src/remote/lib/TerminalCanvas.svelte
+  - src-tauri/src/commands/terminal_font.rs
   - scripts/cdp-term-render-e2e.mjs
   - scripts/mobile-keyboard-e2e.mjs
 test_targets:
@@ -47,5 +49,7 @@ select a linear canvas format advertised by that surface
 run the same renderer, glyph atlas, compositor, IME, and input APIs
 report the actual backend as WebGPU or WebGL2
 if neither backend is available: surface one structured initialization error
-never use Canvas2D as a terminal presentation backend or download terminal fonts
+never use Canvas2D as a terminal presentation backend
+resolve installed font files on Host and transfer bounded bytes over authenticated RPC
+never require controller-side font access, font download, or font installation
 ```

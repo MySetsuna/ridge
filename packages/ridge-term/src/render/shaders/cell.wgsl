@@ -46,10 +46,8 @@ struct InstanceIn {
     @location(3) atlas_layer: u32,
     @location(4) fg_rgba: vec4<f32>,
     @location(5) bg_rgba: vec4<f32>,
-    // §B.3 (2026-05-08) — per-glyph color/mono flag from the
-    // rasterizer's pixel scan. 1 = color-emoji bitmap (RGB carries the
-    // font's native palette), 0 = monochrome (RGB always (1,1,1) +
-    // alpha = coverage; tint with fg_rgba).
+    // Instance mode: 0 = monochrome/nearest, 1 = color/smooth,
+    // 2 = solid rectangle, 3 = monochrome box drawing/smooth.
     @location(6) is_color_u: u32,
 }
 
@@ -79,6 +77,7 @@ struct FrameUniform {
 @group(0) @binding(0) var<uniform> frame: FrameUniform;
 @group(0) @binding(1) var atlas_tex: texture_2d_array<f32>;
 @group(0) @binding(2) var atlas_smp: sampler;
+@group(0) @binding(3) var atlas_smooth_smp: sampler;
 
 // Map (vertex_index in 0..4) → quad corner in [0,1]². TriangleStrip
 // order: (0,0) → (1,0) → (0,1) → (1,1). The bit-twiddle avoids a
@@ -121,6 +120,7 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    let instance_mode = u32(in.is_color + 0.5);
     // §B.5 — solid overlay rectangle short-circuit.
     //
     // Selection and other solid overlay quads set is_color = 2 as a sentinel.
@@ -130,7 +130,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // Output is premultiplied
     // to match the (src=One, dst=OneMinusSrcAlpha) BlendState configured
     // in gpu_context.rs.
-    if (in.is_color > 1.5) {
+    if (instance_mode == 2u) {
         return vec4<f32>(in.fg.rgb * in.fg.a, in.fg.a);
     }
 
@@ -142,15 +142,26 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // edges go dark / black-haloed" symptom that straight-alpha
     // storage produced (Linear filter independently averaged rgb,
     // halving each channel at midway samples regardless of alpha).
-    let glyph = textureSampleLevel(
-        atlas_tex,
-        atlas_smp,
-        in.uv,
-        i32(in.atlas_layer),
-        0.0,
-    );
+    var glyph: vec4<f32>;
+    if (instance_mode == 1u || instance_mode == 3u) {
+        glyph = textureSampleLevel(
+            atlas_tex,
+            atlas_smooth_smp,
+            in.uv,
+            i32(in.atlas_layer),
+            0.0,
+        );
+    } else {
+        glyph = textureSampleLevel(
+            atlas_tex,
+            atlas_smp,
+            in.uv,
+            i32(in.atlas_layer),
+            0.0,
+        );
+    }
 
-    let is_color = in.is_color > 0.5;
+    let is_color = instance_mode == 1u;
 
     // Swash coverage already contains the selected font's hinted grayscale
     // edge. Preserve it byte-for-byte; thresholding makes small stems jagged.

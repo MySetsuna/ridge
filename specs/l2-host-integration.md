@@ -17,6 +17,7 @@ code_targets:
   - src/lib/stores/hostReconnect*
   - src/lib/stores/hosts*
   - src/lib/stores/processGuardPolicy*
+  - src-tauri/src/commands/terminal_font.rs
 test_targets:
   - src/lib/hosts/**/*.test.ts
   - src/lib/remote/cloud/cloudControllerBoot.test.ts
@@ -32,3 +33,7 @@ test_targets:
 
 Desktop host composition, reconnect, and outbound lifecycle bridges depend on
 Agent coordination and the shared Remote transport contracts.
+Host font resolution supplies a bounded, authenticated set of installed font
+bytes to the shared terminal renderer. Color-emoji families are retained ahead
+of lower-priority fallback faces; Remote and Cloud controllers need neither
+local font access nor font installation.

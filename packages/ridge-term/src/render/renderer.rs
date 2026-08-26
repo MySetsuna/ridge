@@ -689,14 +689,14 @@ impl<B: RenderBackend> Renderer<B> {
 
         let tui_mode = Self::is_tui_mode(terminal);
 
-        // Cursor handling: show the cursor when (a) the surface is focused,
-        // (b) DEC ?25 is enabled, (c) we're on the visible blink half, and
-        // (d) the application is not drawing its own TUI cursor.
+        // Cursor handling: obey focus + DEC ?25. TUI frames keep an enabled
+        // cursor continuously visible; this avoids blink churn without
+        // guessing that every fullscreen/inline application paints a caret.
         // During a presentation transaction, keep that gate but use the
         // descriptor captured before the kernel's cursor walk. This keeps
         // grid paints immediate without exposing intermediate cursor moves.
         let cursor_visible =
-            !tui_mode && self.focused && terminal.modes().cursor_visible && blink_phase;
+            self.focused && terminal.modes().cursor_visible && (tui_mode || blink_phase);
         let computed_cursor = if cursor_visible && !self.presentation_cursor_suppressed {
             self.compute_cursor_draw(terminal, offset)
         } else {
@@ -934,9 +934,9 @@ impl<B: RenderBackend> Renderer<B> {
         }
     }
 
-    /// TUI applications paint their own input caret. The terminal cursor is
-    /// therefore suppressed for both fullscreen and inline TUI modes,
-    /// including the sticky idle-inline state used by resize handling.
+    /// Detect fullscreen and inline TUI modes. Cursor blink scheduling uses
+    /// this to hold an enabled terminal cursor steady, while DEC ?25 remains
+    /// authoritative for visibility.
     fn is_tui_mode(terminal: &Terminal) -> bool {
         terminal.is_alt_screen() || terminal.is_inline_tui_resize_at(crate::term::clock::now_ms())
     }
@@ -1159,7 +1159,7 @@ impl<B: RenderBackend> Renderer<B> {
         // kernel cursor walks do not wake or move the painted cursor.
         let offset = terminal.scroll_offset();
         let cursor_visible =
-            !tui_mode && self.focused && terminal.modes().cursor_visible && blink_phase;
+            self.focused && terminal.modes().cursor_visible && (tui_mode || blink_phase);
         if self.presentation_cursor_suppressed {
             let new_cursor = if cursor_visible {
                 self.frozen_cursor
@@ -1648,7 +1648,7 @@ mod tests {
     }
 
     #[test]
-    fn fullscreen_tui_suppresses_terminal_cursor_and_blink_wakeup() {
+    fn fullscreen_tui_keeps_terminal_cursor_steady_without_blink_wakeup() {
         let mut term = Terminal::new(4, 12, 0);
         term.feed(b"\x1b[?1049h");
         let mut renderer = Renderer::new(
@@ -1658,13 +1658,21 @@ mod tests {
         );
 
         assert!(renderer.tick(&term, None, 500.0));
-        assert_eq!(renderer.backend().cursors, 0);
+        assert_eq!(renderer.backend().cursors, 1);
         assert!(!renderer.is_dirty(&term, None, 1000.0));
         assert!(renderer.next_blink_deadline_ms(&term, 1000.0).is_infinite());
+
+        term.feed(b"\x1b[?25l");
+        assert!(renderer.tick(&term, None, 1000.0));
+        assert_eq!(
+            renderer.backend().cursors,
+            1,
+            "DECTCEM off must hide the cursor"
+        );
     }
 
     #[test]
-    fn inline_tui_suppresses_visible_terminal_cursor() {
+    fn inline_tui_keeps_visible_terminal_cursor_steady() {
         let mut term = Terminal::new(4, 12, 0);
         term.feed(b"\x1b[?1h\x1b[H");
         assert!(term.is_inline_tui_resize_at(crate::term::clock::now_ms()));
@@ -1675,7 +1683,9 @@ mod tests {
             Theme::default_dark(),
         );
         assert!(renderer.tick(&term, None, 500.0));
-        assert_eq!(renderer.backend().cursors, 0);
+        assert_eq!(renderer.backend().cursors, 1);
+        assert!(!renderer.is_dirty(&term, None, 1000.0));
+        assert!(renderer.next_blink_deadline_ms(&term, 1000.0).is_infinite());
     }
 
     #[test]
