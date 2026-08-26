@@ -69,6 +69,11 @@ fn build_ridge_window(
             builder = builder.additional_browser_args(&extra);
         }
     }
+    if std::env::var_os("RIDGE_E2E").is_some() {
+        builder = builder.initialization_script(
+            r#"Object.defineProperty(window, "__RIDGE_E2E__", { value: true, configurable: false, writable: false });"#,
+        );
+    }
     let window = builder
         .title("ridge")
         .inner_size(800.0, 600.0)

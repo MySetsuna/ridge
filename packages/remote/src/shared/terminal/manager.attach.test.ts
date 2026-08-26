@@ -399,7 +399,7 @@ describe('TerminalManager attach lifecycle', () => {
 		expect(container.style.cursor).toBe('');
 	});
 
-	it('exposes development diagnostics for PTY, kernel, theme, selection, and worker state', async () => {
+	it('exposes development diagnostics for PTY, kernel, theme, and selection state', async () => {
 		const manager = TerminalManager.instance({
 			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200,
 			theme: { background: '#010203', foreground: '#fefefe' },
@@ -414,7 +414,9 @@ describe('TerminalManager attach lifecycle', () => {
 		manager.onData('pane-a', vi.fn());
 		hooks.feedPty('pane-a', 'output');
 		await hooks.writePty('pane-a', 'input');
-		expect(tauri.invoke).toHaveBeenCalledWith('write_to_pty', { paneId: 'pane-a', data: 'input' });
+		expect(tauri.invoke).toHaveBeenCalledWith('write_to_pty', {
+			workspaceId: 'workspace-a', paneId: 'pane-a', data: 'input',
+		});
 		expect(hooks.visibleText('pane-a')).toEqual(['visible line']);
 		expect(hooks.rows('pane-a')).toBe(24);
 		expect(hooks.cols('pane-a')).toBe(80);

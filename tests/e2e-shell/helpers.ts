@@ -47,7 +47,10 @@ export async function waitForAppReady(timeoutMs = 60_000): Promise<void> {
             return 'location.protocol read threw';
           }
           const splash = document.getElementById('brand-loader');
-          if (!splash) return 'no #brand-loader (page may not have hydrated)';
+          if (!splash) {
+            const html = document.documentElement?.outerHTML.slice(0, 160) ?? '<no documentElement>';
+            return `no #brand-loader at ${location.href} (${document.readyState}); html=${html}`;
+          }
           if (getComputedStyle(splash).display !== 'none') {
             return 'splash still visible (SvelteKit hydration in progress)';
           }
@@ -69,6 +72,29 @@ export async function waitForAppReady(timeoutMs = 60_000): Promise<void> {
       `app never reached pane-attached state — last stall: ${lastFailReason}` +
         ` (waitUntil: ${baseMsg})`,
     );
+  }
+
+  let lastPtyFailure = 'no PTY readiness attempt completed';
+  try {
+    await browser.waitUntil(
+      async () => {
+        const result = await browser.executeAsync((done) => {
+          const pane = document.querySelector('[data-rg-pane-id]') as HTMLElement | null;
+          const paneId = pane?.dataset.rgPaneId;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const writePty = (window as any).__windE2E?.writePty;
+          if (!paneId || typeof writePty !== 'function') return done('pane hook unavailable');
+          writePty(paneId, '').then(() => done('__ready__'), (error: unknown) => done(String(error)));
+        });
+        if (result === '__ready__') return true;
+        lastPtyFailure = String(result);
+        return false;
+      },
+      { timeout: Math.min(timeoutMs, 15_000), interval: 250 },
+    );
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`pane DOM mounted but backend PTY never became writable: ${lastPtyFailure} (${detail})`);
   }
 }
 
@@ -97,7 +123,7 @@ export async function firstPaneId(): Promise<string> {
  *  CSI H homes the cursor — neither scrolls anything into scrollback,
  *  so `scrollbackLen()` stays stable and visible row 0 is guaranteed
  *  empty for the next feedPty. Specs that previously inline-fixed
- *  this: selection-tui-refresh, worker-path-shadow, parserBackend.rust. */
+ *  this: selection-tui-refresh and parserBackend.rust. */
 export async function clearVisibleGrid(paneId: string): Promise<void> {
   await browser.execute((id: string) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
