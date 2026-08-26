@@ -219,6 +219,7 @@ function makeManager() {
 	});
 	const internal = manager as any;
 	internal.wasmReady = true;
+	internal.loadedFontStacks.add('new-font');
 	const fixture = makePane();
 	internal.panes.set(PANE, fixture.pane);
 	return { manager, fixture, internal };

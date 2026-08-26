@@ -440,8 +440,8 @@ impl WebGpuPaneBackend {
     }
 
     fn measure_font(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
-        // Delegate to the browser Canvas2D CSS font stack used by the WebGPU
-        // glyph atlas; the same metrics drive pane fitting.
+        // Use the same Host-font Swash metrics as the WebGPU glyph atlas so
+        // pane fitting and painted advances cannot drift.
         self.ctx
             .borrow_mut()
             .rasterizer
@@ -535,8 +535,8 @@ impl WebGpuPaneBackend {
         self.font_size_q = (ctx.font_size_px * 100.0).round() as u16;
 
         // 1) Atlas slot growth — only ever grows. Shrinking on small
-        //    metric jiggles would thrash the rasterizer's hidden DOM canvas
-        //    allocation and re-rasterize every glyph.
+        //    metric jiggles would thrash the Swash slot allocation and
+        //    re-rasterize every glyph.
         if need_w > ctx.slot_w || need_h > ctx.slot_h {
             ctx.slot_w = need_w.max(ctx.slot_w);
             ctx.slot_h = need_h.max(ctx.slot_h);
@@ -868,6 +868,8 @@ impl WebGpuPaneBackend {
             // Pixel-aligned positions — floor(pos + 0.5) prevents sub-pixel
             // seams between adjacent cells that would show as hairline gaps.
             let pixel_x = (col as f32 * cell_w + 0.5).floor();
+            let cell_span = usize::from(cell.width.max(1));
+            let pixel_x_right = ((col + cell_span) as f32 * cell_w + 0.5).floor();
 
             // ── Fast-path skip: for pure ASCII lines, no cluster lookup
             // is needed. This avoids the linear scan through `row.clusters`
@@ -895,7 +897,7 @@ impl WebGpuPaneBackend {
                 entry,
                 pixel_x,
                 pixel_y,
-                cell_w * f32::from(cell.width.max(1)),
+                (pixel_x_right - pixel_x).max(1.0),
                 cell_h,
                 emoji_em_px,
                 fg,
@@ -942,6 +944,7 @@ impl WebGpuPaneBackend {
             cursor,
             effective_col,
             cell_w,
+            span_w,
             pixel_y,
             cell_h_int,
             cursor_color,
@@ -981,6 +984,7 @@ impl WebGpuPaneBackend {
         cursor: &CursorDraw,
         effective_col: f64,
         cell_w: f32,
+        span_w: f32,
         pixel_y: f32,
         cell_h: f32,
         cursor_color: [f32; 4],
@@ -1011,7 +1015,7 @@ impl WebGpuPaneBackend {
             gx,
             pixel_y,
             &entry,
-            cursor.width.max(1) as f32 * cell_w,
+            span_w.max(1.0),
             cell_h,
             self.emoji_em_px(),
         );
@@ -1200,11 +1204,15 @@ impl WebGpuPaneBackend {
                 if (entry.layer as usize) < self.frame_pinned.len() {
                     self.frame_pinned[entry.layer as usize] = true;
                 }
+                let start_col = col + cell_offset;
+                let end_col = start_col + usize::from((*width).max(1));
+                let pixel_x = (start_col as f32 * cell_w + 0.5).floor();
+                let pixel_x_right = (end_col as f32 * cell_w + 0.5).floor();
                 let (cell_xy, cell_size, atlas_uv) = glyph_quad_geometry_for_cell(
-                    ((col + cell_offset) as f32 * cell_w + 0.5).floor(),
+                    pixel_x,
                     pixel_y,
                     &entry,
-                    f32::from((*width).max(1)) * cell_w,
+                    (pixel_x_right - pixel_x).max(1.0),
                     cell_h,
                     self.emoji_em_px(),
                 );

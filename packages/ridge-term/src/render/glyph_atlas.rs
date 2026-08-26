@@ -99,6 +99,9 @@ pub struct GlyphEntry {
     /// pixels (per `RasterizedGlyph::is_color`). The renderer fits the
     /// complete bitmap into one stable em box inside its reserved cells.
     pub is_color: bool,
+    /// Box-drawing glyph rasterized by Swash, fitted to the exact snapped cell
+    /// width, and clipped to the current physical row.
+    pub is_box_drawing: bool,
 }
 
 /// Place a glyph at its native raster size, including font overhang.
@@ -131,9 +134,13 @@ pub(crate) fn glyph_quad_geometry_with_uv(
     )
 }
 
-/// Normalize color emoji to one em-sized maximum extent. The complete bitmap
-/// remains visible; only its WebGPU quad changes. Monochrome glyphs keep native
-/// font geometry, including overhang.
+/// Fit cell-sensitive glyphs without changing ordinary font geometry. Box
+/// drawing spans the exact snapped cell width and is clipped at row boundaries;
+/// color emoji is contained in one em. Other glyphs retain native overhang.
+#[cfg_attr(
+    not(any(test, all(target_arch = "wasm32", feature = "webgpu"))),
+    allow(dead_code)
+)]
 pub(crate) fn glyph_quad_geometry_for_cell(
     pixel_x: f32,
     pixel_y: f32,
@@ -143,6 +150,26 @@ pub(crate) fn glyph_quad_geometry_for_cell(
     em_px: f32,
 ) -> ([f32; 2], [f32; 2], [f32; 4]) {
     if !entry.is_color {
+        if entry.is_box_drawing {
+            let source_h = (entry.px_h as f32).max(1.0);
+            let native_top = pixel_y + entry.ascent_offset;
+            let native_bottom = native_top + source_h;
+            let row_bottom = pixel_y + allocation_h.max(1.0);
+            let draw_top = native_top.max(pixel_y);
+            let draw_bottom = native_bottom.min(row_bottom);
+            if draw_bottom <= draw_top {
+                return ([pixel_x, pixel_y], [allocation_w.max(1.0), 0.0], entry.uv);
+            }
+
+            let uv_height = entry.uv[3] - entry.uv[1];
+            let v0 = entry.uv[1] + ((draw_top - native_top) / source_h) * uv_height;
+            let v1 = entry.uv[1] + ((draw_bottom - native_top) / source_h) * uv_height;
+            return (
+                [pixel_x, draw_top],
+                [allocation_w.max(1.0), draw_bottom - draw_top],
+                [entry.uv[0], v0, entry.uv[2], v1],
+            );
+        }
         return glyph_quad_geometry_with_uv(pixel_x, pixel_y, entry);
     }
 
@@ -408,6 +435,7 @@ mod tests {
             px_w: 8,
             px_h: 16,
             is_color: false,
+            is_box_drawing: false,
         }
     }
 
@@ -532,6 +560,57 @@ mod tests {
         assert_eq!(
             glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 16.0, 18.0, 14.0),
             ([8.0, 23.0], [7.0, 11.0], glyph.uv)
+        );
+    }
+
+    #[test]
+    fn box_drawing_uses_exact_snapped_cell_width() {
+        let glyph = GlyphEntry {
+            px_w: 11,
+            px_h: 3,
+            ascent_offset: 7.0,
+            is_box_drawing: true,
+            ..entry(0)
+        };
+        assert_eq!(
+            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 10.0, 18.0, 14.0),
+            ([10.0, 27.0], [10.0, 3.0], glyph.uv)
+        );
+    }
+
+    #[test]
+    fn box_drawing_clips_to_snapped_row_without_vertical_scaling() {
+        let glyph = GlyphEntry {
+            uv: [0.0, 0.0, 0.5, 0.75],
+            px_w: 11,
+            px_h: 23,
+            ascent_offset: 0.0,
+            is_box_drawing: true,
+            ..entry(0)
+        };
+        assert_eq!(
+            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 9.0, 22.0, 14.0),
+            (
+                [10.0, 20.0],
+                [9.0, 22.0],
+                [0.0, 0.0, 0.5, 0.75 * 22.0 / 23.0]
+            )
+        );
+    }
+
+    #[test]
+    fn box_drawing_clips_negative_top_bearing_to_current_row() {
+        let glyph = GlyphEntry {
+            uv: [0.0, 0.0, 0.5, 0.75],
+            px_w: 11,
+            px_h: 24,
+            ascent_offset: -1.0,
+            is_box_drawing: true,
+            ..entry(0)
+        };
+        assert_eq!(
+            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 10.0, 23.0, 14.0),
+            ([10.0, 20.0], [10.0, 23.0], [0.0, 0.75 / 24.0, 0.5, 0.75])
         );
     }
 

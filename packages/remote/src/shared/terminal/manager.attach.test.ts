@@ -80,6 +80,7 @@ const wasm = vi.hoisted(() => {
 		FakeKernel,
 		FakeRenderHandle,
 		init: vi.fn(async () => undefined),
+		installFontData: vi.fn(() => true),
 		atlasOverwriteAfterCiteCount: vi.fn(() => 7),
 		setPresentFast: vi.fn(),
 		SurfaceHostHandle: { init: vi.fn(async () => host) },
@@ -88,7 +89,17 @@ const wasm = vi.hoisted(() => {
 });
 
 const tauri = vi.hoisted(() => ({
-	invoke: vi.fn(async () => undefined),
+	invoke: vi.fn(async (command: string) => command === 'load_terminal_font_faces'
+		? {
+			stackHash: '1'.repeat(64),
+			faces: [{
+				family: 'monospace',
+				contentHash: '2'.repeat(64),
+				byteLen: 4,
+				dataBase64: 'AAECAw==',
+			}],
+		}
+		: undefined),
 }));
 
 vi.mock('@tauri-apps/api/core', () => tauri);
@@ -98,6 +109,7 @@ vi.mock('@ridge/term-wasm', () => ({
 	TerminalKernel: wasm.FakeKernel,
 	RenderHandle: wasm.FakeRenderHandle,
 	SurfaceHostHandle: wasm.SurfaceHostHandle,
+	installFontData: wasm.installFontData,
 	atlasOverwriteAfterCiteCount: wasm.atlasOverwriteAfterCiteCount,
 	setPresentFast: wasm.setPresentFast,
 }));
@@ -200,6 +212,7 @@ describe('TerminalManager attach lifecycle', () => {
 		await manager.ready();
 
 		expect(wasm.init).toHaveBeenCalledOnce();
+		expect(wasm.installFontData).toHaveBeenCalledOnce();
 		expect(wasm.setPresentFast).toHaveBeenCalledWith(true);
 		expect((window as any).__ridgeAtlasRace()).toEqual({ overwriteAfterCite: 7 });
 	});

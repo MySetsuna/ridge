@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use crate::commands::{
     clipboard_files, clipboard_image, fs_watch, git, pane, process, project, ridge_file, settings,
-    terminal, theme, watch, workspace,
+    terminal, terminal_font, theme, watch, workspace,
 };
 use crate::db::ProjectStore;
 use crate::state::AppState;
@@ -395,6 +395,8 @@ pub fn run() {
             pane::register_teammate_agent,
             pane::release_teammate_agent,
             terminal::create_pane,
+            terminal_font::load_terminal_font_faces,
+            terminal_font::read_terminal_font_face_chunk,
             terminal::activate_pane_pty,
             terminal::get_teammate_metrics,
             terminal::change_pane_shell,

@@ -54,6 +54,8 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   'resize_pane',
   'detect_available_shells',
   'get_shell_history',
+  'load_terminal_font_faces',
+  'read_terminal_font_face_chunk',
   // Paged scrollback (seq-cursor) — read-only. Lets a cloud controller seed a
   // pane with ~1.5 screens on subscribe and lazily page older history on
   // scroll-up (get_pane_scrollback_before), instead of the host dumping the

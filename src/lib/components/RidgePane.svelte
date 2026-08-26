@@ -72,8 +72,9 @@ let webgpuInitError = $state<string | null>(null);
 
 function formatWebgpuInitError(error: unknown): string {
 	const detail = error instanceof Error ? error.message : String(error);
-	const prefix = detail.includes('WEBGPU_INIT_FAILED') ? detail : `WEBGPU_INIT_FAILED: ${detail}`;
-	return `${prefix}. WebGPU and WebGL2 are unavailable; update the browser, OS, or graphics drivers, then reload.`;
+	return detail.includes('WEBGPU_INIT_FAILED')
+		? `${detail}. WebGPU and WebGL2 are unavailable; update the browser, OS, or graphics drivers, then reload.`
+		: detail;
 }
 
 // 右键菜单"切换终端类型"子菜单需要 shell 列表；挂载预加载（共享缓存），

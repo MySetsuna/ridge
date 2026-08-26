@@ -32,6 +32,8 @@ describe('isRemoteAllowed', () => {
       'write_file',
       'get_pane_layout',
       'write_to_pty',
+      'load_terminal_font_faces',
+      'read_terminal_font_face_chunk',
       'get_pane_scrollback_tail',
       'get_pane_scrollback_before',
       // §R-CLOUD-CONVERGE: the converged full-resync-frame command MUST pass the
