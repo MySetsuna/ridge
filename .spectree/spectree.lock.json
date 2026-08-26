@@ -1,12 +1,12 @@
 {
   "version": 1,
-  "changeId": "CHG-020",
-  "specHash": "d17df615ad0a442670506722d23c8ec787671116feaa69e9f34738a9ab533c72",
+  "changeId": "CHG-021",
+  "specHash": "09650160771621702b29f0e6a143e36fb0f023b50b6eee86651d3b2e27638db5",
   "units": [
     {
       "id": "L3-TERMINAL-GLYPH-001",
       "level": "L3",
-      "nodeHash": "2ba8cdefe8f12cf25ce182b3c21ad71d43757117b68f66d8545c65471fd0e28a",
+      "nodeHash": "dba7db7313b92186560e2af3dd88599e4be04703d9b2a9592f09adff2cec9bac",
       "codeTargets": [
         "packages/ridge-term/src/render/glyph_atlas.rs",
         "packages/ridge-term/src/render/glyph_rasterizer.rs",
@@ -90,6 +90,7 @@
     "changes/CHG-018.md": "4e1820c58e5ffeddc00fc6ffcd8b0c4bc4e374362da3b1a68f3b7923f99546f5",
     "changes/CHG-019.md": "7b1758ca774d132ae6d8afe4ecdee944d8a91f68f949e4efaa42340bfacc7fb0",
     "changes/CHG-020.md": "0db47ca72bc5cd49160555071b6077f3d6169229caa4dbdd99f5048f53d2e06a",
+    "changes/CHG-021.md": "f98a2c377fff14f9d4e65afb112e5a909de40914e11c92bf3a0bea8f4b5d8de3",
     "CLAUDE.md": "1f07d1b3dcd28c80ef7f2255ae8d6135717c98e75a2b7630dc246902148bfd21",
     "docs/_team-archive/site-revamp-2026-04-30/content-brief.md": "ae3ffae60b3037e595e0b0e976675cbbf49edb74ed01ce44e7188b9862a26bfc",
     "docs/_team-archive/site-revamp-2026-04-30/decisions.md": "63b66c909323ed7acc6cce207b8de7395579a5d6636fc00abb62b3502e4f4629",
@@ -919,7 +920,7 @@
     "packages/ridge-term/src/lib.rs": "1a0e976fb8b403a6f55dcce98594090455dacb3de9a06bd41808a6fc4b0587bb",
     "packages/ridge-term/src/render/backend.rs": "94138c8e8de85f56226487b880332e0dc689245fd71ab68b8144dff7f0af602c",
     "packages/ridge-term/src/render/glyph_atlas.rs": "78c0218d3e03e72214f2beabd5c1f2d54eef62bc1aad5255cf958c6f352e093f",
-    "packages/ridge-term/src/render/glyph_rasterizer.rs": "42b5a6e71a90ae4ec116f52f7a3d6ddd604bbb86cafdab1e75c4e18287fbe30a",
+    "packages/ridge-term/src/render/glyph_rasterizer.rs": "fbfabaddfe27c8ba415cd9e936fc692e10b0a33bbd631f3bcfefa7e9733a2a7e",
     "packages/ridge-term/src/render/gpu_context.rs": "5c29f46e7791a7e32bd8f5d960275c490d5e2a0cd0e4858a9c7d0a7fd53dbf21",
     "packages/ridge-term/src/render/gpu_limits.rs": "d4c363bea59de071255d580d92f3f7f93526314baa329f3e49d380eef64cc93e",
     "packages/ridge-term/src/render/mod.rs": "dd268fbabd9b85dcd08a7917bf62089d41db3129e353c11af0eff1a98a0df658",
@@ -1114,7 +1115,7 @@
     "specs/l3-desktop-boot.md": "15f679ff509c729ae267d86a717a11f0ec3e37505883c36b58cd7ed4f25faf77",
     "specs/l3-remote-smoothness.md": "a8f99de0b3f27e07711e01319f31096c55549a4a352c21a6e063ac2e34ef15bb",
     "specs/l3-runtime-discovery.md": "42ab19ac403124c1efcb4352fa293f9d111deabe66ede5a2cad9e0638a70fead",
-    "specs/l3-terminal-glyph-rendering.md": "d81e26f173e322ccfcb79fdd4ea25ab42192521960b85d29524358b3b0f51d9c",
+    "specs/l3-terminal-glyph-rendering.md": "e5e11b987bb1ce71d7e45e0e879b89f99b536deb7a7ab434d86397510f16e959",
     "specs/l4-agent-activity.md": "c83c805c8014dd4b34a459a53d02ffe19283f8b8e6c2d479575fd41ae5fc8e4c",
     "specs/l4-agent-card.md": "e051a80b80b107612c4f4eab5089c498f4f3e22c4ce087eb7c5ea79220d294d9",
     "specs/l4-emoji-geometry-gate.md": "da3ac65ad8c3073745d47d8d24a5a1df9335582e0dabc45387bc32db463faf24",
@@ -1629,6 +1630,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-921215cc2006",
-  "manifestHash": "921215cc20061acd9e262dba570804e4e5feb70d9f4fbe95e1bac68a2d7efa6e"
+  "buildId": "BUILD-850b7f3c43d1",
+  "manifestHash": "850b7f3c43d188dccd55dcdd335262bcffebe31ec8fabda9f5f94bd56291e5e3"
 }
