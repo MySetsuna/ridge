@@ -691,9 +691,7 @@ fn extend_horizontal_connector(
     for x in start..=end {
         for (y, pixel) in &pixels {
             let offset = (y * width + x) * 4;
-            if rgba[offset + 3] == 0 {
-                rgba[offset..offset + 4].copy_from_slice(pixel);
-            }
+            rgba[offset..offset + 4].copy_from_slice(pixel);
         }
     }
 }
@@ -782,6 +780,10 @@ mod tests {
             rgba[(7 + x) * 4..(7 + x + 1) * 4].copy_from_slice(&[48, 48, 48, 48]);
             rgba[(14 + x) * 4..(14 + x + 1) * 4].copy_from_slice(&[160, 160, 160, 160]);
         }
+        rgba[7 * 4..8 * 4].copy_from_slice(&[12, 12, 12, 12]);
+        rgba[13 * 4..14 * 4].copy_from_slice(&[20, 20, 20, 20]);
+        rgba[14 * 4..15 * 4].copy_from_slice(&[24, 24, 24, 24]);
+        rgba[20 * 4..21 * 4].copy_from_slice(&[28, 28, 28, 28]);
         let mut height = 3;
         let mut top = 0;
         stabilize_box_connector_edges(&mut rgba, 7, &mut height, &mut top, 0, 7.0, 3.0, 6, "─");
@@ -803,6 +805,7 @@ mod tests {
         for x in 2..=3 {
             rgba[(2 * 5 + x) * 4..(2 * 5 + x + 1) * 4].copy_from_slice(&[128, 128, 128, 128]);
         }
+        rgba[(2 * 5 + 4) * 4..(2 * 5 + 5) * 4].copy_from_slice(&[16, 16, 16, 16]);
         rgba[(3 * 5 + 2) * 4..(3 * 5 + 3) * 4].copy_from_slice(&[160, 160, 160, 160]);
         let curve_pixel = rgba[(5 + 1) * 4..(5 + 2) * 4].to_vec();
         let mut height = 4;
@@ -840,6 +843,51 @@ mod tests {
         composite_image(&mut rgba, 1, 1, &image, 0, 0);
         assert_eq!(rgba, vec![128, 16, 0, 128]);
         assert_ne!(rgba[0], rgba[1]);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn consolas_box_drawing_uses_monochrome_swash_bitmaps() {
+        let path = std::path::Path::new(r"C:\Windows\Fonts\consola.ttf");
+        if !path.exists() {
+            return;
+        }
+        register_font_data(std::fs::read(path).unwrap()).unwrap();
+        let mut rasterizer = GlyphRasterizer::new(256, 256).unwrap();
+
+        for (text, sides) in [
+            ("─", CONNECT_LEFT | CONNECT_RIGHT),
+            ("│", CONNECT_TOP | CONNECT_BOTTOM),
+            ("╭", CONNECT_RIGHT | CONNECT_BOTTOM),
+        ] {
+            let glyph = rasterizer
+                .rasterize("'Consolas'", 15.0, 1.0, 0, text)
+                .unwrap();
+            assert!(
+                !glyph.is_color,
+                "{text} must remain a monochrome font bitmap"
+            );
+            assert!(glyph.is_box_drawing);
+
+            let width = glyph.width as usize;
+            let height = glyph.height as usize;
+            let logical_left = ((-glyph.left_offset.round() as i32).max(0) as usize).min(width - 1);
+            let logical_right =
+                (logical_left + glyph.advance.ceil().max(1.0) as usize - 1).min(width - 1);
+            let alpha_at = |x: usize, y: usize| glyph.rgba[(y * width + x) * 4 + 3];
+            if sides & CONNECT_LEFT != 0 {
+                assert!((0..height).any(|y| alpha_at(logical_left, y) != 0));
+            }
+            if sides & CONNECT_RIGHT != 0 {
+                assert!((0..height).any(|y| alpha_at(logical_right, y) != 0));
+            }
+            if sides & CONNECT_TOP != 0 {
+                assert!((logical_left..=logical_right).any(|x| alpha_at(x, 0) != 0));
+            }
+            if sides & CONNECT_BOTTOM != 0 {
+                assert!((logical_left..=logical_right).any(|x| alpha_at(x, height - 1) != 0));
+            }
+        }
     }
 
     #[cfg(target_os = "windows")]

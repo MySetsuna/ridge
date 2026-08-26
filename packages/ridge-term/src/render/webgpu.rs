@@ -96,17 +96,14 @@ const CLUSTER_TAG: u32 = 0x8000_0000;
 /// CellInstance `is_color` sentinel for solid overlay rectangles. Character
 /// cells never use this mode: box drawing, block elements, and symbols all
 /// go through the system-font rasterizer and shared glyph atlas. 0 = mono
-/// atlas glyph, 1 = color emoji, 2 = solid overlay, 3 = box drawing.
+/// atlas glyph, 1 = color emoji, 2 = solid overlay.
 const INSTANCE_MODE_MONO: u32 = 0;
 const INSTANCE_MODE_COLOR: u32 = 1;
 const INSTANCE_MODE_SOLID: u32 = 2;
-const INSTANCE_MODE_BOX: u32 = 3;
 
 fn glyph_instance_mode(entry: &GlyphEntry) -> u32 {
     if entry.is_color {
         INSTANCE_MODE_COLOR
-    } else if entry.is_box_drawing {
-        INSTANCE_MODE_BOX
     } else {
         INSTANCE_MODE_MONO
     }
