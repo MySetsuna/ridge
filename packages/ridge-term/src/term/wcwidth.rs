@@ -463,6 +463,7 @@ mod tests {
     #[test]
     fn emoji_presentation_is_distinct_from_wide_text() {
         assert!(is_emoji_presentation("\u{1f600}"));
+        assert!(is_emoji_presentation("\u{1f310}")); // 🌐 GLOBE WITH MERIDIANS
         assert!(is_emoji_presentation("\u{2764}\u{fe0f}"));
         assert!(is_emoji_presentation("1\u{fe0f}\u{20e3}"));
         assert!(is_emoji_presentation("\u{1f1fa}\u{1f1f8}"));

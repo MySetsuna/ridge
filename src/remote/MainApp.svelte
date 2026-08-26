@@ -540,8 +540,9 @@
   // initialization failures instead of hiding them behind a second renderer.
   function formatWebgpuInitError(error: unknown): string {
     const detail = error instanceof Error ? error.message : String(error);
-    const prefix = detail.includes('WEBGPU_INIT_FAILED') ? detail : `WEBGPU_INIT_FAILED: ${detail}`;
-    return `${prefix}. WebGPU and WebGL2 are unavailable; update the browser or OS, then reload.`;
+    return detail.includes('WEBGPU_INIT_FAILED')
+      ? `${detail}. WebGPU and WebGL2 are unavailable; update the browser or OS, then reload.`
+      : detail;
   }
 
   function hostCanvas(node: HTMLCanvasElement) {

@@ -2918,7 +2918,9 @@ async fn dispatch_invoke_pane(
     state: &AppState,
     handle: &tauri::AppHandle,
 ) -> serde_json::Value {
-    use crate::commands::{fs_watch, git, pane, project, ridge_file, terminal, watch, workspace};
+    use crate::commands::{
+        fs_watch, git, pane, project, ridge_file, terminal, terminal_font, watch, workspace,
+    };
     use tauri::Manager;
     match cmd {
         // ── Pane / terminal ──
@@ -3030,6 +3032,16 @@ async fn dispatch_invoke_pane(
         }
         "detect_available_shells" => plain(terminal::detect_available_shells().await),
         "get_shell_history" => val(terminal::get_shell_history(s(args, "shellKind")).await),
+        "load_terminal_font_faces" => val(terminal_font::load_terminal_font_faces(
+            vec_s(args, "families"),
+            Some(vec_s(args, "knownHashes")),
+        )
+        .await),
+        "read_terminal_font_face_chunk" => val(terminal_font::read_terminal_font_face_chunk(
+            s(args, "contentHash"),
+            usize_arg(args, "offset"),
+            usize_arg(args, "length"),
+        )),
 
         _ => unreachable!("unmatched remote invoke command"),
     }
@@ -3500,6 +3512,8 @@ async fn dispatch_allowlisted_invoke(
         "resize_pane",
         "detect_available_shells",
         "get_shell_history",
+        "load_terminal_font_faces",
+        "read_terminal_font_face_chunk",
     ];
     const NATIVE: &[&str] = &[
         "list_native_sessions",

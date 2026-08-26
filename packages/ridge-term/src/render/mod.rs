@@ -131,10 +131,8 @@ mod fit_glyph_box_tests {
 // WebGpuPaneBackend instances record each pane's draw clipped by its own
 // scissor rect. Single submit + present per frame regardless of pane count.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-// Glyph rasterizer (Round 3 §4.1.b). Uses a detached browser Canvas2D only as
-// CSS-system-font glyph input for the WebGPU atlas; it ships no font data.
-// Owned by the shared WebGPU cache-miss path; gated on the same wasm32 +
-// webgpu feature combination.
+// Glyph rasterizer (Round 3 §4.1.b). The host supplies selected system-font
+// bytes; cosmic-text/Swash rasterizes atlas misses without a browser 2D context.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub use backend::{CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme};
 pub use renderer::Renderer;

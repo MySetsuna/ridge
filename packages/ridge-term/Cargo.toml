@@ -51,12 +51,13 @@ default = ["webgpu"]
 # minimal. wasm-bindgen-futures bridges JS Promises to Rust .await
 # inside the WebGpuBackend::new constructor.
 #
-# Glyph atlas misses are rasterized by the browser's Canvas2D CSS font stack;
-# ridge-term does not load, bundle, or authorize local font files.
+# The host supplies selected system-font SFNT bytes before WebGPU starts;
+# cosmic-text/swash shapes and rasterizes atlas misses synchronously in Wasm.
 webgpu = [
     "dep:wgpu",
     "dep:wasm-bindgen-futures",
     "dep:bytemuck",
+    "dep:cosmic-text",
 ]
 
 [dependencies]
@@ -95,9 +96,6 @@ web-sys = { version = "0.3", features = [
     "Element",
     "HtmlElement",
     "HtmlCanvasElement",
-    "CanvasRenderingContext2d",
-    "ImageData",
-    "TextMetrics",
     "CssStyleDeclaration",
     "Storage",
     "console",
@@ -117,6 +115,7 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 # (TASKS §4.5.c). The `derive` feature lets CellInstance + FrameUniform
 # get `Pod` + `Zeroable` impls without hand-written unsafe blocks.
 bytemuck = { version = "1", features = ["derive"], optional = true }
+cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash", "wasm-web", "monospace_fallback"], optional = true }
 
 [dev-dependencies]
 # Native tests don't need wasm. Naga is the WGSL parser/validator wgpu

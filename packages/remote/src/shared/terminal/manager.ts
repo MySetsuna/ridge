@@ -38,6 +38,7 @@ import type { ActiveWallpaperGpu, InputBufferState } from './types';
 import { perfMark } from './perfTrace';
 import { unknownText } from '../transport/unknownText';
 import { DEFAULT_TERM_FONT } from './fontStack';
+import { loadTerminalFonts, type FontDataInstaller } from './fontDataService';
 import { imeHelperCssPosition, type ImeAnchorInput } from './imeAnchor';
 import {
 	cellFromVisualClientPoint,
@@ -631,6 +632,9 @@ export class TerminalManager {
 
 	private wasmReady = false;
 	private wasmReadyPromise: Promise<void> | null = null;
+	private fontInstaller: FontDataInstaller | null = null;
+	private readonly loadedFontStacks = new Set<string>();
+	private readonly fontLoadPromises = new Map<string, Promise<void>>();
 
 	private readonly opts: ManagerOptions;
 	private readonly panes = new Map<string, PaneEntry>();
@@ -875,8 +879,8 @@ export class TerminalManager {
 			//
 			TerminalManager._instance = new TerminalManager(
 				opts ?? {
-					// The browser/OS resolves this CSS stack for metrics and glyph
-					// fallback; no font bytes are loaded by the app.
+					// Host resolves this stack and supplies bounded font bytes to
+					// the shared Swash/WebGPU renderer before pane attachment.
 					fontFamily: DEFAULT_TERM_FONT,
 					fontSizePx: 15,
 					scrollbackLines: 2000,
@@ -903,11 +907,41 @@ export class TerminalManager {
 	 * `?url` import (above) is vite's official asset-URL syntax and
 	 * resolves to whatever path actually serves the file.
 	 */
+	private _ensureFontStack(stack: string): Promise<void> {
+		const key = stack.trim();
+		if (this.loadedFontStacks.has(key)) return Promise.resolve();
+		const active = this.fontLoadPromises.get(key);
+		if (active) return active;
+		if (!this.fontInstaller) {
+			return Promise.reject(new Error('FONT_DATA_MISSING: wasm font installer is unavailable'));
+		}
+		const pending = loadTerminalFonts(key, this.fontInstaller).then(
+			() => {
+				this.loadedFontStacks.add(key);
+				this.fontLoadPromises.delete(key);
+			},
+			(error) => {
+				this.fontLoadPromises.delete(key);
+				throw error;
+			},
+		);
+		this.fontLoadPromises.set(key, pending);
+		return pending;
+	}
+
 	ready(): Promise<void> {
 		if (this.wasmReady) return Promise.resolve();
 		if (this.wasmReadyPromise !== null) return this.wasmReadyPromise;
 		const pending = (async () => {
 			await init(wasmUrl);
+			const fontModule = (await import('@ridge/term-wasm')) as unknown as {
+				installFontData?: (data: Uint8Array) => boolean;
+			};
+			if (typeof fontModule.installFontData !== 'function') {
+				throw new Error('FONT_DATA_MISSING: wasm bundle has no system-font installer');
+			}
+			this.fontInstaller = fontModule.installFontData;
+			await this._ensureFontStack(this.opts.fontFamily);
 			this.wasmReady = true;
 			// §atlas-race forensics (2026-06-22): expose detector counters on
 			// window.__ridgeAtlasRace() for release console / CDP polling. A value
@@ -4618,30 +4652,31 @@ export class TerminalManager {
 			document.documentElement.style.setProperty('--rg-term-font-size', `${sizePx}px`);
 		}
 		if (!this.wasmReady) return Promise.resolve();
-		if (this.opts.fontFamily !== family || this.opts.fontSizePx !== sizePx) return Promise.resolve();
-		const dpr = window.devicePixelRatio || 1;
-		for (const entry of this.panes.values()) {
-			// Skip parked entries — their handle has been freed. They'll
-			// pick up the new font on the next unpark via this.opts.
-			if (entry.parked) continue;
-			// §p4 ITER 1c / ITER 8 — when the worker-renderer owns this
-			// pane's canvas, the main-thread handle is null. Push the
-			// font into the worker so its `RenderHandle.configure`
-			// re-measures, and re-seed entry.cellW / cellH from the
-			// metrics it returns (then refit so the new column count
-			// reaches the kernel + PTY).
-			if (!entry.handle) continue;
-			const [w, h] = entry.handle.configure(family, sizePx, dpr) as
-				| [number, number]
-				| Float32Array;
-			entry.cellW = Number(w);
-			entry.cellH = Number(h);
-			entry.lastConfiguredDpr = dpr;
-			this._invalidateEntry(entry);
-			void this.fitPane(entry, this._sharedRemoteMode);
-		}
-		this.wake();
-		return Promise.resolve();
+		return this._ensureFontStack(family).then(() => {
+			if (this.opts.fontFamily !== family || this.opts.fontSizePx !== sizePx) return;
+			const dpr = window.devicePixelRatio || 1;
+			for (const entry of this.panes.values()) {
+				// Skip parked entries — their handle has been freed. They'll
+				// pick up the new font on the next unpark via this.opts.
+				if (entry.parked) continue;
+				// §p4 ITER 1c / ITER 8 — when the worker-renderer owns this
+				// pane's canvas, the main-thread handle is null. Push the
+				// font into the worker so its `RenderHandle.configure`
+				// re-measures, and re-seed entry.cellW / cellH from the
+				// metrics it returns (then refit so the new column count
+				// reaches the kernel + PTY).
+				if (!entry.handle) continue;
+				const [w, h] = entry.handle.configure(family, sizePx, dpr) as
+					| [number, number]
+					| Float32Array;
+				entry.cellW = Number(w);
+				entry.cellH = Number(h);
+				entry.lastConfiguredDpr = dpr;
+				this._invalidateEntry(entry);
+				void this.fitPane(entry, this._sharedRemoteMode);
+			}
+			this.wake();
+		});
 	}
 
 	/** Apply theme overrides to all panes. */

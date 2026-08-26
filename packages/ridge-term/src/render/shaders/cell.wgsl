@@ -152,12 +152,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 
     let is_color = in.is_color > 0.5;
 
-    // Canvas2D exposes grayscale antialiasing rather than native terminal
-    // subpixel coverage. Keep a narrow antialiased edge while mapping the
-    // broad grayscale fringe to the solid coverage users expect from a
-    // native terminal. The centred curve preserves glyph geometry.
-    // Color emoji must preserve their original alpha.
-    let coverage = select(smoothstep(0.48, 0.52, glyph.a), glyph.a, is_color);
+    // Swash coverage already contains the selected font's hinted grayscale
+    // edge. Preserve it byte-for-byte; thresholding makes small stems jagged.
+    let coverage = glyph.a;
 
     // §B.3 — color/mono classification carried per-instance from the
     // rasterizer's pixel-scan (`GlyphEntry::is_color`). The earlier

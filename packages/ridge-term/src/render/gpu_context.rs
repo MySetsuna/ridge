@@ -113,8 +113,8 @@ pub struct WallpaperTex {
 
 /// CPU-side copy of recently rasterized glyph bitmaps. The GPU atlas is an
 /// LRU of texture layers, so a glyph can be evicted while its bitmap is still
-/// useful. Keeping a bounded copy avoids another synchronous Canvas2D
-/// `get_image_data` readback when that glyph returns under high pane churn.
+/// useful. Keeping a bounded copy avoids another Swash rasterization when that
+/// glyph returns under high pane churn.
 const RASTER_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
 const RASTER_CACHE_MAX_ENTRIES: usize = 2048;
 
@@ -313,6 +313,25 @@ pub fn atlas_overwrite_after_cite_count() -> u64 {
             .map(|rc| rc.borrow().atlas_overwrite_after_cite)
             .unwrap_or(0)
     })
+}
+
+/// Register host-provided system-font bytes and synchronize a live shared
+/// rasterizer. The atlas is invalidated only when the payload is new.
+pub fn install_font_data(data: Vec<u8>) -> Result<bool, String> {
+    let added = super::glyph_rasterizer::register_font_data(data)?;
+    if !added {
+        return Ok(false);
+    }
+    SHARED_GPU.with(|cell| -> Result<(), String> {
+        let Some(ctx) = cell.borrow().as_ref().cloned() else {
+            return Ok(());
+        };
+        let mut ctx = ctx.borrow_mut();
+        ctx.rasterizer.sync_registered_fonts()?;
+        ctx.invalidate_atlas();
+        Ok(())
+    })?;
+    Ok(true)
 }
 
 /// §stale-replay detector: read the process-wide count of cached replays
@@ -711,7 +730,7 @@ impl GpuContext {
             // Linear (NOT sRGB) — matches `SURFACE_FORMAT` so the whole
             // pipeline treats colors as "sRGB byte / 255" semantic values
             // throughout. With `Rgba8UnormSrgb` here, sampling would
-            // gamma-decode the DOM canvas's sRGB-byte glyph pixels
+            // gamma-decode Swash's sRGB-byte glyph pixels
             // into linear space, the shader would mix in linear, then
             // write back to `Bgra8Unorm` (linear) — net effect: every
             // color-emoji RGB channel ends up displayed at its linear
@@ -778,7 +797,7 @@ impl GpuContext {
 
     /// Compute the device-pixel atlas slot size required for the given
     /// (cell_w, cell_h, dpr). Wide CJK cells need ≥ `cell_w × dpr × 2`
-    /// device pixels horizontally so the rasterizer's DOM canvas
+    /// device pixels horizontally so the Swash atlas slot
     /// holds the full advance without clipping. `slot_w` is rounded up
     /// to a power of two so `bytes_per_row = slot_w × 4` always
     /// satisfies wgpu's 256-byte alignment. Vertical adds 25% safety
@@ -953,9 +972,8 @@ impl GpuContext {
             ..Default::default()
         });
 
-        // Rasterizer's DOM canvas dimensions must match the slot
-        // exactly so its `get_image_data` is `slot_w × slot_h × 4`
-        // bytes — same shape `queue.write_texture` expects.
+        // Rasterizer dimensions must match the atlas slot so every admitted
+        // Swash bitmap fits the `queue.write_texture` upload bounds.
         let rasterizer = GlyphRasterizer::new(self.slot_w as u16, self.slot_h as u16)?;
 
         self.atlas_texture = atlas_texture;
@@ -1197,6 +1215,7 @@ impl GpuContext {
             px_w: logical_px_w,
             px_h: logical_px_h,
             is_color: glyph.is_color,
+            is_box_drawing: glyph.is_box_drawing,
         };
         self.atlas.insert(key, entry);
         Ok(entry)
@@ -1316,6 +1335,7 @@ mod tests {
             px_w: 8,
             px_h: 16,
             is_color: false,
+            is_box_drawing: false,
         }
     }
 
