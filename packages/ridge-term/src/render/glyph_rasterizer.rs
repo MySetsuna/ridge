@@ -418,6 +418,52 @@ fn box_drawing_char(glyph_text: &str) -> Option<char> {
     (chars.next().is_none() && ('\u{2500}'..='\u{257f}').contains(&ch)).then_some(ch)
 }
 
+const CONNECT_LEFT: u8 = 1;
+const CONNECT_RIGHT: u8 = 2;
+const CONNECT_TOP: u8 = 4;
+const CONNECT_BOTTOM: u8 = 8;
+
+fn box_connector_sides(ch: char) -> u8 {
+    match ch {
+        '\u{2500}' | '\u{2501}' | '\u{2504}' | '\u{2505}' | '\u{2508}' | '\u{2509}'
+        | '\u{254c}' | '\u{254d}' | '\u{2550}' | '\u{257c}' | '\u{257e}' => {
+            CONNECT_LEFT | CONNECT_RIGHT
+        }
+        '\u{2502}' | '\u{2503}' | '\u{2506}' | '\u{2507}' | '\u{250a}' | '\u{250b}'
+        | '\u{254e}' | '\u{254f}' | '\u{2551}' | '\u{257d}' | '\u{257f}' => {
+            CONNECT_TOP | CONNECT_BOTTOM
+        }
+        '\u{250c}'..='\u{250f}' | '\u{2552}'..='\u{2557}' | '\u{256d}' => {
+            CONNECT_RIGHT | CONNECT_BOTTOM
+        }
+        '\u{2510}'..='\u{2513}' | '\u{2558}'..='\u{255d}' | '\u{256e}' => {
+            CONNECT_LEFT | CONNECT_BOTTOM
+        }
+        '\u{2514}'..='\u{2517}' | '\u{2570}' => CONNECT_RIGHT | CONNECT_TOP,
+        '\u{2518}'..='\u{251b}' | '\u{256f}' => CONNECT_LEFT | CONNECT_TOP,
+        '\u{251c}'..='\u{2523}' | '\u{255e}'..='\u{2560}' => {
+            CONNECT_TOP | CONNECT_BOTTOM | CONNECT_RIGHT
+        }
+        '\u{2524}'..='\u{252b}' | '\u{2561}'..='\u{2563}' => {
+            CONNECT_TOP | CONNECT_BOTTOM | CONNECT_LEFT
+        }
+        '\u{252c}'..='\u{2533}' | '\u{2564}'..='\u{2566}' => {
+            CONNECT_LEFT | CONNECT_RIGHT | CONNECT_BOTTOM
+        }
+        '\u{2534}'..='\u{253b}' | '\u{2567}'..='\u{2569}' => {
+            CONNECT_LEFT | CONNECT_RIGHT | CONNECT_TOP
+        }
+        '\u{253c}'..='\u{254b}' | '\u{256a}'..='\u{256c}' => {
+            CONNECT_LEFT | CONNECT_RIGHT | CONNECT_TOP | CONNECT_BOTTOM
+        }
+        '\u{2574}' | '\u{2578}' => CONNECT_LEFT,
+        '\u{2575}' | '\u{2579}' => CONNECT_TOP,
+        '\u{2576}' | '\u{257a}' => CONNECT_RIGHT,
+        '\u{2577}' | '\u{257b}' => CONNECT_BOTTOM,
+        _ => 0,
+    }
+}
+
 fn attrs_for(family: &str, style_flags: u8) -> Attrs<'_> {
     let weight = if style_flags & GlyphKey::STYLE_BOLD != 0 {
         Weight::BOLD
@@ -503,24 +549,26 @@ fn stabilize_box_connector_edges(
     let Some(ch) = box_drawing_char(glyph_text) else {
         return;
     };
-    if width == 0 {
+    let sides = box_connector_sides(ch);
+    if width == 0 || sides == 0 {
         return;
     }
 
     let glyph_height = *height as usize;
-    let logical_left = (-left_offset).max(0) as usize;
-    let logical_right = logical_left + advance_dev.ceil().max(1.0) as usize - 1;
+    let logical_left = ((-left_offset).max(0) as usize).min(width - 1);
+    let logical_right = (logical_left + advance_dev.ceil().max(1.0) as usize - 1).min(width - 1);
 
     let row_bytes = width * 4;
     let center_x = (logical_left + logical_right) / 2;
-    let top_extension = match ch {
-        '│' | '╰' | '╯' => (*ascent_offset).max(0) as usize,
-        _ => 0,
+    let top_extension = if sides & CONNECT_TOP != 0 {
+        (*ascent_offset).max(0) as usize
+    } else {
+        0
     }
     .min(slot_h.saturating_sub(glyph_height));
-    let top_connector = connector_pixels(rgba, width, glyph_height, center_x, false);
+    let top_connector = vertical_connector_pixels(rgba, width, glyph_height, center_x, false);
     let mut glyph_height = glyph_height;
-    if top_extension != 0 {
+    if top_extension != 0 && !top_connector.is_empty() {
         rgba.resize((glyph_height + top_extension) * row_bytes, 0);
         rgba.copy_within(0..glyph_height * row_bytes, top_extension * row_bytes);
         rgba[..top_extension * row_bytes].fill(0);
@@ -535,27 +583,53 @@ fn stabilize_box_connector_edges(
     }
 
     let target_height = line_height.round().max(1.0) as i32;
-    let bottom_extension = match ch {
-        '│' | '╭' | '╮' => target_height
+    let bottom_extension = if sides & CONNECT_BOTTOM != 0 {
+        target_height
             .saturating_sub(*ascent_offset + *height as i32)
-            .max(0) as usize,
-        _ => 0,
+            .max(0) as usize
+    } else {
+        0
     }
     .min(slot_h.saturating_sub(glyph_height));
-    if bottom_extension == 0 {
-        return;
-    }
-    let bottom_connector = connector_pixels(rgba, width, glyph_height, center_x, true);
-    rgba.resize((glyph_height + bottom_extension) * row_bytes, 0);
-    for (x, pixel) in &bottom_connector {
-        for y in glyph_height..glyph_height + bottom_extension {
-            rgba[(y * width + x) * 4..(y * width + x + 1) * 4].copy_from_slice(pixel);
+    let bottom_connector = vertical_connector_pixels(rgba, width, glyph_height, center_x, true);
+    if bottom_extension != 0 && !bottom_connector.is_empty() {
+        rgba.resize((glyph_height + bottom_extension) * row_bytes, 0);
+        for (x, pixel) in &bottom_connector {
+            for y in glyph_height..glyph_height + bottom_extension {
+                rgba[(y * width + x) * 4..(y * width + x + 1) * 4].copy_from_slice(pixel);
+            }
         }
+        *height += bottom_extension as u16;
+        glyph_height += bottom_extension;
     }
-    *height += bottom_extension as u16;
+
+    let center_y = ((line_height * 0.5).round() as i32 - *ascent_offset)
+        .clamp(0, glyph_height.saturating_sub(1) as i32) as usize;
+    if sides & CONNECT_LEFT != 0 {
+        extend_horizontal_connector(
+            rgba,
+            width,
+            glyph_height,
+            logical_left,
+            logical_right,
+            center_y,
+            false,
+        );
+    }
+    if sides & CONNECT_RIGHT != 0 {
+        extend_horizontal_connector(
+            rgba,
+            width,
+            glyph_height,
+            logical_left,
+            logical_right,
+            center_y,
+            true,
+        );
+    }
 }
 
-fn connector_pixels(
+fn vertical_connector_pixels(
     rgba: &[u8],
     width: usize,
     height: usize,
@@ -587,6 +661,83 @@ fn connector_pixels(
         }
     }
     Vec::new()
+}
+
+fn extend_horizontal_connector(
+    rgba: &mut [u8],
+    width: usize,
+    height: usize,
+    logical_left: usize,
+    logical_right: usize,
+    center_y: usize,
+    from_right: bool,
+) {
+    let Some((source_x, pixels)) = horizontal_connector_pixels(
+        rgba,
+        width,
+        height,
+        logical_left,
+        logical_right,
+        center_y,
+        from_right,
+    ) else {
+        return;
+    };
+    let (start, end) = if from_right {
+        (source_x, logical_right)
+    } else {
+        (logical_left, source_x)
+    };
+    for x in start..=end {
+        for (y, pixel) in &pixels {
+            let offset = (y * width + x) * 4;
+            if rgba[offset + 3] == 0 {
+                rgba[offset..offset + 4].copy_from_slice(pixel);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn horizontal_connector_pixels(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    logical_left: usize,
+    logical_right: usize,
+    center_y: usize,
+    from_right: bool,
+) -> Option<(usize, Vec<(usize, [u8; 4])>)> {
+    for min_alpha in [192, 128, 1] {
+        for step in 0..=logical_right.saturating_sub(logical_left) {
+            let x = if from_right {
+                logical_right - step
+            } else {
+                logical_left + step
+            };
+            if let Some(anchor) = (0..height)
+                .filter(|&y| rgba[(y * width + x) * 4 + 3] >= min_alpha)
+                .min_by_key(|&y| y.abs_diff(center_y))
+            {
+                let mut start = anchor;
+                while start > 0 && rgba[((start - 1) * width + x) * 4 + 3] != 0 {
+                    start -= 1;
+                }
+                let mut end = anchor + 1;
+                while end < height && rgba[(end * width + x) * 4 + 3] != 0 {
+                    end += 1;
+                }
+                let pixels = (start..end)
+                    .map(|y| {
+                        let offset = (y * width + x) * 4;
+                        (y, rgba[offset..offset + 4].try_into().unwrap())
+                    })
+                    .collect();
+                return Some((x, pixels));
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -625,37 +776,54 @@ mod tests {
     }
 
     #[test]
-    fn horizontal_box_glyph_keeps_swatch_coverage_unchanged() {
-        let mut rgba = vec![0; 3 * 2 * 4];
-        rgba[3] = 96;
-        rgba[4..8].fill(180);
-        rgba[8..12].fill(96);
-        let original = rgba.clone();
-        let mut height = 2;
+    fn horizontal_box_glyph_copies_native_coverage_to_both_edges() {
+        let mut rgba = vec![0; 7 * 3 * 4];
+        for x in 2..=4 {
+            rgba[(7 + x) * 4..(7 + x + 1) * 4].copy_from_slice(&[48, 48, 48, 48]);
+            rgba[(14 + x) * 4..(14 + x + 1) * 4].copy_from_slice(&[160, 160, 160, 160]);
+        }
+        let mut height = 3;
         let mut top = 0;
-        stabilize_box_connector_edges(&mut rgba, 3, &mut height, &mut top, 0, 3.0, 2.0, 6, "─");
-        assert_eq!(rgba, original);
+        stabilize_box_connector_edges(&mut rgba, 7, &mut height, &mut top, 0, 7.0, 3.0, 6, "─");
+        for x in 0..7 {
+            assert_eq!(&rgba[(7 + x) * 4..(7 + x + 1) * 4], &[48; 4]);
+            assert_eq!(&rgba[(14 + x) * 4..(14 + x + 1) * 4], &[160; 4]);
+        }
 
         let mut ordinary = rgba.clone();
         ordinary[3] = 96;
-        stabilize_box_connector_edges(&mut ordinary, 3, &mut height, &mut top, 0, 3.0, 2.0, 6, "A");
+        stabilize_box_connector_edges(&mut ordinary, 7, &mut height, &mut top, 0, 7.0, 3.0, 6, "A");
         assert_eq!(ordinary[3], 96);
     }
 
     #[test]
     fn rounded_corner_extends_only_its_font_connector() {
-        let mut rgba = vec![0; 3 * 2 * 4];
-        rgba[4..8].fill(128);
-        rgba[16..20].fill(64);
-        let mut height = 2;
-        let mut top = 2;
-        stabilize_box_connector_edges(&mut rgba, 3, &mut height, &mut top, 0, 3.0, 4.0, 6, "╰");
-        assert_eq!(top, 0);
-        assert_eq!(height, 4);
-        for y in 0..3 {
-            assert_eq!(&rgba[(y * 3 + 1) * 4..(y * 3 + 2) * 4], &[128; 4]);
+        let mut rgba = vec![0; 5 * 4 * 4];
+        rgba[(5 + 1) * 4..(5 + 2) * 4].copy_from_slice(&[32, 32, 32, 32]);
+        for x in 2..=3 {
+            rgba[(2 * 5 + x) * 4..(2 * 5 + x + 1) * 4].copy_from_slice(&[128, 128, 128, 128]);
         }
-        assert_eq!(&rgba[2 * 3 * 4..(2 * 3 + 1) * 4], &[0; 4]);
+        rgba[(3 * 5 + 2) * 4..(3 * 5 + 3) * 4].copy_from_slice(&[160, 160, 160, 160]);
+        let curve_pixel = rgba[(5 + 1) * 4..(5 + 2) * 4].to_vec();
+        let mut height = 4;
+        let mut top = 0;
+        stabilize_box_connector_edges(&mut rgba, 5, &mut height, &mut top, 0, 5.0, 6.0, 8, "╭");
+        assert_eq!(top, 0);
+        assert_eq!(height, 6);
+        assert_eq!(&rgba[(5 + 1) * 4..(5 + 2) * 4], curve_pixel);
+        assert_eq!(&rgba[(2 * 5 + 4) * 4..(2 * 5 + 5) * 4], &[128; 4]);
+        assert_eq!(&rgba[(4 * 5 + 2) * 4..(4 * 5 + 3) * 4], &[160; 4]);
+        assert_eq!(&rgba[(5 * 5 + 2) * 4..(5 * 5 + 3) * 4], &[160; 4]);
+        assert_eq!(&rgba[(2 * 5) * 4..(2 * 5 + 1) * 4], &[0; 4]);
+    }
+
+    #[test]
+    fn connector_topology_covers_common_box_forms() {
+        assert_eq!(box_connector_sides('─'), CONNECT_LEFT | CONNECT_RIGHT);
+        assert_eq!(box_connector_sides('│'), CONNECT_TOP | CONNECT_BOTTOM);
+        assert_eq!(box_connector_sides('╭'), CONNECT_RIGHT | CONNECT_BOTTOM);
+        assert_eq!(box_connector_sides('┼'), 15);
+        assert_eq!(box_connector_sides('╱'), 0);
     }
 
     #[test]
@@ -672,5 +840,25 @@ mod tests {
         composite_image(&mut rgba, 1, 1, &image, 0, 0);
         assert_eq!(rgba, vec![128, 16, 0, 128]);
         assert_ne!(rgba[0], rgba[1]);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn segoe_ui_emoji_rasterizes_robot_as_color() {
+        let path = std::path::Path::new(r"C:\Windows\Fonts\seguiemj.ttf");
+        if !path.exists() {
+            return;
+        }
+        register_font_data(std::fs::read(path).unwrap()).unwrap();
+        let mut rasterizer = GlyphRasterizer::new(256, 256).unwrap();
+        let glyph = rasterizer
+            .rasterize("'Segoe UI Emoji'", 16.0, 2.0, 0, "\u{1f916}")
+            .unwrap();
+
+        assert!(glyph.is_color);
+        assert!(glyph
+            .rgba
+            .chunks_exact(4)
+            .any(|pixel| pixel[3] != 0 && (pixel[0] != pixel[1] || pixel[1] != pixel[2])));
     }
 }

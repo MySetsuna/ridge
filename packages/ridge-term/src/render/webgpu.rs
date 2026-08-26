@@ -96,8 +96,21 @@ const CLUSTER_TAG: u32 = 0x8000_0000;
 /// CellInstance `is_color` sentinel for solid overlay rectangles. Character
 /// cells never use this mode: box drawing, block elements, and symbols all
 /// go through the system-font rasterizer and shared glyph atlas. 0 = mono
-/// atlas glyph, 1 = color emoji, 2 = solid overlay.
+/// atlas glyph, 1 = color emoji, 2 = solid overlay, 3 = box drawing.
+const INSTANCE_MODE_MONO: u32 = 0;
+const INSTANCE_MODE_COLOR: u32 = 1;
 const INSTANCE_MODE_SOLID: u32 = 2;
+const INSTANCE_MODE_BOX: u32 = 3;
+
+fn glyph_instance_mode(entry: &GlyphEntry) -> u32 {
+    if entry.is_color {
+        INSTANCE_MODE_COLOR
+    } else if entry.is_box_drawing {
+        INSTANCE_MODE_BOX
+    } else {
+        INSTANCE_MODE_MONO
+    }
+}
 
 /// Convert an `[u8; 4]` byte color into the f32 form CellInstance
 /// fields use. Vertex stage shaders can multiply linearly without
@@ -184,7 +197,7 @@ struct CellInstance {
     atlas_layer: u32,    // 32..36
     fg_rgba: [f32; 4],   // 36..52
     bg_rgba: [f32; 4],   // 52..68
-    is_color: u32, // 68..72  — 0 = mono atlas glyph, 1 = color emoji bitmap, 2 = solid overlay (cell.wgsl skips atlas sampling)
+    is_color: u32,       // 68..72 — atlas sampling/composite mode; see INSTANCE_MODE_*.
 }
 
 /// Re-exported so `gpu_context.rs` can wire the shared `cell_pipeline`'s
@@ -838,7 +851,7 @@ impl WebGpuPaneBackend {
                 atlas_layer: entry.layer as u32,
                 fg_rgba: rgba_u8_to_f32(fg),
                 bg_rgba: [0.0, 0.0, 0.0, 0.0],
-                is_color: u32::from(entry.is_color),
+                is_color: glyph_instance_mode(&entry),
             });
         }
     }
@@ -1026,7 +1039,7 @@ impl WebGpuPaneBackend {
             atlas_layer: entry.layer as u32,
             fg_rgba: rgba_u8_to_f32(self.theme.cursor_text_color),
             bg_rgba: cursor_color,
-            is_color: if entry.is_color { 1 } else { 0 },
+            is_color: glyph_instance_mode(&entry),
         });
     }
 
@@ -1223,7 +1236,7 @@ impl WebGpuPaneBackend {
                     atlas_layer: entry.layer as u32,
                     fg_rgba: fg_color,
                     bg_rgba: [0.0, 0.0, 0.0, 0.0],
-                    is_color: if entry.is_color { 1 } else { 0 },
+                    is_color: glyph_instance_mode(&entry),
                 });
             }
             cell_offset += *width as usize;
@@ -1539,7 +1552,7 @@ impl WebGpuPaneBackend {
             atlas_layer: entry.layer as u32,
             fg_rgba: glyph_color,
             bg_rgba: [0.0, 0.0, 0.0, 0.0],
-            is_color: if entry.is_color { 1 } else { 0 },
+            is_color: glyph_instance_mode(&entry),
         });
     }
 }

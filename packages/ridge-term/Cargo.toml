@@ -126,6 +126,7 @@ cosmic-text = { version = "0.19", default-features = false, features = ["std", "
 # `select`/`mix`) that would otherwise only surface at WebGPU
 # `device.create_shader_module` time in production.
 naga = { version = "23", features = ["wgsl-in"] }
+cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash", "monospace_fallback"] }
 
 # NOTE (S1, 2026-06-03): the size-optimised release profile that lived here
 # (`opt-level = "z"`, `lto = true`, `codegen-units = 1`) moved to the workspace

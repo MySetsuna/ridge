@@ -212,6 +212,7 @@ pub struct GpuContext {
     pub cell_bind_group_layout: wgpu::BindGroupLayout,
     pub cell_pipeline: wgpu::RenderPipeline,
     pub sampler: wgpu::Sampler,
+    pub smooth_sampler: wgpu::Sampler,
 
     // ── 壁纸资源 ─────────────────────────────────────────────────────
     /// 当前壁纸纹理（含原始像素尺寸）。`None` = 无壁纸。
@@ -490,6 +491,12 @@ impl GpuContext {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
                 ],
             });
 
@@ -615,6 +622,16 @@ impl GpuContext {
             // bitmap exactly; wallpaper scaling keeps its separate sampler.
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let smooth_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ridge-atlas-smooth-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
@@ -767,6 +784,7 @@ impl GpuContext {
             cell_bind_group_layout,
             cell_pipeline,
             sampler,
+            smooth_sampler,
             wallpaper: None,
             wallpaper_opacity: 1.0,
             wallpaper_pipeline,
@@ -1242,6 +1260,10 @@ impl GpuContext {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&self.smooth_sampler),
                 },
             ],
         })
