@@ -52,7 +52,7 @@
     onFirstPaint?: (paneKey: string) => void;
     /** iter-60：句级输入缓冲开关（语音/高频改写场景；alt-screen/TUI 鼠标态自动旁路）。 */
     sentenceBuffer?: boolean;
-    onResize?: (pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
+    onResize?: (pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void | Promise<void>;
     /** Mirror a copied selection onto the desktop host's clipboard (so the host's
      *  native Ctrl+V paste picks it up). The control end's copy writes BOTH. */
     onHostClipboard?: (text: string) => void;
@@ -246,15 +246,25 @@
     manager.onResize(paneId, (rows, cols) => {
       const pane = ownPaneRef();
       if (onPaneResize && pane && containerEl) {
-        onPaneResize(pane, rows, cols, Math.round(containerEl.clientWidth), Math.round(containerEl.clientHeight));
+        return onPaneResize(pane, rows, cols, Math.round(containerEl.clientWidth), Math.round(containerEl.clientHeight));
       }
     });
+    // attach() may already have fitted the local kernel before the Host callback
+    // existed. Force the same measured grid through the Remote-owned claim and
+    // wait for Host PTY/parser acknowledgement before replaying queued bytes.
+    try {
+      await manager.fitPaneNow(paneId, true);
+    } catch (err) {
+      if (alive) attachError = `REMOTE_RESIZE_FAILED: ${err instanceof Error ? err.message : String(err)}`;
+      console.error('[mobile-term] initial Host grid claim failed', paneId, err);
+      return;
+    }
+    if (!alive) { manager.park(paneId); return; }
     const pendingFrames = onDrainPending?.(paneId) ?? [];
     for (const frame of pendingFrames) manager.feed(paneId, frame);
     manager.flushPaneFeed(paneId);
     flushPendingStdin();
     manager.setFocused(paneId, true);
-    manager.fitPaneNow(paneId);
     focusInput();
     requestAnimationFrame(() => {
       if (alive) onFirstPaint?.(paneId);

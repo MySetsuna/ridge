@@ -26,7 +26,7 @@ describe('remote Agent attention monitor', () => {
   });
 
   it('marks browser-driven pane fits as remote-owned claims', () => {
-    expect(source).toContain("ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight, 'remote');");
+    expect(source).toContain("return ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight, 'remote');");
   });
 
   it('releases every pane-owned queue, timer, trace, transport, and kernel', () => {

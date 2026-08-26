@@ -654,10 +654,10 @@
   // until the manual refresh button. `claimPane` runs the SAME host path as that
   // button (resize real PTY + parser, broadcast `pty-resized`), giving automatic
   // 自适应全屏 reflow without the manual tap.
-  function onResize(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
+  function onResize(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number): Promise<void> {
     // This callback originates in the browser viewer. Keep ownership explicit
     // so host and remote resize paths cannot overwrite each other's authority.
-    ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight, 'remote');
+    return ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight, 'remote');
   }
 
   function handleRefresh() {

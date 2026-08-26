@@ -1024,9 +1024,22 @@ export class CloudRemoteConnection implements RemoteLink {
     _pixelWidth?: number,
     _pixelHeight?: number,
     owner?: PaneRenderOwner,
-  ): void {
+  ): Promise<void> {
     this.paneScheduler.resume(pane);
-    this._resize(pane, rows, cols, owner);
+    if (!pane.paneId || rows <= 0 || cols <= 0) return Promise.resolve();
+    const key = paneRefKey(pane);
+    if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) {
+      return Promise.resolve();
+    }
+    const params = owner ? { owner } : undefined;
+    this._refreshSeq++;
+    return this.paneScheduler.scheduleResizeAndWait(
+      pane,
+      rows,
+      cols,
+      params,
+      { force: true },
+    );
   }
   private _resize(pane: PaneRef, rows: number, cols: number, owner?: PaneRenderOwner): void {
     if (!pane.paneId || rows <= 0 || cols <= 0) return;

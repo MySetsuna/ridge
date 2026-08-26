@@ -424,6 +424,28 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
     conn.disconnect();
   });
 
+  it('settles a Remote claim only after the Host resize acknowledgement', async () => {
+    const { conn, ws } = connect();
+    let settled = false;
+    const applied = conn.claimPane(pane, 30, 100, 0, 0, 'remote').then(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(40);
+    const frames = invokeFrames(ws, 'resize_pane');
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toMatchObject({
+      args: { workspaceId: pane.workspaceId, paneId: pane.paneId, rows: 30, cols: 100, owner: 'remote' },
+    });
+    expect(settled).toBe(false);
+
+    resolveInvoke(ws, frames[0]);
+    await flushPromises();
+    await applied;
+    expect(settled).toBe(true);
+    conn.disconnect();
+  });
+
   it('turns an invoke timeout into bounded backoff and retry', async () => {
     const { conn, ws } = connect();
 
