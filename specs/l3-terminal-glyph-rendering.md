@@ -30,10 +30,11 @@ Remote, and Cloud surfaces share this contract without external font installs.
 Box-drawing glyphs remain selected-font rasters; connector coverage extends to
 the Unicode-declared cell sides so adjacent cells meet while curves and source
 antialiasing remain intact. Rounded corners reuse the same selected-font
-straight-line profiles and axes: the complete native curve translates to the
-horizontal reference axis before vacated vertical arms are extended, so no
-outer-edge splice can detach an interior tangent. Their quads preserve a
-one-source-texel-to-one-device-pixel mapping and clip to snapped cell bounds
+straight-line profiles and axes: the complete native curve translates rigidly
+to both reference axes before the affected straight arms are rebuilt. Vertical
+tangent rows reuse the straight profile until the first inward curve pixel, so
+no axis replacement or outer hook can offset the transition. Their quads preserve
+a one-source-texel-to-one-device-pixel mapping and clip to snapped cell bounds
 without geometric rescaling. If a native box bitmap ends before a declared
 snapped cell side, that side is completed by repeating only its outermost native
 texel column; the curve and main quad remain unscaled.
