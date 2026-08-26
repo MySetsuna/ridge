@@ -50,6 +50,8 @@ pub struct DomainPtyLaunch<'a> {
     pub role: &'a str,
     pub launch_profile: Option<&'a str>,
     pub env: Option<&'a HashMap<String, String>>,
+    pub cols: Option<u16>,
+    pub rows: Option<u16>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -764,6 +766,8 @@ pub fn create_domain_pty(
             role,
             launch_profile,
             env: Some(&env),
+            cols: None,
+            rows: None,
         },
     )
 }
@@ -784,6 +788,8 @@ pub fn create_domain_pty_with_command(
         "workspace_id": launch.workspace_id,
         "role": launch.role,
         "launch_profile": launch.launch_profile,
+        "cols": launch.cols,
+        "rows": launch.rows,
     });
     let value = request_json(endpoint, "POST", "/v1/domain/ptys", Some(&body))?;
     let response: KernelPtyCreateResponse = decode_domain_snapshot(value)?;

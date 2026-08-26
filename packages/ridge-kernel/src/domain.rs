@@ -813,7 +813,14 @@ fn validate_pty_create(request: &PtyCreateRequest) -> Option<&'static str> {
         .iter()
         .map(|(key, value)| key.len().saturating_add(value.len()))
         .sum::<usize>();
-    (env_bytes > 64 * 1024).then_some("PTY launch environment is too large")
+    if env_bytes > 64 * 1024 {
+        return Some("PTY launch environment is too large");
+    }
+    match (request.cols, request.rows) {
+        (Some(0), _) | (_, Some(0)) => Some("PTY dimensions must be greater than zero"),
+        (Some(_), None) | (None, Some(_)) => Some("PTY dimensions must include cols and rows"),
+        _ => None,
+    }
 }
 
 fn seed_workspace_for_pty(
@@ -889,15 +896,9 @@ pub async fn domain_pty_create(
         role,
         launch_profile: request.launch_profile.as_deref(),
         env: Some(&request.env),
+        initial_size: request.cols.zip(request.rows),
     }) {
         Ok(pty_id) => {
-            if let (Some(cols), Some(rows)) = (request.cols, request.rows) {
-                if let Err(error) = st.ptys.resize(pty_id, cols, rows) {
-                    let _ = st.ptys.destroy(pty_id);
-                    rollback_seeded_workspace(&st, inserted_workspace);
-                    return Ok(bad_request(error.to_string()));
-                }
-            }
             let executable = request
                 .program
                 .as_deref()
@@ -2206,8 +2207,8 @@ mod tests {
                 workspace_id: Some(Uuid::new_v4()),
                 role: Some("shell".into()),
                 launch_profile: None,
-                cols: Some(80),
-                rows: Some(24),
+                cols: Some(132),
+                rows: Some(41),
             }),
         )
         .await
@@ -2223,6 +2224,8 @@ mod tests {
         assert_eq!(listed["source"], "ridge-kernel");
         assert_eq!(listed["ptys"][0]["pty_id"], pane_id.to_string());
         assert_eq!(listed["ptys"][0]["program"], Value::Null);
+        assert_eq!(listed["ptys"][0]["cols"], 132);
+        assert_eq!(listed["ptys"][0]["rows"], 41);
         assert!(listed["ptys"][0]["child_pid"].as_u64().is_some());
         state.ptys.destroy(pane_id).expect("destroy test PTY");
     }

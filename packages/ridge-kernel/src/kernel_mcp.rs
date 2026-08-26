@@ -336,6 +336,7 @@ impl KernelMcpHost {
                 role: &request.role,
                 launch_profile,
                 env: None,
+                initial_size: None,
             })
             .map_err(|error| {
                 if let Some(old_id) = replace_id {

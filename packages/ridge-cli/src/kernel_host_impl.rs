@@ -770,6 +770,8 @@ fn dispatch(
                     role: "shell",
                     launch_profile: Some("remote-lan"),
                     env: Some(&HashMap::new()),
+                    cols: None,
+                    rows: None,
                 },
             )?;
             Ok(Value::Null)

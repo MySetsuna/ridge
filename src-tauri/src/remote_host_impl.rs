@@ -2956,7 +2956,14 @@ async fn dispatch_invoke_pane(
             Err(e) => serde_json::json!({ "_error": format!("invalid updates: {e}") }),
         },
         "create_pane" => unit(
-            terminal::create_pane(handle.state(), s(args, "paneId"), opt_s(args, "shell")).await,
+            terminal::create_pane(
+                handle.state(),
+                s(args, "paneId"),
+                opt_s(args, "shell"),
+                u16_opt(args, "rows"),
+                u16_opt(args, "cols"),
+            )
+            .await,
         ),
         "activate_pane_pty" => unit(
             terminal::activate_pane_pty(

@@ -371,6 +371,7 @@ pub struct PtyLaunch<'a> {
     pub role: &'a str,
     pub launch_profile: Option<&'a str>,
     pub env: Option<&'a HashMap<String, String>>,
+    pub initial_size: Option<(u16, u16)>,
 }
 
 impl PtyRegistry {
@@ -385,6 +386,7 @@ impl PtyRegistry {
             role: "shell",
             launch_profile: None,
             env: None,
+            initial_size: None,
         })
     }
 
@@ -402,18 +404,21 @@ impl PtyRegistry {
         }
         let empty_env = HashMap::new();
         let env = launch.env.unwrap_or(&empty_env);
-        let (bridge, output) = PtyBridge::spawn_command_with_env(
+        let (cols, rows) = launch.initial_size.unwrap_or((DEFAULT_COLS, DEFAULT_ROWS));
+        let (bridge, output) = PtyBridge::spawn_command_with_env_at_size(
             launch.program,
             launch.args,
             launch.cwd,
             launch.launch_profile,
             env,
+            cols,
+            rows,
         )?;
         let bridge = Arc::new(bridge);
         let scrollback = Arc::new(Mutex::new(Vec::new()));
         let renderer = Arc::new(Mutex::new(Terminal::new(
-            DEFAULT_ROWS as usize,
-            DEFAULT_COLS as usize,
+            rows as usize,
+            cols as usize,
             RENDER_SCROLLBACK_ROWS,
         )));
         let output_hub = Arc::new(PtyOutputHub::new());
@@ -444,8 +449,8 @@ impl PtyRegistry {
             cwd: launch.cwd.map(str::to_string),
             status: "Idle".to_string(),
             child_pid: bridge.process_id(),
-            cols: DEFAULT_COLS,
-            rows: DEFAULT_ROWS,
+            cols,
+            rows,
         };
         self.ptys.lock().insert(
             launch.id,
@@ -521,12 +526,18 @@ impl PtyRegistry {
     }
 
     pub fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<()> {
-        let bridge = self.get(id)?;
-        bridge.resize(cols, rows)?;
+        if cols == 0 || rows == 0 {
+            anyhow::bail!("PTY dimensions must be greater than zero");
+        }
         let mut ptys = self.ptys.lock();
         let managed = ptys
             .get_mut(&id)
+            .filter(|managed| !managed.closing.load(Ordering::Acquire))
             .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
+        if managed.info.cols == cols && managed.info.rows == rows {
+            return Ok(());
+        }
+        managed.bridge.resize(cols, rows)?;
         managed.renderer.lock().resize(rows as usize, cols as usize);
         managed.info.cols = cols;
         managed.info.rows = rows;
@@ -738,10 +749,30 @@ impl PtyBridge {
         launch_profile: Option<&str>,
         env: &HashMap<String, String>,
     ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
+        Self::spawn_command_with_env_at_size(
+            program,
+            args,
+            cwd,
+            launch_profile,
+            env,
+            DEFAULT_COLS,
+            DEFAULT_ROWS,
+        )
+    }
+
+    pub fn spawn_command_with_env_at_size(
+        program: Option<&str>,
+        args: &[String],
+        cwd: Option<&str>,
+        launch_profile: Option<&str>,
+        env: &HashMap<String, String>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
         let pair = native_pty_system()
             .openpty(PtySize {
-                rows: DEFAULT_ROWS,
-                cols: DEFAULT_COLS,
+                rows,
+                cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -1070,6 +1101,50 @@ mod tests {
             data
         );
         bridge.destroy().expect("destroy env test child");
+    }
+
+    #[tokio::test]
+    async fn interactive_bridge_delivers_input_to_child() {
+        #[cfg(windows)]
+        let (program, args) = (
+            Some("powershell.exe"),
+            vec!["-NoLogo".to_string(), "-NoProfile".to_string()],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (Some("/bin/sh"), Vec::new());
+        let (bridge, mut output) = PtyBridge::spawn_command_with_env(
+            program,
+            &args,
+            None,
+            Some("ridge-interactive"),
+            &HashMap::new(),
+        )
+        .expect("spawn interactive child");
+
+        bridge
+            .write_input(b"echo ridge-kernel-input\r")
+            .expect("write interactive input");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut data = Vec::new();
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(chunk) = tokio::time::timeout(remaining, output.recv())
+                .await
+                .expect("interactive child output timeout")
+            else {
+                break;
+            };
+            data.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&data).contains("ridge-kernel-input") {
+                break;
+            }
+        }
+        assert!(
+            String::from_utf8_lossy(&data).contains("ridge-kernel-input"),
+            "interactive child output did not contain input: {:?}",
+            data
+        );
+        bridge.destroy().expect("destroy interactive test child");
     }
 
     #[tokio::test]
