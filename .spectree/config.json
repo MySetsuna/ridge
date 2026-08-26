@@ -17,6 +17,7 @@
     ".vscode",
     ".webview2-cloud-e2e",
     ".webview2-dev-cdp",
+    ".webview2-e2e",
     ".webview2-probe",
     "artifacts",
     "build",
