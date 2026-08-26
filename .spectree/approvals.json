@@ -73,5 +73,10 @@
     "changeId": "CHG-016",
     "specHash": "4d1ac9dc8d08c6d071bf67368a0a0456854653d30039bcfa9cd6bda0a70ba8ce",
     "approvedAt": "2026-08-25T21:17:18.595Z"
+  },
+  {
+    "changeId": "CHG-017",
+    "specHash": "9ec6a36825c18ecd7922a06062f3861c4ec933d0e0d70014b970a461a78449aa",
+    "approvedAt": "2026-08-26T03:26:28.060Z"
   }
 ]
