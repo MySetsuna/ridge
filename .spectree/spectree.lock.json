@@ -1,52 +1,12 @@
 {
   "version": 1,
-  "changeId": "CHG-018",
-  "specHash": "c08ce51b30459af364447166d432a80fc531597a8752593e885d2db11e75f83c",
+  "changeId": "CHG-019",
+  "specHash": "4e33163c12562925ffd6b659f2b21c52ff2f7514137a4ae6b6386413c669eab8",
   "units": [
-    {
-      "id": "L2-AUTOMATION-001",
-      "level": "L2",
-      "nodeHash": "d690cf9c468e244ff525eb6bc990c1715eb8fc1e66580524c055fd7b3c3571c7",
-      "codeTargets": [
-        "scripts/**"
-      ],
-      "testTargets": [
-        "scripts/**/*.test.mjs",
-        "scripts/**/*.test.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L2-HOST-INTEGRATION-001",
-      "level": "L2",
-      "nodeHash": "c00461aecda3521bde7416232a8c2713248fc779d2ba9ae9cc9e69b234aa8cd0",
-      "codeTargets": [
-        "src/lib/hosts/**",
-        "src/lib/remote/cloud/cloudControllerBoot*",
-        "src/lib/remote/cloud/cloudHostTopologyLink*",
-        "src/lib/remote/cloud/sharedWorkspaceProjection*",
-        "src/lib/stores/gitGuardStats*",
-        "src/lib/stores/hostReconnect*",
-        "src/lib/stores/hosts*",
-        "src/lib/stores/processGuardPolicy*",
-        "src-tauri/src/commands/terminal_font.rs"
-      ],
-      "testTargets": [
-        "src/lib/hosts/**/*.test.ts",
-        "src/lib/remote/cloud/cloudControllerBoot.test.ts",
-        "src/lib/remote/cloud/cloudHostTopologyLink.test.ts",
-        "src/lib/remote/cloud/sharedWorkspaceProjection.test.ts",
-        "src/lib/stores/gitGuardStats.test.ts",
-        "src/lib/stores/hostReconnect.test.ts",
-        "src/lib/stores/hosts*.test.ts",
-        "src/lib/stores/processGuardPolicy.test.ts"
-      ],
-      "status": "LOCKED"
-    },
     {
       "id": "L3-TERMINAL-GLYPH-001",
       "level": "L3",
-      "nodeHash": "f4ffedbc62580e059a24b1ea15984c2588233e4e61bd0a8e5bfe3a50c53c00f3",
+      "nodeHash": "c06b26c08859e3c25b373cc761307947254a6a86d6c7d65279bd03d94033084e",
       "codeTargets": [
         "packages/ridge-term/src/render/glyph_atlas.rs",
         "packages/ridge-term/src/render/glyph_rasterizer.rs",
@@ -81,92 +41,18 @@
         "packages/ridge-term/src/term/wcwidth.rs"
       ],
       "status": "LOCKED"
-    },
-    {
-      "id": "L4-REMOTE-GPU-COMPAT-001",
-      "level": "L4",
-      "nodeHash": "32b872c7824c4c3c2b295e6c56428e6708f02026bef4ec1533b5fa8a3d1e0c63",
-      "codeTargets": [
-        "Cargo.lock",
-        "packages/ridge-term/Cargo.toml",
-        "packages/ridge-term/README.md",
-        "packages/ridge-term/build.mjs",
-        "packages/ridge-term/src/lib.rs",
-        "packages/ridge-term/src/render/gpu_context.rs",
-        "packages/ridge-term/src/render/gpu_limits.rs",
-        "packages/ridge-term/src/render/mod.rs",
-        "packages/ridge-term/src/render/surface_host.rs",
-        "packages/ridge-term/src/render/webgpu.rs",
-        "packages/remote/src/shared/terminal/fontDataService.ts",
-        "packages/remote/src/shared/terminal/manager.ts",
-        "scripts/cdp-port*",
-        "scripts/lib/cdpTarget*",
-        "scripts/lib/toolPath*",
-        "src/remote/MainApp.svelte",
-        "src/remote/lib/TerminalCanvas.svelte",
-        "src-tauri/src/commands/terminal_font.rs",
-        "scripts/cdp-term-render-e2e.mjs",
-        "scripts/mobile-keyboard-e2e.mjs"
-      ],
-      "testTargets": [
-        "packages/remote/src/shared/terminal/manager.attach.test.ts",
-        "packages/remote/src/shared/terminal/manager.test.ts",
-        "packages/ridge-term/src/render/gpu_limits.rs",
-        "src/remote/lib/TerminalCanvas.test.ts",
-        "scripts/cdp-term-render-e2e.mjs",
-        "scripts/mobile-keyboard-e2e.mjs"
-      ],
-      "status": "LOCKED"
     }
   ],
   "allowedPaths": [
-    "Cargo.lock",
-    "packages/remote/src/shared/terminal/fontDataService.ts",
-    "packages/remote/src/shared/terminal/manager.attach.test.ts",
-    "packages/remote/src/shared/terminal/manager.test.ts",
-    "packages/remote/src/shared/terminal/manager.ts",
-    "packages/ridge-term/Cargo.toml",
-    "packages/ridge-term/README.md",
-    "packages/ridge-term/build.mjs",
-    "packages/ridge-term/src/lib.rs",
     "packages/ridge-term/src/render/glyph_atlas.rs",
     "packages/ridge-term/src/render/glyph_rasterizer.rs",
     "packages/ridge-term/src/render/gpu_context.rs",
-    "packages/ridge-term/src/render/gpu_limits.rs",
-    "packages/ridge-term/src/render/mod.rs",
     "packages/ridge-term/src/render/renderer.rs",
     "packages/ridge-term/src/render/shaders/cell.wgsl",
-    "packages/ridge-term/src/render/surface_host.rs",
     "packages/ridge-term/src/render/webgpu.rs",
     "packages/ridge-term/src/term/wcwidth.rs",
-    "scripts/**",
-    "scripts/**/*.test.mjs",
-    "scripts/**/*.test.ts",
-    "scripts/cdp-port*",
     "scripts/cdp-term-render-e2e.mjs",
-    "scripts/lib/cdpTarget*",
-    "scripts/lib/toolPath*",
-    "scripts/mobile-keyboard-e2e.mjs",
-    "src-tauri/src/commands/terminal_font.rs",
-    "src/lib/hosts/**",
-    "src/lib/hosts/**/*.test.ts",
-    "src/lib/remote/cloud/cloudControllerBoot*",
-    "src/lib/remote/cloud/cloudControllerBoot.test.ts",
-    "src/lib/remote/cloud/cloudHostTopologyLink*",
-    "src/lib/remote/cloud/cloudHostTopologyLink.test.ts",
-    "src/lib/remote/cloud/sharedWorkspaceProjection*",
-    "src/lib/remote/cloud/sharedWorkspaceProjection.test.ts",
-    "src/lib/stores/gitGuardStats*",
-    "src/lib/stores/gitGuardStats.test.ts",
-    "src/lib/stores/hostReconnect*",
-    "src/lib/stores/hostReconnect.test.ts",
-    "src/lib/stores/hosts*",
-    "src/lib/stores/hosts*.test.ts",
-    "src/lib/stores/processGuardPolicy*",
-    "src/lib/stores/processGuardPolicy.test.ts",
-    "src/remote/MainApp.svelte",
-    "src/remote/lib/TerminalCanvas.svelte",
-    "src/remote/lib/TerminalCanvas.test.ts"
+    "src-tauri/src/commands/terminal_font.rs"
   ],
   "testCommand": [
     "pnpm",
@@ -202,6 +88,7 @@
     "changes/CHG-016.md": "c21fd94de35abd316852f36f985bb6fff6af1c49ba7fbc7c50eb67f58b9b9f5e",
     "changes/CHG-017.md": "98526153247ad50048eb86095024a7f12f34f0332c606d9bd72554925b482e73",
     "changes/CHG-018.md": "4e1820c58e5ffeddc00fc6ffcd8b0c4bc4e374362da3b1a68f3b7923f99546f5",
+    "changes/CHG-019.md": "7b1758ca774d132ae6d8afe4ecdee944d8a91f68f949e4efaa42340bfacc7fb0",
     "CLAUDE.md": "1f07d1b3dcd28c80ef7f2255ae8d6135717c98e75a2b7630dc246902148bfd21",
     "docs/_team-archive/site-revamp-2026-04-30/content-brief.md": "ae3ffae60b3037e595e0b0e976675cbbf49edb74ed01ce44e7188b9862a26bfc",
     "docs/_team-archive/site-revamp-2026-04-30/decisions.md": "63b66c909323ed7acc6cce207b8de7395579a5d6636fc00abb62b3502e4f4629",
@@ -1031,16 +918,16 @@
     "packages/ridge-term/src/lib.rs": "1a0e976fb8b403a6f55dcce98594090455dacb3de9a06bd41808a6fc4b0587bb",
     "packages/ridge-term/src/render/backend.rs": "94138c8e8de85f56226487b880332e0dc689245fd71ab68b8144dff7f0af602c",
     "packages/ridge-term/src/render/glyph_atlas.rs": "664cbf4dc083bccc554cee9eef44f6183b62a298b14a9f9b2bbce82ac64d529f",
-    "packages/ridge-term/src/render/glyph_rasterizer.rs": "90b7982d523dd1105989e49f45fd5aeab0f1fccd58ed0b153f69b8b40a687c88",
+    "packages/ridge-term/src/render/glyph_rasterizer.rs": "f7fd11d30e51b2606dcfe7253f91e7ad01c62fb4a0a3759b30f6094a1126cf38",
     "packages/ridge-term/src/render/gpu_context.rs": "5c29f46e7791a7e32bd8f5d960275c490d5e2a0cd0e4858a9c7d0a7fd53dbf21",
     "packages/ridge-term/src/render/gpu_limits.rs": "d4c363bea59de071255d580d92f3f7f93526314baa329f3e49d380eef64cc93e",
     "packages/ridge-term/src/render/mod.rs": "dd268fbabd9b85dcd08a7917bf62089d41db3129e353c11af0eff1a98a0df658",
     "packages/ridge-term/src/render/renderer.rs": "32af772e991dac2d02d4437a5bcae3d7ebd2b0f3d0b4d3d0c691acbacd3f0c3b",
-    "packages/ridge-term/src/render/shaders/cell.wgsl": "c2b9ec7bcbe3c28183443171acf407625a9fef8f610dd9e8b6107fa5c36a9dff",
+    "packages/ridge-term/src/render/shaders/cell.wgsl": "89cb80155cd4abc3c9b91e7ff267ebde834cbf269094972a7d6e3ddc844ca734",
     "packages/ridge-term/src/render/shaders/wallpaper.wgsl": "0bbeff392870654082ddaee0cc67e77695e5bd498737b6f8ba7baba85fdb9208",
     "packages/ridge-term/src/render/surface_host.rs": "50eb0bfdaf56165a68b7108853fa11c28cd08997811833d9373d7f2ff6795efa",
     "packages/ridge-term/src/render/wallpaper.rs": "1a2ed3eeee5fed42ca98cca868be91d404610b893ad4150b68606ad278f03a2c",
-    "packages/ridge-term/src/render/webgpu.rs": "f3b24eee3b8bdb69b2157dbb307285839904f4698b66c620402cbce0ac2dcd8a",
+    "packages/ridge-term/src/render/webgpu.rs": "877dd9d807e60d39f332a3d12315ced5dc19bc999bd91ab09e846c94ac6cccd6",
     "packages/ridge-term/src/search.rs": "3999337e00727ff988cfecb1786ff02598a1007b6d06f4fcd1e3d387e46fcbb3",
     "packages/ridge-term/src/selection.rs": "d4f541218c34b588ff2688ef737eb34f804a8ef58fb51b05d3a8b3b00f16e16e",
     "packages/ridge-term/src/term/attr_table.rs": "13a1613a741b14163d690c1192e58846fca2e70997c4fde33a69906785c656fb",
@@ -1226,7 +1113,7 @@
     "specs/l3-desktop-boot.md": "15f679ff509c729ae267d86a717a11f0ec3e37505883c36b58cd7ed4f25faf77",
     "specs/l3-remote-smoothness.md": "a8f99de0b3f27e07711e01319f31096c55549a4a352c21a6e063ac2e34ef15bb",
     "specs/l3-runtime-discovery.md": "42ab19ac403124c1efcb4352fa293f9d111deabe66ede5a2cad9e0638a70fead",
-    "specs/l3-terminal-glyph-rendering.md": "9a8f3178867d6e6103381b0aaee75770bff2af36c24d469c1eb6860be734a0c7",
+    "specs/l3-terminal-glyph-rendering.md": "f187821c7e41709d6860335a5bcd3446348ac9d0aedd6244ac2259d76adfd711",
     "specs/l4-agent-activity.md": "c83c805c8014dd4b34a459a53d02ffe19283f8b8e6c2d479575fd41ae5fc8e4c",
     "specs/l4-agent-card.md": "e051a80b80b107612c4f4eab5089c498f4f3e22c4ce087eb7c5ea79220d294d9",
     "specs/l4-emoji-geometry-gate.md": "da3ac65ad8c3073745d47d8d24a5a1df9335582e0dabc45387bc32db463faf24",
@@ -1741,6 +1628,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-d49864dd7f9d",
-  "manifestHash": "d49864dd7f9d3fb8721da175eeeec893511736fef2ea39acc0caa236c652984b"
+  "buildId": "BUILD-c7780ef21988",
+  "manifestHash": "c7780ef2198893a5623498d93059477f22b3aab544bda5f7aec5601e1014f59a"
 }

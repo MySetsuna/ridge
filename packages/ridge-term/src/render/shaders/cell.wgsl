@@ -47,7 +47,7 @@ struct InstanceIn {
     @location(4) fg_rgba: vec4<f32>,
     @location(5) bg_rgba: vec4<f32>,
     // Instance mode: 0 = monochrome/nearest, 1 = color/smooth,
-    // 2 = solid rectangle, 3 = monochrome box drawing/smooth.
+    // 2 = solid rectangle.
     @location(6) is_color_u: u32,
 }
 
@@ -143,7 +143,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // storage produced (Linear filter independently averaged rgb,
     // halving each channel at midway samples regardless of alpha).
     var glyph: vec4<f32>;
-    if (instance_mode == 1u || instance_mode == 3u) {
+    if (instance_mode == 1u) {
         glyph = textureSampleLevel(
             atlas_tex,
             atlas_smooth_smp,

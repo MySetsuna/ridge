@@ -29,7 +29,7 @@ use one em-sized maximum extent, and remain centered without clipping. Local,
 Remote, and Cloud surfaces share this contract without external font installs.
 Box-drawing glyphs remain selected-font rasters; connector coverage extends to
 the Unicode-declared cell sides so adjacent cells meet while curves and source
-antialiasing remain intact. Monochrome text samples at native nearest density;
-scaled color emoji and box drawing use linear atlas sampling. TUI mode obeys
+antialiasing remain intact. Monochrome text and box drawing sample at native
+nearest density; only scaled color emoji use linear atlas sampling. TUI mode obeys
 DECTCEM and keeps an enabled cursor steady without blink wakeups. No path may
 threshold Swash coverage or introduce a non-GPU presentation backend.
