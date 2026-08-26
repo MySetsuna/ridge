@@ -321,6 +321,7 @@ impl GlyphRasterizer {
                 &mut result,
                 box_char.unwrap(),
                 dpr,
+                line_height.round().max(1.0) as usize,
                 &horizontal,
                 &vertical,
             );
@@ -503,6 +504,7 @@ fn align_rounded_corner_connectors(
     target: &mut RasterizedGlyph,
     ch: char,
     dpr: f32,
+    cell_height: usize,
     horizontal: &RasterizedGlyph,
     vertical: &RasterizedGlyph,
 ) {
@@ -516,75 +518,300 @@ fn align_rounded_corner_connectors(
         return;
     }
 
-    if sides & (CONNECT_LEFT | CONNECT_RIGHT) != 0 {
-        let Some((reference_left, reference_right)) = glyph_logical_x_bounds(horizontal, dpr)
-        else {
-            return;
-        };
-        let reference_height = horizontal.height as usize;
-        let profile = horizontal_connector_pixels(
-            &horizontal.rgba,
-            horizontal.width as usize,
-            reference_height,
-            reference_left,
-            reference_right,
-            reference_height.saturating_sub(1) / 2,
-            sides & CONNECT_RIGHT != 0,
-        )
-        .map(|(_, pixels)| pixels)
-        .unwrap_or_default();
-        if !profile.is_empty() {
-            let target_x = if sides & CONNECT_LEFT != 0 {
-                logical_left
-            } else {
-                logical_right
-            };
+    let from_right = sides & CONNECT_RIGHT != 0;
+    let target_horizontal = connector_column_pixels(
+        &target.rgba,
+        width,
+        height,
+        if from_right {
+            logical_right
+        } else {
+            logical_left
+        },
+        height.saturating_sub(1) / 2,
+    );
+    let Some((reference_left, reference_right)) = glyph_logical_x_bounds(horizontal, dpr) else {
+        return;
+    };
+    let reference_height = horizontal.height as usize;
+    let reference_horizontal = connector_column_pixels(
+        &horizontal.rgba,
+        horizontal.width as usize,
+        reference_height,
+        if from_right {
+            reference_right
+        } else {
+            reference_left
+        },
+        reference_height.saturating_sub(1) / 2,
+    );
+    if target_horizontal.is_empty() || reference_horizontal.is_empty() {
+        return;
+    }
+
+    let target_top = target.ascent_offset.round() as i32;
+    let Some(target_axis) = connector_axis(&target_horizontal, target_top) else {
+        return;
+    };
+    let Some(reference_axis) = connector_axis(
+        &reference_horizontal,
+        horizontal.ascent_offset.round() as i32,
+    ) else {
+        return;
+    };
+    let delta_y = reference_axis - target_axis;
+    let horizontal_span = straight_column_span(
+        &target.rgba,
+        width,
+        height,
+        logical_left,
+        logical_right,
+        &target_horizontal,
+        from_right,
+    );
+
+    let Some((vertical_left, vertical_right)) = glyph_logical_x_bounds(vertical, dpr) else {
+        return;
+    };
+    let from_bottom = sides & CONNECT_BOTTOM != 0;
+    let target_vertical = connector_row_pixels(
+        &target.rgba,
+        width,
+        height,
+        if from_bottom { height - 1 } else { 0 },
+        (logical_left + logical_right) / 2,
+    );
+    let vertical_span =
+        straight_row_span(&target.rgba, width, height, &target_vertical, from_bottom);
+    let reference_vertical = connector_row_pixels(
+        &vertical.rgba,
+        vertical.width as usize,
+        vertical.height as usize,
+        if from_bottom {
+            vertical.height as usize - 1
+        } else {
+            0
+        },
+        (vertical_left + vertical_right) / 2,
+    );
+    if target_vertical.is_empty() || reference_vertical.is_empty() {
+        return;
+    }
+
+    translate_glyph_vertically(target, delta_y, cell_height);
+    let height = target.height as usize;
+    if let Some((start_x, end_x)) = horizontal_span {
+        for x in start_x..=end_x {
             for y in 0..height {
-                target.rgba[(y * width + target_x) * 4..(y * width + target_x + 1) * 4].fill(0);
+                target.rgba[(y * width + x) * 4..(y * width + x + 1) * 4].fill(0);
             }
-            let reference_top = horizontal.ascent_offset.round() as i32;
-            let target_top = target.ascent_offset.round() as i32;
-            for (reference_y, pixel) in profile {
-                let target_y = reference_y as i32 + reference_top - target_top;
-                if (0..height as i32).contains(&target_y) {
-                    let offset = (target_y as usize * width + target_x) * 4;
-                    target.rgba[offset..offset + 4].copy_from_slice(&pixel);
+            for (reference_y, pixel) in &reference_horizontal {
+                let y = *reference_y as i32 + horizontal.ascent_offset.round() as i32;
+                if (0..height as i32).contains(&y) {
+                    let offset = (y as usize * width + x) * 4;
+                    target.rgba[offset..offset + 4].copy_from_slice(pixel);
                 }
             }
         }
     }
 
-    if sides & (CONNECT_TOP | CONNECT_BOTTOM) != 0 {
-        let Some((reference_left, reference_right)) = glyph_logical_x_bounds(vertical, dpr) else {
-            return;
-        };
-        let profile = vertical_connector_pixels(
-            &vertical.rgba,
-            vertical.width as usize,
-            vertical.height as usize,
-            (reference_left + reference_right) / 2,
-            sides & CONNECT_BOTTOM != 0,
-        );
-        if !profile.is_empty() {
-            let target_y = if sides & CONNECT_TOP != 0 {
-                0
-            } else {
-                height - 1
-            };
-            for x in logical_left..=logical_right {
-                target.rgba[(target_y * width + x) * 4..(target_y * width + x + 1) * 4].fill(0);
-            }
-            let reference_left_offset = vertical.left_offset.round() as i32;
-            let target_left_offset = target.left_offset.round() as i32;
-            for (reference_x, pixel) in profile {
-                let target_x = reference_x as i32 + reference_left_offset - target_left_offset;
-                if (logical_left as i32..=logical_right as i32).contains(&target_x) {
-                    let offset = (target_y * width + target_x as usize) * 4;
-                    target.rgba[offset..offset + 4].copy_from_slice(&pixel);
-                }
+    let Some((start_y, end_y)) = vertical_span else {
+        return;
+    };
+    let shifted_start = target_top + start_y as i32 + delta_y;
+    let shifted_end = target_top + end_y as i32 + delta_y;
+    let (paint_start, paint_end) = if sides & CONNECT_TOP != 0 {
+        (0, shifted_end.min(height as i32 - 1))
+    } else {
+        (shifted_start.max(0), height as i32 - 1)
+    };
+    if paint_start > paint_end {
+        return;
+    }
+    for y in paint_start as usize..=paint_end as usize {
+        for x in logical_left..=logical_right {
+            target.rgba[(y * width + x) * 4..(y * width + x + 1) * 4].fill(0);
+        }
+        for (reference_x, pixel) in &reference_vertical {
+            let x = *reference_x as i32 + vertical.left_offset.round() as i32
+                - target.left_offset.round() as i32;
+            if (logical_left as i32..=logical_right as i32).contains(&x) {
+                let offset = (y * width + x as usize) * 4;
+                target.rgba[offset..offset + 4].copy_from_slice(pixel);
             }
         }
     }
+}
+
+fn connector_axis(profile: &[(usize, [u8; 4])], offset: i32) -> Option<i32> {
+    let (weighted, coverage) = profile
+        .iter()
+        .fold((0_i64, 0_i64), |sum, (position, pixel)| {
+            let alpha = i64::from(pixel[3]);
+            (
+                sum.0 + i64::from(*position as i32 + offset) * alpha,
+                sum.1 + alpha,
+            )
+        });
+    (coverage != 0).then(|| (weighted as f64 / coverage as f64).round() as i32)
+}
+
+fn connector_column_pixels(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    x: usize,
+    center_y: usize,
+) -> Vec<(usize, [u8; 4])> {
+    let Some(anchor) = (0..height)
+        .filter(|&y| rgba[(y * width + x) * 4 + 3] != 0)
+        .min_by_key(|&y| y.abs_diff(center_y))
+    else {
+        return Vec::new();
+    };
+    let mut start = anchor;
+    while start > 0 && rgba[((start - 1) * width + x) * 4 + 3] != 0 {
+        start -= 1;
+    }
+    let mut end = anchor + 1;
+    while end < height && rgba[(end * width + x) * 4 + 3] != 0 {
+        end += 1;
+    }
+    (start..end)
+        .map(|y| {
+            let offset = (y * width + x) * 4;
+            (y, rgba[offset..offset + 4].try_into().unwrap())
+        })
+        .collect()
+}
+
+fn connector_row_pixels(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    y: usize,
+    center_x: usize,
+) -> Vec<(usize, [u8; 4])> {
+    if y >= height {
+        return Vec::new();
+    }
+    let Some(anchor) = (0..width)
+        .filter(|&x| rgba[(y * width + x) * 4 + 3] != 0)
+        .min_by_key(|&x| x.abs_diff(center_x))
+    else {
+        return Vec::new();
+    };
+    let mut start = anchor;
+    while start > 0 && rgba[(y * width + start - 1) * 4 + 3] != 0 {
+        start -= 1;
+    }
+    let mut end = anchor + 1;
+    while end < width && rgba[(y * width + end) * 4 + 3] != 0 {
+        end += 1;
+    }
+    (start..end)
+        .map(|x| {
+            let offset = (y * width + x) * 4;
+            (x, rgba[offset..offset + 4].try_into().unwrap())
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn straight_column_span(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    logical_left: usize,
+    logical_right: usize,
+    profile: &[(usize, [u8; 4])],
+    from_right: bool,
+) -> Option<(usize, usize)> {
+    let min_y = profile.iter().map(|(y, _)| *y).min()?;
+    let max_y = profile.iter().map(|(y, _)| *y).max()?;
+    let mut farthest = None;
+    for step in 0..=logical_right.saturating_sub(logical_left) {
+        let x = if from_right {
+            logical_right - step
+        } else {
+            logical_left + step
+        };
+        let mut inside = false;
+        let mut outside = false;
+        for y in 0..height {
+            if rgba[(y * width + x) * 4 + 3] == 0 {
+                continue;
+            }
+            if (min_y..=max_y).contains(&y) {
+                inside = true;
+            } else {
+                outside = true;
+            }
+        }
+        if !inside || outside {
+            break;
+        }
+        farthest = Some(x);
+    }
+    farthest.map(|x| {
+        if from_right {
+            (x, logical_right)
+        } else {
+            (logical_left, x)
+        }
+    })
+}
+
+fn straight_row_span(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    profile: &[(usize, [u8; 4])],
+    from_bottom: bool,
+) -> Option<(usize, usize)> {
+    let min_x = profile.iter().map(|(x, _)| *x).min()?;
+    let max_x = profile.iter().map(|(x, _)| *x).max()?;
+    let mut farthest = None;
+    for step in 0..height {
+        let y = if from_bottom { height - step - 1 } else { step };
+        let mut inside = false;
+        let mut outside = false;
+        for x in 0..width {
+            if rgba[(y * width + x) * 4 + 3] == 0 {
+                continue;
+            }
+            if (min_x..=max_x).contains(&x) {
+                inside = true;
+            } else {
+                outside = true;
+            }
+        }
+        if !inside || outside {
+            break;
+        }
+        farthest = Some(y);
+    }
+    farthest.map(|y| if from_bottom { (y, height - 1) } else { (0, y) })
+}
+
+fn translate_glyph_vertically(target: &mut RasterizedGlyph, delta_y: i32, cell_height: usize) {
+    let width = target.width as usize;
+    let old_height = target.height as usize;
+    let target_height = cell_height.clamp(1, u16::MAX as usize);
+    let old_top = target.ascent_offset.round() as i32;
+    let mut shifted = vec![0; width * target_height * 4];
+    for source_y in 0..old_height {
+        let target_y = old_top + source_y as i32 + delta_y;
+        if !(0..target_height as i32).contains(&target_y) {
+            continue;
+        }
+        let source = source_y * width * 4..(source_y + 1) * width * 4;
+        let destination = target_y as usize * width * 4..(target_y as usize + 1) * width * 4;
+        shifted[destination].copy_from_slice(&target.rgba[source]);
+    }
+    target.rgba = shifted;
+    target.height = target_height as u16;
+    target.ascent_offset = 0.0;
 }
 
 fn box_connector_sides(ch: char) -> u8 {
@@ -1022,58 +1249,64 @@ mod tests {
     }
 
     #[test]
-    fn rounded_corner_replaces_only_declared_edges_with_reference_profiles() {
+    fn rounded_corner_translates_curve_and_rebuilds_complete_straight_arms() {
         let mut target = RasterizedGlyph {
-            rgba: vec![0; 5 * 5 * 4],
-            width: 5,
+            rgba: vec![0; 7 * 5 * 4],
+            width: 7,
             height: 5,
-            advance: 5.0,
+            advance: 7.0,
             ascent_offset: 0.0,
             left_offset: 0.0,
             is_color: false,
             is_box_drawing: true,
         };
-        target.rgba[(1 * 5 + 1) * 4..(1 * 5 + 2) * 4].copy_from_slice(&[33; 4]);
-        target.rgba[(1 * 5 + 4) * 4..(1 * 5 + 5) * 4].copy_from_slice(&[44; 4]);
-        target.rgba[(2 * 5) * 4..(2 * 5 + 1) * 4].copy_from_slice(&[12; 4]);
-        target.rgba[(3 * 5) * 4..(3 * 5 + 1) * 4].copy_from_slice(&[18; 4]);
-        target.rgba[(4 * 5 + 2) * 4..(4 * 5 + 3) * 4].copy_from_slice(&[24; 4]);
+        target.rgba[0..4].copy_from_slice(&[90; 4]);
+        target.rgba[(1 * 7 + 1) * 4..(1 * 7 + 2) * 4].copy_from_slice(&[75; 4]);
+        target.rgba[(1 * 7 + 2) * 4..(1 * 7 + 3) * 4].copy_from_slice(&[77; 4]);
+        for x in 3..=6 {
+            target.rgba[(2 * 7 + x) * 4..(2 * 7 + x + 1) * 4].copy_from_slice(&[140; 4]);
+        }
 
         let horizontal = RasterizedGlyph {
-            rgba: vec![210; 5 * 4],
-            width: 5,
+            rgba: vec![220; 7 * 4],
+            width: 7,
             height: 1,
-            advance: 5.0,
-            ascent_offset: 2.0,
+            advance: 7.0,
+            ascent_offset: 4.0,
             left_offset: 0.0,
             is_color: false,
             is_box_drawing: true,
         };
         let mut vertical = RasterizedGlyph {
-            rgba: vec![0; 5 * 5 * 4],
-            width: 5,
-            height: 5,
-            advance: 5.0,
+            rgba: vec![0; 7 * 7 * 4],
+            width: 7,
+            height: 7,
+            advance: 7.0,
             ascent_offset: 0.0,
             left_offset: 0.0,
             is_color: false,
             is_box_drawing: true,
         };
-        for y in 0..5 {
-            vertical.rgba[(y * 5 + 2) * 4..(y * 5 + 3) * 4].copy_from_slice(&[80; 4]);
-            vertical.rgba[(y * 5 + 3) * 4..(y * 5 + 4) * 4].copy_from_slice(&[190; 4]);
+        for y in 0..7 {
+            vertical.rgba[(y * 7) * 4..(y * 7 + 1) * 4].copy_from_slice(&[200; 4]);
         }
 
-        align_rounded_corner_connectors(&mut target, '╮', 1.0, &horizontal, &vertical);
+        align_rounded_corner_connectors(&mut target, '\u{2570}', 1.0, 7, &horizontal, &vertical);
 
-        assert_eq!(&target.rgba[(1 * 5 + 1) * 4..(1 * 5 + 2) * 4], &[33; 4]);
-        assert_eq!(&target.rgba[(1 * 5 + 4) * 4..(1 * 5 + 5) * 4], &[44; 4]);
-        for y in 0..5 {
-            let expected = if y == 2 { [210; 4] } else { [0; 4] };
-            assert_eq!(&target.rgba[(y * 5) * 4..(y * 5 + 1) * 4], &expected);
+        assert_eq!(target.height, 7);
+        assert_eq!(target.ascent_offset, 0.0);
+        for y in 0..=2 {
+            assert_eq!(&target.rgba[(y * 7) * 4..(y * 7 + 1) * 4], &[200; 4]);
         }
-        assert_eq!(&target.rgba[(4 * 5 + 2) * 4..(4 * 5 + 3) * 4], &[80; 4]);
-        assert_eq!(&target.rgba[(4 * 5 + 3) * 4..(4 * 5 + 4) * 4], &[190; 4]);
+        assert_eq!(&target.rgba[(3 * 7 + 1) * 4..(3 * 7 + 2) * 4], &[75; 4]);
+        assert_eq!(&target.rgba[(3 * 7 + 2) * 4..(3 * 7 + 3) * 4], &[77; 4]);
+        for x in 3..=6 {
+            assert_eq!(
+                &target.rgba[(4 * 7 + x) * 4..(4 * 7 + x + 1) * 4],
+                &[220; 4]
+            );
+            assert_eq!(&target.rgba[(2 * 7 + x) * 4..(2 * 7 + x + 1) * 4], &[0; 4]);
+        }
     }
 
     #[test]
@@ -1103,22 +1336,15 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn consolas_rounded_corner_edges_match_straight_profiles() {
-        let path = std::path::Path::new(r"C:\Windows\Fonts\consola.ttf");
-        if !path.exists() {
+    fn consolas_rounded_corner_arms_match_straight_profiles() {
+        let regular_path = std::path::Path::new(r"C:\Windows\Fonts\consola.ttf");
+        let bold_path = std::path::Path::new(r"C:\Windows\Fonts\consolab.ttf");
+        if !regular_path.exists() || !bold_path.exists() {
             return;
         }
-        register_font_data(std::fs::read(path).unwrap()).unwrap();
+        register_font_data(std::fs::read(regular_path).unwrap()).unwrap();
+        register_font_data(std::fs::read(bold_path).unwrap()).unwrap();
         let mut rasterizer = GlyphRasterizer::new(256, 256).unwrap();
-        let corner = rasterizer
-            .rasterize("'Consolas'", 19.0, 1.0, 0, "╮")
-            .unwrap();
-        let horizontal = rasterizer
-            .rasterize("'Consolas'", 19.0, 1.0, 0, "─")
-            .unwrap();
-        let vertical = rasterizer
-            .rasterize("'Consolas'", 19.0, 1.0, 0, "│")
-            .unwrap();
 
         let column_profile = |glyph: &RasterizedGlyph, x: usize| {
             (0..glyph.height as usize)
@@ -1139,17 +1365,76 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let (corner_left, _) = glyph_logical_x_bounds(&corner, 1.0).unwrap();
-        let (_, horizontal_right) = glyph_logical_x_bounds(&horizontal, 1.0).unwrap();
 
-        assert_eq!(
-            column_profile(&corner, corner_left),
-            column_profile(&horizontal, horizontal_right)
-        );
-        assert_eq!(
-            row_profile(&corner, corner.height as usize - 1),
-            row_profile(&vertical, vertical.height as usize - 1)
-        );
+        for style_flags in [0, GlyphKey::STYLE_BOLD] {
+            let horizontal = rasterizer
+                .rasterize("'Consolas'", 19.0, 1.0, style_flags, "\u{2500}")
+                .unwrap();
+            let vertical = rasterizer
+                .rasterize("'Consolas'", 19.0, 1.0, style_flags, "\u{2502}")
+                .unwrap();
+            let (horizontal_left, horizontal_right) =
+                glyph_logical_x_bounds(&horizontal, 1.0).unwrap();
+
+            for (ch, from_right, from_bottom) in [
+                ('\u{256d}', true, true),
+                ('\u{256e}', false, true),
+                ('\u{2570}', true, false),
+                ('\u{256f}', false, false),
+            ] {
+                let corner = rasterizer
+                    .rasterize("'Consolas'", 19.0, 1.0, style_flags, &ch.to_string())
+                    .unwrap();
+                let (corner_left, corner_right) = glyph_logical_x_bounds(&corner, 1.0).unwrap();
+                let expected_horizontal = column_profile(
+                    &horizontal,
+                    if from_right {
+                        horizontal_right
+                    } else {
+                        horizontal_left
+                    },
+                );
+                let mut matching_columns = 0;
+                for step in 0..=corner_right - corner_left {
+                    let x = if from_right {
+                        corner_right - step
+                    } else {
+                        corner_left + step
+                    };
+                    if column_profile(&corner, x) != expected_horizontal {
+                        break;
+                    }
+                    matching_columns += 1;
+                }
+                assert!(
+                    matching_columns >= 2,
+                    "{ch} style={style_flags} only aligned {matching_columns} horizontal columns"
+                );
+
+                let reference_y = if from_bottom {
+                    vertical.height as usize - 1
+                } else {
+                    0
+                };
+                let expected_vertical = row_profile(&vertical, reference_y);
+                let mut matching_rows = 0;
+                for step in 0..corner.height as usize {
+                    let y = if from_bottom {
+                        corner.height as usize - step - 1
+                    } else {
+                        step
+                    };
+                    if row_profile(&corner, y) != expected_vertical {
+                        break;
+                    }
+                    matching_rows += 1;
+                }
+                assert!(
+                    matching_rows >= 2,
+                    "{ch} style={style_flags} only aligned {matching_rows} vertical rows"
+                );
+            }
+        }
         assert_eq!(
             rasterizer
                 .box_connector_references
