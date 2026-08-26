@@ -814,7 +814,7 @@ fn translate_glyph_vertically(target: &mut RasterizedGlyph, delta_y: i32, cell_h
     target.ascent_offset = 0.0;
 }
 
-fn box_connector_sides(ch: char) -> u8 {
+pub(super) fn box_connector_sides(ch: char) -> u8 {
     match ch {
         '\u{2500}' | '\u{2501}' | '\u{2504}' | '\u{2505}' | '\u{2508}' | '\u{2509}'
         | '\u{254c}' | '\u{254d}' | '\u{2550}' | '\u{257c}' | '\u{257e}' => {

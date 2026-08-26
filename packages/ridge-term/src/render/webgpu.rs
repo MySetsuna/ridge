@@ -49,7 +49,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use super::glyph_atlas::{glyph_quad_geometry_for_cell, GlyphEntry, GlyphKey};
+use super::glyph_atlas::{
+    glyph_quad_geometry_for_cell, glyph_quad_parts_for_cell, GlyphEntry, GlyphKey,
+};
 use super::gpu_context::{GpuContext, ATLAS_SUPERSAMPLE};
 use super::surface_host::{ScissorRect, SurfaceHost};
 use crate::render::backend::{
@@ -833,7 +835,7 @@ impl WebGpuPaneBackend {
         fg: [u8; 4],
     ) {
         if let Some(entry) = entry {
-            let (cell_xy, cell_size, atlas_uv) = glyph_quad_geometry_for_cell(
+            let (main, edges) = glyph_quad_parts_for_cell(
                 pixel_x,
                 pixel_y,
                 &entry,
@@ -841,15 +843,22 @@ impl WebGpuPaneBackend {
                 allocation_h,
                 emoji_em_px,
             );
-            instances.push(CellInstance {
-                cell_xy,
-                cell_size,
-                atlas_uv,
-                atlas_layer: entry.layer as u32,
-                fg_rgba: rgba_u8_to_f32(fg),
-                bg_rgba: [0.0, 0.0, 0.0, 0.0],
-                is_color: glyph_instance_mode(&entry),
-            });
+            for (cell_xy, cell_size, atlas_uv) in
+                std::iter::once(main).chain(edges.into_iter().flatten())
+            {
+                if cell_size[0] <= 0.0 || cell_size[1] <= 0.0 {
+                    continue;
+                }
+                instances.push(CellInstance {
+                    cell_xy,
+                    cell_size,
+                    atlas_uv,
+                    atlas_layer: entry.layer as u32,
+                    fg_rgba: rgba_u8_to_f32(fg),
+                    bg_rgba: [0.0, 0.0, 0.0, 0.0],
+                    is_color: glyph_instance_mode(&entry),
+                });
+            }
         }
     }
 
