@@ -106,9 +106,6 @@ git2 = "0.19"
 sysinfo = "0.31"
 backtrace = "0.3"
 base64 = "0.22"
-# Resolve the selected terminal font stack to raw SFNT/TTC data. Rasterization
-# remains in ridge-term Wasm so the renderer never creates a 2D canvas.
-fontdb = "0.23"
 # 剪贴板图片粘贴（§clipboard-image）：把 arboard 读到的 RGBA8 编码成 PNG 落盘成临时文件，
 # 再把路径作为 bracketed-paste 文本喂给终端里的 TUI（Claude Code 等）。只需编码，故用轻量的
 # `png` crate 而非重量级的 `image`。

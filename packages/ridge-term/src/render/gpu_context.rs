@@ -212,7 +212,6 @@ pub struct GpuContext {
     pub cell_bind_group_layout: wgpu::BindGroupLayout,
     pub cell_pipeline: wgpu::RenderPipeline,
     pub sampler: wgpu::Sampler,
-    pub smooth_sampler: wgpu::Sampler,
 
     // ── 壁纸资源 ─────────────────────────────────────────────────────
     /// 当前壁纸纹理（含原始像素尺寸）。`None` = 无壁纸。
@@ -491,12 +490,6 @@ impl GpuContext {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
                 ],
             });
 
@@ -610,22 +603,6 @@ impl GpuContext {
         });
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("ridge-atlas-sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            // Glyphs are rasterized at the current device scale and their
-            // quads preserve that device-pixel extent. Linear filtering would
-            // blend neighbouring transparent texels whenever the pane origin
-            // or DPR lands between pixels, producing a soft fringe and visible
-            // seams between adjacent box-drawing glyphs. Sample the native
-            // bitmap exactly; wallpaper scaling keeps its separate sampler.
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-        let smooth_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("ridge-atlas-smooth-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -784,7 +761,6 @@ impl GpuContext {
             cell_bind_group_layout,
             cell_pipeline,
             sampler,
-            smooth_sampler,
             wallpaper: None,
             wallpaper_opacity: 1.0,
             wallpaper_pipeline,
@@ -1261,10 +1237,6 @@ impl GpuContext {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&self.smooth_sampler),
-                },
             ],
         })
     }
@@ -1284,6 +1256,14 @@ mod tests {
     // the pin-aware eviction walk. Browser smoke (plan §Verification)
     // covers the GPU-bearing paths, including atlas-generation
     // propagation across panes.
+
+    #[test]
+    fn cell_shader_uses_one_sampler_and_exact_mono_texels() {
+        let shader = include_str!("shaders/cell.wgsl");
+        assert_eq!(shader.matches(": sampler;").count(), 1);
+        assert!(shader.contains("textureLoad("));
+        assert!(shader.contains("textureSampleLevel("));
+    }
 
     fn slot_dims_for_pub(cell_w_css: f32, cell_h_css: f32, dpr: f32) -> (u32, u32) {
         // Mirrors the live `slot_dims_for` impl including the atlas scale

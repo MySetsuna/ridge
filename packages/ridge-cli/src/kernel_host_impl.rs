@@ -634,6 +634,21 @@ fn jsonrpc_result(id: &Value, result: Result<Value, String>) -> Value {
     }
 }
 
+fn pane_resize_owner(value: &Value) -> &'static str {
+    match value.get("owner").and_then(Value::as_str) {
+        Some("remote") => "remote",
+        Some("host") => "host",
+        _ if matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("claim-pane" | "refresh-pane")
+        ) =>
+        {
+            "remote"
+        }
+        _ => "host",
+    }
+}
+
 fn dispatch(
     method: &str,
     args: &Value,
@@ -664,12 +679,23 @@ fn dispatch(
             Ok(Value::Null)
         }
         "resize_pane" | "resize_pty" => {
+            let workspace_id =
+                host.workspace_id(args.get("workspaceId").and_then(Value::as_str))?;
             let id = host.pane_id(args, &snapshot)?;
             let rows = args.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
             let cols = args.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
+            let owner = pane_resize_owner(args);
             resize_domain_pty(&host.current_endpoint(), id, cols, rows)?;
             let _ = out_tx.send(Message::Text(
-                json!({"type":"pty-resized","paneId":id,"rows":rows,"cols":cols}).to_string(),
+                json!({
+                    "type": "pty-resized",
+                    "workspaceId": workspace_id,
+                    "paneId": id,
+                    "rows": rows,
+                    "cols": cols,
+                    "owner": owner,
+                })
+                .to_string(),
             ));
             Ok(Value::Null)
         }
@@ -724,7 +750,11 @@ fn dispatch(
                 .map_err(|error| error.to_string())?;
             serde_json::to_value(entries).map_err(|error| error.to_string())
         }
-        "get_file_tree" | "read_file" | "text_search" => {
+        "get_file_tree"
+        | "read_file"
+        | "text_search"
+        | "load_terminal_font_faces"
+        | "read_terminal_font_face_chunk" => {
             let roots = host.roots(&snapshot);
             let ctx = core_host::headless_ctx(&roots);
             ridge_core::dispatch(method, args.clone(), &ctx)
@@ -1438,5 +1468,16 @@ mod tests {
         )
         .expect("OSC title should produce a frame");
         assert_eq!(frame["title"], "Codex working");
+    }
+
+    #[test]
+    fn resize_owner_defaults_closed_and_preserves_known_endpoints() {
+        assert_eq!(pane_resize_owner(&json!({})), "host");
+        assert_eq!(pane_resize_owner(&json!({ "owner": "unknown" })), "host");
+        assert_eq!(pane_resize_owner(&json!({ "owner": "remote" })), "remote");
+        assert_eq!(
+            pane_resize_owner(&json!({ "type": "refresh-pane" })),
+            "remote"
+        );
     }
 }
