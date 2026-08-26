@@ -581,7 +581,7 @@ fn align_rounded_corner_connectors(
         if from_bottom { height - 1 } else { 0 },
         (logical_left + logical_right) / 2,
     );
-    let vertical_span =
+    let mut vertical_span =
         straight_row_span(&target.rgba, width, height, &target_vertical, from_bottom);
     let reference_vertical = connector_row_pixels(
         &vertical.rgba,
@@ -598,9 +598,50 @@ fn align_rounded_corner_connectors(
         return;
     }
 
+    let Some(target_vertical_axis) =
+        connector_axis(&target_vertical, target.left_offset.round() as i32)
+    else {
+        return;
+    };
+    let Some(reference_vertical_axis) =
+        connector_axis(&reference_vertical, vertical.left_offset.round() as i32)
+    else {
+        return;
+    };
+    let delta_x = reference_vertical_axis - target_vertical_axis;
+
+    translate_glyph_horizontally(target, delta_x);
+    let reference_offset = vertical.left_offset.round() as i32 - target.left_offset.round() as i32;
+    let reference_bounds = reference_vertical
+        .iter()
+        .map(|(x, _)| *x as i32 + reference_offset)
+        .fold(None::<(i32, i32)>, |bounds, x| {
+            Some(bounds.map_or((x, x), |(left, right)| (left.min(x), right.max(x))))
+        });
+    if let (Some(span), Some((reference_left, reference_right))) = (vertical_span, reference_bounds)
+    {
+        vertical_span = Some(extend_vertical_tangent_span(
+            &target.rgba,
+            width,
+            height,
+            span,
+            reference_left,
+            reference_right,
+            from_bottom,
+            from_right,
+        ));
+    }
     translate_glyph_vertically(target, delta_y, cell_height);
     let height = target.height as usize;
     if let Some((start_x, end_x)) = horizontal_span {
+        let shifted = |x: usize| {
+            (x as i32 + delta_x).clamp(logical_left as i32, logical_right as i32) as usize
+        };
+        let (start_x, end_x) = if from_right {
+            (shifted(start_x), logical_right)
+        } else {
+            (logical_left, shifted(end_x))
+        };
         for x in start_x..=end_x {
             for y in 0..height {
                 target.rgba[(y * width + x) * 4..(y * width + x + 1) * 4].fill(0);
@@ -641,6 +682,27 @@ fn align_rounded_corner_connectors(
             }
         }
     }
+}
+
+fn translate_glyph_horizontally(target: &mut RasterizedGlyph, delta_x: i32) {
+    if delta_x == 0 {
+        return;
+    }
+    let width = target.width as usize;
+    let height = target.height as usize;
+    let mut shifted = vec![0; target.rgba.len()];
+    for y in 0..height {
+        for source_x in 0..width {
+            let target_x = source_x as i32 + delta_x;
+            if !(0..width as i32).contains(&target_x) {
+                continue;
+            }
+            let source = (y * width + source_x) * 4;
+            let destination = (y * width + target_x as usize) * 4;
+            shifted[destination..destination + 4].copy_from_slice(&target.rgba[source..source + 4]);
+        }
+    }
+    target.rgba = shifted;
 }
 
 fn connector_axis(profile: &[(usize, [u8; 4])], offset: i32) -> Option<i32> {
@@ -792,6 +854,47 @@ fn straight_row_span(
         farthest = Some(y);
     }
     farthest.map(|y| if from_bottom { (y, height - 1) } else { (0, y) })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn extend_vertical_tangent_span(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    (mut start, mut end): (usize, usize),
+    reference_left: i32,
+    reference_right: i32,
+    from_bottom: bool,
+    curve_to_right: bool,
+) -> (usize, usize) {
+    loop {
+        let candidate = if from_bottom {
+            start.checked_sub(1)
+        } else {
+            end.checked_add(1).filter(|&y| y < height)
+        };
+        let Some(y) = candidate else { break };
+        let bounds = (0..width)
+            .filter(|&x| rgba[(y * width + x) * 4 + 3] != 0)
+            .fold(None::<(usize, usize)>, |bounds, x| {
+                Some(bounds.map_or((x, x), |(left, right)| (left.min(x), right.max(x))))
+            });
+        let Some((left, right)) = bounds else { break };
+        let enters_curve = if curve_to_right {
+            right as i32 > reference_right
+        } else {
+            (left as i32) < reference_left
+        };
+        if enters_curve {
+            break;
+        }
+        if from_bottom {
+            start = y;
+        } else {
+            end = y;
+        }
+    }
+    (start, end)
 }
 
 fn translate_glyph_vertically(target: &mut RasterizedGlyph, delta_y: i32, cell_height: usize) {
@@ -1288,7 +1391,7 @@ mod tests {
             is_box_drawing: true,
         };
         for y in 0..7 {
-            vertical.rgba[(y * 7) * 4..(y * 7 + 1) * 4].copy_from_slice(&[200; 4]);
+            vertical.rgba[(y * 7 + 1) * 4..(y * 7 + 2) * 4].copy_from_slice(&[200; 4]);
         }
 
         align_rounded_corner_connectors(&mut target, '\u{2570}', 1.0, 7, &horizontal, &vertical);
@@ -1296,17 +1399,34 @@ mod tests {
         assert_eq!(target.height, 7);
         assert_eq!(target.ascent_offset, 0.0);
         for y in 0..=2 {
-            assert_eq!(&target.rgba[(y * 7) * 4..(y * 7 + 1) * 4], &[200; 4]);
+            assert_eq!(&target.rgba[(y * 7 + 1) * 4..(y * 7 + 2) * 4], &[200; 4]);
         }
-        assert_eq!(&target.rgba[(3 * 7 + 1) * 4..(3 * 7 + 2) * 4], &[75; 4]);
-        assert_eq!(&target.rgba[(3 * 7 + 2) * 4..(3 * 7 + 3) * 4], &[77; 4]);
-        for x in 3..=6 {
+        assert_eq!(&target.rgba[(3 * 7 + 2) * 4..(3 * 7 + 3) * 4], &[75; 4]);
+        assert_eq!(&target.rgba[(3 * 7 + 3) * 4..(3 * 7 + 4) * 4], &[77; 4]);
+        for x in 4..=6 {
             assert_eq!(
                 &target.rgba[(4 * 7 + x) * 4..(4 * 7 + x + 1) * 4],
                 &[220; 4]
             );
             assert_eq!(&target.rgba[(2 * 7 + x) * 4..(2 * 7 + x + 1) * 4], &[0; 4]);
         }
+    }
+
+    #[test]
+    fn rounded_corner_rebuilds_outer_hook_until_curve_turns_inward() {
+        let mut rgba = vec![0; 5 * 5 * 4];
+        for (y, x) in [(0, 2), (1, 1), (2, 2), (3, 3)] {
+            rgba[(y * 5 + x) * 4 + 3] = 255;
+        }
+
+        assert_eq!(
+            extend_vertical_tangent_span(&rgba, 5, 5, (0, 0), 2, 2, false, true),
+            (0, 2)
+        );
+        assert_eq!(
+            extend_vertical_tangent_span(&rgba, 5, 5, (4, 4), 2, 2, true, false),
+            (2, 4)
+        );
     }
 
     #[test]
