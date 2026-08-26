@@ -34,7 +34,9 @@ straight-line profiles and axes: the complete native curve translates to the
 horizontal reference axis before vacated vertical arms are extended, so no
 outer-edge splice can detach an interior tangent. Their quads preserve a
 one-source-texel-to-one-device-pixel mapping and clip to snapped cell bounds
-without geometric rescaling.
+without geometric rescaling. If a native box bitmap ends before a declared
+snapped cell side, that side is completed by repeating only its outermost native
+texel column; the curve and main quad remain unscaled.
 Monochrome text and box drawing sample at native nearest density; only scaled
 color emoji use linear atlas sampling. TUI mode obeys DECTCEM and keeps an
 enabled cursor steady without blink wakeups. No path may threshold Swash
