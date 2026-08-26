@@ -2010,7 +2010,10 @@ mod tests {
                 resume: None,
             },
         ];
-        expect_agents(&page_history_replies(replies.clone(), 2, 0), &["Claude", "Codex"]);
+        expect_agents(
+            &page_history_replies(replies.clone(), 2, 0),
+            &["Claude", "Codex"],
+        );
         expect_agents(&page_history_replies(replies, 2, 2), &["Claude"]);
         assert!(history_reply_matches_query(
             &AgentRecentReply {
@@ -2028,7 +2031,10 @@ mod tests {
 
     fn expect_agents(replies: &[AgentRecentReply], expected: &[&str]) {
         assert_eq!(
-            replies.iter().map(|reply| reply.agent.as_str()).collect::<Vec<_>>(),
+            replies
+                .iter()
+                .map(|reply| reply.agent.as_str())
+                .collect::<Vec<_>>(),
             expected,
         );
     }

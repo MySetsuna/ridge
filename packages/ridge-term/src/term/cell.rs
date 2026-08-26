@@ -250,7 +250,9 @@ impl Row {
             .binary_search_by_key(&col_u16, |cluster| cluster.col)
         {
             Ok(index) => self.clusters[index].text = text,
-            Err(index) => self.clusters.insert(index, ClusterSpan { col: col_u16, text }),
+            Err(index) => self
+                .clusters
+                .insert(index, ClusterSpan { col: col_u16, text }),
         }
     }
 
@@ -411,7 +413,10 @@ mod tests {
         r.set_cluster(9, "updated".into());
 
         assert_eq!(
-            r.clusters.iter().map(|cluster| cluster.col).collect::<Vec<_>>(),
+            r.clusters
+                .iter()
+                .map(|cluster| cluster.col)
+                .collect::<Vec<_>>(),
             [2, 9]
         );
         assert_eq!(

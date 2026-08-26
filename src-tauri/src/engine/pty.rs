@@ -297,8 +297,7 @@ pub struct PtyInputSink {
 
 impl PtyInputSink {
     pub fn new(writer: Arc<Mutex<Box<dyn Write + Send>>>) -> Arc<Self> {
-        let (sender, receiver) =
-            mpsc::sync_channel::<PtyInputRequest>(PTY_INPUT_QUEUE_CAPACITY);
+        let (sender, receiver) = mpsc::sync_channel::<PtyInputRequest>(PTY_INPUT_QUEUE_CAPACITY);
         let closed = Arc::new(AtomicBool::new(false));
         let worker_closed = Arc::clone(&closed);
         let spawned = std::thread::Builder::new()
@@ -355,9 +354,7 @@ impl PtyInputSink {
             .try_send(PtyInputRequest { data, ack })
             .map_err(|error| match error {
                 TrySendError::Full(_) => "PTY input queue is full".to_string(),
-                TrySendError::Disconnected(_) => {
-                    "PTY input worker disconnected".to_string()
-                }
+                TrySendError::Disconnected(_) => "PTY input worker disconnected".to_string(),
             })?;
         match tokio::time::timeout(timeout, written).await {
             Ok(Ok(result)) => result,

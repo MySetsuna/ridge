@@ -2297,14 +2297,7 @@ pub fn resize_pane_inner(
                     ws.pane_sizes.insert(pane_id, (rows, cols));
                 }
             }
-            crate::remote_host_impl::broadcast_pane_resize(
-                state,
-                wid,
-                pane_id,
-                rows,
-                cols,
-                owner,
-            );
+            crate::remote_host_impl::broadcast_pane_resize(state, wid, pane_id, rows, cols, owner);
             Ok(())
         }
         Err(e) => {
