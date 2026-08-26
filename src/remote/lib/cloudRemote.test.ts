@@ -716,7 +716,7 @@ describe('CloudRemoteConnection panes', () => {
         timeoutFailures: 5,
       });
 
-      conn.claimPane(PANE, 24, 80);
+      void conn.claimPane(PANE, 24, 80).catch(() => undefined);
       await Promise.resolve();
       expect(attempts).toBe(6);
     } finally {
@@ -730,12 +730,13 @@ describe('CloudRemoteConnection panes', () => {
     vi.useFakeTimers();
     try {
       const before = conn.lastRefreshSeq();
-      conn.claimPane(PANE, 30, 100, 0, 0, 'remote');
+      const applied = conn.claimPane(PANE, 30, 100, 0, 0, 'remote');
       await vi.advanceTimersByTimeAsync(40);
       expect(invokeMock).toHaveBeenCalledWith('resize_pane', {
         workspaceId: 'ws1', paneId: 'pane-a', rows: 30, cols: 100, owner: 'remote',
       }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
       expect(conn.lastRefreshSeq()).toBe(before + 1);
+      await applied;
     } finally {
       conn.disconnect();
       vi.useRealTimers();

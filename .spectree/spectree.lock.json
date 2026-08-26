@@ -1,58 +1,186 @@
 {
   "version": 1,
-  "changeId": "CHG-023",
-  "specHash": "17853cc3565d78281c503bb5f306a4db5971b63b4bcbc03a0e3d186750ebb010",
+  "changeId": "CHG-024",
+  "specHash": "ef65c359d7308009175d7fdfa815d645ebb41b4f64cea2ec1cb9642095be78f3",
   "units": [
     {
-      "id": "L3-TERMINAL-GLYPH-001",
-      "level": "L3",
-      "nodeHash": "7933394d561b8c97241aa92a4e925c3f0a5053af1e9438a2c7e14fb1b2c65e28",
+      "id": "L2-AUTOMATION-001",
+      "level": "L2",
+      "nodeHash": "d690cf9c468e244ff525eb6bc990c1715eb8fc1e66580524c055fd7b3c3571c7",
       "codeTargets": [
-        "packages/ridge-term/src/render/glyph_atlas.rs",
-        "packages/ridge-term/src/render/glyph_rasterizer.rs",
-        "packages/ridge-term/src/render/gpu_context.rs",
-        "packages/ridge-term/src/render/shaders/cell.wgsl",
-        "packages/ridge-term/src/render/webgpu.rs",
-        "packages/ridge-term/src/term/wcwidth.rs",
-        "src-tauri/src/commands/terminal_font.rs"
+        "scripts/**"
       ],
       "testTargets": [
-        "packages/ridge-term/src/render/glyph_atlas.rs",
-        "packages/ridge-term/src/render/glyph_rasterizer.rs",
-        "packages/ridge-term/src/render/renderer.rs",
-        "packages/ridge-term/src/term/wcwidth.rs",
-        "scripts/cdp-term-render-e2e.mjs"
+        "scripts/**/*.test.mjs",
+        "scripts/**/*.test.ts"
       ],
       "status": "LOCKED"
     },
     {
-      "id": "L4-EMOJI-GEOMETRY-001",
-      "level": "L4",
-      "nodeHash": "0b070f9ac2a154a82da36e810fdf91824be32f3b0c6fe6e53ef670930d269b1d",
+      "id": "L2-HOST-INTEGRATION-001",
+      "level": "L2",
+      "nodeHash": "c00461aecda3521bde7416232a8c2713248fc779d2ba9ae9cc9e69b234aa8cd0",
       "codeTargets": [
-        "packages/ridge-term/src/render/glyph_atlas.rs",
-        "packages/ridge-term/src/render/glyph_rasterizer.rs",
-        "packages/ridge-term/src/render/webgpu.rs",
+        "src/lib/hosts/**",
+        "src/lib/remote/cloud/cloudControllerBoot*",
+        "src/lib/remote/cloud/cloudHostTopologyLink*",
+        "src/lib/remote/cloud/sharedWorkspaceProjection*",
+        "src/lib/stores/gitGuardStats*",
+        "src/lib/stores/hostReconnect*",
+        "src/lib/stores/hosts*",
+        "src/lib/stores/processGuardPolicy*",
         "src-tauri/src/commands/terminal_font.rs"
       ],
       "testTargets": [
-        "packages/ridge-term/src/render/glyph_atlas.rs",
-        "packages/ridge-term/src/render/glyph_rasterizer.rs",
-        "packages/ridge-term/src/term/wcwidth.rs"
+        "src/lib/hosts/**/*.test.ts",
+        "src/lib/remote/cloud/cloudControllerBoot.test.ts",
+        "src/lib/remote/cloud/cloudHostTopologyLink.test.ts",
+        "src/lib/remote/cloud/sharedWorkspaceProjection.test.ts",
+        "src/lib/stores/gitGuardStats.test.ts",
+        "src/lib/stores/hostReconnect.test.ts",
+        "src/lib/stores/hosts*.test.ts",
+        "src/lib/stores/processGuardPolicy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L3-AGENT-HITL-001",
+      "level": "L3",
+      "nodeHash": "8e71f2928a61d75f166b214885dfed285b24af3691a7d61824e493d0f74feef7",
+      "codeTargets": [
+        "src/lib/teammate/hitlAudit*"
+      ],
+      "testTargets": [
+        "src/lib/teammate/hitlAudit*.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L3-REMOTE-SMOOTHNESS-001",
+      "level": "L3",
+      "nodeHash": "94cbb22b13c1d19f9c3c5f11867f6748c8898b1ad89ad9547cc65dd6dae9b9f7",
+      "codeTargets": [
+        "src/remote/MainApp.svelte",
+        "src/remote/lib/TerminalCanvas.svelte",
+        "src/remote/lib/paneFeedScheduler.ts",
+        "packages/remote/src/shared/terminal/manager.ts",
+        "packages/remote/src/shared/transport/**"
+      ],
+      "testTargets": [
+        "src/remote/lib/paneFeedScheduler.test.ts",
+        "src/remote/lib/TerminalCanvas.test.ts",
+        "packages/remote/src/shared/**"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-REMOTE-GPU-COMPAT-001",
+      "level": "L4",
+      "nodeHash": "32b872c7824c4c3c2b295e6c56428e6708f02026bef4ec1533b5fa8a3d1e0c63",
+      "codeTargets": [
+        "Cargo.lock",
+        "packages/ridge-term/Cargo.toml",
+        "packages/ridge-term/README.md",
+        "packages/ridge-term/build.mjs",
+        "packages/ridge-term/src/lib.rs",
+        "packages/ridge-term/src/render/gpu_context.rs",
+        "packages/ridge-term/src/render/gpu_limits.rs",
+        "packages/ridge-term/src/render/mod.rs",
+        "packages/ridge-term/src/render/surface_host.rs",
+        "packages/ridge-term/src/render/webgpu.rs",
+        "packages/remote/src/shared/terminal/fontDataService.ts",
+        "packages/remote/src/shared/terminal/manager.ts",
+        "scripts/cdp-port*",
+        "scripts/lib/cdpTarget*",
+        "scripts/lib/toolPath*",
+        "src/remote/MainApp.svelte",
+        "src/remote/lib/TerminalCanvas.svelte",
+        "src-tauri/src/commands/terminal_font.rs",
+        "scripts/cdp-term-render-e2e.mjs",
+        "scripts/mobile-keyboard-e2e.mjs"
+      ],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/manager.attach.test.ts",
+        "packages/remote/src/shared/terminal/manager.test.ts",
+        "packages/ridge-term/src/render/gpu_limits.rs",
+        "src/remote/lib/TerminalCanvas.test.ts",
+        "scripts/cdp-term-render-e2e.mjs",
+        "scripts/mobile-keyboard-e2e.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-REMOTE-PERFORMANCE-GATE-001",
+      "level": "L4",
+      "nodeHash": "2925c36603acddf2dcdc14a4e1c7dc4c258bcbbdf87ab207c79874144fbf672b",
+      "codeTargets": [
+        "src/remote/**",
+        "packages/remote/src/**",
+        "src/lib/components/GitGraph.svelte",
+        "src/shared/sidebar/types*"
+      ],
+      "testTargets": [
+        "tests/e2e/**",
+        "scripts/perf-bench.ps1"
       ],
       "status": "LOCKED"
     }
   ],
   "allowedPaths": [
-    "packages/ridge-term/src/render/glyph_atlas.rs",
-    "packages/ridge-term/src/render/glyph_rasterizer.rs",
+    "Cargo.lock",
+    "packages/remote/src/**",
+    "packages/remote/src/shared/**",
+    "packages/remote/src/shared/terminal/fontDataService.ts",
+    "packages/remote/src/shared/terminal/manager.attach.test.ts",
+    "packages/remote/src/shared/terminal/manager.test.ts",
+    "packages/remote/src/shared/terminal/manager.ts",
+    "packages/remote/src/shared/transport/**",
+    "packages/ridge-term/Cargo.toml",
+    "packages/ridge-term/README.md",
+    "packages/ridge-term/build.mjs",
+    "packages/ridge-term/src/lib.rs",
     "packages/ridge-term/src/render/gpu_context.rs",
-    "packages/ridge-term/src/render/renderer.rs",
-    "packages/ridge-term/src/render/shaders/cell.wgsl",
+    "packages/ridge-term/src/render/gpu_limits.rs",
+    "packages/ridge-term/src/render/mod.rs",
+    "packages/ridge-term/src/render/surface_host.rs",
     "packages/ridge-term/src/render/webgpu.rs",
-    "packages/ridge-term/src/term/wcwidth.rs",
+    "scripts/**",
+    "scripts/**/*.test.mjs",
+    "scripts/**/*.test.ts",
+    "scripts/cdp-port*",
     "scripts/cdp-term-render-e2e.mjs",
-    "src-tauri/src/commands/terminal_font.rs"
+    "scripts/lib/cdpTarget*",
+    "scripts/lib/toolPath*",
+    "scripts/mobile-keyboard-e2e.mjs",
+    "scripts/perf-bench.ps1",
+    "src-tauri/src/commands/terminal_font.rs",
+    "src/lib/components/GitGraph.svelte",
+    "src/lib/hosts/**",
+    "src/lib/hosts/**/*.test.ts",
+    "src/lib/remote/cloud/cloudControllerBoot*",
+    "src/lib/remote/cloud/cloudControllerBoot.test.ts",
+    "src/lib/remote/cloud/cloudHostTopologyLink*",
+    "src/lib/remote/cloud/cloudHostTopologyLink.test.ts",
+    "src/lib/remote/cloud/sharedWorkspaceProjection*",
+    "src/lib/remote/cloud/sharedWorkspaceProjection.test.ts",
+    "src/lib/stores/gitGuardStats*",
+    "src/lib/stores/gitGuardStats.test.ts",
+    "src/lib/stores/hostReconnect*",
+    "src/lib/stores/hostReconnect.test.ts",
+    "src/lib/stores/hosts*",
+    "src/lib/stores/hosts*.test.ts",
+    "src/lib/stores/processGuardPolicy*",
+    "src/lib/stores/processGuardPolicy.test.ts",
+    "src/lib/teammate/hitlAudit*",
+    "src/lib/teammate/hitlAudit*.test.ts",
+    "src/remote/**",
+    "src/remote/MainApp.svelte",
+    "src/remote/lib/TerminalCanvas.svelte",
+    "src/remote/lib/TerminalCanvas.test.ts",
+    "src/remote/lib/paneFeedScheduler.test.ts",
+    "src/remote/lib/paneFeedScheduler.ts",
+    "src/shared/sidebar/types*",
+    "tests/e2e/**"
   ],
   "testCommand": [
     "pnpm",
@@ -93,6 +221,7 @@
     "changes/CHG-021.md": "f98a2c377fff14f9d4e65afb112e5a909de40914e11c92bf3a0bea8f4b5d8de3",
     "changes/CHG-022.md": "bef981ba396767cc11302e228d645c3b1524b4364dcfc1ac74031616d30fc4da",
     "changes/CHG-023.md": "a3e212a0bc356acb4c98e76ed2cd76e0439c06f2435ef54e84b0519ad633ef78",
+    "changes/CHG-024.md": "a6ecf5dccf85f07918a1b6c359679d917c41e5d28dfa295668c29768fe6346d6",
     "CLAUDE.md": "1f07d1b3dcd28c80ef7f2255ae8d6135717c98e75a2b7630dc246902148bfd21",
     "docs/_team-archive/site-revamp-2026-04-30/content-brief.md": "ae3ffae60b3037e595e0b0e976675cbbf49edb74ed01ce44e7188b9862a26bfc",
     "docs/_team-archive/site-revamp-2026-04-30/decisions.md": "63b66c909323ed7acc6cce207b8de7395579a5d6636fc00abb62b3502e4f4629",
@@ -676,7 +805,7 @@
     "packages/remote/src/shared/terminal/linkSpans.test.ts": "df99d998c41be0d5270b47dc950b16935bd93286b4b79d866d95a0f32e2d5989",
     "packages/remote/src/shared/terminal/linkSpans.ts": "0dbea595b6c6eb87bd6aac200d22b13115f7510b9f22afb27461c24d6b315056",
     "packages/remote/src/shared/terminal/manager.attach.test.ts": "5947e28946503007b589c813be60f870f3b0b224bf49b188c2f46652f3b5e666",
-    "packages/remote/src/shared/terminal/manager.test.ts": "f7cf6d018b817b02238d61e50fcc6c618797e2188cd9899395d7502cbf09338d",
+    "packages/remote/src/shared/terminal/manager.test.ts": "276e5383ae74e4445f03caf812424cf643a7024388f6cf36a2fd74e3fe053c27",
     "packages/remote/src/shared/terminal/manager.ts": "ba073fc76d22d17e09cc67eb153e960c046d685239cc8f9adfc3483be36c515a",
     "packages/remote/src/shared/terminal/mobileCopy.test.ts": "b23fbcedeb74e00efcbc21b521a45328cec76af32ef4d7db351cd37c86d1a143",
     "packages/remote/src/shared/terminal/mobileCopy.ts": "53d24a89916d6599a2433aa031370c0c020d8a8abafdc7fe0e4ef0bdf1a79f88",
@@ -748,9 +877,9 @@
     "packages/remote/src/shared/transport/unknownText.test.ts": "9ef6eb2dd61145aa2af8bec1cefe49fec7cba8eccc1b12d1835d635ff245a0a3",
     "packages/remote/src/shared/transport/unknownText.ts": "7364fc7fc183a44ea2b26b665da64c1e6ded6d18e2ec80012ebb6a294fd2b66d",
     "packages/remote/src/shared/transport/wsRemote.behavior.test.ts": "2a31483af4363fd1bf1d95135e3092c9f537585a0719e40e7ce2b730e08f1a2c",
-    "packages/remote/src/shared/transport/wsRemote.ts": "dda3ccf6eabdcb35a414a59c81aea9d8538e17aaa446fe0c7e9b39ab765d9958",
+    "packages/remote/src/shared/transport/wsRemote.ts": "68b901ac4fb39d3e2e075b21817cd0f114bf980d72fae6e790949260dc46e9d1",
     "packages/remote/src/shared/transport/wsRemotePending.test.ts": "894c0e2732ea59df167edd0799aa2bcc4d38bcb6c8734925daa8e25c8287c93d",
-    "packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts": "c168d32a1731d902d36939bf19ba323701b50fc4926f18f3bcac421124eca229",
+    "packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts": "66f01699b62199aa984ea8c9065104b27e294639652d7fa9586f689070b0e4ff",
     "packages/remote/src/shared/transport/wsRemoteUrl.test.ts": "0e7c6cf6b54ece8a3ba4e58e8e8017e68d55256ea7ced09e4b2442e72507ec40",
     "packages/remote/tsconfig.json": "4d72265d4e993a19956e24f1f492580978648aca90769c258edd40061ba5c6ca",
     "packages/rg-split/.github/workflows/pages.yml": "7b19d4a4b9b430a150bba9d767735ba396be989382bfd11884511cd582a30bde",
@@ -1115,7 +1244,7 @@
     "specs/l3-agent-card.md": "40571bd88a26823258db8a9f8344efdcd3369c8c595ce1c7896ea8b22a8ef1a8",
     "specs/l3-agent-hitl.md": "8052829560003511d1b4d59bf634ab5f9fc78b1d5ba6859830618b2bbb9d2ae3",
     "specs/l3-desktop-boot.md": "15f679ff509c729ae267d86a717a11f0ec3e37505883c36b58cd7ed4f25faf77",
-    "specs/l3-remote-smoothness.md": "a8f99de0b3f27e07711e01319f31096c55549a4a352c21a6e063ac2e34ef15bb",
+    "specs/l3-remote-smoothness.md": "774f3ac4298971f5144f994124dbd3664b3af5a3ca4a57fa478aefc05692ce5f",
     "specs/l3-runtime-discovery.md": "42ab19ac403124c1efcb4352fa293f9d111deabe66ede5a2cad9e0638a70fead",
     "specs/l3-terminal-glyph-rendering.md": "662afe498260bd0c60f0e489ca5f47b300354f457fdeddac5a659cf1257e15b4",
     "specs/l4-agent-activity.md": "c83c805c8014dd4b34a459a53d02ffe19283f8b8e6c2d479575fd41ae5fc8e4c",
@@ -1385,8 +1514,8 @@
     "src/remote/index.html": "0126ebd002d6334f80ef94ccfcf887f507e7671841500d0e246816dbb326468c",
     "src/remote/lib/clipboard.test.ts": "193c8770ebe7a5ffe239fbb126ebedb63de7c3c1797b88e3081811852dd90538",
     "src/remote/lib/clipboard.ts": "eb5114470fff3122d310d8b7af8fdb1130c4e380943208684748ec9efd062463",
-    "src/remote/lib/cloudRemote.test.ts": "0b9be99c759e2b0ec26048a8bb60776539960649069db337dbe4057089a6e2a5",
-    "src/remote/lib/cloudRemote.ts": "55183c04633e74166e38dabce3c95c0a89d8f223a3dad0ceae3802a4baf5a111",
+    "src/remote/lib/cloudRemote.test.ts": "85c7ae63510ead6ed9a5f2a0fc5ed5ec51966a0d2ba73fee915c7329a43b5ae4",
+    "src/remote/lib/cloudRemote.ts": "e1e29a199c14f6c56cc2d6a4480bf9db02f47254338f6801e201d2fe7cffd389",
     "src/remote/lib/FileViewer.svelte": "c911c3de4d0b2fd40e0e6f0fee919085b12b5a09886151cbd4fad10a36b19e78",
     "src/remote/lib/generationGuard.test.ts": "b0f08e505186944fa4397c6d1429152960186f609c791a25fb1565613ade8c2c",
     "src/remote/lib/generationGuard.ts": "74da229bfe89693ad129f4ea611b8749ed172277ce57a7608687a722919588b1",
@@ -1419,8 +1548,8 @@
     "src/remote/lib/SidebarTeamRoster.test.ts": "fe7764e5389d6a80cb6cba363e86ff708e82d844afba0987c5dfca0e7edb9f6b",
     "src/remote/lib/teamRosterScope.test.ts": "3e92991e10a3c39f2733132f86834555f0ce41cc0e6f324fd1bd75a389479582",
     "src/remote/lib/teamRosterScope.ts": "fee9ffda95569021e91a9a04338e0ad43b767d9eafe8eaca41ca262c8efd691b",
-    "src/remote/lib/TerminalCanvas.svelte": "ffd6bfe332ff53516f3ac75710bb3cae7519688d19a779c2f5f791677eb0df87",
-    "src/remote/lib/TerminalCanvas.test.ts": "3638c0ae4a023fbb10208bfbab3dbc76850058f3acbb2625c2baa81255ab57a4",
+    "src/remote/lib/TerminalCanvas.svelte": "bc9fd71e2ce16451df1ecee63fa2f6f25b3f6f4fef80cc65d5453454cbec7799",
+    "src/remote/lib/TerminalCanvas.test.ts": "c2dd46e5cfa50260a5b0833061f8911527f38ca5262eea91c8d87bab9c0ae7ac",
     "src/remote/lib/theme.test.ts": "e263c8426d8e7644a7df7b3f34ed15f192efc37a062b9ca4f25de28976ab375b",
     "src/remote/lib/theme.ts": "98173950d59022d6daa450fa3a723a1678332f792f252c421a0499d193d53d03",
     "src/remote/lib/treeState.svelte.ts": "aaaf54950ef7405e3994ba5fca4afee1cd8e053f6d3c675203e06cc0fd0f5a85",
@@ -1430,8 +1559,8 @@
     "src/remote/lib/WorkspaceTree.test.ts": "4db3ca3ee487689d84a40663e88c74fd285715ffa255cd9378508cfa983d3db3",
     "src/remote/main.test.ts": "298712a52148256facd81b94d06cb7fa6f5fdfc2d1a70a6471ebe633d9717b08",
     "src/remote/main.ts": "841d50bff786c76c1113f7d9e04b15f6492cf9fc6c19c0db6c3499a530f63dd6",
-    "src/remote/MainApp.svelte": "9fdb05015ba68913b0fa33b3a47c7f394b5b8bd00918231b7eadaa5794e4cb11",
-    "src/remote/MainApp.test.ts": "c7e148d172d17a8b4f7d5d9ed234d69b0febd45cba16965c85cf167e77c7b392",
+    "src/remote/MainApp.svelte": "f0459090b2e993195739079c06debe5fe25c6137230b2c44eb7ab7f2aa971067",
+    "src/remote/MainApp.test.ts": "d1e91d2d996f969e1ada5c13863b6fbc2d8a506aa240ae0fb1649540a5ad5bee",
     "src/remote/public/apple-touch-icon.png": "fcf04070e1ae0e72599b39cf3c118a81c57d01dbb98b894b6ba988bda26cc01e",
     "src/remote/public/favicon.png": "7b0d863efa5a660174ce0242b3b356c70cd952eceda2589da50819aa82cc02ac",
     "src/remote/public/fonts/flags.woff2": "85c0857c03f3bfa9971b5bccdafd4337bade1f76accc74002c0f1de466cf4702",
@@ -1632,6 +1761,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-96997db73671",
-  "manifestHash": "96997db736711345c955050460870293b5d0a4b4957e58a495e5ea2f73dc400b"
+  "buildId": "BUILD-1558921b9fdd",
+  "manifestHash": "1558921b9fdd908a181ce19f68014cf96282e01bbb11009fb627211f5d61eec7"
 }

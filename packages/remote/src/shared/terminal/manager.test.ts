@@ -1522,6 +1522,28 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 	}
 	});
 
+	it('forces a same-sized shared Remote claim after the resize handler binds', async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, fixture, internal } = makeManager();
+			internal._sharedRemoteMode = true;
+			fixture.setRows(20);
+			fixture.setCols(80);
+			fixture.pane.lastReportedRows = 20;
+			fixture.pane.lastReportedCols = 80;
+			fixture.pane.resizeHandler = vi.fn().mockResolvedValue(undefined);
+
+			await manager.fitPaneNow(PANE);
+			expect(fixture.pane.resizeHandler).not.toHaveBeenCalled();
+
+			await manager.fitPaneNow(PANE, true);
+			expect(fixture.kernel.resize).toHaveBeenCalledWith(20, 80);
+			expect(fixture.pane.resizeHandler).toHaveBeenCalledWith(20, 80, false, false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('renders only the pane dirtied by a bottom-row scroll', () => {
 		const { manager, fixture, internal } = makeManager();
 		const sibling = makePane();

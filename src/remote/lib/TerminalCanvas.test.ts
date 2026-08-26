@@ -52,6 +52,11 @@ describe('remote pane Agent status chrome contract', () => {
   it('keeps pane geometry authoritative for host resize recovery', () => {
     expect(source).toContain('export function fitPaneNow()');
     expect(source).toContain('if (attached) manager.fitPaneNow(paneId);');
+    expect(source).toContain('await manager.fitPaneNow(paneId, true);');
+    expect(source.indexOf('await manager.fitPaneNow(paneId, true);')).toBeLessThan(
+      source.indexOf('const pendingFrames = onDrainPending?.(paneId) ?? [];'),
+    );
+    expect(source).toContain('return onPaneResize(pane, rows, cols');
     expect(source).toContain('export function claimPaneSize()');
     expect(source).toContain('manager.claimPaneSize(paneId)');
     expect(source).toContain('manager.forceFullRedraw(paneId)');

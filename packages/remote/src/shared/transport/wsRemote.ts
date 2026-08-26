@@ -512,7 +512,7 @@ export interface RemoteLink {
     pixelWidth: number,
     pixelHeight: number,
     owner?: PaneRenderOwner,
-  ): void;
+  ): Promise<void>;
   lastRefreshSeq(): number;
   listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }>;
   /** P1 roster：只读拓扑快照（capability `teammate` 协商后可用；UI 轮询取数）。 */
@@ -1528,12 +1528,13 @@ export class RemoteConnection implements RemoteLink {
     _pixelWidth: number,
     _pixelHeight: number,
     owner?: PaneRenderOwner,
-  ) {
+  ): Promise<void> {
     this.paneScheduler.resume(pane);
-    const accepted = owner
-      ? this.paneScheduler.scheduleResize(pane, rows, cols, { owner }, { force: true })
-      : this.paneScheduler.scheduleResize(pane, rows, cols, undefined, { force: true });
-    if (accepted) this._refreshSeq++;
+    const applied = owner
+      ? this.paneScheduler.scheduleResizeAndWait(pane, rows, cols, { owner }, { force: true })
+      : this.paneScheduler.scheduleResizeAndWait(pane, rows, cols, undefined, { force: true });
+    this._refreshSeq++;
+    return applied;
   }
   lastRefreshSeq(): number { return this._refreshSeq; }
 
