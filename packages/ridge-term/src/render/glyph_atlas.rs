@@ -99,18 +99,10 @@ pub struct GlyphEntry {
     /// pixels (per `RasterizedGlyph::is_color`). The renderer fits the
     /// complete bitmap into one stable em box inside its reserved cells.
     pub is_color: bool,
-    /// Box-drawing glyph rasterized by Swash, fitted to the exact snapped cell
-    /// width, and clipped to the current physical row.
-    pub is_box_drawing: bool,
-    /// Unicode-declared connector sides: left=1, right=2, top=4, bottom=8.
-    pub box_sides: u8,
+    /// Box Drawing or Block Elements glyph rasterized by Swash, clipped to the
+    /// exact snapped terminal cell without scaling.
+    pub is_cell_graphic: bool,
 }
-
-#[cfg_attr(
-    not(any(test, all(target_arch = "wasm32", feature = "webgpu"))),
-    allow(dead_code)
-)]
-pub(crate) type GlyphQuad = ([f32; 2], [f32; 2], [f32; 4]);
 
 /// Place a glyph at its native raster size, including font overhang.
 #[allow(dead_code)]
@@ -158,7 +150,7 @@ pub(crate) fn glyph_quad_geometry_for_cell(
     em_px: f32,
 ) -> ([f32; 2], [f32; 2], [f32; 4]) {
     if !entry.is_color {
-        if entry.is_box_drawing {
+        if entry.is_cell_graphic {
             let source_w = (entry.px_w as f32).max(1.0);
             let source_h = (entry.px_h as f32).max(1.0);
             let native_left = pixel_x + entry.left_offset;
@@ -206,96 +198,6 @@ pub(crate) fn glyph_quad_geometry_for_cell(
         ],
         [render_w, render_h],
         entry.uv,
-    )
-}
-
-/// Keep a corner's curve at native density while guaranteeing that its
-/// declared horizontal connector owns the final snapped cell pixel. The main
-/// quad yields that pixel to a one-texel atlas strip, avoiding both rescaling
-/// and double alpha blending.
-#[cfg_attr(
-    not(any(test, all(target_arch = "wasm32", feature = "webgpu"))),
-    allow(dead_code)
-)]
-pub(crate) fn glyph_quad_parts_for_cell(
-    pixel_x: f32,
-    pixel_y: f32,
-    entry: &GlyphEntry,
-    allocation_w: f32,
-    allocation_h: f32,
-    em_px: f32,
-) -> (GlyphQuad, [Option<GlyphQuad>; 2]) {
-    let mut main =
-        glyph_quad_geometry_for_cell(pixel_x, pixel_y, entry, allocation_w, allocation_h, em_px);
-    let is_corner = matches!(entry.box_sides, 5 | 6 | 9 | 10);
-    if !entry.is_box_drawing || !is_corner || main.1[1] <= 0.0 {
-        return (main, [None, None]);
-    }
-
-    let box_w = allocation_w.max(1.0);
-    let cell_right = pixel_x + box_w;
-    let main_left = main.0[0];
-    let main_right = main_left + main.1[0];
-    let texel_u = (entry.uv[2] - entry.uv[0]) / (entry.px_w as f32).max(1.0);
-    let mut edges = [None, None];
-
-    if entry.box_sides & 1 != 0 {
-        let edge_right = if main_left > pixel_x {
-            main_left.min(cell_right)
-        } else {
-            (pixel_x + 1.0).min(cell_right)
-        };
-        if edge_right > pixel_x {
-            edges[0] = Some((
-                [pixel_x, main.0[1]],
-                [edge_right - pixel_x, main.1[1]],
-                [entry.uv[0], main.2[1], entry.uv[0] + texel_u, main.2[3]],
-            ));
-            main = crop_quad_horizontal(main, edge_right, cell_right);
-        }
-    }
-
-    if entry.box_sides & 2 != 0 {
-        let edge_left = if main_right < cell_right {
-            main_right.max(pixel_x)
-        } else {
-            (cell_right - 1.0).max(pixel_x)
-        };
-        if edge_left < cell_right {
-            edges[1] = Some((
-                [edge_left, main.0[1]],
-                [cell_right - edge_left, main.1[1]],
-                [entry.uv[2] - texel_u, main.2[1], entry.uv[2], main.2[3]],
-            ));
-            main = crop_quad_horizontal(main, pixel_x, edge_left);
-        }
-    }
-
-    (main, edges)
-}
-
-#[cfg_attr(
-    not(any(test, all(target_arch = "wasm32", feature = "webgpu"))),
-    allow(dead_code)
-)]
-fn crop_quad_horizontal(quad: GlyphQuad, keep_left: f32, keep_right: f32) -> GlyphQuad {
-    let old_left = quad.0[0];
-    let old_right = old_left + quad.1[0];
-    let new_left = old_left.max(keep_left);
-    let new_right = old_right.min(keep_right);
-    if new_right <= new_left || quad.1[0] <= 0.0 {
-        return ([new_left, quad.0[1]], [0.0, quad.1[1]], quad.2);
-    }
-    let u_per_px = (quad.2[2] - quad.2[0]) / quad.1[0];
-    (
-        [new_left, quad.0[1]],
-        [new_right - new_left, quad.1[1]],
-        [
-            quad.2[0] + (new_left - old_left) * u_per_px,
-            quad.2[1],
-            quad.2[2] - (old_right - new_right) * u_per_px,
-            quad.2[3],
-        ],
     )
 }
 
@@ -542,8 +444,7 @@ mod tests {
             px_w: 8,
             px_h: 16,
             is_color: false,
-            is_box_drawing: false,
-            box_sides: 0,
+            is_cell_graphic: false,
         }
     }
 
@@ -677,7 +578,7 @@ mod tests {
             px_w: 11,
             px_h: 3,
             ascent_offset: 7.0,
-            is_box_drawing: true,
+            is_cell_graphic: true,
             ..entry(0)
         };
         assert_eq!(
@@ -687,60 +588,13 @@ mod tests {
     }
 
     #[test]
-    fn rounded_box_reserves_cell_edge_for_outer_native_texel() {
-        let glyph = GlyphEntry {
-            uv: [0.0, 0.0, 14.0 / 256.0, 18.0 / 256.0],
-            px_w: 14,
-            px_h: 18,
-            ascent_offset: 0.0,
-            is_box_drawing: true,
-            box_sides: 10,
-            ..entry(0)
-        };
-
-        let (main, edges) = glyph_quad_parts_for_cell(10.0, 20.0, &glyph, 12.0, 18.0, 14.0);
-        assert_eq!(
-            main,
-            (
-                [10.0, 20.0],
-                [11.0, 18.0],
-                [0.0, 0.0, 11.0 / 256.0, 18.0 / 256.0]
-            )
-        );
-        assert_eq!(edges[0], None);
-        assert_eq!(
-            edges[1],
-            Some((
-                [21.0, 20.0],
-                [1.0, 18.0],
-                [13.0 / 256.0, 0.0, 14.0 / 256.0, 18.0 / 256.0]
-            ))
-        );
-    }
-
-    #[test]
-    fn ordinary_and_straight_glyphs_emit_no_corner_edge_strip() {
-        let ordinary = entry(0);
-        let (_, ordinary_edges) = glyph_quad_parts_for_cell(0.0, 0.0, &ordinary, 8.0, 16.0, 14.0);
-        assert_eq!(ordinary_edges, [None, None]);
-
-        let straight = GlyphEntry {
-            is_box_drawing: true,
-            box_sides: 3,
-            ..entry(1)
-        };
-        let (_, straight_edges) = glyph_quad_parts_for_cell(0.0, 0.0, &straight, 8.0, 16.0, 14.0);
-        assert_eq!(straight_edges, [None, None]);
-    }
-
-    #[test]
     fn box_drawing_clips_to_snapped_row_without_vertical_scaling() {
         let glyph = GlyphEntry {
             uv: [0.0, 0.0, 0.5, 0.75],
             px_w: 11,
             px_h: 23,
             ascent_offset: 0.0,
-            is_box_drawing: true,
+            is_cell_graphic: true,
             ..entry(0)
         };
         assert_eq!(
@@ -760,7 +614,7 @@ mod tests {
             px_w: 11,
             px_h: 24,
             ascent_offset: -1.0,
-            is_box_drawing: true,
+            is_cell_graphic: true,
             ..entry(0)
         };
         assert_eq!(
@@ -780,7 +634,7 @@ mod tests {
             px_w: 12,
             px_h: 3,
             ascent_offset: 7.0,
-            is_box_drawing: true,
+            is_cell_graphic: true,
             ..entry(0)
         };
         assert_eq!(

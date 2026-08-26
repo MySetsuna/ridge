@@ -17,6 +17,7 @@ test_targets:
   - packages/ridge-term/src/render/glyph_rasterizer.rs
   - packages/ridge-term/src/render/renderer.rs
   - packages/ridge-term/src/term/wcwidth.rs
+  - scripts/cdp-cell-graphics-e2e.mjs
   - scripts/cdp-term-render-e2e.mjs
 ---
 
@@ -35,9 +36,10 @@ to both reference axes before the affected straight arms are rebuilt. Vertical
 tangent rows reuse the straight profile until the first inward curve pixel, so
 no axis replacement or outer hook can offset the transition. Their quads preserve
 a one-source-texel-to-one-device-pixel mapping and clip to snapped cell bounds
-without geometric rescaling. If a native box bitmap ends before a declared
-snapped cell side, that side is completed by repeating only its outermost native
-texel column; the curve and main quad remain unscaled.
+without geometric rescaling. Box Drawing and Block Elements are terminal cell
+graphics: each is presented as one atlas quad, and only its Unicode-declared
+connected sides are completed in the selected-font raster before upload, never
+by a second edge quad that can create a rasterization or blend boundary.
 Monochrome text and box drawing sample at native nearest density; only scaled
 color emoji use linear atlas sampling. TUI mode obeys DECTCEM and keeps an
 enabled cursor steady without blink wakeups. No path may threshold Swash

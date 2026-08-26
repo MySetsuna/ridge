@@ -46,7 +46,7 @@ use std::rc::Rc;
 use web_sys::HtmlCanvasElement;
 
 use super::glyph_atlas::{pick_evictable_layer, GlyphAtlas, GlyphEntry, GlyphKey};
-use super::glyph_rasterizer::{box_connector_sides, GlyphRasterizer, RasterizedGlyph};
+use super::glyph_rasterizer::{GlyphRasterizer, RasterizedGlyph};
 use super::gpu_limits::fit_required_limits;
 
 /// Atlas slot dimension floors in device pixels. `slot_w` is rounded up
@@ -1233,12 +1233,7 @@ impl GpuContext {
             px_w: logical_px_w,
             px_h: logical_px_h,
             is_color: glyph.is_color,
-            is_box_drawing: glyph.is_box_drawing,
-            box_sides: glyph_text
-                .chars()
-                .next()
-                .map(box_connector_sides)
-                .unwrap_or(0),
+            is_cell_graphic: glyph.is_cell_graphic,
         };
         self.atlas.insert(key, entry);
         Ok(entry)
@@ -1362,8 +1357,7 @@ mod tests {
             px_w: 8,
             px_h: 16,
             is_color: false,
-            is_box_drawing: false,
-            box_sides: 0,
+            is_cell_graphic: false,
         }
     }
 
