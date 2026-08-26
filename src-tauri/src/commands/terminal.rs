@@ -181,12 +181,26 @@ pub async fn create_pane(
     state: State<'_, AppState>,
     pane_id: String,
     shell: Option<String>,
+    rows: Option<u16>,
+    cols: Option<u16>,
 ) -> Result<(), String> {
+    let initial_size = initial_pty_size(cols, rows)?;
     let st = state.inner().clone();
-    tokio::task::spawn_blocking(move || create_pane_inner(&st, pane_id, shell))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    tokio::task::spawn_blocking(move || {
+        create_pane_inner_with_size(&st, pane_id, shell, initial_size)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+fn initial_pty_size(cols: Option<u16>, rows: Option<u16>) -> Result<Option<(u16, u16)>, String> {
+    match (cols, rows) {
+        (None, None) => Ok(None),
+        (Some(cols), Some(rows)) if cols > 0 && rows > 0 => Ok(Some((cols, rows))),
+        (Some(_), Some(_)) => Err("PTY dimensions must be greater than zero".into()),
+        _ => Err("PTY dimensions must include cols and rows".into()),
+    }
 }
 
 pub(crate) fn validate_agent_launch(executable: &str, cwd: &Path) -> Result<(), String> {
@@ -393,10 +407,19 @@ pub fn create_pane_inner(
     pane_id: String,
     shell: Option<String>,
 ) -> Result<(), AppError> {
+    create_pane_inner_with_size(state, pane_id, shell, None)
+}
+
+fn create_pane_inner_with_size(
+    state: &AppState,
+    pane_id: String,
+    shell: Option<String>,
+    initial_size: Option<(u16, u16)>,
+) -> Result<(), AppError> {
     let parsed = parse_pane_id(&pane_id)?;
     let workspace_id =
         workspace_containing_pane(state, parsed).ok_or(AppError::PaneNotFound(parsed))?;
-    create_pane_in_workspace(state, workspace_id, pane_id, shell)
+    create_pane_in_workspace(state, workspace_id, pane_id, shell, initial_size)
 }
 
 fn create_pane_in_workspace(
@@ -404,6 +427,7 @@ fn create_pane_in_workspace(
     workspace_id: Uuid,
     pane_id: String,
     shell: Option<String>,
+    initial_size: Option<(u16, u16)>,
 ) -> Result<(), AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
 
@@ -442,7 +466,7 @@ fn create_pane_in_workspace(
         }
     }
 
-    ensure_pane_pty_workspace(
+    ensure_pane_pty_workspace_with_initial_size(
         &*state,
         workspace_id,
         pane_id,
@@ -455,6 +479,7 @@ fn create_pane_in_workspace(
             ready_tx: None,
             trace_id: None,
         },
+        initial_size,
     )?;
 
     // 设置 pane 的工作目录用于 git diff 跟踪
@@ -776,6 +801,7 @@ fn attach_or_spawn_kernel_pty(
     pane_id: Uuid,
     shell: Option<&str>,
     cwd: Option<&Path>,
+    initial_size: Option<(u16, u16)>,
 ) -> Result<bool, String> {
     attach_or_spawn_kernel_command(
         state,
@@ -789,6 +815,7 @@ fn attach_or_spawn_kernel_pty(
             cwd,
             role: "shell",
             launch_profile: Some("ridge-interactive"),
+            initial_size,
         },
     )
 }
@@ -802,6 +829,7 @@ struct KernelCommandLaunch<'a> {
     cwd: Option<&'a Path>,
     role: &'a str,
     launch_profile: Option<&'a str>,
+    initial_size: Option<(u16, u16)>,
 }
 
 fn attach_or_spawn_kernel_command(
@@ -821,6 +849,7 @@ fn attach_or_spawn_kernel_command(
             info.rows,
         )
     } else {
+        let (cols, rows) = launch.initial_size.unwrap_or((80, 24));
         let pty_id = ridge_kernel::client::create_domain_pty_with_command(
             &endpoint,
             ridge_kernel::client::DomainPtyLaunch {
@@ -832,9 +861,11 @@ fn attach_or_spawn_kernel_command(
                 role: launch.role,
                 launch_profile: launch.launch_profile,
                 env: Some(launch.env),
+                cols: Some(cols),
+                rows: Some(rows),
             },
         )?;
-        (pty_id, None, 80, 24)
+        (pty_id, None, cols, rows)
     };
     let reference = KernelPtyRef {
         endpoint,
@@ -962,6 +993,7 @@ struct KernelPtyInstall<'a> {
     tmux_pane_index: Option<usize>,
     kernel_candidate: bool,
     has_explicit_launch: bool,
+    initial_size: Option<(u16, u16)>,
     ready_tx: &'a mut Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 }
 
@@ -1005,6 +1037,7 @@ fn install_structured_kernel_pty(
             cwd: request.cwd,
             role: "agent",
             launch_profile: None,
+            initial_size: None,
         },
     )
     .map_err(|error| AppError::PtyError(format!("ridge-kernel Agent PTY unavailable: {error}")))?;
@@ -1023,6 +1056,7 @@ fn install_shell_kernel_pty(request: &mut KernelPtyInstall<'_>) -> Result<(), Ap
         request.pane_id,
         request.shell,
         request.cwd,
+        request.initial_size,
     )
     .map_err(|error| AppError::PtyError(format!("ridge-kernel shell PTY unavailable: {error}")))?;
     mark_kernel_ready(request.ready_tx);
@@ -1034,6 +1068,16 @@ pub fn ensure_pane_pty_workspace(
     workspace_id: Uuid,
     pane_id: Uuid,
     options: EnsurePtyOptions<'_>,
+) -> Result<(), AppError> {
+    ensure_pane_pty_workspace_with_initial_size(state, workspace_id, pane_id, options, None)
+}
+
+fn ensure_pane_pty_workspace_with_initial_size(
+    state: &AppState,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    options: EnsurePtyOptions<'_>,
+    initial_size: Option<(u16, u16)>,
 ) -> Result<(), AppError> {
     let EnsurePtyOptions {
         shell,
@@ -1071,6 +1115,7 @@ pub fn ensure_pane_pty_workspace(
         tmux_pane_index,
         kernel_candidate,
         has_explicit_launch,
+        initial_size,
         ready_tx: &mut ready_tx,
     }) {
         return result;
@@ -1877,9 +1922,9 @@ async fn write_to_resolved_pty(
         handle.input_sink.clone()
     };
     input_sink
-        .try_send(data.into_bytes())
-        .map_err(AppError::PtyError)?;
-    Ok(())
+        .send(data.into_bytes())
+        .await
+        .map_err(AppError::PtyError)
 }
 
 #[tauri::command]

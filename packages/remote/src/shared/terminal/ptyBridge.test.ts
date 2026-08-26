@@ -275,6 +275,8 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 			workspaceId: WS,
 			paneId: PANE,
 			shell: null,
+			rows: 24,
+			cols: 80,
 		});
 		expect(invokeMock).toHaveBeenCalledWith('activate_pane_pty', expect.objectContaining({
 			workspaceId: WS,

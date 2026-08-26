@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::engine::parser::PaneParser;
@@ -32,12 +32,35 @@ mod tests {
     use std::sync::mpsc;
 
     struct ChannelWriter(mpsc::Sender<Vec<u8>>);
+    struct FailingWriter;
+    struct SlowWriter;
 
     impl Write for ChannelWriter {
         fn write(&mut self, data: &[u8]) -> io::Result<usize> {
             self.0
                 .send(data.to_vec())
                 .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "capture closed"))?;
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _data: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "write failed"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Write for SlowWriter {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            std::thread::sleep(Duration::from_millis(250));
             Ok(data.len())
         }
 
@@ -84,14 +107,14 @@ mod tests {
         assert!(!pane_cwd_matches(None, "C:/code/ridge"));
     }
 
-    #[test]
-    fn pty_input_sink_preserves_order_across_batched_writes() {
+    #[tokio::test]
+    async fn pty_input_sink_preserves_order_across_batched_writes() {
         let (tx, rx) = mpsc::channel();
         let writer: Box<dyn Write + Send> = Box::new(ChannelWriter(tx));
         let sink = PtyInputSink::new(Arc::new(Mutex::new(writer)));
 
-        sink.try_send(b"first".to_vec()).unwrap();
-        sink.try_send(b"second".to_vec()).unwrap();
+        sink.send(b"first".to_vec()).await.unwrap();
+        sink.send(b"second".to_vec()).await.unwrap();
 
         let mut received = Vec::new();
         while received.len() < "firstsecond".len() {
@@ -99,6 +122,33 @@ mod tests {
         }
         assert_eq!(received, b"firstsecond");
         drop(sink);
+    }
+
+    #[tokio::test]
+    async fn pty_input_sink_reports_worker_write_failure() {
+        let writer: Box<dyn Write + Send> = Box::new(FailingWriter);
+        let sink = PtyInputSink::new(Arc::new(Mutex::new(writer)));
+
+        let error = sink.send(b"input".to_vec()).await.unwrap_err();
+
+        assert_eq!(error, "write failed");
+    }
+
+    #[tokio::test]
+    async fn pty_input_sink_times_out_a_blocked_writer() {
+        let writer: Box<dyn Write + Send> = Box::new(SlowWriter);
+        let sink = PtyInputSink::new(Arc::new(Mutex::new(writer)));
+
+        let error = sink
+            .send_with_timeout(b"input".to_vec(), Duration::from_millis(20))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, "PTY input write timed out");
+        assert_eq!(
+            sink.send(b"later".to_vec()).await.unwrap_err(),
+            "PTY input worker is closed"
+        );
     }
 
     #[test]
@@ -231,31 +281,42 @@ pub struct PtyHandle {
 
 const PTY_INPUT_QUEUE_CAPACITY: usize = 256;
 const PTY_INPUT_BATCH_BYTES: usize = 64 * 1024;
+const PTY_INPUT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Bounded, cancellable stdin lane. Tauri commands only enqueue here; the
-/// worker owns the potentially blocking ConPTY/kernel write and preserves
-/// byte order without making the WebView wait for one HTTP request per key.
+struct PtyInputRequest {
+    data: Vec<u8>,
+    ack: tokio::sync::oneshot::Sender<Result<(), String>>,
+}
+
+/// Bounded stdin lane. The worker owns the potentially blocking ConPTY/kernel
+/// write and preserves byte order; callers receive a bounded write result.
 pub struct PtyInputSink {
-    sender: SyncSender<Vec<u8>>,
+    sender: SyncSender<PtyInputRequest>,
     closed: Arc<AtomicBool>,
 }
 
 impl PtyInputSink {
     pub fn new(writer: Arc<Mutex<Box<dyn Write + Send>>>) -> Arc<Self> {
-        let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(PTY_INPUT_QUEUE_CAPACITY);
+        let (sender, receiver) =
+            mpsc::sync_channel::<PtyInputRequest>(PTY_INPUT_QUEUE_CAPACITY);
         let closed = Arc::new(AtomicBool::new(false));
         let worker_closed = Arc::clone(&closed);
-        let _ = std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("ridge-pty-input".into())
             .spawn(move || {
                 while let Ok(first) = receiver.recv() {
                     if worker_closed.load(Ordering::Acquire) {
+                        let _ = first.ack.send(Err("PTY input worker is closed".into()));
                         continue;
                     }
-                    let mut data = first;
+                    let PtyInputRequest { mut data, ack } = first;
+                    let mut acknowledgements = vec![ack];
                     while data.len() < PTY_INPUT_BATCH_BYTES {
                         match receiver.try_recv() {
-                            Ok(next) => data.extend_from_slice(&next),
+                            Ok(next) => {
+                                data.extend_from_slice(&next.data);
+                                acknowledgements.push(next.ack);
+                            }
                             Err(mpsc::TryRecvError::Empty) => break,
                             Err(mpsc::TryRecvError::Disconnected) => break,
                         }
@@ -264,6 +325,10 @@ impl PtyInputSink {
                         let mut sink = writer.lock();
                         sink.write_all(&data).and_then(|_| sink.flush())
                     };
+                    let result = result.map_err(|error| error.to_string());
+                    for ack in acknowledgements {
+                        let _ = ack.send(result.clone());
+                    }
                     if let Err(error) = result {
                         eprintln!("[ridge] PTY input worker stopped: {error}");
                         worker_closed.store(true, Ordering::Release);
@@ -271,17 +336,39 @@ impl PtyInputSink {
                     }
                 }
             });
+        if spawned.is_err() {
+            closed.store(true, Ordering::Release);
+        }
         Arc::new(Self { sender, closed })
     }
 
-    pub fn try_send(&self, data: Vec<u8>) -> Result<(), String> {
+    pub async fn send(&self, data: Vec<u8>) -> Result<(), String> {
+        self.send_with_timeout(data, PTY_INPUT_ACK_TIMEOUT).await
+    }
+
+    async fn send_with_timeout(&self, data: Vec<u8>, timeout: Duration) -> Result<(), String> {
         if self.closed.load(Ordering::Acquire) {
             return Err("PTY input worker is closed".into());
         }
-        self.sender.try_send(data).map_err(|error| match error {
-            TrySendError::Full(_) => "PTY input queue is full".into(),
-            TrySendError::Disconnected(_) => "PTY input worker disconnected".into(),
-        })
+        let (ack, written) = tokio::sync::oneshot::channel();
+        self.sender
+            .try_send(PtyInputRequest { data, ack })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => "PTY input queue is full".to_string(),
+                TrySendError::Disconnected(_) => {
+                    "PTY input worker disconnected".to_string()
+                }
+            })?;
+        match tokio::time::timeout(timeout, written).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                Err("PTY input worker stopped before acknowledging the write".to_string())
+            }
+            Err(_) => {
+                self.closed.store(true, Ordering::Release);
+                Err("PTY input write timed out".to_string())
+            }
+        }
     }
 }
 

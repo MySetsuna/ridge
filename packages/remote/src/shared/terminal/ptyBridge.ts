@@ -193,6 +193,8 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 					workspaceId,
 					paneId,
 					shell: TerminalManager.hostPorts()?.settings?.get()?.defaultShell || null,
+					rows: manager.rows(paneId) || 24,
+					cols: manager.cols(paneId) || 80,
 				});
 			} catch (err) {
 				if (!isPaneNotFoundError(err)) {

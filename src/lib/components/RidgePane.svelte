@@ -1554,22 +1554,38 @@ onMount(() => {
 		// component's `alive` / `triggerBellFlash`; see the comment
 		// block above each function for details.
 		manager.onData(paneId, onPtyData);
-		manager.onResize(paneId, onPtyResize);
 		manager.onEvent(paneId, onKernelEvent);
 
 		const remote = remotePaneBinding(paneId);
 		if (remote) {
+			manager.onResize(paneId, onPtyResize);
 			activateRemotePaneBinding(paneId);
 			// manager.attach already measured the real container; claim now so
 			// the foreign PTY never remains at its placeholder 80x24 geometry.
 			manager.claimPaneSize(paneId);
 			return;
 		}
+
+		// Measure the committed flex layout before the shell starts. Keep the
+		// resize handler detached during this fit: there is no PTY to resize yet.
+		manager.setLocalGridAuthority(paneId, true);
+		await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+		if (!alive) return;
+		try {
+			await manager.fitPaneNow(paneId);
+		} catch (e) {
+			console.warn('pre-create pane fit failed', e);
+		}
+		if (!alive) return;
+		manager.onResize(paneId, onPtyResize);
+
 		// 3) PTY backend lifecycle
 		try {
 			await invoke('create_pane', {
 				paneId,
 				shell: get(settingsStore).defaultShell || null,
+				rows: manager.rows(paneId),
+				cols: manager.cols(paneId),
 			});
 		} catch (e) {
 			console.error('create_pane failed', e);
@@ -1609,11 +1625,9 @@ onMount(() => {
 			if (alive) atOldest = true;
 		}
 
-		// 6) Settle the real grid before activation. `create_pane` leaves the
-		// PTY in pending_spawns, so resize_pane can apply the measured size
-		// before the shell receives its first bytes. Otherwise the shell starts
-		// at 80x24 and a later fit preserves row 23 in the pane's middle.
-		manager.setLocalGridAuthority(paneId, true);
+		// 6) Reassert the measured grid before activation. `create_pane` already
+		// starts the kernel PTY at this size; this fit catches layout changes that
+		// occurred while the blocking create request was in flight.
 		if (alive) {
 			try {
 				await manager.fitPaneNow(paneId);
@@ -1639,9 +1653,8 @@ onMount(() => {
 		}
 
 		// Local panes use the native Rust parser + binary delta lane. Once the
-		// native parser owns the grid, force one more fit through that parser;
-		// otherwise a live kernel PTY created at 80×24 never receives its first
-		// measured resize and inline TUI frames land against the wrong canvas.
+		// native parser owns the grid, force one more fit through that parser so
+		// layout changes during activation reach the same grid authority.
 		try {
 			await enableDeltaModeThenFit(
 				paneId,
