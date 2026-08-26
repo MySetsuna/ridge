@@ -361,7 +361,9 @@ impl DeliveryRegistry {
         entry: &Value,
     ) -> Result<DeliveryOutcome, String> {
         let Some((workspace_id, agent_id, generation, lease)) = target_identity(target) else {
-            return Err("delivery target lacks workspace_id, agent_id, generation, or lease".into());
+            return Err(
+                "delivery target lacks workspace_id, agent_id, generation, or lease".into(),
+            );
         };
         let routes = self
             .routes
@@ -492,7 +494,13 @@ mod tests {
     fn registered_route_is_fenced_and_non_blocking() {
         let registry = DeliveryRegistry::default();
         let receiver = registry
-            .register(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 2, "lease-2")
+            .register(
+                HubDeliveryAdapter::RuntimeApi,
+                "ws-a",
+                "agent-a",
+                2,
+                "lease-2",
+            )
             .unwrap();
         let target = serde_json::json!({
             "workspaceId": "ws-a",
@@ -645,7 +653,13 @@ mod tests {
             ..safe
         };
         registry
-            .register_pty_runtime_snapshot("ws-a", "agent-a", 1, "lease-1", snapshot(unsafe_snapshot))
+            .register_pty_runtime_snapshot(
+                "ws-a",
+                "agent-a",
+                1,
+                "lease-1",
+                snapshot(unsafe_snapshot),
+            )
             .unwrap();
         assert_eq!(
             registry
@@ -700,10 +714,22 @@ mod tests {
     fn newer_generation_replaces_old_route_and_fences_late_teardown() {
         let registry = DeliveryRegistry::default();
         let old_receiver = registry
-            .register(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 3, "lease-3")
+            .register(
+                HubDeliveryAdapter::RuntimeApi,
+                "ws-a",
+                "agent-a",
+                3,
+                "lease-3",
+            )
             .unwrap();
         let new_receiver = registry
-            .register(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 4, "lease-4")
+            .register(
+                HubDeliveryAdapter::RuntimeApi,
+                "ws-a",
+                "agent-a",
+                4,
+                "lease-4",
+            )
             .unwrap();
 
         assert!(matches!(
@@ -731,7 +757,13 @@ mod tests {
                 .runtime_api
         );
         assert!(registry
-            .register(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 2, "lease-2")
+            .register(
+                HubDeliveryAdapter::RuntimeApi,
+                "ws-a",
+                "agent-a",
+                2,
+                "lease-2"
+            )
             .is_err());
 
         let entry = serde_json::json!({ "messageId": "message-4" });
@@ -749,10 +781,22 @@ mod tests {
             .is_ok());
         assert_eq!(new_receiver.try_recv().unwrap(), entry);
         assert!(registry
-            .unregister(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 3, "lease-3")
+            .unregister(
+                HubDeliveryAdapter::RuntimeApi,
+                "ws-a",
+                "agent-a",
+                3,
+                "lease-3"
+            )
             .is_err());
         assert!(registry
-            .unregister(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 4, "lease-4")
+            .unregister(
+                HubDeliveryAdapter::RuntimeApi,
+                "ws-a",
+                "agent-a",
+                4,
+                "lease-4"
+            )
             .unwrap());
     }
 
@@ -760,10 +804,22 @@ mod tests {
     fn same_agent_routes_are_isolated_by_workspace() {
         let registry = DeliveryRegistry::default();
         let receiver_a = registry
-            .register(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 1, "lease-a")
+            .register(
+                HubDeliveryAdapter::RuntimeApi,
+                "ws-a",
+                "agent-a",
+                1,
+                "lease-a",
+            )
             .unwrap();
         let receiver_b = registry
-            .register(HubDeliveryAdapter::RuntimeApi, "ws-b", "agent-a", 1, "lease-b")
+            .register(
+                HubDeliveryAdapter::RuntimeApi,
+                "ws-b",
+                "agent-a",
+                1,
+                "lease-b",
+            )
             .unwrap();
         let target_a = serde_json::json!({
             "workspaceId": "ws-a",
@@ -786,7 +842,13 @@ mod tests {
         assert_eq!(receiver_a.try_recv().unwrap(), entry);
         assert!(matches!(receiver_b.try_recv(), Err(TryRecvError::Empty)));
         assert!(registry
-            .unregister(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 1, "lease-a")
+            .unregister(
+                HubDeliveryAdapter::RuntimeApi,
+                "ws-a",
+                "agent-a",
+                1,
+                "lease-a"
+            )
             .unwrap());
         assert!(registry.probe(&target_b).runtime_api);
     }

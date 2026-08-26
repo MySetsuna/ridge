@@ -810,7 +810,9 @@ impl A2aEndpointRegistry {
 
     pub fn deliver(&self, target: &Value, entry: &Value) -> Result<A2aDeliveryResult, String> {
         let Some((workspace_id, agent_id, generation, lease)) = target_identity(target) else {
-            return Err("A2A delivery target lacks workspace_id, agent_id, generation, or lease".into());
+            return Err(
+                "A2A delivery target lacks workspace_id, agent_id, generation, or lease".into(),
+            );
         };
         let client = {
             let routes = self
@@ -1425,8 +1427,12 @@ mod tests {
             "generation": 2,
             "lease": "lease-2"
         })));
-        assert!(registry.unregister("ws-a", "agent-a", 1, "lease-2").is_err());
-        assert!(registry.unregister("ws-a", "agent-a", 2, "lease-2").unwrap());
+        assert!(registry
+            .unregister("ws-a", "agent-a", 1, "lease-2")
+            .is_err());
+        assert!(registry
+            .unregister("ws-a", "agent-a", 2, "lease-2")
+            .unwrap());
         assert!(!registry.probe(&json!({
             "workspaceId": "ws-a",
             "agentId": "agent-a",

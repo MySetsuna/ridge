@@ -151,9 +151,9 @@ fn scenario_alt_screen_resize_does_not_swallow_redraw() {
     t.feed(b"\x1b[?1049h"); // enter alt
     t.feed(b"OLD CONTENT FROM BEFORE RESIZE\r\n"); // pollute alt buffer
     t.resize(10, 40);
-                      // Synthetic redraw the alt-screen TUI would emit after SIGWINCH.
-                      // ESC [2J  = clear screen
-                      // ESC [H   = cursor home
+    // Synthetic redraw the alt-screen TUI would emit after SIGWINCH.
+    // ESC [2J  = clear screen
+    // ESC [H   = cursor home
     t.feed(b"\x1b[2J\x1b[Hpost-resize redraw");
 
     assert!(t.grid().is_alt_screen(), "still on alt");

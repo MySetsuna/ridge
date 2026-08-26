@@ -1783,7 +1783,11 @@ mod pty_delta_channel_tests {
             state.enqueue_pane_delta_frame(ws, pane, DeltaFrame::new(1, burst)),
             PaneDeltaEnqueue::NeedsResync
         ));
-        assert_eq!(count.load(Ordering::SeqCst), 0, "oversized frame emits no stale wake");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "oversized frame emits no stale wake"
+        );
     }
 
     #[test]
