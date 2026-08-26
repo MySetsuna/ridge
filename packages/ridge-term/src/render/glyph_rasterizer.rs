@@ -100,6 +100,20 @@ struct PendingImage {
     data: Vec<u8>,
 }
 
+#[derive(Clone, PartialEq)]
+struct BoxConnectorReferenceKey {
+    font_stack: String,
+    font_size_bits: u32,
+    dpr_bits: u32,
+    style_flags: u8,
+}
+
+struct BoxConnectorReferences {
+    key: BoxConnectorReferenceKey,
+    horizontal: RasterizedGlyph,
+    vertical: RasterizedGlyph,
+}
+
 pub struct GlyphRasterizer {
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -107,6 +121,7 @@ pub struct GlyphRasterizer {
     resolved_stack: String,
     resolved_family: Option<String>,
     resolved_emoji_family: Option<String>,
+    box_connector_references: Option<BoxConnectorReferences>,
     slot_w: u16,
     slot_h: u16,
 }
@@ -123,6 +138,7 @@ impl GlyphRasterizer {
             resolved_stack: String::new(),
             resolved_family: None,
             resolved_emoji_family: None,
+            box_connector_references: None,
             slot_w: slot_w.max(1),
             slot_h: slot_h.max(1),
         };
@@ -157,6 +173,7 @@ impl GlyphRasterizer {
             self.resolved_stack.clear();
             self.resolved_family = None;
             self.resolved_emoji_family = None;
+            self.box_connector_references = None;
         }
         Ok(changed)
     }
@@ -173,7 +190,8 @@ impl GlyphRasterizer {
         let device_size = (font_size_px.max(1.0) * dpr).max(1.0);
         let line_height = (device_size * 1.2).max(1.0);
         let wants_color_emoji = is_emoji_presentation(glyph_text);
-        let is_box_drawing = box_drawing_char(glyph_text).is_some();
+        let box_char = box_drawing_char(glyph_text);
+        let is_box_drawing = box_char.is_some();
         let family = if wants_color_emoji {
             self.resolve_emoji_family(font_family)?
         } else {
@@ -286,7 +304,7 @@ impl GlyphRasterizer {
             glyph_text,
         );
 
-        Ok(RasterizedGlyph {
+        let mut result = RasterizedGlyph {
             rgba,
             width,
             height,
@@ -295,7 +313,19 @@ impl GlyphRasterizer {
             left_offset: crop_left as f32,
             is_color,
             is_box_drawing,
-        })
+        };
+        if box_char.is_some_and(is_rounded_box_corner) {
+            let (horizontal, vertical) =
+                self.box_connector_references(font_family, font_size_px, dpr, style_flags)?;
+            align_rounded_corner_connectors(
+                &mut result,
+                box_char.unwrap(),
+                dpr,
+                &horizontal,
+                &vertical,
+            );
+        }
+        Ok(result)
     }
 
     pub fn slot_dimensions(&self) -> (u16, u16) {
@@ -323,6 +353,38 @@ impl GlyphRasterizer {
             run.line_w.round().max(1.0),
             run.line_height.round().max(1.0),
         ))
+    }
+
+    fn box_connector_references(
+        &mut self,
+        font_stack: &str,
+        font_size_px: f32,
+        dpr: f32,
+        style_flags: u8,
+    ) -> Result<(RasterizedGlyph, RasterizedGlyph), String> {
+        let key = BoxConnectorReferenceKey {
+            font_stack: font_stack.to_string(),
+            font_size_bits: font_size_px.max(1.0).to_bits(),
+            dpr_bits: dpr.to_bits(),
+            style_flags,
+        };
+        if let Some(cached) = self
+            .box_connector_references
+            .as_ref()
+            .filter(|cached| cached.key == key)
+        {
+            return Ok((cached.horizontal.clone(), cached.vertical.clone()));
+        }
+
+        // Straight references do not enter this rounded-corner branch.
+        let horizontal = self.rasterize(font_stack, font_size_px, dpr, style_flags, "─")?;
+        let vertical = self.rasterize(font_stack, font_size_px, dpr, style_flags, "│")?;
+        self.box_connector_references = Some(BoxConnectorReferences {
+            key,
+            horizontal: horizontal.clone(),
+            vertical: vertical.clone(),
+        });
+        Ok((horizontal, vertical))
     }
 
     fn resolve_family(&mut self, stack: &str) -> Result<String, String> {
@@ -418,10 +480,112 @@ fn box_drawing_char(glyph_text: &str) -> Option<char> {
     (chars.next().is_none() && ('\u{2500}'..='\u{257f}').contains(&ch)).then_some(ch)
 }
 
+fn is_rounded_box_corner(ch: char) -> bool {
+    matches!(ch, '╭' | '╮' | '╯' | '╰')
+}
+
 const CONNECT_LEFT: u8 = 1;
 const CONNECT_RIGHT: u8 = 2;
 const CONNECT_TOP: u8 = 4;
 const CONNECT_BOTTOM: u8 = 8;
+
+fn glyph_logical_x_bounds(glyph: &RasterizedGlyph, dpr: f32) -> Option<(usize, usize)> {
+    let width = glyph.width as usize;
+    if width == 0 {
+        return None;
+    }
+    let left = ((-glyph.left_offset.round() as i32).max(0) as usize).min(width - 1);
+    let right = (left + (glyph.advance * dpr).ceil().max(1.0) as usize - 1).min(width - 1);
+    Some((left, right))
+}
+
+fn align_rounded_corner_connectors(
+    target: &mut RasterizedGlyph,
+    ch: char,
+    dpr: f32,
+    horizontal: &RasterizedGlyph,
+    vertical: &RasterizedGlyph,
+) {
+    let sides = box_connector_sides(ch);
+    let width = target.width as usize;
+    let height = target.height as usize;
+    let Some((logical_left, logical_right)) = glyph_logical_x_bounds(target, dpr) else {
+        return;
+    };
+    if height == 0 || target.rgba.len() < width * height * 4 {
+        return;
+    }
+
+    if sides & (CONNECT_LEFT | CONNECT_RIGHT) != 0 {
+        let Some((reference_left, reference_right)) = glyph_logical_x_bounds(horizontal, dpr)
+        else {
+            return;
+        };
+        let reference_height = horizontal.height as usize;
+        let profile = horizontal_connector_pixels(
+            &horizontal.rgba,
+            horizontal.width as usize,
+            reference_height,
+            reference_left,
+            reference_right,
+            reference_height.saturating_sub(1) / 2,
+            sides & CONNECT_RIGHT != 0,
+        )
+        .map(|(_, pixels)| pixels)
+        .unwrap_or_default();
+        if !profile.is_empty() {
+            let target_x = if sides & CONNECT_LEFT != 0 {
+                logical_left
+            } else {
+                logical_right
+            };
+            for y in 0..height {
+                target.rgba[(y * width + target_x) * 4..(y * width + target_x + 1) * 4].fill(0);
+            }
+            let reference_top = horizontal.ascent_offset.round() as i32;
+            let target_top = target.ascent_offset.round() as i32;
+            for (reference_y, pixel) in profile {
+                let target_y = reference_y as i32 + reference_top - target_top;
+                if (0..height as i32).contains(&target_y) {
+                    let offset = (target_y as usize * width + target_x) * 4;
+                    target.rgba[offset..offset + 4].copy_from_slice(&pixel);
+                }
+            }
+        }
+    }
+
+    if sides & (CONNECT_TOP | CONNECT_BOTTOM) != 0 {
+        let Some((reference_left, reference_right)) = glyph_logical_x_bounds(vertical, dpr) else {
+            return;
+        };
+        let profile = vertical_connector_pixels(
+            &vertical.rgba,
+            vertical.width as usize,
+            vertical.height as usize,
+            (reference_left + reference_right) / 2,
+            sides & CONNECT_BOTTOM != 0,
+        );
+        if !profile.is_empty() {
+            let target_y = if sides & CONNECT_TOP != 0 {
+                0
+            } else {
+                height - 1
+            };
+            for x in logical_left..=logical_right {
+                target.rgba[(target_y * width + x) * 4..(target_y * width + x + 1) * 4].fill(0);
+            }
+            let reference_left_offset = vertical.left_offset.round() as i32;
+            let target_left_offset = target.left_offset.round() as i32;
+            for (reference_x, pixel) in profile {
+                let target_x = reference_x as i32 + reference_left_offset - target_left_offset;
+                if (logical_left as i32..=logical_right as i32).contains(&target_x) {
+                    let offset = (target_y * width + target_x as usize) * 4;
+                    target.rgba[offset..offset + 4].copy_from_slice(&pixel);
+                }
+            }
+        }
+    }
+}
 
 fn box_connector_sides(ch: char) -> u8 {
     match ch {
@@ -858,6 +1022,61 @@ mod tests {
     }
 
     #[test]
+    fn rounded_corner_replaces_only_declared_edges_with_reference_profiles() {
+        let mut target = RasterizedGlyph {
+            rgba: vec![0; 5 * 5 * 4],
+            width: 5,
+            height: 5,
+            advance: 5.0,
+            ascent_offset: 0.0,
+            left_offset: 0.0,
+            is_color: false,
+            is_box_drawing: true,
+        };
+        target.rgba[(1 * 5 + 1) * 4..(1 * 5 + 2) * 4].copy_from_slice(&[33; 4]);
+        target.rgba[(1 * 5 + 4) * 4..(1 * 5 + 5) * 4].copy_from_slice(&[44; 4]);
+        target.rgba[(2 * 5) * 4..(2 * 5 + 1) * 4].copy_from_slice(&[12; 4]);
+        target.rgba[(3 * 5) * 4..(3 * 5 + 1) * 4].copy_from_slice(&[18; 4]);
+        target.rgba[(4 * 5 + 2) * 4..(4 * 5 + 3) * 4].copy_from_slice(&[24; 4]);
+
+        let horizontal = RasterizedGlyph {
+            rgba: vec![210; 5 * 4],
+            width: 5,
+            height: 1,
+            advance: 5.0,
+            ascent_offset: 2.0,
+            left_offset: 0.0,
+            is_color: false,
+            is_box_drawing: true,
+        };
+        let mut vertical = RasterizedGlyph {
+            rgba: vec![0; 5 * 5 * 4],
+            width: 5,
+            height: 5,
+            advance: 5.0,
+            ascent_offset: 0.0,
+            left_offset: 0.0,
+            is_color: false,
+            is_box_drawing: true,
+        };
+        for y in 0..5 {
+            vertical.rgba[(y * 5 + 2) * 4..(y * 5 + 3) * 4].copy_from_slice(&[80; 4]);
+            vertical.rgba[(y * 5 + 3) * 4..(y * 5 + 4) * 4].copy_from_slice(&[190; 4]);
+        }
+
+        align_rounded_corner_connectors(&mut target, '╮', 1.0, &horizontal, &vertical);
+
+        assert_eq!(&target.rgba[(1 * 5 + 1) * 4..(1 * 5 + 2) * 4], &[33; 4]);
+        assert_eq!(&target.rgba[(1 * 5 + 4) * 4..(1 * 5 + 5) * 4], &[44; 4]);
+        for y in 0..5 {
+            let expected = if y == 2 { [210; 4] } else { [0; 4] };
+            assert_eq!(&target.rgba[(y * 5) * 4..(y * 5 + 1) * 4], &expected);
+        }
+        assert_eq!(&target.rgba[(4 * 5 + 2) * 4..(4 * 5 + 3) * 4], &[80; 4]);
+        assert_eq!(&target.rgba[(4 * 5 + 3) * 4..(4 * 5 + 4) * 4], &[190; 4]);
+    }
+
+    #[test]
     fn connector_topology_covers_common_box_forms() {
         assert_eq!(box_connector_sides('─'), CONNECT_LEFT | CONNECT_RIGHT);
         assert_eq!(box_connector_sides('│'), CONNECT_TOP | CONNECT_BOTTOM);
@@ -880,6 +1099,66 @@ mod tests {
         composite_image(&mut rgba, 1, 1, &image, 0, 0);
         assert_eq!(rgba, vec![128, 16, 0, 128]);
         assert_ne!(rgba[0], rgba[1]);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn consolas_rounded_corner_edges_match_straight_profiles() {
+        let path = std::path::Path::new(r"C:\Windows\Fonts\consola.ttf");
+        if !path.exists() {
+            return;
+        }
+        register_font_data(std::fs::read(path).unwrap()).unwrap();
+        let mut rasterizer = GlyphRasterizer::new(256, 256).unwrap();
+        let corner = rasterizer
+            .rasterize("'Consolas'", 19.0, 1.0, 0, "╮")
+            .unwrap();
+        let horizontal = rasterizer
+            .rasterize("'Consolas'", 19.0, 1.0, 0, "─")
+            .unwrap();
+        let vertical = rasterizer
+            .rasterize("'Consolas'", 19.0, 1.0, 0, "│")
+            .unwrap();
+
+        let column_profile = |glyph: &RasterizedGlyph, x: usize| {
+            (0..glyph.height as usize)
+                .filter_map(|y| {
+                    let offset = (y * glyph.width as usize + x) * 4;
+                    let pixel: [u8; 4] = glyph.rgba[offset..offset + 4].try_into().unwrap();
+                    (pixel[3] != 0)
+                        .then_some((y as i32 + glyph.ascent_offset.round() as i32, pixel))
+                })
+                .collect::<Vec<_>>()
+        };
+        let row_profile = |glyph: &RasterizedGlyph, y: usize| {
+            (0..glyph.width as usize)
+                .filter_map(|x| {
+                    let offset = (y * glyph.width as usize + x) * 4;
+                    let pixel: [u8; 4] = glyph.rgba[offset..offset + 4].try_into().unwrap();
+                    (pixel[3] != 0).then_some((x as i32 + glyph.left_offset.round() as i32, pixel))
+                })
+                .collect::<Vec<_>>()
+        };
+        let (corner_left, _) = glyph_logical_x_bounds(&corner, 1.0).unwrap();
+        let (_, horizontal_right) = glyph_logical_x_bounds(&horizontal, 1.0).unwrap();
+
+        assert_eq!(
+            column_profile(&corner, corner_left),
+            column_profile(&horizontal, horizontal_right)
+        );
+        assert_eq!(
+            row_profile(&corner, corner.height as usize - 1),
+            row_profile(&vertical, vertical.height as usize - 1)
+        );
+        assert_eq!(
+            rasterizer
+                .box_connector_references
+                .as_ref()
+                .unwrap()
+                .key
+                .font_size_bits,
+            19.0_f32.to_bits()
+        );
     }
 
     #[cfg(target_os = "windows")]
