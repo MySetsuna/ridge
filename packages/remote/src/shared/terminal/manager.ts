@@ -1971,10 +1971,10 @@ export class TerminalManager {
 			// helpers on window so the WebDriver client can
 			// `executeAsync` them.
 			//
-			// Gated behind import.meta.env.DEV so writePty / feedPty /
-			// installPtyWriteSpy are not accessible from production
-			// DevTools or in the case of an XSS.
-			if (import.meta.env.DEV) {
+			// Production launches omit RIDGE_E2E, so writePty / feedPty /
+			// installPtyWriteSpy stay inaccessible from DevTools or an XSS.
+			const processE2e = (window as typeof window & { __RIDGE_E2E__?: boolean }).__RIDGE_E2E__ === true;
+			if (import.meta.env.DEV || processE2e) {
 				(window as unknown as {
 				__windE2E?: {
 					feedPty: (paneId: string, data: string) => void;
@@ -2044,7 +2044,11 @@ export class TerminalManager {
 				// Rust producer vs wasm consumer pipeline end-to-end.
 				// feedPty short-circuits to kernel.feed and is therefore
 				// useless for backend comparison.
-				writePty: (paneId, data) => invoke('write_to_pty', { paneId, data }),
+				writePty: (paneId, data) => invoke('write_to_pty', {
+					workspaceId: this.panes.get(paneId)?.workspaceId,
+					paneId,
+					data,
+				}),
 				visibleText: (paneId) => {
 					const e = this.panes.get(paneId);
 					if (!e) return [];
