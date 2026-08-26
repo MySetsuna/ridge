@@ -324,6 +324,32 @@ fn dispatch_admitted(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> 
             let lines = shell::get_shell_history().map_err(CoreError::internal)?;
             serde_json::to_value(lines).map_err(CoreError::internal)
         }
+        "load_terminal_font_faces" => {
+            let families = serde_json::from_value::<Vec<String>>(
+                args.get("families").cloned().unwrap_or(Value::Null),
+            )
+            .map_err(|error| CoreError::InvalidArgs(format!("invalid families: {error}")))?;
+            let known_hashes = match args.get("knownHashes") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(
+                    serde_json::from_value::<Vec<String>>(value.clone()).map_err(|error| {
+                        CoreError::InvalidArgs(format!("invalid knownHashes: {error}"))
+                    })?,
+                ),
+            };
+            let response = crate::terminal_font::load_terminal_font_faces(families, known_hashes)
+                .map_err(CoreError::internal)?;
+            serde_json::to_value(response).map_err(CoreError::internal)
+        }
+        "read_terminal_font_face_chunk" => {
+            let content_hash = s(&args, "contentHash");
+            let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let length = args.get("length").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let chunk =
+                crate::terminal_font::read_terminal_font_face_chunk(content_hash, offset, length)
+                    .map_err(CoreError::internal)?;
+            serde_json::to_value(chunk).map_err(CoreError::internal)
+        }
         "browse_directory" => {
             let listing =
                 fs_commands::browse_directory(opt_s(&args, "path")).map_err(CoreError::internal)?;

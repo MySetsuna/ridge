@@ -557,7 +557,13 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(manager.backendName('missing')).toBeNull();
 		expect(manager.isAltScreen(PANE)).toBe(false);
 		expect(manager.debugDumpRows(PANE, 0, 0)[0]?.nonSpace[0]?.ch).toBe('A');
-		expect(manager.debugGeometry()).toHaveLength(1);
+		expect(manager.debugGeometry()).toEqual([
+			expect.objectContaining({
+				scrollback: { offset: 0, total: 12 },
+				cursor: { row: 3, col: 4 },
+				visibleText: expect.any(Array),
+			}),
+		]);
 	});
 
 	it('keeps TUI gates, IME anchors, redraw invalidation, and theme state coherent', async () => {

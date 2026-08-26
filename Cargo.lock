@@ -5576,7 +5576,6 @@ dependencies = [
  "chrono",
  "clipboard-win",
  "dirs 5.0.1",
- "fontdb",
  "futures",
  "getrandom 0.2.17",
  "git2",
@@ -5674,9 +5673,11 @@ dependencies = [
 name = "ridge-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "directories",
  "dirs 5.0.1",
  "ed25519-dalek",
+ "fontdb",
  "glob",
  "ignore",
  "libc",

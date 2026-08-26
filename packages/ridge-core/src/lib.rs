@@ -50,6 +50,7 @@ pub mod remote;
 pub mod sandbox;
 mod seed_store;
 pub mod teammate;
+pub mod terminal_font;
 pub mod totp;
 pub mod workspace;
 

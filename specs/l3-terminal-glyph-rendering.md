@@ -40,7 +40,8 @@ without geometric rescaling. Box Drawing and Block Elements are terminal cell
 graphics: each is presented as one atlas quad, and only its Unicode-declared
 connected sides are completed in the selected-font raster before upload, never
 by a second edge quad that can create a rasterization or blend boundary.
-Monochrome text and box drawing sample at native nearest density; only scaled
-color emoji use linear atlas sampling. TUI mode obeys DECTCEM and keeps an
+Color glyphs use the atlas' sole filtering sampler; monochrome text, Box Drawing,
+and Block Elements use exact texel loads. This keeps WebGL2 fallback shader
+validation legal without softening the WebGPU path. TUI mode obeys DECTCEM and keeps an
 enabled cursor steady without blink wakeups. No path may threshold Swash
 coverage or introduce a non-GPU presentation backend.

@@ -46,7 +46,7 @@ struct InstanceIn {
     @location(3) atlas_layer: u32,
     @location(4) fg_rgba: vec4<f32>,
     @location(5) bg_rgba: vec4<f32>,
-    // Instance mode: 0 = monochrome/nearest, 1 = color/smooth,
+    // Instance mode: 0 = monochrome/exact texel, 1 = color/smooth,
     // 2 = solid rectangle.
     @location(6) is_color_u: u32,
 }
@@ -76,8 +76,7 @@ struct FrameUniform {
 
 @group(0) @binding(0) var<uniform> frame: FrameUniform;
 @group(0) @binding(1) var atlas_tex: texture_2d_array<f32>;
-@group(0) @binding(2) var atlas_smp: sampler;
-@group(0) @binding(3) var atlas_smooth_smp: sampler;
+@group(0) @binding(2) var atlas_smooth_smp: sampler;
 
 // Map (vertex_index in 0..4) → quad corner in [0,1]². TriangleStrip
 // order: (0,0) → (1,0) → (0,1) → (1,1). The bit-twiddle avoids a
@@ -152,12 +151,18 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             0.0,
         );
     } else {
-        glyph = textureSampleLevel(
+        let atlas_size_u = textureDimensions(atlas_tex);
+        let atlas_size = vec2<i32>(atlas_size_u);
+        let texel = clamp(
+            vec2<i32>(floor(in.uv * vec2<f32>(atlas_size_u))),
+            vec2<i32>(0),
+            atlas_size - vec2<i32>(1),
+        );
+        glyph = textureLoad(
             atlas_tex,
-            atlas_smp,
-            in.uv,
+            texel,
             i32(in.atlas_layer),
-            0.0,
+            0,
         );
     }
 

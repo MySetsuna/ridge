@@ -243,7 +243,7 @@ pub struct WebGpuPaneBackend {
     instance_capacity: u32,
     /// Bind group instance against `ctx.cell_bind_group_layout`. Holds
     /// references to `frame_uniform` (per-pane) + `ctx.atlas_view` +
-    /// `ctx.sampler` (shared). Rebuilt when `ctx.atlas_generation`
+    /// `ctx.sampler` (shared color-glyph sampler). Rebuilt when `ctx.atlas_generation`
     /// advances (atlas reallocated) — see `begin_frame`.
     bind_group: Rc<wgpu::BindGroup>,
     /// Per-frame CellInstance accumulator. `begin_frame` clears it,

@@ -5,8 +5,9 @@
  * This is a browser-emulation probe, not a physical-device claim: Chromium's
  * mobile context resizes the visual viewport while the real LAN Remote host
  * and PTY/WebSocket path remain live. It verifies focus, bounded visual-only
- * translation, jitter convergence, keyboard-close recovery, and Console
- * cleanliness in a fresh context with extensions disabled.
+ * translation, jitter convergence, keyboard-close recovery, canonical resize
+ * ownership, in-place TUI redraws, and Console cleanliness in a fresh context
+ * with extensions disabled.
  */
 
 import { spawn } from 'node:child_process';
@@ -37,6 +38,10 @@ const EVIDENCE_FILE = resolve(
   process.env.RIDGE_KEYBOARD_EVIDENCE ||
     join(ROOT, '.iteration', 'artifacts', 'rdg-remote-e2e', 'mobile-keyboard.json'),
 );
+const TUI_FIXTURE_FILE = join(ROOT, '.ridge', `mobile-tui-redraw-${process.pid}.ps1`);
+const TUI_READY = 'RIDGE_TUI_READY';
+const TUI_DONE = 'RIDGE_TUI_DONE';
+const TUI_REDRAW_FRAMES = 160;
 const RDG = process.env.RIDGE_RDG || join(ROOT, 'target', 'debug', 'rdg.exe');
 const FORCE_WEBGL_FALLBACK = process.env.RIDGE_REMOTE_E2E_FORCE_WEBGL_FALLBACK === '1';
 const PORT_MIN = 28_000;
@@ -130,12 +135,44 @@ async function metric(page) {
   });
 }
 
+async function waitForTerminalMarker(page, marker, timeout = 8_000) {
+  await page.waitForFunction((expected) => {
+    const panes = window.__RIDGE_TERMINAL_GEOMETRY?.() ?? [];
+    return panes.some((pane) => pane.visibleText?.some((line) => String(line).includes(expected)));
+  }, marker, { timeout });
+}
+
+function writeTuiFixture() {
+  const source = [
+    '$e = [char]27',
+    `[Console]::Out.Write("$e[3J$e[2J$e[H${TUI_READY}")`,
+    'Start-Sleep -Milliseconds 1200',
+    `1..${TUI_REDRAW_FRAMES} | ForEach-Object {`,
+    '  $tick = $_.ToString("D3")',
+    '  [Console]::Out.Write("$e[2;1HTUI FRAME $tick$e[K$e[3;1HSIZE CLAIM STABLE$e[K$e[4;1HPRIMARY IN-PLACE$e[K$e[H")',
+    '  Start-Sleep -Milliseconds 5',
+    '}',
+    `[Console]::Out.Write("$e[5;1H${TUI_DONE}$e[K$e[H")`,
+    'Start-Sleep -Milliseconds 1500',
+  ].join('\r\n');
+  mkdirSync(resolve(TUI_FIXTURE_FILE, '..'), { recursive: true });
+  writeFileSync(TUI_FIXTURE_FILE, `${source}\r\n`);
+}
+
 async function authenticate(page, status) {
+  const app = page.locator('.app-root').first();
+  if (await app.isVisible().catch(() => false)) return;
   const input = page.locator('input[inputmode="numeric"]').first();
   if (!(await input.isVisible().catch(() => false))) return;
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (await app.isVisible().catch(() => false)) return;
     const current = readStatus() || status;
-    await input.fill(String(current.totp));
+    try {
+      await input.fill(String(current.totp), { timeout: 2_000 });
+    } catch (error) {
+      if (await app.isVisible().catch(() => false)) return;
+      throw error;
+    }
     const button = page
       .locator('button')
       .filter({ hasText: /Connect|连接|验证|Verify|继续/i })
@@ -143,6 +180,7 @@ async function authenticate(page, status) {
     if (await button.count()) await button.click();
     else await input.press('Enter');
     await page.waitForTimeout(1_000);
+    if (await app.isVisible().catch(() => false)) return;
     if (!(await input.isVisible().catch(() => false))) return;
     if (attempt < 2) await sleep(1_500);
   }
@@ -153,6 +191,7 @@ async function main() {
   if (process.platform !== 'win32') throw new Error('probe currently requires Windows taskkill cleanup');
   if (!existsSync(RDG)) throw new Error(`rdg binary missing: ${RDG}`);
   mkdirSync(resolve(EVIDENCE_FILE, '..'), { recursive: true });
+  writeTuiFixture();
   try {
     unlinkSync(STATUS_FILE);
   } catch {
@@ -186,6 +225,8 @@ async function main() {
   let context;
   let page;
   const browserErrors = [];
+  const wsFrames = { sent: [], received: [] };
+  const wsFrameCounts = { sent: 0, received: 0 };
   let result;
   try {
     const status = await waitReady(45_000, port, host.pid);
@@ -221,6 +262,26 @@ async function main() {
       }
     }, FORCE_WEBGL_FALLBACK);
     page = await context.newPage();
+    page.on('websocket', (socket) => {
+      const capture = (direction, event) => {
+        wsFrameCounts[direction] += 1;
+        const raw = event?.payload ?? event;
+        const payload = typeof raw === 'string'
+          ? raw
+          : raw instanceof Uint8Array ? new TextDecoder().decode(raw) : null;
+        if (typeof payload !== 'string') return;
+        try {
+          const frame = JSON.parse(payload);
+          if (
+            frame?.method === 'resize_pane'
+            || (frame?.type === 'invoke-request' && frame?.cmd === 'resize_pane')
+            || frame?.type === 'pty-resized'
+          ) wsFrames[direction].push(frame);
+        } catch { /* binary/non-JSON */ }
+      };
+      socket.on('framesent', (event) => capture('sent', event));
+      socket.on('framereceived', (event) => capture('received', event));
+    });
     page.on('pageerror', (error) => browserErrors.push(`pageerror:${error.message}`));
     page.on('console', (message) => {
       if (message.type() === 'error') browserErrors.push(`console:${message.text()}`);
@@ -236,6 +297,66 @@ async function main() {
       await page.locator('.container[data-renderer-backend="WebGL2"]').first()
         .waitFor({ state: 'visible', timeout: 20_000 });
     }
+    await page.waitForTimeout(900);
+    let ownershipPane = null;
+    let remoteClaimFrame = null;
+    let remoteClaim = null;
+    let remoteAck = null;
+    const ownershipDeadline = Date.now() + 10_000;
+    while (Date.now() < ownershipDeadline) {
+      ownershipPane = (await metric(page)).geometry?.[0] ?? null;
+      remoteClaimFrame = [...wsFrames.sent].reverse().find((frame) =>
+        (frame?.method === 'resize_pane' && frame?.params?.owner === 'remote')
+        || (frame?.type === 'invoke-request'
+          && frame?.cmd === 'resize_pane'
+          && frame?.args?.owner === 'remote')) ?? null;
+      remoteClaim = remoteClaimFrame?.method === 'resize_pane'
+        ? remoteClaimFrame.params
+        : remoteClaimFrame?.args ?? null;
+      remoteAck = [...wsFrames.received].reverse().find((frame) =>
+        frame?.type === 'pty-resized'
+        && frame?.owner === 'remote'
+        && frame?.rows === remoteClaim?.rows
+        && frame?.cols === remoteClaim?.cols) ?? null;
+      if (ownershipPane && remoteClaim && remoteAck) break;
+      await page.waitForTimeout(100);
+    }
+    const resizeOwnership = {
+      ok: Boolean(
+        ownershipPane
+        && remoteClaim
+        && remoteAck
+        && ownershipPane.kernel?.rows === remoteClaim.rows
+        && ownershipPane.kernel?.cols === remoteClaim.cols
+        && ownershipPane.reported?.rows === remoteClaim.rows
+        && ownershipPane.reported?.cols === remoteClaim.cols
+      ),
+      pane: ownershipPane,
+      claim: remoteClaimFrame ? { frame: remoteClaimFrame, params: remoteClaim } : null,
+      acknowledgement: remoteAck ?? null,
+    };
+
+    await page.locator('.hidden-input').focus();
+    await page.keyboard.type(`& '${TUI_FIXTURE_FILE.replaceAll("'", "''")}'`);
+    await page.keyboard.press('Enter');
+    await waitForTerminalMarker(page, TUI_READY);
+    const tuiBefore = (await metric(page)).geometry?.[0] ?? null;
+    await waitForTerminalMarker(page, TUI_DONE);
+    const tuiAfter = (await metric(page)).geometry?.[0] ?? null;
+    const tuiRedraw = {
+      ok: Boolean(
+        tuiBefore
+        && tuiAfter
+        && tuiBefore.scrollback?.total === 0
+        && tuiBefore.scrollback?.offset === 0
+        && tuiAfter.scrollback?.total === tuiBefore.scrollback.total
+        && tuiAfter.scrollback?.offset === tuiBefore.scrollback.offset
+        && tuiAfter.visibleText?.some((line) => String(line).includes(TUI_DONE))
+      ),
+      frames: TUI_REDRAW_FRAMES,
+      before: tuiBefore,
+      after: tuiAfter,
+    };
     // Produce harmless shell output so the shared terminal manager has a
     // concrete cursor anchor near the lower viewport (an idle fresh PTY may
     // legitimately have none, which would correctly require no translation).
@@ -392,6 +513,8 @@ async function main() {
         && shiftBounded
         && inputSafe
         && recovered
+        && resizeOwnership.ok
+        && tuiRedraw.ok
         && selectionTouch.ok
         && browserErrors.length === 0,
       emulation: 'Chromium mobile context; not physical-device evidence',
@@ -404,6 +527,9 @@ async function main() {
       reduced,
       jitter,
       restored,
+      resizeWire: { counts: wsFrameCounts, ...wsFrames },
+      resizeOwnership,
+      tuiRedraw,
       selectionTouch,
       assertions: {
         visualReduced,
@@ -412,6 +538,8 @@ async function main() {
         shiftBounded,
         inputSafe,
         recovered,
+        resizeOwnership: resizeOwnership.ok,
+        tuiRedraw: tuiRedraw.ok,
         selectionTouch: selectionTouch.ok,
       },
     };
@@ -439,6 +567,11 @@ async function main() {
     await killTree(host.pid);
     try {
       unlinkSync(STATUS_FILE);
+    } catch {
+      /* ok */
+    }
+    try {
+      unlinkSync(TUI_FIXTURE_FILE);
     } catch {
       /* ok */
     }

@@ -366,6 +366,21 @@ fn list_workspaces_value(ws_id: Uuid) -> Value {
 
 /// 桌面 WEB_REMOTE 经 LanWsAdapter 发 `invoke-request` / JSON-RPC；此前 rdg 静默忽略
 /// → 桌面浏览器空白壳。终端接通最小方法集（pane + 只读 workspace 呈现）。
+fn pane_resize_owner(value: &Value) -> &'static str {
+    match value.get("owner").and_then(Value::as_str) {
+        Some("remote") => "remote",
+        Some("host") => "host",
+        _ if matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("claim-pane" | "refresh-pane")
+        ) =>
+        {
+            "remote"
+        }
+        _ => "host",
+    }
+}
+
 fn dispatch_lan_invoke(
     cmd: &str,
     args: &Value,
@@ -397,6 +412,7 @@ fn dispatch_lan_invoke(
         "resize_pane" | "resize_pty" => {
             let rows = args.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
             let cols = args.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
+            let owner = pane_resize_owner(args);
             let pane_id = args
                 .get("paneId")
                 .and_then(Value::as_str)
@@ -415,6 +431,7 @@ fn dispatch_lan_invoke(
                     "paneId": pane_id.to_string(),
                     "rows": rows,
                     "cols": cols,
+                    "owner": owner,
                 })
                 .to_string(),
             ));
@@ -481,7 +498,11 @@ fn dispatch_lan_invoke(
             serde_json::to_value(entries)
                 .map_err(|e| format!("cannot encode directory result: {e}"))
         }
-        "get_file_tree" | "read_file" | "text_search" => {
+        "get_file_tree"
+        | "read_file"
+        | "text_search"
+        | "load_terminal_font_faces"
+        | "read_terminal_font_face_chunk" => {
             let roots = rdg_allowed_file_roots(workspace);
             let ctx = crate::core_host::headless_ctx(&roots);
             ridge_core::dispatch(cmd, args.clone(), &ctx).map_err(|e| e.to_command_string())
@@ -926,6 +947,7 @@ fn resize_pane_message(
     };
     let rows = v["rows"].as_u64().unwrap_or(24) as u16;
     let cols = v["cols"].as_u64().unwrap_or(80) as u16;
+    let owner = pane_resize_owner(v);
     let workspace = workspace.lock().unwrap();
     let Some(session) = workspace.find(pane_id) else {
         return;
@@ -938,6 +960,7 @@ fn resize_pane_message(
             "paneId": pane_id.to_string(),
             "rows": rows,
             "cols": cols,
+            "owner": owner,
         })
         .to_string(),
     ));
@@ -1479,7 +1502,7 @@ mod tests {
 
         dispatch_lan_invoke(
             "resize_pane",
-            &json!({ "paneId": pane_id, "rows": 42, "cols": 120 }),
+            &json!({ "paneId": pane_id, "rows": 42, "cols": 120, "owner": "remote" }),
             &workspace,
             ws_id,
             &tx,
@@ -1496,7 +1519,19 @@ mod tests {
         assert_eq!(value["paneId"], pane_id);
         assert_eq!(value["rows"], 42);
         assert_eq!(value["cols"], 120);
+        assert_eq!(value["owner"], "remote");
         drop(workspace);
+    }
+
+    #[test]
+    fn resize_owner_defaults_closed_and_preserves_known_endpoints() {
+        assert_eq!(pane_resize_owner(&json!({})), "host");
+        assert_eq!(pane_resize_owner(&json!({ "owner": "unknown" })), "host");
+        assert_eq!(pane_resize_owner(&json!({ "owner": "remote" })), "remote");
+        assert_eq!(
+            pane_resize_owner(&json!({ "type": "claim-pane" })),
+            "remote"
+        );
     }
 
     #[test]

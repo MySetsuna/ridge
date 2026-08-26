@@ -2,9 +2,10 @@
   import AuthScreen from './AuthScreen.svelte';
   import CloudAuthScreen from './CloudAuthScreen.svelte';
   import MainApp from './MainApp.svelte';
-  import { RemoteConnection, type RemoteLink } from '@ridge/remote';
+  import { RemoteConnection, createLanWsTransport, type RemoteLink } from '@ridge/remote';
   import { setTransport } from '$lib/transport';
   import { WsDataProvider } from '$lib/transport/ws';
+  import { bridge } from '$lib/transport/tauriShim/bridge';
   import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
 
   // §mobile-cloud (design 2026-06-16): the mobile app now has TWO transports —
@@ -74,6 +75,12 @@
     ws = lanWs;
     mode = 'lan';
   }
+
+  function handleLanVerified() {
+    if (!lanWs) return;
+    bridge.attach(createLanWsTransport(lanWs), { useGlobalWorkspace: false });
+    verified = true;
+  }
 </script>
 
 <QueryClientProvider client={queryClient}>
@@ -87,7 +94,7 @@
       <MainApp {ws} />
     {/if}
   {:else if !verified}
-    <AuthScreen ws={lanWs!} onverified={() => verified = true} />
+    <AuthScreen ws={lanWs!} onverified={handleLanVerified} />
   {:else if ws}
     <MainApp {ws} />
   {/if}

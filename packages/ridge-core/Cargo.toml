@@ -49,6 +49,8 @@ directories = "5"
 # (future) LAN host. Pure crates, no Tauri. `rand` uses the OS entropy source
 # for the per-process secret. See `totp.rs`.
 sha2 = "0.10"
+base64 = "0.22"
+fontdb = "0.23"
 rand = "0.8"
 # Ed25519 长期设备身份签名（零信任 P0-1 / 方案 #2）：host 签名临时 X25519 公钥，
 # controller 验签 + TOFU 固定指纹。默认 features 即够（仅用 from_bytes/sign/verify，
