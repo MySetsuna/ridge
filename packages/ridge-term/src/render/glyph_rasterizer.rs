@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use cosmic_text::fontdb;
 use cosmic_text::{
-    Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, SwashContent, Weight,
-    Wrap,
+    Attrs, Buffer, Family, FontSystem, Hinting, Metrics, Shaping, Style, SwashCache, SwashContent,
+    Weight, Wrap,
 };
 
 use super::glyph_atlas::GlyphKey;
@@ -88,7 +88,7 @@ pub struct RasterizedGlyph {
     /// Device-pixel offset from the logical cell origin to the bitmap left.
     pub left_offset: f32,
     pub is_color: bool,
-    pub is_cell_graphic: bool,
+    pub is_box_drawing: bool,
 }
 
 struct PendingImage {
@@ -201,7 +201,7 @@ impl GlyphRasterizer {
         let line_height = (device_size * 1.2).max(1.0);
         let wants_color_emoji = is_emoji_presentation(glyph_text);
         let box_char = box_drawing_char(glyph_text);
-        let is_cell_graphic = cell_graphic_char(glyph_text).is_some();
+        let is_box_drawing = box_char.is_some();
         let family = if wants_color_emoji {
             self.resolve_emoji_family(font_family)?
         } else {
@@ -212,6 +212,9 @@ impl GlyphRasterizer {
             &mut self.font_system,
             Metrics::new(device_size, line_height),
         );
+        // Terminal cells are physical-pixel addressed. Match native terminal
+        // grid fitting so repeated Block Elements share identical edges.
+        buffer.set_hinting(Hinting::Enabled);
         buffer.set_size(Some(self.slot_w as f32), Some(self.slot_h as f32));
         buffer.set_wrap(Wrap::None);
         buffer.set_text(glyph_text, &attrs, Shaping::Advanced, None);
@@ -273,7 +276,7 @@ impl GlyphRasterizer {
                 ascent_offset: 0.0,
                 left_offset: 0.0,
                 is_color: false,
-                is_cell_graphic,
+                is_box_drawing,
             });
         }
         if wants_color_emoji && !is_color {
@@ -302,7 +305,10 @@ impl GlyphRasterizer {
                 crop_top,
             );
         }
-        stabilize_cell_graphic_edges(
+        if is_grid_block_element(glyph_text) {
+            normalize_grid_block_coverage(&mut rgba);
+        }
+        stabilize_box_connector_edges(
             &mut rgba,
             width as usize,
             &mut height,
@@ -322,7 +328,7 @@ impl GlyphRasterizer {
             ascent_offset: crop_top as f32,
             left_offset: crop_left as f32,
             is_color,
-            is_cell_graphic,
+            is_box_drawing,
         };
         if box_char.is_some_and(is_rounded_box_corner) {
             let (horizontal, vertical) =
@@ -485,14 +491,6 @@ fn box_drawing_char(glyph_text: &str) -> Option<char> {
     (chars.next().is_none() && ('\u{2500}'..='\u{257f}').contains(&ch)).then_some(ch)
 }
 
-fn cell_graphic_char(glyph_text: &str) -> Option<char> {
-    let mut chars = glyph_text.chars();
-    let ch = chars.next()?;
-    (chars.next().is_none()
-        && (('\u{2500}'..='\u{257f}').contains(&ch) || ('\u{2580}'..='\u{259f}').contains(&ch)))
-    .then_some(ch)
-}
-
 fn is_rounded_box_corner(ch: char) -> bool {
     matches!(ch, '╭' | '╮' | '╯' | '╰')
 }
@@ -575,24 +573,31 @@ fn align_rounded_corner_arms(
         return;
     };
     let from_bottom = sides & CONNECT_BOTTOM != 0;
+    let target_vertical_edge = if from_bottom {
+        height.saturating_sub(1)
+    } else {
+        (-target_top).clamp(0, height.saturating_sub(1) as i32) as usize
+    };
     let target_vertical = connector_row_pixels(
         &target.rgba,
         width,
         height,
-        if from_bottom { height - 1 } else { 0 },
+        target_vertical_edge,
         (logical_left + logical_right) / 2,
     );
     let vertical_span =
         straight_row_span(&target.rgba, width, height, &target_vertical, from_bottom);
+    let reference_vertical_edge = if from_bottom {
+        vertical.height as usize - 1
+    } else {
+        (-(vertical.ascent_offset.round() as i32))
+            .clamp(0, vertical.height.saturating_sub(1) as i32) as usize
+    };
     let reference_vertical = connector_row_pixels(
         &vertical.rgba,
         vertical.width as usize,
         vertical.height as usize,
-        if from_bottom {
-            vertical.height as usize - 1
-        } else {
-            0
-        },
+        reference_vertical_edge,
         (vertical_left + vertical_right) / 2,
     );
     if target_vertical.is_empty() || reference_vertical.is_empty() {
@@ -821,31 +826,6 @@ fn box_connector_sides(ch: char) -> u8 {
     }
 }
 
-fn cell_graphic_sides(ch: char) -> u8 {
-    let block_sides = match ch {
-        '\u{2580}' | '\u{2594}' => CONNECT_LEFT | CONNECT_RIGHT | CONNECT_TOP,
-        '\u{2581}'..='\u{2587}' => CONNECT_LEFT | CONNECT_RIGHT | CONNECT_BOTTOM,
-        '\u{2588}' | '\u{2591}'..='\u{2593}' => {
-            CONNECT_LEFT | CONNECT_RIGHT | CONNECT_TOP | CONNECT_BOTTOM
-        }
-        '\u{2589}'..='\u{258f}' => CONNECT_LEFT | CONNECT_TOP | CONNECT_BOTTOM,
-        '\u{2590}' | '\u{2595}' => CONNECT_RIGHT | CONNECT_TOP | CONNECT_BOTTOM,
-        '\u{2596}' => CONNECT_LEFT | CONNECT_BOTTOM,
-        '\u{2597}' => CONNECT_RIGHT | CONNECT_BOTTOM,
-        '\u{2598}' => CONNECT_LEFT | CONNECT_TOP,
-        '\u{2599}'..='\u{259c}' | '\u{259e}'..='\u{259f}' => {
-            CONNECT_LEFT | CONNECT_RIGHT | CONNECT_TOP | CONNECT_BOTTOM
-        }
-        '\u{259d}' => CONNECT_RIGHT | CONNECT_TOP,
-        _ => 0,
-    };
-    if block_sides == 0 {
-        box_connector_sides(ch)
-    } else {
-        block_sides
-    }
-}
-
 fn attrs_for(family: &str, style_flags: u8) -> Attrs<'_> {
     let weight = if style_flags & GlyphKey::STYLE_BOLD != 0 {
         Weight::BOLD
@@ -905,6 +885,36 @@ fn premultiply(channel: u8, alpha: u8) -> u8 {
     ((channel as u32 * alpha as u32 + 127) / 255) as u8
 }
 
+fn is_grid_block_element(glyph_text: &str) -> bool {
+    let mut chars = glyph_text.chars();
+    let Some(ch) = chars.next() else {
+        return false;
+    };
+    if chars.next().is_some() {
+        return false;
+    }
+    matches!(
+        ch,
+        '\u{2580}'..='\u{2590}' | '\u{2594}' | '\u{2595}' | '\u{2596}'..='\u{259f}'
+    )
+}
+
+/// Native terminal grids treat geometric Block Elements as hard pixel fills.
+/// Swash retains outline antialiasing on the cell boundary, which creates a
+/// visible seam when adjacent copies of the same block are composited. Keep
+/// the Host-rasterized shape and only snap its already-painted coverage to a
+/// full device pixel; shade blocks and ordinary glyphs keep their AA.
+fn normalize_grid_block_coverage(rgba: &mut [u8]) {
+    for pixel in rgba.chunks_exact_mut(4) {
+        if pixel[3] != 0 {
+            pixel[0] = pixel[3];
+            pixel[1] = pixel[3];
+            pixel[2] = pixel[3];
+            pixel[3] = 255;
+        }
+    }
+}
+
 fn blend_premult(dst: &mut [u8], src: [u8; 4]) {
     let inv = 255_u32 - src[3] as u32;
     for channel in 0..3 {
@@ -917,7 +927,7 @@ fn blend_premult(dst: &mut [u8], src: [u8; 4]) {
 /// Keep Swash's outline, but make its already-painted box connectors meet the
 /// neighboring cell. Curves and all non-connector anti-aliasing remain intact.
 #[allow(clippy::too_many_arguments)]
-fn stabilize_cell_graphic_edges(
+fn stabilize_box_connector_edges(
     rgba: &mut Vec<u8>,
     width: usize,
     height: &mut u16,
@@ -928,28 +938,51 @@ fn stabilize_cell_graphic_edges(
     slot_h: usize,
     glyph_text: &str,
 ) {
-    let Some(ch) = cell_graphic_char(glyph_text) else {
+    let Some(ch) = box_drawing_char(glyph_text) else {
         return;
     };
-    let sides = cell_graphic_sides(ch);
+    let sides = box_connector_sides(ch);
     if width == 0 || sides == 0 {
         return;
     }
 
     let glyph_height = *height as usize;
+    if is_continuous_vertical_box(ch) {
+        normalize_continuous_vertical_connector(
+            rgba,
+            width,
+            glyph_height,
+            *ascent_offset,
+            line_height,
+        );
+    }
     let logical_left = ((-left_offset).max(0) as usize).min(width - 1);
     let logical_right = (logical_left + advance_dev.ceil().max(1.0) as usize - 1).min(width - 1);
 
     let row_bytes = width * 4;
     let center_x = (logical_left + logical_right) / 2;
+    // An elbow's vertical arm sits on the opposite side from its horizontal
+    // arm. Sampling the cell center misses that arm, so the extension stops
+    // short and leaves a gap before the neighboring vertical cell.
+    let vertical_connector_x = if sides & CONNECT_TOP != 0 && sides & CONNECT_BOTTOM != 0 {
+        center_x
+    } else if sides & CONNECT_LEFT != 0 {
+        logical_right
+    } else if sides & CONNECT_RIGHT != 0 {
+        logical_left
+    } else {
+        center_x
+    };
     let top_extension = if sides & CONNECT_TOP != 0 {
         (*ascent_offset).max(0) as usize
     } else {
         0
     }
     .min(slot_h.saturating_sub(glyph_height));
-    let top_connector = vertical_connector_pixels(rgba, width, glyph_height, center_x, false);
-    let bottom_connector = vertical_connector_pixels(rgba, width, glyph_height, center_x, true);
+    let top_connector =
+        vertical_connector_pixels(rgba, width, glyph_height, vertical_connector_x, false);
+    let bottom_connector =
+        vertical_connector_pixels(rgba, width, glyph_height, vertical_connector_x, true);
     let mut glyph_height = glyph_height;
     if top_extension != 0 && !top_connector.is_empty() {
         rgba.resize((glyph_height + top_extension) * row_bytes, 0);
@@ -1008,6 +1041,42 @@ fn stabilize_cell_graphic_edges(
             center_y,
             true,
         );
+    }
+}
+
+fn is_continuous_vertical_box(ch: char) -> bool {
+    matches!(ch, '\u{2502}' | '\u{2503}' | '\u{2551}')
+}
+
+fn normalize_continuous_vertical_connector(
+    rgba: &mut [u8],
+    width: usize,
+    height: usize,
+    ascent_offset: i32,
+    line_height: f32,
+) {
+    if width == 0 || height == 0 || rgba.len() < width.saturating_mul(height).saturating_mul(4) {
+        return;
+    }
+    let target_height = line_height.round().max(1.0) as i32;
+    let start = (-ascent_offset).max(0).min(height as i32) as usize;
+    let end = (target_height - ascent_offset).clamp(0, height as i32) as usize;
+    if start >= end {
+        return;
+    }
+
+    let row_bytes = width * 4;
+    let source_y = (start..end)
+        .max_by_key(|&y| {
+            rgba[y * row_bytes..(y + 1) * row_bytes]
+                .chunks_exact(4)
+                .map(|pixel| u32::from(pixel[3]))
+                .sum::<u32>()
+        })
+        .unwrap_or(start);
+    let source = rgba[source_y * row_bytes..(source_y + 1) * row_bytes].to_vec();
+    for y in start..end {
+        rgba[y * row_bytes..(y + 1) * row_bytes].copy_from_slice(&source);
     }
 }
 
@@ -1189,6 +1258,31 @@ mod tests {
     }
 
     #[test]
+    fn grid_block_coverage_snaps_only_geometric_blocks() {
+        assert!(is_grid_block_element("\u{2588}"));
+        assert!(is_grid_block_element("\u{2596}"));
+        assert!(!is_grid_block_element("\u{2592}"));
+        assert!(!is_grid_block_element("A"));
+
+        let mut rgba = [0, 0, 0, 0, 90, 90, 90, 90, 255, 255, 255, 255];
+        normalize_grid_block_coverage(&mut rgba);
+        assert_eq!(rgba, [0, 0, 0, 0, 90, 90, 90, 255, 255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn continuous_vertical_connector_repeats_the_strongest_native_profile() {
+        let mut rgba = vec![0; 2 * 5 * 4];
+        rgba[8..16].copy_from_slice(&[20, 20, 20, 20, 0, 0, 0, 0]);
+        rgba[16..24].copy_from_slice(&[92, 92, 255, 40, 0, 0, 0, 0]);
+        rgba[24..32].copy_from_slice(&[66, 66, 184, 28, 0, 0, 0, 0]);
+        normalize_continuous_vertical_connector(&mut rgba, 2, 5, -1, 4.0);
+        assert_eq!(&rgba[0..8], &[0; 8]);
+        for y in 1..5 {
+            assert_eq!(&rgba[y * 8..(y + 1) * 8], &[92, 92, 255, 40, 0, 0, 0, 0]);
+        }
+    }
+
+    #[test]
     fn horizontal_box_glyph_copies_native_coverage_to_both_edges() {
         let mut rgba = vec![0; 7 * 3 * 4];
         for x in 2..=4 {
@@ -1201,7 +1295,7 @@ mod tests {
         rgba[20 * 4..21 * 4].copy_from_slice(&[28, 28, 28, 28]);
         let mut height = 3;
         let mut top = 0;
-        stabilize_cell_graphic_edges(&mut rgba, 7, &mut height, &mut top, 0, 7.0, 3.0, 6, "─");
+        stabilize_box_connector_edges(&mut rgba, 7, &mut height, &mut top, 0, 7.0, 3.0, 6, "─");
         for x in 0..7 {
             assert_eq!(&rgba[(7 + x) * 4..(7 + x + 1) * 4], &[48; 4]);
             assert_eq!(&rgba[(14 + x) * 4..(14 + x + 1) * 4], &[160; 4]);
@@ -1209,7 +1303,7 @@ mod tests {
 
         let mut ordinary = rgba.clone();
         ordinary[3] = 96;
-        stabilize_cell_graphic_edges(&mut ordinary, 7, &mut height, &mut top, 0, 7.0, 3.0, 6, "A");
+        stabilize_box_connector_edges(&mut ordinary, 7, &mut height, &mut top, 0, 7.0, 3.0, 6, "A");
         assert_eq!(ordinary[3], 96);
     }
 
@@ -1225,7 +1319,17 @@ mod tests {
         let curve_pixel = rgba[(5 + 1) * 4..(5 + 2) * 4].to_vec();
         let mut height = 4;
         let mut top = 0;
-        stabilize_cell_graphic_edges(&mut rgba, 5, &mut height, &mut top, 0, 5.0, 6.0, 8, "╭");
+        stabilize_box_connector_edges(
+            &mut rgba,
+            5,
+            &mut height,
+            &mut top,
+            0,
+            5.0,
+            6.0,
+            8,
+            "\u{256d}",
+        );
         assert_eq!(top, 0);
         assert_eq!(height, 6);
         assert_eq!(&rgba[(5 + 1) * 4..(5 + 2) * 4], curve_pixel);
@@ -1245,7 +1349,7 @@ mod tests {
             ascent_offset: 0.0,
             left_offset: 0.0,
             is_color: false,
-            is_cell_graphic: true,
+            is_box_drawing: true,
         };
         for y in 0..=1 {
             target.rgba[(y * 7 + 1) * 4..(y * 7 + 2) * 4].copy_from_slice(&[120; 4]);
@@ -1283,42 +1387,19 @@ mod tests {
     }
 
     #[test]
-    fn vertical_connector_preserves_each_native_edge_profile() {
+    fn vertical_connector_is_continuous_across_cell_rows() {
         let mut rgba = vec![0; 3 * 2 * 4];
         rgba[(1 * 4)..(2 * 4)].copy_from_slice(&[200; 4]);
         rgba[(3 + 1) * 4..(3 + 2) * 4].copy_from_slice(&[240; 4]);
         let mut height = 2;
         let mut top = 1;
 
-        stabilize_cell_graphic_edges(&mut rgba, 3, &mut height, &mut top, 0, 3.0, 5.0, 6, "│");
+        stabilize_box_connector_edges(&mut rgba, 3, &mut height, &mut top, 0, 3.0, 5.0, 6, "│");
 
         assert_eq!(top, 0);
         assert_eq!(height, 5);
-        assert_eq!(&rgba[(1 * 4)..(1 * 4 + 4)], &[200; 4]);
-        assert_eq!(&rgba[(3 * 3 + 1) * 4..(3 * 3 + 2) * 4], &[240; 4]);
-        assert_eq!(&rgba[(4 * 3 + 1) * 4..(4 * 3 + 2) * 4], &[240; 4]);
-    }
-
-    #[test]
-    fn asymmetric_block_keeps_distinct_top_and_bottom_silhouettes() {
-        let mut rgba = vec![0; 4 * 2 * 4];
-        for x in 0..4 {
-            rgba[x * 4..(x + 1) * 4].copy_from_slice(&[180; 4]);
-        }
-        for x in 0..2 {
-            rgba[(4 + x) * 4..(5 + x) * 4].copy_from_slice(&[220; 4]);
-        }
-        let mut height = 2;
-        let mut top = 1;
-
-        stabilize_cell_graphic_edges(&mut rgba, 4, &mut height, &mut top, 0, 4.0, 5.0, 6, "▛");
-
-        assert_eq!(top, 0);
-        assert_eq!(height, 5);
-        assert_eq!(&rgba[0..4 * 4], &[180; 16]);
-        for y in 2..5 {
-            assert_eq!(&rgba[(y * 4) * 4..(y * 4 + 2) * 4], &[220; 8]);
-            assert_eq!(&rgba[(y * 4 + 2) * 4..(y * 4 + 4) * 4], &[0; 8]);
+        for row in 0..5 {
+            assert_eq!(&rgba[(row * 3 + 1) * 4..(row * 3 + 2) * 4], &[240; 4]);
         }
     }
 
@@ -1329,29 +1410,6 @@ mod tests {
         assert_eq!(box_connector_sides('╭'), CONNECT_RIGHT | CONNECT_BOTTOM);
         assert_eq!(box_connector_sides('┼'), 15);
         assert_eq!(box_connector_sides('╱'), 0);
-    }
-
-    #[test]
-    fn connector_topology_covers_terminal_block_forms() {
-        assert_eq!(
-            cell_graphic_sides('\u{2580}'),
-            CONNECT_LEFT | CONNECT_RIGHT | CONNECT_TOP
-        );
-        assert_eq!(
-            cell_graphic_sides('\u{2584}'),
-            CONNECT_LEFT | CONNECT_RIGHT | CONNECT_BOTTOM
-        );
-        assert_eq!(cell_graphic_sides('\u{2588}'), 15);
-        assert_eq!(
-            cell_graphic_sides('\u{258c}'),
-            CONNECT_LEFT | CONNECT_TOP | CONNECT_BOTTOM
-        );
-        assert_eq!(
-            cell_graphic_sides('\u{2590}'),
-            CONNECT_RIGHT | CONNECT_TOP | CONNECT_BOTTOM
-        );
-        assert_eq!(cell_graphic_sides('\u{259b}'), 15);
-        assert_eq!(cell_graphic_sides('\u{259c}'), 15);
     }
 
     #[test]
@@ -1459,7 +1517,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn consolas_cell_graphics_reach_their_declared_edges() {
+    fn consolas_box_graphics_reach_their_declared_edges() {
         let path = std::path::Path::new(r"C:\Windows\Fonts\consola.ttf");
         if !path.exists() {
             return;
@@ -1471,13 +1529,6 @@ mod tests {
             ("\u{2500}", CONNECT_LEFT | CONNECT_RIGHT),
             ("\u{2502}", CONNECT_TOP | CONNECT_BOTTOM),
             ("\u{256d}", CONNECT_RIGHT | CONNECT_BOTTOM),
-            ("\u{2580}", CONNECT_LEFT | CONNECT_RIGHT | CONNECT_TOP),
-            ("\u{2584}", CONNECT_LEFT | CONNECT_RIGHT | CONNECT_BOTTOM),
-            ("\u{2588}", 15),
-            ("\u{258c}", CONNECT_LEFT | CONNECT_TOP | CONNECT_BOTTOM),
-            ("\u{2590}", CONNECT_RIGHT | CONNECT_TOP | CONNECT_BOTTOM),
-            ("\u{259b}", 15),
-            ("\u{259c}", 15),
         ] {
             let glyph = rasterizer
                 .rasterize("'Consolas'", 32.0, 1.0, 0, text)
@@ -1486,7 +1537,7 @@ mod tests {
                 !glyph.is_color,
                 "{text} must remain a monochrome font bitmap"
             );
-            assert!(glyph.is_cell_graphic);
+            assert!(glyph.is_box_drawing);
 
             let width = glyph.width as usize;
             let height = glyph.height as usize;
@@ -1506,6 +1557,28 @@ mod tests {
             if sides & CONNECT_BOTTOM != 0 {
                 assert!((logical_left..=logical_right).any(|x| alpha_at(x, height - 1) != 0));
             }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn consolas_block_elements_keep_native_font_geometry() {
+        let path = std::path::Path::new(r"C:\Windows\Fonts\consola.ttf");
+        if !path.exists() {
+            return;
+        }
+        register_font_data(std::fs::read(path).unwrap()).unwrap();
+        let mut rasterizer = GlyphRasterizer::new(256, 256).unwrap();
+
+        for text in ["\u{2580}", "\u{2588}", "\u{258c}", "\u{2590}", "\u{259b}"] {
+            let glyph = rasterizer
+                .rasterize("'Consolas'", 32.0, 1.0, 0, text)
+                .unwrap();
+            assert!(!glyph.is_color, "{text} must remain monochrome");
+            assert!(
+                !glyph.is_box_drawing,
+                "{text} must not enter connector rewriting"
+            );
         }
     }
 

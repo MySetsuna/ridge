@@ -26,7 +26,7 @@ export const SYSTEM_EMOJI_FALLBACK = EMOJI_FALLBACK;
 
 /** Monospace + CJK text fonts (no emoji), in priority order. */
 export const TEXT_MONO =
-	"'JetBrains Mono','Cascadia Code','SF Mono',ui-monospace,Consolas";
+	"'JetBrains Mono','Cascadia Mono','Cascadia Code','SF Mono',ui-monospace,Consolas";
 
 /** Smooth platform CJK faces, kept ahead of generic proportional text. */
 export const CJK_FALLBACK =

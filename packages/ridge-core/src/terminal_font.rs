@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+#[cfg(target_os = "windows")]
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::Engine;
@@ -126,6 +128,64 @@ fn configure_platform_generic_families(db: &mut Database) {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn windows_terminal_package() -> Option<PathBuf> {
+    let root = Path::new(r"C:\Program Files\WindowsApps");
+    let mut packages = std::fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("Microsoft.WindowsTerminal_"))
+        })
+        .collect::<Vec<_>>();
+    packages.sort_unstable();
+    packages.into_iter().rev().find(|path| {
+        path.join("CascadiaMono.ttf").is_file() || path.join("CascadiaCode.ttf").is_file()
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn load_windows_terminal_fonts(db: &mut Database, families: &[String]) {
+    let wants_mono = families.iter().any(|family| {
+        matches!(
+            family.trim().trim_matches(['\'', '"']).to_ascii_lowercase().as_str(),
+            "cascadia mono" | "monospace" | "ui-monospace"
+        )
+    });
+    let wants_code = families.iter().any(|family| {
+        family
+            .trim()
+            .trim_matches(['\'', '"'])
+            .eq_ignore_ascii_case("cascadia code")
+    });
+    if !wants_mono && !wants_code {
+        return;
+    }
+
+    let Some(package) = windows_terminal_package() else {
+        return;
+    };
+    let names = [
+        (wants_mono, "CascadiaMono.ttf"),
+        (wants_mono, "CascadiaMonoItalic.ttf"),
+        (wants_code, "CascadiaCode.ttf"),
+        (wants_code, "CascadiaCodeItalic.ttf"),
+    ];
+    for (wanted, name) in names {
+        if wanted {
+            let path = package.join(name);
+            if path.is_file() {
+                let _ = db.load_font_file(path);
+            }
+        }
+    }
+}
+
 fn normalize_known_hashes(hashes: Vec<String>) -> Result<HashSet<String>, String> {
     if hashes.len() > MAX_FONT_FILES {
         return Err("FONT_DATA_INVALID: too many cached font hashes".to_string());
@@ -148,6 +208,8 @@ pub fn load_terminal_font_faces(
     normalize_known_hashes(known_hashes.unwrap_or_default())?;
     let mut db = Database::new();
     db.load_system_fonts();
+    #[cfg(target_os = "windows")]
+    load_windows_terminal_fonts(&mut db, &families);
     configure_platform_generic_families(&mut db);
 
     let variants = [
@@ -309,12 +371,17 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn ui_monospace_resolves_to_consolas_instead_of_legacy_courier() {
+    fn ui_monospace_resolves_to_the_native_terminal_face() {
         let response = load_terminal_font_faces(vec!["ui-monospace".into()], None).unwrap();
+        let expected = if windows_terminal_package().is_some() {
+            "Cascadia Mono"
+        } else {
+            "Consolas"
+        };
         assert!(response
             .faces
             .iter()
-            .any(|face| face.family.eq_ignore_ascii_case("Consolas")));
+            .any(|face| face.family.eq_ignore_ascii_case(expected)));
         assert!(!response
             .faces
             .iter()
