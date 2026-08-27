@@ -2630,7 +2630,7 @@ function captureBackspace(node: HTMLElement) {
 		margin: 0;
 		resize: none;
 		overflow: hidden;
-		font-family: var(--rg-term-font-family, ui-monospace, 'Cascadia Code', Consolas, monospace);
+		font-family: var(--rg-term-font-family, ui-monospace, 'Cascadia Mono', 'Cascadia Code', Consolas, monospace);
 		font-size: var(--rg-term-font-size, 14px);
 		line-height: var(--rg-ime-cell-h, 18px);
 	}

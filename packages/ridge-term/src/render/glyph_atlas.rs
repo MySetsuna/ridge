@@ -99,9 +99,10 @@ pub struct GlyphEntry {
     /// pixels (per `RasterizedGlyph::is_color`). The renderer keeps the
     /// complete native bitmap extent; it may overhang its reserved cells.
     pub is_color: bool,
-    /// Box Drawing or Block Elements glyph rasterized by Swash, clipped to the
-    /// exact snapped terminal cell without scaling.
-    pub is_cell_graphic: bool,
+    /// Box Drawing glyph rasterized by Swash, clipped to the exact snapped
+    /// terminal cell without scaling. Block Elements use ordinary native
+    /// glyph geometry and are never rewritten by connector logic.
+    pub is_box_drawing: bool,
 }
 
 /// Place a glyph at its native raster size, including font overhang.
@@ -148,7 +149,7 @@ pub(crate) fn glyph_quad_geometry_for_cell(
     allocation_w: f32,
     allocation_h: f32,
 ) -> ([f32; 2], [f32; 2], [f32; 4]) {
-    if entry.is_cell_graphic {
+    if entry.is_box_drawing {
         let source_w = (entry.px_w as f32).max(1.0);
         let source_h = (entry.px_h as f32).max(1.0);
         let native_left = pixel_x + entry.left_offset;
@@ -424,7 +425,7 @@ mod tests {
             px_w: 8,
             px_h: 16,
             is_color: false,
-            is_cell_graphic: false,
+            is_box_drawing: false,
         }
     }
 
@@ -564,7 +565,7 @@ mod tests {
             px_w: 11,
             px_h: 3,
             ascent_offset: 7.0,
-            is_cell_graphic: true,
+            is_box_drawing: true,
             ..entry(0)
         };
         assert_eq!(
@@ -580,7 +581,7 @@ mod tests {
             px_w: 11,
             px_h: 23,
             ascent_offset: 0.0,
-            is_cell_graphic: true,
+            is_box_drawing: true,
             ..entry(0)
         };
         assert_eq!(
@@ -600,7 +601,7 @@ mod tests {
             px_w: 11,
             px_h: 24,
             ascent_offset: -1.0,
-            is_cell_graphic: true,
+            is_box_drawing: true,
             ..entry(0)
         };
         assert_eq!(
@@ -620,7 +621,7 @@ mod tests {
             px_w: 12,
             px_h: 3,
             ascent_offset: 7.0,
-            is_cell_graphic: true,
+            is_box_drawing: true,
             ..entry(0)
         };
         assert_eq!(
