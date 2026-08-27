@@ -5294,13 +5294,8 @@ export class TerminalManager {
 			this._recomputeViewport(entry);
 			void this.fitPane(entry, this._sharedRemoteMode);
 		}
-		const syncWasActive = entry.syncStart !== null;
 		if (!this._renderEntryAfterSync(entry, state)) return;
-		if (syncWasActive && entry.syncStart === null) {
-			// An explicit ?2026l boundary is stronger than the heuristic quiet
-			// window: present the final cursor with the final grid frame.
-			this._releaseTuiCursorSuppression(entry);
-		} else if (entry.tuiCursorSuppressUntil > state.perfNow) {
+		if (entry.tuiCursorSuppressUntil > state.perfNow) {
 			state.minDeadlineMs = Math.min(state.minDeadlineMs, entry.tuiCursorSuppressUntil - state.perfNow);
 		} else if (entry.tuiCursorSuppressed) {
 			this._releaseTuiCursorSuppression(entry);

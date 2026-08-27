@@ -102,6 +102,30 @@ fn query_family<'a>(name: &'a str) -> Family<'a> {
     }
 }
 
+fn configure_platform_generic_families(db: &mut Database) {
+    #[cfg(target_os = "windows")]
+    const MONOSPACE_CANDIDATES: &[&str] =
+        &["Cascadia Mono", "Cascadia Code", "Consolas", "Courier New"];
+    #[cfg(target_os = "macos")]
+    const MONOSPACE_CANDIDATES: &[&str] = &["SF Mono", "Menlo", "Monaco", "Courier New"];
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    const MONOSPACE_CANDIDATES: &[&str] = &[];
+
+    let selected = MONOSPACE_CANDIDATES.iter().find_map(|candidate| {
+        let family = Family::Name(candidate);
+        let query = Query {
+            families: std::slice::from_ref(&family),
+            weight: Weight::NORMAL,
+            stretch: Stretch::Normal,
+            style: Style::Normal,
+        };
+        db.query(&query).map(|_| (*candidate).to_string())
+    });
+    if let Some(selected) = selected {
+        db.set_monospace_family(selected);
+    }
+}
+
 fn normalize_known_hashes(hashes: Vec<String>) -> Result<HashSet<String>, String> {
     if hashes.len() > MAX_FONT_FILES {
         return Err("FONT_DATA_INVALID: too many cached font hashes".to_string());
@@ -124,6 +148,7 @@ pub fn load_terminal_font_faces(
     normalize_known_hashes(known_hashes.unwrap_or_default())?;
     let mut db = Database::new();
     db.load_system_fonts();
+    configure_platform_generic_families(&mut db);
 
     let variants = [
         (Weight::NORMAL, Style::Normal),
@@ -280,6 +305,20 @@ mod tests {
         assert!(
             read_terminal_font_face_chunk("a".repeat(64), 0, MAX_FONT_CHUNK_BYTES + 1).is_err()
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn ui_monospace_resolves_to_consolas_instead_of_legacy_courier() {
+        let response = load_terminal_font_faces(vec!["ui-monospace".into()], None).unwrap();
+        assert!(response
+            .faces
+            .iter()
+            .any(|face| face.family.eq_ignore_ascii_case("Consolas")));
+        assert!(!response
+            .faces
+            .iter()
+            .any(|face| face.family.eq_ignore_ascii_case("Courier New")));
     }
 
     #[cfg(target_os = "windows")]

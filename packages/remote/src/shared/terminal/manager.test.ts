@@ -410,7 +410,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(fixture.handle.render).toHaveBeenCalledTimes(2);
 	});
 
-	it('releases the frozen cursor at an explicit synchronized-output boundary', () => {
+	it('keeps the cursor frozen after synchronized output until the quiet window expires', () => {
 		const { manager, fixture, internal } = makeManager();
 		fixture.kernel.applyDeltaFrame.mockReturnValueOnce(true);
 		fixture.kernel.isSyncOutput.mockReturnValue(true);
@@ -430,8 +430,12 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		fixture.kernel.isSyncOutput.mockReturnValue(false);
 		state.perfNow = 11;
 		internal._renderFrameEntry(fixture.pane, state);
-		expect(fixture.handle.setPresentationCursorSuppressed).toHaveBeenLastCalledWith(false);
+		expect(fixture.handle.setPresentationCursorSuppressed).toHaveBeenLastCalledWith(true);
 		expect(fixture.handle.render).toHaveBeenCalledOnce();
+
+		state.perfNow = fixture.pane.tuiCursorSuppressUntil + 1;
+		internal._renderFrameEntry(fixture.pane, state);
+		expect(fixture.handle.setPresentationCursorSuppressed).toHaveBeenLastCalledWith(false);
 	});
 
 	it('drops queued native deltas after a decode error and reports it through the bridge callback', () => {
