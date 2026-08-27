@@ -5,6 +5,8 @@ title: Stable system glyph rasterization
 status: LOCKED
 parent: L2-RUNTIME-QUALITY-001
 code_targets:
+  - packages/remote/src/shared/terminal/fontStack.ts
+  - packages/ridge-core/src/terminal_font.rs
   - packages/ridge-term/src/render/glyph_atlas.rs
   - packages/ridge-term/src/render/glyph_rasterizer.rs
   - packages/ridge-term/src/render/gpu_context.rs
@@ -13,6 +15,8 @@ code_targets:
   - packages/ridge-term/src/term/wcwidth.rs
   - src-tauri/src/commands/terminal_font.rs
 test_targets:
+  - packages/remote/src/shared/terminal/fontStack.test.ts
+  - packages/ridge-core/src/terminal_font.rs
   - packages/ridge-term/src/render/glyph_atlas.rs
   - packages/ridge-term/src/render/glyph_rasterizer.rs
   - packages/ridge-term/src/render/renderer.rs
@@ -25,9 +29,10 @@ test_targets:
 
 Terminal grapheme clusters retain parser cell widths while the shared WebGPU
 renderer presents complete system-font bitmaps with stable row alignment.
-Monochrome glyphs preserve native geometry. Color emoji preserve aspect ratio,
-use one em-sized maximum extent, and remain centered without clipping. Local,
-Remote, and Cloud surfaces share this contract without external font installs.
+Monochrome glyphs and color emoji preserve native geometry. Color emoji keep
+their complete Host bitmap size and may overflow their reserved cells without
+scaling or clipping. Local, Remote, and Cloud surfaces share this contract
+without external font installs.
 Box-drawing glyphs remain selected-font rasters; connector coverage extends to
 the Unicode-declared cell sides so adjacent cells meet while curves and source
 antialiasing remain intact. No connector repair may translate or rescale the

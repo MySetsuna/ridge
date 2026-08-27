@@ -829,18 +829,11 @@ impl WebGpuPaneBackend {
         pixel_y: f32,
         allocation_w: f32,
         allocation_h: f32,
-        emoji_em_px: f32,
         fg: [u8; 4],
     ) {
         if let Some(entry) = entry {
-            let (cell_xy, cell_size, atlas_uv) = glyph_quad_geometry_for_cell(
-                pixel_x,
-                pixel_y,
-                &entry,
-                allocation_w,
-                allocation_h,
-                emoji_em_px,
-            );
+            let (cell_xy, cell_size, atlas_uv) =
+                glyph_quad_geometry_for_cell(pixel_x, pixel_y, &entry, allocation_w, allocation_h);
             if cell_size[0] <= 0.0 || cell_size[1] <= 0.0 {
                 return;
             }
@@ -861,7 +854,6 @@ impl WebGpuPaneBackend {
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).max(1.0);
         let (pixel_y, pixel_y_bot) = self.row_pixel_bounds(row_idx);
         let cell_h = pixel_y_bot - pixel_y;
-        let emoji_em_px = self.emoji_em_px();
         let tui_mode = self.metrics.tui_mode;
         let (font_family_hash, font_size_q) = self.font_key();
 
@@ -912,7 +904,6 @@ impl WebGpuPaneBackend {
                 pixel_y,
                 (pixel_x_right - pixel_x).max(1.0),
                 cell_h,
-                emoji_em_px,
                 fg,
             );
         }
@@ -1024,14 +1015,8 @@ impl WebGpuPaneBackend {
             self.frame_pinned[entry.layer as usize] = true;
         }
         let gx = (effective_col as f32 * cell_w + 0.5).floor();
-        let (cell_xy, cell_size, atlas_uv) = glyph_quad_geometry_for_cell(
-            gx,
-            pixel_y,
-            &entry,
-            span_w.max(1.0),
-            cell_h,
-            self.emoji_em_px(),
-        );
+        let (cell_xy, cell_size, atlas_uv) =
+            glyph_quad_geometry_for_cell(gx, pixel_y, &entry, span_w.max(1.0), cell_h);
         self.pending_instances.push(CellInstance {
             cell_xy,
             cell_size,
@@ -1045,12 +1030,6 @@ impl WebGpuPaneBackend {
 
     fn font_key(&self) -> (u64, u16) {
         (self.font_family_hash, self.font_size_q)
-    }
-
-    fn emoji_em_px(&self) -> f32 {
-        ((self.font_size_q as f32 / 100.0) * self.metrics.dpr)
-            .round()
-            .max(1.0)
     }
 
     fn lookup_cursor_glyph(&mut self, key: &GlyphKey) -> Option<GlyphEntry> {
@@ -1227,7 +1206,6 @@ impl WebGpuPaneBackend {
                     &entry,
                     (pixel_x_right - pixel_x).max(1.0),
                     cell_h,
-                    self.emoji_em_px(),
                 );
                 self.pending_instances.push(CellInstance {
                     cell_xy,
@@ -1537,14 +1515,8 @@ impl WebGpuPaneBackend {
         if (entry.layer as usize) < self.frame_pinned.len() {
             self.frame_pinned[entry.layer as usize] = true;
         }
-        let (cell_xy, cell_size, atlas_uv) = glyph_quad_geometry_for_cell(
-            pixel_x,
-            row_y,
-            &entry,
-            allocation_w,
-            allocation_h,
-            self.emoji_em_px(),
-        );
+        let (cell_xy, cell_size, atlas_uv) =
+            glyph_quad_geometry_for_cell(pixel_x, row_y, &entry, allocation_w, allocation_h);
         self.pending_instances.push(CellInstance {
             cell_xy,
             cell_size,
