@@ -134,11 +134,15 @@ function brightCoordinates(data, info, axis, fixedStart, fixedEnd, scanStart, sc
 }
 
 function assertBrightPixels(data, info, points, label) {
-  const dark = points.filter(([x, y]) => luminance(data, info, x, y) < 24).length;
-  if (points.length === 0 || dark > 0) {
-    throw new Error(`${label} contains ${dark}/${points.length} dark pixels`);
+  const dark = points
+    .map(([x, y]) => ({ x, y, luminance: luminance(data, info, x, y) }))
+    .filter((point) => point.luminance < 24);
+  if (points.length === 0 || dark.length > 0) {
+    throw new Error(
+      `${label} contains ${dark.length}/${points.length} dark pixels: ${JSON.stringify(dark)}`,
+    );
   }
-  return { dark, total: points.length };
+  return { dark: dark.length, total: points.length };
 }
 
 const targets = await listTargets();
@@ -239,6 +243,7 @@ try {
   const halfRowBoundary = rowTop(firstRow + 3);
   const left = colLeft(0);
   const right = colLeft(2);
+  console.log(JSON.stringify({ geometry, scaleX, scaleY, gridLeft, gridTop, firstRow }));
   const checks = {
     fullVerticalLeft: assertBrightLine(data, info, 'x', verticalBoundary - 1, fullTop, fullBottom, 'full block left seam'),
     fullVerticalRight: assertBrightLine(data, info, 'x', verticalBoundary, fullTop, fullBottom, 'full block right seam'),

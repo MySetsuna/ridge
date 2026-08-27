@@ -10,6 +10,7 @@ code_targets:
   - src/remote/lib/TerminalCanvas.svelte
   - src/remote/lib/paneFeedScheduler.ts
   - packages/remote/src/shared/terminal/manager.ts
+  - packages/remote/src/shared/terminal/renderTransaction.ts
   - packages/remote/src/shared/transport/**
   - Cargo.lock
   - packages/ridge-core/Cargo.toml

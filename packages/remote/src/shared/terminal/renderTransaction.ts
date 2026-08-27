@@ -1,7 +1,7 @@
 /** Native-parser repaint transactions share this quiet window across the main
  * compositor and optional worker renderer. Grid paints never wait for it;
  * the cursor stays at its last presented cell until a redraw walk stops. */
-export const TUI_CURSOR_SETTLE_MS = 24;
+export const TUI_CURSOR_SETTLE_MS = 64;
 
 /** Explicit VT synchronized-output transactions are semantic frame boundaries,
  * so defer their presentation without guessing from a timer. The timeout is

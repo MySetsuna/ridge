@@ -6,6 +6,7 @@ status: LOCKED
 parent: L1-PROJECT-001
 code_targets:
   - scripts/sync-generated-csp*
+  - src-tauri/tauri.conf.json
   - src/hooks.server.ts
   - vite.config.js
 test_targets:

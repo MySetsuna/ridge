@@ -30,18 +30,20 @@ use one em-sized maximum extent, and remain centered without clipping. Local,
 Remote, and Cloud surfaces share this contract without external font installs.
 Box-drawing glyphs remain selected-font rasters; connector coverage extends to
 the Unicode-declared cell sides so adjacent cells meet while curves and source
-antialiasing remain intact. Rounded corners reuse the same selected-font
-straight-line profiles and axes: the complete native curve translates rigidly
-to both reference axes before the affected straight arms are rebuilt. Vertical
-tangent rows reuse the straight profile until the first inward curve pixel, so
-no axis replacement or outer hook can offset the transition. Their quads preserve
-a one-source-texel-to-one-device-pixel mapping and clip to snapped cell bounds
-without geometric rescaling. Box Drawing and Block Elements are terminal cell
-graphics: each is presented as one atlas quad, and only its Unicode-declared
-connected sides are completed in the selected-font raster before upload, never
-by a second edge quad that can create a rasterization or blend boundary.
+antialiasing remain intact. No connector repair may translate or rescale the
+complete glyph. Each connected side repeats only that side's own native edge
+profile through an unpainted bearing; opposite edges never share a profile.
+Thus asymmetric Block Elements retain their selected-font silhouette while
+rounded corners retain their native curve and tangent axes. Their quads preserve
+a one-source-texel-to-one-device-pixel mapping and clip to snapped cell bounds.
+Box Drawing and Block Elements are terminal cell graphics: each is presented as
+one atlas quad, never a second edge quad that can create a rasterization or blend
+boundary.
 Color glyphs use the atlas' sole filtering sampler; monochrome text, Box Drawing,
 and Block Elements use exact texel loads. This keeps WebGL2 fallback shader
-validation legal without softening the WebGPU path. TUI mode obeys DECTCEM and keeps an
-enabled cursor steady without blink wakeups. No path may threshold Swash
+validation legal without softening the WebGPU path. TUI mode obeys DECTCEM and
+keeps an enabled cursor steady without blink wakeups. Repaint transactions keep
+the last presented cursor through explicit synchronized-output boundaries until
+the shared 64 ms quiet window expires, preventing split startup chunks from
+presenting transient clear-row cursor positions. No path may threshold Swash
 coverage or introduce a non-GPU presentation backend.
