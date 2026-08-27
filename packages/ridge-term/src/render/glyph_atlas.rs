@@ -96,8 +96,8 @@ pub struct GlyphEntry {
     pub px_w: u16,
     pub px_h: u16,
     /// True when the glyph carries a color-emoji palette in its atlas
-    /// pixels (per `RasterizedGlyph::is_color`). The renderer fits the
-    /// complete bitmap into one stable em box inside its reserved cells.
+    /// pixels (per `RasterizedGlyph::is_color`). The renderer keeps the
+    /// complete native bitmap extent; it may overhang its reserved cells.
     pub is_color: bool,
     /// Box Drawing or Block Elements glyph rasterized by Swash, clipped to the
     /// exact snapped terminal cell without scaling.
@@ -136,7 +136,7 @@ pub(crate) fn glyph_quad_geometry_with_uv(
 
 /// Fit cell-sensitive glyphs without changing ordinary font geometry. Box
 /// drawing spans the exact snapped cell width and is clipped at row boundaries;
-/// color emoji is contained in one em. Other glyphs retain native overhang.
+/// color emoji and ordinary glyphs retain their native overhang.
 #[cfg_attr(
     not(any(test, all(target_arch = "wasm32", feature = "webgpu"))),
     allow(dead_code)
@@ -147,58 +147,38 @@ pub(crate) fn glyph_quad_geometry_for_cell(
     entry: &GlyphEntry,
     allocation_w: f32,
     allocation_h: f32,
-    em_px: f32,
 ) -> ([f32; 2], [f32; 2], [f32; 4]) {
-    if !entry.is_color {
-        if entry.is_cell_graphic {
-            let source_w = (entry.px_w as f32).max(1.0);
-            let source_h = (entry.px_h as f32).max(1.0);
-            let native_left = pixel_x + entry.left_offset;
-            let native_top = pixel_y + entry.ascent_offset;
-            let native_right = native_left + source_w;
-            let native_bottom = native_top + source_h;
-            let cell_right = pixel_x + allocation_w.max(1.0);
-            let row_bottom = pixel_y + allocation_h.max(1.0);
-            let draw_left = native_left.max(pixel_x);
-            let draw_top = native_top.max(pixel_y);
-            let draw_right = native_right.min(cell_right);
-            let draw_bottom = native_bottom.min(row_bottom);
-            if draw_right <= draw_left || draw_bottom <= draw_top {
-                return ([pixel_x, pixel_y], [0.0, 0.0], entry.uv);
-            }
-
-            let uv_width = entry.uv[2] - entry.uv[0];
-            let uv_height = entry.uv[3] - entry.uv[1];
-            let u0 = entry.uv[0] + ((draw_left - native_left) / source_w) * uv_width;
-            let u1 = entry.uv[0] + ((draw_right - native_left) / source_w) * uv_width;
-            let v0 = entry.uv[1] + ((draw_top - native_top) / source_h) * uv_height;
-            let v1 = entry.uv[1] + ((draw_bottom - native_top) / source_h) * uv_height;
-            return (
-                [draw_left, draw_top],
-                [draw_right - draw_left, draw_bottom - draw_top],
-                [u0, v0, u1, v1],
-            );
+    if entry.is_cell_graphic {
+        let source_w = (entry.px_w as f32).max(1.0);
+        let source_h = (entry.px_h as f32).max(1.0);
+        let native_left = pixel_x + entry.left_offset;
+        let native_top = pixel_y + entry.ascent_offset;
+        let native_right = native_left + source_w;
+        let native_bottom = native_top + source_h;
+        let cell_right = pixel_x + allocation_w.max(1.0);
+        let row_bottom = pixel_y + allocation_h.max(1.0);
+        let draw_left = native_left.max(pixel_x);
+        let draw_top = native_top.max(pixel_y);
+        let draw_right = native_right.min(cell_right);
+        let draw_bottom = native_bottom.min(row_bottom);
+        if draw_right <= draw_left || draw_bottom <= draw_top {
+            return ([pixel_x, pixel_y], [0.0, 0.0], entry.uv);
         }
-        return glyph_quad_geometry_with_uv(pixel_x, pixel_y, entry);
+
+        let uv_width = entry.uv[2] - entry.uv[0];
+        let uv_height = entry.uv[3] - entry.uv[1];
+        let u0 = entry.uv[0] + ((draw_left - native_left) / source_w) * uv_width;
+        let u1 = entry.uv[0] + ((draw_right - native_left) / source_w) * uv_width;
+        let v0 = entry.uv[1] + ((draw_top - native_top) / source_h) * uv_height;
+        let v1 = entry.uv[1] + ((draw_bottom - native_top) / source_h) * uv_height;
+        return (
+            [draw_left, draw_top],
+            [draw_right - draw_left, draw_bottom - draw_top],
+            [u0, v0, u1, v1],
+        );
     }
 
-    let source_w = (entry.px_w as f32).max(1.0);
-    let source_h = (entry.px_h as f32).max(1.0);
-    let box_w = allocation_w.max(1.0);
-    let box_h = allocation_h.max(1.0);
-    let target_extent = em_px.max(1.0).min(box_w).min(box_h);
-    let scale = target_extent / source_w.max(source_h);
-    let render_w = source_w * scale;
-    let render_h = source_h * scale;
-
-    (
-        [
-            pixel_x + (box_w - render_w) * 0.5,
-            pixel_y + (box_h - render_h) * 0.5,
-        ],
-        [render_w, render_h],
-        entry.uv,
-    )
+    glyph_quad_geometry_with_uv(pixel_x, pixel_y, entry)
 }
 
 struct AtlasEntry {
@@ -519,28 +499,34 @@ mod tests {
     }
 
     #[test]
-    fn color_emoji_share_one_centered_em_extent_without_clipping() {
+    fn color_emoji_preserve_native_extent_and_overflow_cell_box() {
         let small = GlyphEntry {
             px_w: 8,
             px_h: 8,
+            ascent_offset: 2.0,
+            left_offset: 1.0,
             is_color: true,
             ..entry(0)
         };
         let decorated = GlyphEntry {
             px_w: 24,
             px_h: 24,
+            ascent_offset: 2.0,
+            left_offset: 1.0,
             is_color: true,
             ..entry(1)
         };
 
-        let small_quad = glyph_quad_geometry_for_cell(10.0, 20.0, &small, 16.0, 18.0, 14.0);
-        let decorated_quad = glyph_quad_geometry_for_cell(10.0, 20.0, &decorated, 16.0, 18.0, 14.0);
-        assert_eq!(small_quad, ([11.0, 22.0], [14.0, 14.0], small.uv));
-        assert_eq!(decorated_quad, small_quad);
+        let small_quad = glyph_quad_geometry_for_cell(10.0, 20.0, &small, 16.0, 18.0);
+        let decorated_quad = glyph_quad_geometry_for_cell(10.0, 20.0, &decorated, 16.0, 18.0);
+        assert_eq!(small_quad, ([11.0, 22.0], [8.0, 8.0], small.uv));
+        assert_eq!(decorated_quad, ([11.0, 22.0], [24.0, 24.0], decorated.uv));
+        assert!(decorated_quad.1[0] > 16.0);
+        assert!(decorated_quad.1[1] > 18.0);
     }
 
     #[test]
-    fn color_emoji_preserve_aspect_ratio_and_complete_uv() {
+    fn color_emoji_keep_native_aspect_ratio_and_complete_uv_when_overflowing() {
         let glyph = GlyphEntry {
             uv: [0.0, 0.0, 0.75, 0.5],
             px_w: 24,
@@ -549,12 +535,12 @@ mod tests {
             ..entry(0)
         };
 
-        let (xy, size, uv) = glyph_quad_geometry_for_cell(4.0, 6.0, &glyph, 16.0, 18.0, 14.0);
-        assert_eq!(xy, [5.0, 11.5]);
-        assert_eq!(size, [14.0, 7.0]);
+        let (xy, size, uv) = glyph_quad_geometry_for_cell(4.0, 6.0, &glyph, 16.0, 18.0);
+        assert_eq!(xy, [4.0, 18.0]);
+        assert_eq!(size, [24.0, 12.0]);
         assert_eq!(uv, glyph.uv);
-        assert!(xy[0] >= 4.0 && xy[0] + size[0] <= 20.0);
-        assert!(xy[1] >= 6.0 && xy[1] + size[1] <= 24.0);
+        assert!(xy[0] + size[0] > 4.0 + 16.0);
+        assert!(xy[1] + size[1] > 6.0 + 18.0);
     }
 
     #[test]
@@ -567,7 +553,7 @@ mod tests {
             ..entry(0)
         };
         assert_eq!(
-            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 16.0, 18.0, 14.0),
+            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 16.0, 18.0),
             ([8.0, 23.0], [7.0, 11.0], glyph.uv)
         );
     }
@@ -582,7 +568,7 @@ mod tests {
             ..entry(0)
         };
         assert_eq!(
-            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 10.0, 18.0, 14.0),
+            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 10.0, 18.0),
             ([10.0, 27.0], [10.0, 3.0], [0.0, 0.0, 10.0 / 11.0, 1.0])
         );
     }
@@ -598,7 +584,7 @@ mod tests {
             ..entry(0)
         };
         assert_eq!(
-            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 9.0, 22.0, 14.0),
+            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 9.0, 22.0),
             (
                 [10.0, 20.0],
                 [9.0, 22.0],
@@ -618,7 +604,7 @@ mod tests {
             ..entry(0)
         };
         assert_eq!(
-            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 10.0, 23.0, 14.0),
+            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 10.0, 23.0),
             (
                 [10.0, 20.0],
                 [10.0, 23.0],
@@ -638,7 +624,7 @@ mod tests {
             ..entry(0)
         };
         assert_eq!(
-            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 10.0, 18.0, 14.0),
+            glyph_quad_geometry_for_cell(10.0, 20.0, &glyph, 10.0, 18.0),
             (
                 [10.0, 27.0],
                 [10.0, 3.0],
