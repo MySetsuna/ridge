@@ -1,9 +1,0 @@
-.iteration/
-.ridge/
-.tools/
-notebooklm-iteration-loop/
-ridge-code/
-skills/
-static/remote/
-web-remote-dist/
-src-tauri/.claude/settings.local.json
