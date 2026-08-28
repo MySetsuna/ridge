@@ -787,8 +787,9 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		manager.scrollUp(PANE, 2);
 		manager.scrollDown(PANE, 1);
 		fixture.setAltScreen(false);
-		manager.clearTerminalPreservingPrompt(PANE);
+		manager.clearTerminal(PANE);
 		expect(fixture.kernel.clearTerminalPreservingPrompt).toHaveBeenCalledOnce();
+		expect(sent.at(-1)).toEqual(new Uint8Array([0x0c]));
 		manager.clearScrollback(PANE);
 		expect(fixture.kernel.clearScrollback).toHaveBeenCalledOnce();
 		expect(fixture.pane.linkSpans.clear).toHaveBeenCalledTimes(2);

@@ -68,6 +68,10 @@ import { shouldWipeHostOnPaneRemount } from './hostRemountPolicy';
 import { shouldForwardPointerMotion, sgrReleaseButton } from './mouseForwardPolicy';
 import { SYNC_OUTPUT_TIMEOUT_MS, TUI_CURSOR_SETTLE_MS } from './renderTransaction';
 
+// Shells use Ctrl+L as their clear-screen action. Keep this as input rather
+// than an ANSI output sequence so the shell/ConPTY cursor state is reset too.
+const TERMINAL_CLEAR_INPUT = '\x0c';
+
 function isMacPlatform(): boolean {
 	return typeof navigator !== 'undefined'
 		&& /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
@@ -3532,6 +3536,12 @@ export class TerminalManager {
 		if (!entry) return;
 		this._releaseScrollback(entry, true, !entry.kernel.isAltScreen());
 		this.wake();
+	}
+
+	/** Clear the local mirror and send the shell's clear action through PTY. */
+	clearTerminal(paneId: string): void {
+		this.clearTerminalPreservingPrompt(paneId);
+		this.write(paneId, TERMINAL_CLEAR_INPUT);
 	}
 
 	private _releaseScrollback(
