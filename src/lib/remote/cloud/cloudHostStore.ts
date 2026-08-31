@@ -59,6 +59,17 @@ async function refreshWorkspaceAccess(access: WorkspaceAccess): Promise<void> {
   access.roots = [...roots];
 }
 
+/**
+ * Desktop shell transport for the runtime-agnostic Remote RPC contract.
+ * Command-specific argument shapes belong to ridge-core, not Tauri IPC.
+ */
+function invokeRemoteHost(method: string, params?: unknown): Promise<unknown> {
+  return invoke('dispatch_remote_invoke', {
+    method,
+    args: params ?? {},
+  });
+}
+
 async function invokeWorkspaceScoped(
   access: WorkspaceAccess,
   method: string,
@@ -74,7 +85,7 @@ async function invokeWorkspaceScoped(
     throw error;
   }
   if (plan.kind === 'result') return plan.value;
-  const result = await invoke<unknown>(plan.method, plan.params);
+  const result = await invokeRemoteHost(plan.method, plan.params);
   if (
     plan.method === 'split_pane' ||
     plan.method === 'dock_pane' ||
@@ -141,7 +152,7 @@ function buildHost(): RidgeCloudHost | null {
         const paneSource = makeCloudHostPaneSource({ invoke, listen });
         return new CloudHostBridge({
           invoke: (method, params) =>
-            access ? invokeWorkspaceScoped(access, method, params) : invoke(method, params),
+            access ? invokeWorkspaceScoped(access, method, params) : invokeRemoteHost(method, params),
           sendFrame: send,
           preauthorized: !!access,
           // B2（D-GM-11）：用 subscribe_pane_raw 专用 raw fan-out（RemotePtyEvent::

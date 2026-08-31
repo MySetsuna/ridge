@@ -44,8 +44,8 @@
     remotePerfStart,
   } from '@ridge/remote/shared/transport/remotePerfTrace';
   import { getTransport, type DataProvider } from '$lib/transport';
-  import type { TerminalLinkOpenRequest } from '@ridge/remote/shared/terminal/ports';
-  import { probePathWithCache } from '@ridge/remote/shared/terminal/linkOpenHost';
+  import type { TerminalLinkOpenRequest, TerminalLinkValidationResult } from '@ridge/remote/shared/terminal/ports';
+  import { looksOutsideWorkspace, probePathWithCache } from '@ridge/remote/shared/terminal/linkOpenHost';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { MobileRemoteUiState } from './lib/mobileRemoteUiState.svelte';
   import {
@@ -232,9 +232,16 @@
   }
 
   function handleRemoteTextLink(event: Event): void {
-    const detail = (event as CustomEvent<TerminalLinkOpenRequest>).detail;
+    const detail = (event as CustomEvent<TerminalLinkOpenRequest & {
+      validateOnly?: boolean;
+      resolveValidation?: (result: TerminalLinkValidationResult) => void;
+    }>).detail;
     const path = detail?.type === 'path' ? detail.path?.trim() : '';
-    if (!path) return;
+    const scope = detail.cwd?.trim() || detail.workspaceRoot?.trim();
+    if (!path || !scope || looksOutsideWorkspace(path, scope)) {
+      detail.resolveValidation?.({ valid: false, reason: 'outside_workspace' });
+      return;
+    }
     const line = detail.line;
     linkError = '';
     const provider = dataProvider ?? getTransport();
@@ -256,19 +263,23 @@
         throw error;
       }
     }).then((proof) => {
+      if (detail.validateOnly) {
+        detail.resolveValidation?.({
+          valid: proof.exists && proof.isDirectory !== true,
+          reason: !proof.exists ? 'missing_path' : proof.isDirectory ? 'directory_path' : undefined,
+        });
+        return;
+      }
       if (!proof.exists) {
         linkError = `路径不存在：${path}`;
       } else if (proof.isDirectory) {
-        linkedDirectory = {
-          workspaceId: detail.origin.workspaceId,
-          paneId: detail.origin.paneId,
-          path,
-        };
-        ui.sidebarTab = 'files';
+        linkError = `非文件路径：${path}`;
       } else {
         openFileViewer(path, line);
       }
     }).catch((error) => {
+      detail.resolveValidation?.({ valid: false, reason: 'probe_failed' });
+      if (detail.validateOnly) return;
       linkError = `路径验证失败：${error instanceof Error ? error.message : String(error)}`;
     });
   }

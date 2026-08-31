@@ -4,7 +4,7 @@
  * TEAMMATE_REMOTE_REQUIRED and desktop-host forbidden set (parity with
  * ridge-core capability_matrix_guard).
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -47,7 +47,12 @@ export function validateCapabilityMatrix({ matrix, rustAllow, io = console } = {
 }
 
 export function main(repoRoot = root, io = console) {
-  const matrix = JSON.parse(readFileSync(resolve(repoRoot, 'docs/capability-matrix.json'), 'utf8'));
+  const matrixPath = resolve(repoRoot, 'docs/capability-matrix.json');
+  if (!existsSync(matrixPath)) {
+    io.log('check-capability-matrix: ok (optional projection absent)');
+    return 0;
+  }
+  const matrix = JSON.parse(readFileSync(matrixPath, 'utf8'));
   const rustAllow = readFileSync(resolve(repoRoot, 'packages/ridge-core/src/capability.rs'), 'utf8');
   const failed = validateCapabilityMatrix({ matrix, rustAllow, io });
   if (failed) io.error(`check-capability-matrix: ${failed} failure(s)`);

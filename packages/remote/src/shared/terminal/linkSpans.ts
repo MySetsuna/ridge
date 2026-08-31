@@ -14,7 +14,7 @@
 // 因此正常输出/滚动几乎零开销；ctrl 按下时一次扫描 ~3000 字符的可见区，
 // 单次 < 1 ms（实测）。
 
-export type LinkSpanKind = 'url' | 'file-url' | 'win-abs' | 'posix-abs' | 'home' | 'rel';
+export type LinkSpanKind = 'url' | 'path';
 
 export interface LinkSpan {
   row: number; // 0-based viewport row
@@ -48,7 +48,7 @@ const KNOWN_EXTS = new Set([
   'pdf', 'zip', 'tar', 'gz',
 ]);
 
-const URL_RE = /(?:https?:\/\/|file:\/\/\/?)[^\s<>"'`{}|\\^[\]]+/g;
+const SCHEME_URL_RE = /(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s<>"'`{}|\\^[\]]+)/g;
 const WIN_ABS_RE = /(?<![A-Za-z0-9])([a-zA-Z]:[\\/][^\s<>"'`|?*]+)/g;
 const POSIX_ABS_RE = /(?<![A-Za-z0-9_/])(\/[A-Za-z0-9_.\-/]+(?::\d+(?::\d+)?)?)/g;
 const HOME_RE = /(?<!\w)(~\/[^\s<>"'`|?*]+)/g;
@@ -97,7 +97,7 @@ function pushRawSpan(
 ): void {
   const trimmed = trimTrailingPunct(raw);
   if (!trimmed) return;
-  if ((kind === 'win-abs' || kind === 'posix-abs' || kind === 'home' || kind === 'rel') && !looksLikePath(trimmed)) {
+  if (kind === 'path' && !looksLikePath(trimmed)) {
     return;
   }
   const end = start + trimmed.length;
@@ -111,41 +111,39 @@ function pushSpan(spans: LinkSpan[], row: number, m: RegExpExecArray, kind: Link
 /** 单行扫描。返回该行的所有 spans，已按 c0 排序。 */
 function scanRow(row: number, line: string): LinkSpan[] {
   const spans: LinkSpan[] = [];
-  for (const re of [URL_RE]) {
-    re.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(line)) !== null) {
-      const kind: LinkSpanKind = m[0].startsWith('file://') ? 'file-url' : 'url';
-      pushSpan(spans, row, m, kind);
+  const schemeRanges: Array<{ c0: number; c1: number }> = [];
+  SCHEME_URL_RE.lastIndex = 0;
+  let schemeMatch: RegExpExecArray | null;
+  while ((schemeMatch = SCHEME_URL_RE.exec(line)) !== null) {
+    const raw = schemeMatch[1]!;
+    const start = schemeMatch.index;
+    const trimmed = trimTrailingPunct(raw);
+    schemeRanges.push({ c0: start, c1: start + raw.length });
+    if (isStrictWebUrl(trimmed)) {
+      pushRawSpan(spans, row, trimmed, start, 'url');
     }
   }
   QUOTED_PATH_RE.lastIndex = 0;
   let quoted: RegExpExecArray | null;
   while ((quoted = QUOTED_PATH_RE.exec(line)) !== null) {
     const raw = quoted[2]!;
-    const kind: LinkSpanKind = /^[A-Za-z]:[\\/]/.test(raw)
-      ? 'win-abs'
-      : raw.startsWith('~/') || raw.startsWith('~\\')
-        ? 'home'
-        : /^\.{1,2}[\\/]/.test(raw)
-          ? 'rel'
-          : 'posix-abs';
-    pushRawSpan(spans, row, raw, quoted.index + 1, kind);
+    pushRawSpan(spans, row, raw, quoted.index + 1, 'path');
   }
   // 路径类。按更具体优先级跑：win-abs → home → rel → posix-abs。
   for (const [re, kind] of [
-    [WIN_ABS_RE, 'win-abs'],
-    [HOME_RE, 'home'],
-    [REL_RE, 'rel'],
-    [NESTED_REL_RE, 'rel'],
-    [BARE_FILE_RE, 'rel'],
-    [POSIX_ABS_RE, 'posix-abs'],
+    [WIN_ABS_RE, 'path'],
+    [HOME_RE, 'path'],
+    [REL_RE, 'path'],
+    [NESTED_REL_RE, 'path'],
+    [BARE_FILE_RE, 'path'],
+    [POSIX_ABS_RE, 'path'],
   ] as Array<[RegExp, LinkSpanKind]>) {
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(line)) !== null) {
       // 跳过已被 URL 段覆盖的位置，避免把 https://foo/bar 内的 /bar 二次匹配
-      const overlap = spans.some((s) => m!.index < s.c1 && m!.index + m![0].length > s.c0);
+      const overlap = spans.some((s) => m!.index < s.c1 && m!.index + m![0].length > s.c0) ||
+        schemeRanges.some((range) => m!.index < range.c1 && m!.index + m![0].length > range.c0);
       if (overlap) continue;
       pushSpan(spans, row, m, kind);
     }
@@ -159,10 +157,22 @@ const PATH_CONTINUATION_RE = /^[^\s<>"'`|?*]+/;
 
 /** Return the contiguous continuation at the start of a soft-wrapped row. */
 function continuationPrefix(line: string, kind: LinkSpanKind): string {
-  const match = (kind === 'url' || kind === 'file-url')
+  const match = kind === 'url'
     ? URL_CONTINUATION_RE.exec(line)
     : PATH_CONTINUATION_RE.exec(line);
   return match?.[0] ?? '';
+}
+
+/** Strict, allocation-bounded web target validation shared by scanning/opening. */
+export function isStrictWebUrl(href: string): boolean {
+  if (!href || href.length > 2_048 || /[\\\u0000-\u0020\u007f]/.test(href)) return false;
+  try {
+    const url = new URL(href);
+    return (url.protocol === 'http:' || url.protocol === 'https:') &&
+      url.hostname.length > 0 && !url.username && !url.password;
+  } catch {
+    return false;
+  }
 }
 
 function rowIsSoftWrapped(

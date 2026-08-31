@@ -467,7 +467,9 @@ impl WebGpuPaneBackend {
     }
 
     fn supports_scroll_copy(&self) -> bool {
-        !self.viewport.is_empty() && self.host.borrow().is_frame_open()
+        !self.viewport.is_empty()
+            && !self.ctx.borrow().has_wallpaper()
+            && self.host.borrow().is_frame_open()
     }
 
     fn scroll_rows(&mut self, scroll: ScrollOp, metrics: FrameMetrics) -> ScrollCopyResult {
@@ -601,7 +603,7 @@ impl WebGpuPaneBackend {
         // `resolve_cell_colors` 解析为透明 [0,0,0,0]，字形与显式着色单元仍
         // 正常叠加在壁纸之上。TUI 模式保留不透明 tui_bg seed：全屏 TUI 应用
         // 独占画面、需要纯色背景，不应透出壁纸。
-        if !self.metrics.tui_mode && self.ctx.borrow().has_wallpaper() {
+        if self.ctx.borrow().has_wallpaper() {
             return;
         }
         let bg_color = if self.metrics.tui_mode {
@@ -628,7 +630,7 @@ impl WebGpuPaneBackend {
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).max(1.0);
         let (pixel_y, pixel_y_bot) = self.row_pixel_bounds(row_idx);
         let row_h_int = pixel_y_bot - pixel_y;
-        let tui_mode = self.metrics.tui_mode;
+        let tui_mode = self.metrics.tui_mode && !self.ctx.borrow().has_wallpaper();
         let theme = &self.theme;
 
         // Consume tracking: columns consumed by a preceding wide cell's
@@ -669,7 +671,7 @@ impl WebGpuPaneBackend {
             // Normal shell default backgrounds are transparent: the damaged
             // row was already repaired by SurfaceHost, so emitting one quad
             // per cell only burns CPU and instance bandwidth.
-            if tui_mode || bg[3] != 0 {
+            if bg[3] != 0 {
                 if cell_span == 1 {
                     let extends = matches!(
                         background_run.as_ref(),
@@ -854,7 +856,7 @@ impl WebGpuPaneBackend {
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).max(1.0);
         let (pixel_y, pixel_y_bot) = self.row_pixel_bounds(row_idx);
         let cell_h = pixel_y_bot - pixel_y;
-        let tui_mode = self.metrics.tui_mode;
+        let tui_mode = self.metrics.tui_mode && !self.ctx.borrow().has_wallpaper();
         let (font_family_hash, font_size_q) = self.font_key();
 
         let render_path = scan_line_path(row.cells, row.clusters);
@@ -1228,7 +1230,7 @@ impl WebGpuPaneBackend {
             return;
         }
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).max(1.0);
-        let thickness = (2.0 * self.metrics.dpr).round().max(1.0);
+        let thickness = self.metrics.dpr.round().max(1.0);
         let link_color = rgba_u8_to_f32(self.theme.hyperlink_color);
         for &(row, col_start, col_end) in rects {
             if col_end <= col_start {
@@ -1531,7 +1533,9 @@ impl WebGpuPaneBackend {
 
 impl WebGpuPaneBackend {
     fn background_damage_rects(&mut self) -> Vec<ScissorRect> {
-        if self.metrics.tui_mode || self.damaged_rows.is_empty() {
+        if (self.metrics.tui_mode && !self.ctx.borrow().has_wallpaper())
+            || self.damaged_rows.is_empty()
+        {
             return Vec::new();
         }
         self.damaged_rows.sort_unstable();

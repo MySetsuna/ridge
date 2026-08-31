@@ -9,7 +9,7 @@ import {
   resolvePathAgainstCwd,
   type LinkOpenTarget,
 } from './linkAffordance';
-import { trimTrailingSeparators, type LinkSpanKind } from './linkSpans';
+import { isStrictWebUrl, trimTrailingSeparators, type LinkSpanKind } from './linkSpans';
 
 export type HostOpenAction =
   | { type: 'open_url'; href: string }
@@ -51,11 +51,6 @@ export function planFromTarget(target: LinkOpenTarget, ctx: OpenContext = {}): H
     }
     return { type: 'open_url', href: target.href };
   }
-  if (target.kind === 'file-url') {
-    const path = fileUrlToPath(target.href);
-    if (!path) return { type: 'noop', reason: 'bad_file_url' };
-    return planPathOpen(path, undefined, undefined, ctx);
-  }
   const abs = resolvePathAgainstCwd(target.path, ctx.paneCwd, ctx.workspaceRoot);
   return planPathOpen(abs, target.line, target.col, ctx);
 }
@@ -69,11 +64,11 @@ function planPathOpen(
   if (!path || path.includes('\0')) {
     return { type: 'noop', reason: 'empty_path' };
   }
-  // Block path traversal tricks relative to workspace when both set
-  if (ctx.workspaceRoot && looksOutsideWorkspace(path, ctx.workspaceRoot)) {
-    // still allow absolute opens outside workspace (editor may refuse)
+  const scope = ctx.paneCwd || ctx.workspaceRoot;
+  if (!scope || looksOutsideWorkspace(path, scope)) {
+    return { type: 'noop', reason: 'outside_workspace' };
   }
-  if (isProbablyDirectory(path)) return { type: 'reveal_in_tree', path };
+  if (isProbablyDirectory(path)) return { type: 'noop', reason: 'directory_path' };
   return { type: 'open_file', path, line, col };
 }
 
@@ -155,25 +150,7 @@ export function clearPathProbeCache(): void {
 }
 
 export function isSafeHttpUrl(href: string): boolean {
-  try {
-    const u = new URL(href);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-export function fileUrlToPath(href: string): string | null {
-  try {
-    const u = new URL(href);
-    if (u.protocol !== 'file:') return null;
-    let p = decodeURIComponent(u.pathname);
-    // Windows file:///C:/...
-    if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1);
-    return p;
-  } catch {
-    return null;
-  }
+  return isStrictWebUrl(href);
 }
 
 export function looksOutsideWorkspace(path: string, root: string): boolean {
@@ -182,21 +159,16 @@ export function looksOutsideWorkspace(path: string, root: string): boolean {
   const normalizedRoot = norm(root);
   const r = trimTrailingSeparators(normalizedRoot);
   if (/^[a-z]:\//.test(p) || p.startsWith('/')) {
-    return !p.startsWith(r);
+    return p !== r && !p.startsWith(`${r}/`);
   }
   return p.includes('..');
 }
 
-/** Path-like span kinds (post-refactor granular LinkSpanKind). */
+/** The only non-web link class. */
 export function isPathSpanKind(
   kind: LinkSpanKind | 'osc8' | null | undefined,
 ): boolean {
-  return (
-    kind === 'win-abs' ||
-    kind === 'posix-abs' ||
-    kind === 'home' ||
-    kind === 'rel'
-  );
+  return kind === 'path';
 }
 
 /** Underline CSS class tokens for renderer. */
@@ -207,7 +179,6 @@ export function underlineCssTokens(opts: {
   if (!opts.show) return [];
   const tokens = ['ridge-link-underline'];
   if (opts.kind === 'url' || opts.kind === 'osc8') tokens.push('ridge-link-url');
-  else if (opts.kind === 'file-url') tokens.push('ridge-link-file');
   else if (isPathSpanKind(opts.kind)) tokens.push('ridge-link-path');
   return tokens;
 }
