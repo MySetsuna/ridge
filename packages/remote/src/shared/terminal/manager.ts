@@ -38,7 +38,7 @@ import type { ActiveWallpaperGpu, InputBufferState } from './types';
 import { perfMark } from './perfTrace';
 import { unknownText } from '../transport/unknownText';
 import { DEFAULT_TERM_FONT } from './fontStack';
-import { loadTerminalFonts, type FontDataInstaller } from './fontDataService';
+import type { FontDataInstaller } from './fontDataService';
 import { imeHelperCssPosition, type ImeAnchorInput } from './imeAnchor';
 import {
 	cellFromVisualClientPoint,
@@ -67,6 +67,12 @@ import {
 import { shouldWipeHostOnPaneRemount } from './hostRemountPolicy';
 import { shouldForwardPointerMotion, sgrReleaseButton } from './mouseForwardPolicy';
 import { SYNC_OUTPUT_TIMEOUT_MS, TUI_CURSOR_SETTLE_MS } from './renderTransaction';
+
+// Remote Web rasterizes with controller-side browser fonts; only desktop
+// installs Host-resolved font bytes into the shared WASM renderer.
+const loadHostFontDataService = import.meta.env.RIDGE_WEB_REMOTE === true
+	? null
+	: () => import('./fontDataService');
 
 // Shells use Ctrl+L as their clear-screen action. Keep this as input rather
 // than an ANSI output sequence so the shell/ConPTY cursor state is reset too.
@@ -913,13 +919,21 @@ export class TerminalManager {
 	 */
 	private _ensureFontStack(stack: string): Promise<void> {
 		const key = stack.trim();
+		const fontDataServiceLoader = loadHostFontDataService;
+		if (!fontDataServiceLoader) {
+			this.loadedFontStacks.add(key);
+			return Promise.resolve();
+		}
 		if (this.loadedFontStacks.has(key)) return Promise.resolve();
 		const active = this.fontLoadPromises.get(key);
 		if (active) return active;
 		if (!this.fontInstaller) {
 			return Promise.reject(new Error('FONT_DATA_MISSING: wasm font installer is unavailable'));
 		}
-		const pending = loadTerminalFonts(key, this.fontInstaller).then(
+		const installer = this.fontInstaller;
+		const pending = fontDataServiceLoader().then(({ loadTerminalFonts }) => (
+			loadTerminalFonts(key, installer)
+		)).then(
 			() => {
 				this.loadedFontStacks.add(key);
 				this.fontLoadPromises.delete(key);
@@ -938,13 +952,15 @@ export class TerminalManager {
 		if (this.wasmReadyPromise !== null) return this.wasmReadyPromise;
 		const pending = (async () => {
 			await init(wasmUrl);
-			const fontModule = (await import('@ridge/term-wasm')) as unknown as {
-				installFontData?: (data: Uint8Array) => boolean;
-			};
-			if (typeof fontModule.installFontData !== 'function') {
-				throw new Error('FONT_DATA_MISSING: wasm bundle has no system-font installer');
+			if (loadHostFontDataService) {
+				const fontModule = (await import('@ridge/term-wasm')) as unknown as {
+					installFontData?: (data: Uint8Array) => boolean;
+				};
+				if (typeof fontModule.installFontData !== 'function') {
+					throw new Error('FONT_DATA_MISSING: wasm bundle has no system-font installer');
+				}
+				this.fontInstaller = fontModule.installFontData;
 			}
-			this.fontInstaller = fontModule.installFontData;
 			await this._ensureFontStack(this.opts.fontFamily);
 			this.wasmReady = true;
 			// §atlas-race forensics (2026-06-22): expose detector counters on
