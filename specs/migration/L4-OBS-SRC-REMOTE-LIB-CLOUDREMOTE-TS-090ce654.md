@@ -58,4 +58,4 @@ verified_by:
 
 # cloudRemote.ts
 
-Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+Cloud Remote exposes one lazy older-history page per pane at a time. A page advances its sequence cursor only inside a synchronous commit callback after the expected cursor is revalidated and kernel prepend succeeds; discard releases the lane without advancing.

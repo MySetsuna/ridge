@@ -29,6 +29,12 @@ describe('remote Agent attention monitor', () => {
     expect(source).toContain("return ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight, 'remote');");
   });
 
+  it('settles current mobile geometry before refresh and atomically prepends history', () => {
+    expect(source).toContain('async function handleRefresh()');
+    expect(source).toContain('await canvasRef.claimPaneSize();');
+    expect(source).toContain('page.commit(() => targetCanvas.prependScrollbackForPane(key, bytes))');
+  });
+
   it('releases every pane-owned queue, timer, trace, transport, and kernel', () => {
     const start = source.indexOf('function releasePaneRuntime');
     const end = source.indexOf('\n  }\n\n  // Free kernels', start);

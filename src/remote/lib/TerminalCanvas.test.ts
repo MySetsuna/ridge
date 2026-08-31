@@ -57,7 +57,10 @@ describe('remote pane Agent status chrome contract', () => {
       source.indexOf('const pendingFrames = onDrainPending?.(paneId) ?? [];'),
     );
     expect(source).toContain('return onPaneResize(pane, rows, cols');
-    expect(source).toContain('export function claimPaneSize()');
+    expect(source).toContain('export function claimPaneSize(): Promise<void>');
+    expect(source).toContain('for (let frame = 0; frame < 30; frame += 1)');
+    expect(source).toContain('const viewport = window.visualViewport;');
+    expect(source).toContain('manager.resizeHost();');
     expect(source).toContain('manager.claimPaneSize(paneId)');
     expect(source).toContain('manager.forceFullRedraw(paneId)');
     expect(source).toContain('export function resizeKernel(rows: number, cols: number)');
@@ -82,6 +85,12 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain("decideTouchMouseGesture('release')");
     expect(source).toContain('manager.hasLinkAt(paneId, startCell.row, startCell.col)');
     expect(source).toContain('ontouchcancel={handleTouchCancel}');
+  });
+
+  it('cancels compatibility clicks before focusing the mobile IME sink', () => {
+    expect(source).toContain('Cancel its compatibility');
+    expect(source).toMatch(/if \(elapsed >= TOUCH_TAP_MAX_MS\) return;\r?\n\s+\/\/ Focus happens[\s\S]*?e\.preventDefault\(\);/);
+    expect(source).toMatch(/if \(!wasDragging\) \{\r?\n\s+e\.preventDefault\(\);\r?\n\s+openSoftKeyboard\(\);/);
   });
 
   it('requires the platform modifier for mouse links while preserving touch taps', () => {

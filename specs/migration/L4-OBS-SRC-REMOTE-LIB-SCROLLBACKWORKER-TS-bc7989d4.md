@@ -64,4 +64,4 @@ verified_by:
 
 # scrollbackWorker.ts
 
-Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+Scrollback worker validation preserves page bytes exactly and transfers their ArrayBuffer back without a UTF-8 decode/re-encode round trip. Replies must match pane and sequence identity before the page can enter the atomic prepend transaction; malformed or stale pages settle independently.

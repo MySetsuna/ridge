@@ -420,9 +420,31 @@
     if (attached) manager.fitPaneNow(paneId);
   }
   /** Explicit refresh: measure this pane and remount the shared host PTY even
-   * when the claimed rows×cols match the last fit (same-size is not a no-op). */
-  export function claimPaneSize() {
-    if (!attached) return;
+  * when the claimed rows×cols match the last fit (same-size is not a no-op). */
+  let paneSizeClaimGeneration = 0;
+  export function claimPaneSize(): Promise<void> {
+    const generation = ++paneSizeClaimGeneration;
+    if (!attached) return Promise.resolve();
+    return claimSettledPaneSize(generation);
+  }
+  async function claimSettledPaneSize(generation: number): Promise<void> {
+    let previousGeometry = '';
+    let stableFrames = 0;
+    for (let frame = 0; frame < 30; frame += 1) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      if (!attached || generation !== paneSizeClaimGeneration) return;
+      const rect = containerEl?.getBoundingClientRect();
+      const viewport = window.visualViewport;
+      const geometry = [
+        rect?.left, rect?.top, rect?.width, rect?.height,
+        viewport?.offsetLeft, viewport?.offsetTop, viewport?.width, viewport?.height,
+      ].map((value) => Math.round(value ?? 0)).join(':');
+      stableFrames = geometry === previousGeometry ? stableFrames + 1 : 0;
+      previousGeometry = geometry;
+      if (frame >= 3 && stableFrames >= 2) break;
+    }
+    if (!attached || generation !== paneSizeClaimGeneration) return;
+    manager.resizeHost();
     manager.claimPaneSize(paneId);
     manager.forceFullRedraw(paneId);
   }
@@ -651,7 +673,10 @@
         if (bytes.length > 0) onStdin(td.decode(bytes));
       }
       touchMouseDragging = false;
-      if (elapsed < TOUCH_TAP_MAX_MS) openSoftKeyboard();
+      if (elapsed < TOUCH_TAP_MAX_MS) {
+        e.preventDefault();
+        openSoftKeyboard();
+      }
       return;
     }
     if (selectionMode) {
@@ -678,10 +703,16 @@
       }
       // §select-tap-keyboard: a TAP (not a drag) in selection mode also raises
       // the soft keyboard so you can type without first leaving select mode.
-      if (!wasDragging) openSoftKeyboard();
+      if (!wasDragging) {
+        e.preventDefault();
+        openSoftKeyboard();
+      }
       return;
     }
     if (elapsed >= TOUCH_TAP_MAX_MS) return;
+    // Focus happens inside this trusted touchend. Cancel its compatibility
+    // mouse/click event or that later event refocuses the canvas and closes IME.
+    e.preventDefault();
     // Light tap clears an existing selection (and re-raises the keyboard).
     if (hasSelectionState || hasSelection()) {
       manager.clearSelection(paneId);

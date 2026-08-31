@@ -88,4 +88,4 @@ verified_by:
 
 # wsRemote.ts
 
-Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+LAN and cloud links share the PendingScrollbackPage atomic commit contract. Cursor validation, synchronous kernel mutation, cursor advancement, and in-flight release occur as one non-interleavable operation; stale, duplicate, failed, or discarded pages cannot alter cursor state.
