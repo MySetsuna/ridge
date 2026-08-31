@@ -788,6 +788,9 @@ impl<B: RenderBackend> Renderer<B> {
                 continue;
             };
             for span in &row.hyperlinks {
+                if !is_safe_http_uri(&span.uri) {
+                    continue;
+                }
                 hl_rects.push((row_draw.row_index, span.col_start, span.col_end));
             }
         }
@@ -1254,6 +1257,47 @@ impl<B: RenderBackend> Renderer<B> {
     }
 }
 
+fn is_safe_http_uri(uri: &str) -> bool {
+    if uri.is_empty()
+        || uri.len() > 2_048
+        || uri.contains('\\')
+        || uri.chars().any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return false;
+    }
+    let Some(rest) = uri
+        .strip_prefix("https://")
+        .or_else(|| uri.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    if let Some(ipv6) = authority.strip_prefix('[') {
+        let Some(close) = ipv6.find(']') else {
+            return false;
+        };
+        if close == 0 {
+            return false;
+        }
+        let tail = &ipv6[close + 1..];
+        return tail.is_empty()
+            || tail.strip_prefix(':').is_some_and(|port| {
+                !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+            });
+    }
+    let (host, port) = authority
+        .split_once(':')
+        .map_or((authority, None), |(host, port)| (host, Some(port)));
+    !host.is_empty()
+        && !host.contains(':')
+        && port.map_or(true, |port| {
+            !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
 fn cursor_eq(a: &Option<CursorDraw>, b: &Option<CursorDraw>) -> bool {
     cursor_refs_eq(a.as_ref(), b.as_ref())
 }
@@ -1564,7 +1608,7 @@ mod tests {
     // large VT rewrites as grid updates and dirty only revision-changed rows —
     // never whole-viewport clear solely because absolute CSI / TUI is active.
 
-    use super::Renderer;
+    use super::{is_safe_http_uri, Renderer};
     use crate::render::backend::{FrameMetrics, RenderBackend, RowDraw, ScrollCopyResult, Theme};
     use crate::term::attr_table::AttrTable;
     use crate::term::{grid::ScrollOp, Terminal};
@@ -2069,6 +2113,14 @@ mod tests {
             renderer.backend().hyperlink_rects.is_empty(),
             "partial redraw must not scan or re-emit clean-row links"
         );
+    }
+
+    #[test]
+    fn native_hyperlink_underline_accepts_only_credential_free_http_urls() {
+        assert!(is_safe_http_uri("https://example.com/releases/latest"));
+        assert!(!is_safe_http_uri("file:///C:/code/wind/main.rs"));
+        assert!(!is_safe_http_uri("https://user:secret@example.com/private"));
+        assert!(!is_safe_http_uri("javascript:alert(1)"));
     }
 
     #[test]

@@ -11,8 +11,7 @@ import { trimTrailingSeparators, type LinkSpan, type LinkSpanKind } from './link
 
 export type LinkOpenTarget =
   | { kind: 'url'; href: string }
-  | { kind: 'path'; path: string; line?: number; col?: number }
-  | { kind: 'file-url'; href: string };
+  | { kind: 'path'; path: string; line?: number; col?: number };
 
 export interface HoverUnderlineDecision {
   /** Whether renderer/DOM should paint underline under the span. */
@@ -49,7 +48,7 @@ export function parsePathWithLocation(text: string): {
   if (/^[A-Za-z]:$/.test(pathPart)) return { path: text };
   if (/^[A-Za-z]:$/.test(pathPart.replaceAll('\\', ''))) return { path: text };
   // "http://..." must not parse as path:line
-  if (/^https?:\/\//i.test(text) || /^file:\/\//i.test(text)) {
+  if (/^https?:\/\//i.test(text)) {
     return { path: text };
   }
   const line = m[2] ? Number.parseInt(m[2], 10) : undefined;
@@ -65,9 +64,6 @@ export function resolveOpenTarget(
 ): LinkOpenTarget {
   if (kind === 'url' || kind === 'osc8') {
     return { kind: 'url', href: text };
-  }
-  if (kind === 'file-url') {
-    return { kind: 'file-url', href: text };
   }
   const loc = parsePathWithLocation(text);
   return {

@@ -129,7 +129,7 @@ describe('parsePathWithLocation / resolveOpenTarget', () => {
   });
 
   it('path kinds become path targets', () => {
-    expect(resolveOpenTarget('foo/bar.ts:2', 'rel')).toEqual({
+    expect(resolveOpenTarget('foo/bar.ts:2', 'path')).toEqual({
       kind: 'path',
       path: 'foo/bar.ts',
       line: 2,

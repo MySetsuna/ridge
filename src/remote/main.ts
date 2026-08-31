@@ -3,6 +3,7 @@ import { mount } from 'svelte';
 import App from './App.svelte';
 import { registerSW } from 'virtual:pwa-register';
 import { REMOTE_TERM_FONT } from '@ridge/remote/shared/terminal/fontStack';
+import { isSafeHttpUrl } from '@ridge/remote/shared/terminal/linkOpenHost';
 
 // §P4 host-ports (2026-07-25): the shared TerminalManager reads app capabilities
 // (terminal scrollback lines / font / shell) through injected HostPorts. Mobile
@@ -25,7 +26,7 @@ try {
       subscribe: (cb) => { cb(snapshot); return () => {}; },
     },
     openTextLink: (request) => {
-      if (request.type === 'url' && request.href) {
+      if (request.type === 'url' && request.href && isSafeHttpUrl(request.href)) {
         window.open(request.href, '_blank', 'noopener,noreferrer');
         return { handled: true };
       }
@@ -36,6 +37,29 @@ try {
         },
       }));
       return { handled: true };
+    },
+    validateTextLink: (request) => {
+      if (request.type === 'url') {
+        return { valid: !!request.href && isSafeHttpUrl(request.href) };
+      }
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (result: { valid: boolean; reason?: string }) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(result);
+        };
+        const timer = setTimeout(() => finish({ valid: false, reason: 'probe_timeout' }), 2_500);
+        window.dispatchEvent(new CustomEvent('ridge:remote-open-text-link', {
+          detail: {
+            ...request,
+            origin: { ...request.origin, kind: 'shared' },
+            validateOnly: true,
+            resolveValidation: finish,
+          },
+        }));
+      });
     },
   });
 } catch (error) {

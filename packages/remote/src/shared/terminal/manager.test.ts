@@ -672,7 +672,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 			origin: { kind: 'local', workspaceId: 'workspace-a', paneId: 'manager-test-pane' },
 	});
 		fixture.kernel.hyperlinkAt.mockReturnValue(null);
-		fixture.pane.linkSpans.hitTest.mockReturnValue({ text: 'src/main.ts:4', kind: 'rel' });
+		fixture.pane.linkSpans.hitTest.mockReturnValue({ text: 'src/main.ts:4', kind: 'path' });
 		expect(manager.hasLinkAt(PANE, 1, 2)).toBe(true);
 		const ports = TerminalManager.hostPorts()!;
 		expect(manager.openLinkAt(PANE, 1, 2)).toBe(true);
@@ -732,7 +732,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		const { manager, fixture } = makeManager();
 		const entry = fixture.pane;
 		const open = vi.spyOn(manager, 'openLinkAt').mockReturnValue(true);
-		entry.linkSpans.hitTest.mockReturnValue({ row: 1, c0: 2, c1: 6, text: 'src/main.ts', kind: 'rel' });
+		entry.linkSpans.hitTest.mockReturnValue({ row: 1, c0: 2, c1: 6, text: 'src/main.ts', kind: 'path' });
 		const target = { setPointerCapture: vi.fn() };
 		const event = (ctrlKey: boolean) => ({
 			clientX: 35, clientY: 65, button: 0, buttons: 1, pointerId: 2, detail: 1,

@@ -544,6 +544,9 @@ pub fn run() {
             commands::remote::add_to_blacklist,
             commands::remote::list_blacklist,
             commands::remote::remove_from_blacklist,
+            // Cloud WebView 的單一 Remote RPC shell 端口；命令 admission、錯誤語義與
+            // core/legacy 分派皆復用 LAN dispatcher，不暴露各 Tauri command 形狀。
+            remote_host_impl::dispatch_remote_invoke,
             // B2（D-GM-11）cloud pane 裸字节流（host-local sink，非 controller 直调）
             commands::cloud_pane::subscribe_pane_raw,
             commands::cloud_pane::unsubscribe_pane_raw,

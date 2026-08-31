@@ -75,6 +75,8 @@ describe('openTerminalLink', () => {
 		path: 'C:\\repo\\src\\main.ts',
 		line: 12,
 		col: 3,
+		cwd: 'C:\\repo',
+		workspaceRoot: 'C:\\repo',
 		origin: { kind: 'local' as const, workspaceId: 'ws-a', paneId: 'pane-a' },
 	};
 
@@ -88,16 +90,16 @@ describe('openTerminalLink', () => {
 		expect(openFile).toHaveBeenCalledWith(request.path, 12, 3);
 	});
 
-	it('routes a local directory to Explorer and never opens it as a file', async () => {
+	it('keeps a local directory inert and never opens it as a file', async () => {
 		clearPathProbeCache();
 		const revealDirectory = vi.fn(async () => true);
 		const openFile = vi.fn(async () => {});
-		await openTerminalLink({ ...request, path: 'C:\\repo\\src', line: undefined, col: undefined }, {
+		await expect(openTerminalLink({ ...request, path: 'C:\\repo\\src', line: undefined, col: undefined }, {
 			inspectPath: vi.fn(async () => ({ exists: true, isDirectory: true })),
 			revealDirectory,
 			openFile,
-		});
-		expect(revealDirectory).toHaveBeenCalledWith('C:\\repo\\src', 'ws-a');
+		})).resolves.toEqual({ handled: false, reason: 'directory_path' });
+		expect(revealDirectory).not.toHaveBeenCalled();
 		expect(openFile).not.toHaveBeenCalled();
 	});
 
@@ -144,6 +146,11 @@ describe('openTerminalLink', () => {
 		await expect(openTerminalLink({
 			type: 'url',
 			href: 'javascript:alert(1)',
+			origin: request.origin,
+		}, { openUrl })).resolves.toEqual({ handled: false, reason: 'unsafe_url' });
+		await expect(openTerminalLink({
+			type: 'url',
+			href: 'https://user:secret@example.test',
 			origin: request.origin,
 		}, { openUrl })).resolves.toEqual({ handled: false, reason: 'unsafe_url' });
 	});
