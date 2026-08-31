@@ -68,4 +68,4 @@ verified_by:
 
 # MainApp.svelte
 
-Remote file-link validation probes the connected workspace origin, distinguishes files from directories, returns a boolean without navigation, and shares bounded proof results with click opening.
+Remote mobile refresh settles the current VisualViewport before remeasuring and re-rendering the active terminal. Lazy scrollback fetch, validation, prepend, and cursor advancement form one latest-pane transaction: stale pages never mutate a kernel and failed prepends never advance the transport cursor.

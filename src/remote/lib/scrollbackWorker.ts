@@ -15,7 +15,7 @@ export type ScrollbackWorkerDecoded = {
   paneId: string;
   startSeq: number;
   endSeq: number;
-  text: string;
+  bytes: ArrayBuffer;
 };
 
 export type ScrollbackWorkerResult = ScrollbackWorkerDecoded | {
@@ -29,15 +29,17 @@ export type ScrollbackWorkerResult = ScrollbackWorkerDecoded | {
 
 /** Pure worker-safe decoder; DOM/kernel ownership remains on the main thread. */
 export function decodeScrollback(request: ScrollbackWorkerRequest): ScrollbackWorkerDecoded | null {
-  if (request.startSeq >= request.endSeq || !request.workspaceId || !request.paneId) return null;
-  const text = new TextDecoder().decode(request.bytes);
+  if (!Number.isSafeInteger(request.startSeq) || !Number.isSafeInteger(request.endSeq)
+    || request.startSeq < 0 || request.startSeq >= request.endSeq
+    || request.endSeq - request.startSeq !== request.bytes.byteLength
+    || !request.workspaceId || !request.paneId) return null;
   return { type: 'decoded', requestId: request.requestId, workspaceId: request.workspaceId,
-    paneId: request.paneId, startSeq: request.startSeq, endSeq: request.endSeq, text };
+    paneId: request.paneId, startSeq: request.startSeq, endSeq: request.endSeq, bytes: request.bytes };
 }
 
 type WorkerScope = {
   onmessage: ((event: MessageEvent<ScrollbackWorkerRequest>) => void) | null;
-  postMessage(value: ScrollbackWorkerResult): void;
+  postMessage(value: ScrollbackWorkerResult, transfer?: Transferable[]): void;
 };
 
 export function installScrollbackWorker(scope: WorkerScope): void {
@@ -45,7 +47,7 @@ export function installScrollbackWorker(scope: WorkerScope): void {
     try {
       const result = decodeScrollback(event.data);
       if (result) {
-        scope.postMessage(result);
+        scope.postMessage(result, [result.bytes]);
         return;
       }
       // Invalid/stale sequence ranges are still terminal for this request.
@@ -80,6 +82,8 @@ const MAX_PENDING_DECODES = 8;
 type PendingDecode = {
   resolve: (bytes: Uint8Array | null) => void;
   paneKey: string;
+  startSeq: number;
+  endSeq: number;
   timer: ReturnType<typeof setTimeout>;
 };
 
@@ -101,11 +105,15 @@ export class ScrollbackDecoder {
             return;
           }
           const paneKey = `${event.data.workspaceId}:${event.data.paneId}`;
-          if (pending.paneKey !== paneKey || typeof event.data.text !== 'string') {
+          if (pending.paneKey !== paneKey
+            || pending.startSeq !== event.data.startSeq
+            || pending.endSeq !== event.data.endSeq
+            || !(event.data.bytes instanceof ArrayBuffer)
+            || event.data.bytes.byteLength !== event.data.endSeq - event.data.startSeq) {
             this.settle(event.data.requestId, null);
             return;
           }
-          this.settle(event.data.requestId, new TextEncoder().encode(event.data.text));
+          this.settle(event.data.requestId, new Uint8Array(event.data.bytes));
         };
         this.worker.onerror = () => this.failWorker();
       } catch {
@@ -132,7 +140,7 @@ export class ScrollbackDecoder {
     return new Promise((resolve) => {
       const id = request.requestId;
       const timer = setTimeout(() => this.settle(id, null), DECODE_TIMEOUT_MS);
-      this.pending.set(id, { resolve, paneKey: `${pane.workspaceId}:${pane.paneId}`, timer });
+      this.pending.set(id, { resolve, paneKey: `${pane.workspaceId}:${pane.paneId}`, startSeq, endSeq, timer });
       try {
         this.worker!.postMessage(request, [request.bytes]);
       } catch {

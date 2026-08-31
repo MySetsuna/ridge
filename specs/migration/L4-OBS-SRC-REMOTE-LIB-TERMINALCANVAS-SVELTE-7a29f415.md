@@ -73,4 +73,4 @@ verified_by:
 
 # TerminalCanvas.svelte
 
-Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+Mobile terminal taps cancel the browser's compatibility mouse default before focusing the hidden IME sink, so the synthetic click cannot immediately steal focus and collapse the soft keyboard. Explicit refresh waits for current viewport geometry, force-claims the measured pane grid, resizes the shared host surface, and redraws the active pane. Older scrollback is prepended only through a synchronous cursor-checked transaction.

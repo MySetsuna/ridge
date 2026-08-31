@@ -396,7 +396,10 @@
       page = await ws.fetchOlderScrollback(pane);
       if (!page || !remoteAppAlive) return;
       const bytes = await scrollbackDecoder.decode(pane, page.startSeq, page.endSeq, page.bytes);
-      if (remoteAppAlive && bytes && targetCanvas.prependScrollbackForPane(key, bytes)) page.commit();
+      if (!remoteAppAlive || !bytes) return;
+      if (!page.commit(() => targetCanvas.prependScrollbackForPane(key, bytes))) {
+        throw new Error('scrollback page changed before prepend commit');
+      }
     } catch {
       if (remoteAppAlive && !scrollbackErrorPaneIds.includes(key)) {
         scrollbackErrorPaneIds = [...scrollbackErrorPaneIds, key];
@@ -671,12 +674,12 @@
     return ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight, 'remote');
   }
 
-  function handleRefresh() {
+  async function handleRefresh() {
     if (ui.activePaneId && canvasRef) {
       // Pane box is the sole geometry authority. Measure the settled box and
       // force a host remount/redraw at that grid, even when rows×cols match
       // the last claim (same-size fit used to be a silent no-op).
-      canvasRef.claimPaneSize();
+      await canvasRef.claimPaneSize();
     }
     ws.listPanes();
     refreshWorkspaces();

@@ -313,8 +313,8 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
     const pageB = await second;
     expect(pageA?.bytes).toEqual(new TextEncoder().encode('a'));
     expect(pageB?.bytes).toEqual(new TextEncoder().encode('b'));
-    expect(pageA?.commit()).toBe(true);
-    expect(pageB?.commit()).toBe(true);
+    expect(pageA?.commit(() => true)).toBe(true);
+    expect(pageB?.commit(() => true)).toBe(true);
     conn.disconnect();
   });
 

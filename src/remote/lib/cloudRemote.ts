@@ -763,8 +763,13 @@ export class CloudRemoteConnection implements RemoteLink {
         startSeq: chunk.start_seq,
         endSeq: chunk.end_seq,
         atOldest: chunk.at_oldest,
-        commit: () => {
+        commit: (apply) => {
           if (settled || this.scrollbackCursor.get(key)?.oldestSeq !== chunk.end_seq) return false;
+          try {
+            if (!apply()) return false;
+          } catch {
+            return false;
+          }
           this.scrollbackCursor.set(key, {
             oldestSeq: chunk.start_seq,
             atOldest: chunk.at_oldest,
