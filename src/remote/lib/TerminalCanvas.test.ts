@@ -62,7 +62,7 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain('for (let frame = 0; frame < 30; frame += 1)');
     expect(source).toContain('const viewport = window.visualViewport;');
     expect(source).toContain('manager.resizeHost();');
-    expect(source).toContain('manager.claimPaneSize(paneId)');
+    expect(source).toContain('await manager.claimPaneSize(paneId);');
     expect(source).toContain('manager.forceFullRedraw(paneId)');
     expect(source).toContain('export function resizeKernel(rows: number, cols: number)');
     expect(source).toContain('manager.applyPaneResize(paneId, rows, cols)');

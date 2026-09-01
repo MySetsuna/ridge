@@ -1,12 +1,12 @@
 {
   "version": 1,
-  "changeId": "CHG-014",
-  "specHash": "f7cc4fe741dfdfb770995b4daf9ea5f049266baa6badec322e60adcb028e66db",
+  "changeId": "CHG-017",
+  "specHash": "a05cd396a0174fb384a577459c4bcb3e09b599c1c5c80f40b9036f631d3552c4",
   "units": [
     {
       "id": "L4-OBS-PACKAGE-JSON-7ae45ad1",
       "level": "L4",
-      "nodeHash": "461c1b467dc4f5dd703b58c1e6c446b1c4b0d58146c180e48f75a6a7887d49b8",
+      "nodeHash": "1da066efe8676115220714bdaa8966a2955e7e44380650b2b9b2d25f50c6f1fd",
       "codeTargets": [
         "package.json",
         "Cargo.lock"
@@ -17,7 +17,7 @@
     {
       "id": "L4-OBS-SRC-TAURI-CARGO-TOML-fe4c6a80",
       "level": "L4",
-      "nodeHash": "0c416eb8a165a3705b3ccb1f5844169f9abb13328aa2e00a6bb34805162740c6",
+      "nodeHash": "80b0e6d29a13f66e31c18d9d0f7879c5e23c4d8da2c95be2fb243b340e6cced1",
       "codeTargets": [
         "src-tauri/Cargo.toml"
       ],
@@ -29,7 +29,7 @@
     {
       "id": "L4-OBS-SRC-TAURI-TAURI-CONF-JSON-fa09f1da",
       "level": "L4",
-      "nodeHash": "dde2e869370e8d87b2321f3b1fd26481d09f48088603146d8a045038d68d28a8",
+      "nodeHash": "8cf817f54596c3b0fb1b4cf4117ade2dfae13c7e28b98d294c4d824ce3a3e02a",
       "codeTargets": [
         "src-tauri/tauri.conf.json"
       ],
@@ -62,7 +62,6 @@
   ],
   "baseline": {
     ".claude/settings.json": "7619b23fae7b9adbd4f01a10bedbaa15eaae109689a1202694deae0c9679a8ae",
-    ".claude/settings.local.json": "42375f5702ad6e5d06bbe63c470d22c708cc887b9d45b5a8c4acaf9d46ee149c",
     ".claude/workflows/rdg-remote-cont.js": "be668d1d6eaa75663d0d4144dba1f7662b3a74a84896a85cde65e761dcc9e4fa",
     ".claude/workflows/rdg-remote-unify.js": "6396f44f3a9e3c2aa01612e6693e0be43e80082be29d321499f2f628cea68dfe",
     ".env": "d4ef68e4a9a1d5b79094d3ff7bfa01acca753b5a05623401272a53ff2e47c457",
@@ -80,7 +79,7 @@
     ".vscode/extensions.json": "926925a0d7f8b5e0e9e84667ac901095f7ffdb83afb54de65662d6e4cfb78ad1",
     ".vscode/settings.json": "54224dc29195ac0e0ae6a3ce38d5cd7aeb390357259a37c860a28a3f1087ef71",
     "AGENTS.md": "f79dcdcc868100c55ce91dda383e287ad1283226b7a24de3fed95123864fc0bf",
-    "Cargo.lock": "cb51b9461f69f8698117ee2a53bac80ffbe0031e4514405be33ee1333809be69",
+    "Cargo.lock": "b64297507bd13cb4a8da80f3c202bd62886a09d3dcfdc9d47a45341a20699747",
     "Cargo.toml": "9cccba0a8b7bcab6a2fafaf06c63f219a6f9c2a81604d0a408ae593074d8ddcc",
     "changes/BASELINE-001.md": "014956323df88e7e740dc6669f035bef10d139cb72d42de7c963ae2b1d0b1aae",
     "changes/CHG-001.md": "1108fb4f66a90c53a26b1fba64da1315e81c851d822c4a5736fd84640d9d685d",
@@ -97,10 +96,13 @@
     "changes/CHG-012.md": "f9fadf83fb10ab0b4f6b0492ec941cc2aa63572d8b116fe05b8b18402aa5a3af",
     "changes/CHG-013.md": "51dad3849d5d1f069a570116cb5b2678f6d543f1c5bfdeb97031d0bc791d81d7",
     "changes/CHG-014.md": "139a6f84973612369f238627fc7190415e657c601884e0d655ef6e26593c45a5",
+    "changes/CHG-015.md": "b243680773b1214ecc4ce455f8c86e1e3faeab9f117f8e740130604334f48ce5",
+    "changes/CHG-016.md": "0be930d26e2a1ac787d239989751a2d754bf9d315bf4ea9c8c17f85bc63324a1",
+    "changes/CHG-017.md": "1843c39ca65ce80bc00190b931f59867b4b378280f26c1444bfe415deb13ed06",
     "docs/iterations/2026-07-24-notebook-notes-archive/README.md": "dcd51ae6ee46d9aca4163ce6801ac80f6eee96766a296d795ea58fb67c3b8a5e",
     "docs/iterations/README.md": "d0cae0b0d6966497a3e7d2d06c28a79aefc8e9b3d05b2446a00556512c466626",
     "docs/README_CN.md": "34453c55206c88e9620cb10431b2b23cf2dc3c882289a04a2098a6703a0e9fea",
-    "package.json": "8dcdc669f4e648ccaf3895613976b7c460ce0d305b1ad73196fb66834b45dccc",
+    "package.json": "97e737fa0e65773e14dbd33adee26c00e1a8962bc93ad4ba82cdaa7650a32f53",
     "packages/remote/package.json": "3c9d355179aefeaf12877e4e44bc5b41ba8812fc23825024f01da3b082f6b1db",
     "packages/remote/src/index.ts": "ae66d492761ce353faab343fe9215ab48235088dee9cd5ce1621392948999c30",
     "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts": "7abb718851c25821146276ac974fbad2aa64e011e142e2623fe2c6a164324b08",
@@ -199,8 +201,8 @@
     "packages/remote/src/shared/terminal/linkSpans.test.ts": "cc22a4cfd279452e22e096a7ff95b0c1fc38dc0376fc1d71687e92797605fec9",
     "packages/remote/src/shared/terminal/linkSpans.ts": "f739e5374fd47b65ef304361bd82bc51dfdfc87b2799971fd44f7bbbce37b731",
     "packages/remote/src/shared/terminal/manager.attach.test.ts": "5947e28946503007b589c813be60f870f3b0b224bf49b188c2f46652f3b5e666",
-    "packages/remote/src/shared/terminal/manager.test.ts": "e74c9b6376176425e03206b98661dd3265123d11eed95b306b5e0144dc96dfd5",
-    "packages/remote/src/shared/terminal/manager.ts": "5ed88f739a67697e1e0fea058165913be3779ec1f579e835c54525725f44db6c",
+    "packages/remote/src/shared/terminal/manager.test.ts": "78c363c62ea10d796d6a5d639025b29117c39bb07d82c22ca96b859b4eb98554",
+    "packages/remote/src/shared/terminal/manager.ts": "d6bd7e752d2043ef4c38b744fdc63cfe93fbe50e9ff22c5bc26322d84b6f1ae6",
     "packages/remote/src/shared/terminal/mobileCopy.test.ts": "b23fbcedeb74e00efcbc21b521a45328cec76af32ef4d7db351cd37c86d1a143",
     "packages/remote/src/shared/terminal/mobileCopy.ts": "53d24a89916d6599a2433aa031370c0c020d8a8abafdc7fe0e4ef0bdf1a79f88",
     "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts": "b578ca4a89c3aaaddb896f16dbdb0e3c047b4e8d8ca89a89c6eea4ab3fdbfe29",
@@ -750,7 +752,7 @@
     "specs/migration/L3-OBS-WDIO-PERF-CONF-TS-cfedf6e3.md": "f05b622ff45567f36a5000a68f9229d06af1856ea7ea36da28295304662f7010",
     "specs/migration/L4-OBS-CARGO-TOML-2e9d962a.md": "792972ba00efbb58fad4335c022b0f13f48e6d53641796ac89255cba6ea8b486",
     "specs/migration/L4-OBS-CLAUDE-SETTINGS-JSON-f27ac6f3.md": "df1efe01cc0ec14f7f9937f430558f941ef72cd14f119ba496bba1cd7699afec",
-    "specs/migration/L4-OBS-CLAUDE-SETTINGS-LOCAL-JSON-fca16cae.md": "04ccc9f1ef486922aa6a2d8f08825f27227e86a26344ca43b10dc864ee54874d",
+    "specs/migration/L4-OBS-CLAUDE-SETTINGS-LOCAL-JSON-fca16cae.md": "f2166d2f144e84a89e23180320e1b5161f1828efd4c1765029e3730d4022830e",
     "specs/migration/L4-OBS-CLAUDE-WORKFLOWS-RDG-REMOTE-CONT-JS-fceb9f5f.md": "7c52626374c43bb2718463698c575310f87e604a03f38851200eec4bd5e717af",
     "specs/migration/L4-OBS-CLAUDE-WORKFLOWS-RDG-REMOTE-UNIFY-JS-64f950cf.md": "5a0f5600f95c249bf78badf0ef0b0e9bf93c0461ad34f7b83adce8671090de67",
     "specs/migration/L4-OBS-GITHUB-WORKFLOWS-DEPLOY-PAGES-YML-0f132b09.md": "1bde2e5e0fa4ec8ed530e7ca70fdcbfd1f3ab4a3d2569b104da5e0d299ce4889",
@@ -759,7 +761,7 @@
     "specs/migration/L4-OBS-MCP-JSON-d5d3368a.md": "301d7667db5e13b8c96db2a2b718c02e44578efb25c7ec7d53794840c0a6fb45",
     "specs/migration/L4-OBS-OPENCODE-OPENCODE-JSON-ba0786d2.md": "0b216c99b95b08ee90734f619a88d30aa3105298c576c5b515812683d6b15116",
     "specs/migration/L4-OBS-OPENCODE-PACKAGE-JSON-047992d6.md": "107c40212fa95735793b48d3cb9fccfcd937841311cdacc799763cceee2d68be",
-    "specs/migration/L4-OBS-PACKAGE-JSON-7ae45ad1.md": "40aec9b687c7b7253dfbdc039e5c7711f5f30f2da866bdca5d6b4ecc83d7b1fd",
+    "specs/migration/L4-OBS-PACKAGE-JSON-7ae45ad1.md": "6c27bfa91435f5930c2f99a1f34bd6fb5f2c6b3e7778610558af1b57e0a2b3c1",
     "specs/migration/L4-OBS-PACKAGES-REMOTE-PACKAGE-JSON-dfdc6c85.md": "2d06b0d7489a6069e6e1dca2222e97b8507ad94ba57afd7df4cb2d95a4c94845",
     "specs/migration/L4-OBS-PACKAGES-REMOTE-SRC-INDEX-TS-71c2de24.md": "ab2ad2baf4dbda6fdfc6a1a07658fd99c8c229417d3739474291316ebd82a4ee",
     "specs/migration/L4-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-APICLIENT-TS-3a5d37d5.md": "73ca679862027fb5c6dd86dafaa2d97e5d82be30a9bf35ad7a9594456890db16",
@@ -818,7 +820,7 @@
     "specs/migration/L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKAFFORDANCE-TS-6447eb98.md": "10662c1403c1e932385b748dc14231358b71d7cc9dbcb6305083c5d714c99211",
     "specs/migration/L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKOPENHOST-TS-660b7093.md": "810349ffec12c3f76798f3837de937f31ee9db3f9c50123835208d7ba32f3e48",
     "specs/migration/L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKSPANS-TS-9a94cb0a.md": "2c8aded4293e812d2d0310f9b1f3382de24158b0bc3fc9e4ac53788d3f1ee185",
-    "specs/migration/L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MANAGER-TS-8c721fa3.md": "6ced96d9bd55d49fa9d65697bfa16d9218cdd9d9db3f62d98e1f76a4b3630d7f",
+    "specs/migration/L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MANAGER-TS-8c721fa3.md": "b9dc88d8683e71dfcefffd196f14595058a64066b3bdf3e91a09b2fe185ecb86",
     "specs/migration/L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MOBILECOPY-TS-b10e9b8d.md": "4cbad155df60f02d168255881f75c6f33c2de47c0254ea973e93edc2a20cf970",
     "specs/migration/L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MOBILETOUCHSCROLL-TS-603db964.md": "fb1556b39f8a6f43b08a36671b59accc9c50cfb71dd279720e20cc29af59db69",
     "specs/migration/L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MOUSEFORWARDPOLICY-TS-793d4041.md": "8aeaf58b9917bab9195e76df0b5789a7171a3adc5abec3538d9346881f8af618",
@@ -1308,7 +1310,7 @@
     "specs/migration/L4-OBS-SRC-REMOTE-LIB-SIDEBARPROVIDER-TS-7ec9bf31.md": "00251c975bf8e16ff49505a69897e4e9933976fa966ff5914049c37d38fb7c05",
     "specs/migration/L4-OBS-SRC-REMOTE-LIB-SIDEBARTEAMROSTER-SVELTE-12be4b8d.md": "b89243859399210f17e1d1085bc1aa7d69f14cfff9fab7c5746c66b025d609a7",
     "specs/migration/L4-OBS-SRC-REMOTE-LIB-TEAMROSTERSCOPE-TS-7f69b034.md": "8a5dc6048349e8a28529f8783c4c6c2de6c1182345810c3f11192a914deeead5",
-    "specs/migration/L4-OBS-SRC-REMOTE-LIB-TERMINALCANVAS-SVELTE-7a29f415.md": "9f6459c4e2bc8528b3db62da9058375631493afa7957bf1491ddc51f9aab0bf0",
+    "specs/migration/L4-OBS-SRC-REMOTE-LIB-TERMINALCANVAS-SVELTE-7a29f415.md": "cf7f35d5c4f4b125d7e63233eb0f3145eedf31d9ea259c6dba72f7a350d3ba57",
     "specs/migration/L4-OBS-SRC-REMOTE-LIB-THEME-TS-8d9c60f3.md": "104b558bcf3e39c9d79904adcf89405385f4c6af17d4e564e7e076754cfac55b",
     "specs/migration/L4-OBS-SRC-REMOTE-LIB-TREESTATE-SVELTE-TS-2ebf9ef5.md": "5649ae18498b8c2b22980e8c61f15f85d714b98e3c21e27be284e53bfaed8dd4",
     "specs/migration/L4-OBS-SRC-REMOTE-LIB-VIRTUALKEYBOARD-SVELTE-32890537.md": "d18e2538afc8e1f8155370a682a5b8000f26698ec8bdc2888afa7cb70a7caa46",
@@ -1326,7 +1328,7 @@
     "specs/migration/L4-OBS-SRC-SHARED-SIDEBAR-TYPES-TS-7f5c67d5.md": "1921e3b4197ca590bd0831492d0425b9123ed37404fb48e9cfe98159b45a14e9",
     "specs/migration/L4-OBS-SRC-TAURI-BUILD-RS-7d1ef5b0.md": "8364032743c70009e4b80c9260b81c03d6d0b6008e9f4ad99eadcd9fe85c3f11",
     "specs/migration/L4-OBS-SRC-TAURI-CAPABILITIES-DEFAULT-JSON-8fe2bbfe.md": "6ba5e63d1b30fe2d645d328544a74e8762362de90d2bc5b933b484359a04b940",
-    "specs/migration/L4-OBS-SRC-TAURI-CARGO-TOML-fe4c6a80.md": "ccf1e959d12475b023d78d6f93504b88011c7d8e503ec3be4e035dce0ab994a1",
+    "specs/migration/L4-OBS-SRC-TAURI-CARGO-TOML-fe4c6a80.md": "733c85d962c7d4dc3cabdd7b627614686593a10f62dd1279fc48a4d1c6a7fd0a",
     "specs/migration/L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09.md": "f9992f63137d31ce26b458564db4ce5c275498f9b49e9e3710a28b59c80580bc",
     "specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d.md": "35c1c92b23757ac845d8c5c93208b2ce989d5660f3a6b3b77fa1328a5445e410",
     "specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58.md": "272276a776a1e97a540e9872b9d22c8ff9600ad0fde259f248a0a184eee42cd5",
@@ -1410,7 +1412,7 @@
     "specs/migration/L4-OBS-SRC-TAURI-SRC-UTILS-MOD-RS-d9ca22c8.md": "4abeda20bf083fe977deed4d9f5bf646b39e529af638a6fe8e991e66e4e32efc",
     "specs/migration/L4-OBS-SRC-TAURI-SRC-UTILS-PANE-ID-RS-c5e7302c.md": "4914d3e3b860a099ff3ab24c1ef159445422588886ae90428d09a615a3aee1c0",
     "specs/migration/L4-OBS-SRC-TAURI-SRC-UTILS-PTY-LOG-RS-cfe4a773.md": "b7180c9730954c057ede37979dc12f7b6299cdbc9653ed017416678f98ece18a",
-    "specs/migration/L4-OBS-SRC-TAURI-TAURI-CONF-JSON-fa09f1da.md": "86de5d4860ada38be1bfc1eb5e371ed1191abe07aba93c30315724a84aea010a",
+    "specs/migration/L4-OBS-SRC-TAURI-TAURI-CONF-JSON-fa09f1da.md": "ac9d9b940da165c4f40363983b311ed8317e39c1fee09a4ff635ad9a8ca262d5",
     "specs/migration/L4-OBS-STATIC-MOBILE-ASSETS-INDEX-BPFF1VZX-CSS-77c42f58.md": "d393f9168c88e637be809da613d8e8d9fec3f93560b2728bcf21f19f3c3ef847",
     "specs/migration/L4-OBS-STATIC-MOBILE-ASSETS-INDEX-CM2SAWTC-JS-6cebe785.md": "02f7ea7c675ea3ce8681c094d3d1fb8ac6ba3550ba2be9a9e7526e5e5203c8d2",
     "specs/migration/L4-OBS-SVELTE-CONFIG-JS-6317e218.md": "6241b1cc02ae54302d0645cd4e23f2bb7424476fbb6ec241e36e5a41d5ecf87b",
@@ -1960,8 +1962,8 @@
     "src/remote/lib/SidebarTeamRoster.test.ts": "fe7764e5389d6a80cb6cba363e86ff708e82d844afba0987c5dfca0e7edb9f6b",
     "src/remote/lib/teamRosterScope.test.ts": "3e92991e10a3c39f2733132f86834555f0ce41cc0e6f324fd1bd75a389479582",
     "src/remote/lib/teamRosterScope.ts": "fee9ffda95569021e91a9a04338e0ad43b767d9eafe8eaca41ca262c8efd691b",
-    "src/remote/lib/TerminalCanvas.svelte": "302380f2d73e5010ca860c76ba7c51545438cab0b49fe2e2ca00325a4b5ce174",
-    "src/remote/lib/TerminalCanvas.test.ts": "def68ea74878b5aa42a98e8a60238fe3b9e38a7b8f339ecfdcf517211f03ddf4",
+    "src/remote/lib/TerminalCanvas.svelte": "16982d59a9e07d2e4b9f4fd3fe48232fc4304376774e2a40eb37edc7d580aaa5",
+    "src/remote/lib/TerminalCanvas.test.ts": "9093c063d8d1b8a9af9f8457c6af098d3db7b6a60b5a843a2bdcbef718503304",
     "src/remote/lib/theme.test.ts": "e263c8426d8e7644a7df7b3f34ed15f192efc37a062b9ca4f25de28976ab375b",
     "src/remote/lib/theme.ts": "98173950d59022d6daa450fa3a723a1678332f792f252c421a0499d193d53d03",
     "src/remote/lib/treeState.svelte.ts": "aaaf54950ef7405e3994ba5fca4afee1cd8e053f6d3c675203e06cc0fd0f5a85",
@@ -2002,7 +2004,7 @@
     "src-tauri/build.rs": "67135ac3b6dfd3c93a0bb047ab339d8926c8fd8289c8d52bce480c083e9ca61c",
     "src-tauri/capabilities/default.json": "0aea69d6e967d9018481608de11dc5a992b38cabee3e825095353cab0cf5d8c2",
     "src-tauri/Cargo.lock": "736528b17382bf99c0cee212647529614b1555c46dea0428e13abeefc49ec44f",
-    "src-tauri/Cargo.toml": "4c79eb4d2e065a6f2107ace5797dd9c454aeb00228d3fba603edfd044012ca08",
+    "src-tauri/Cargo.toml": "bbaba00db0e5556cb5299e6e2a0ec1e8374470176ef40cc7125abd9489da4b1e",
     "src-tauri/gen/schemas/acl-manifests.json": "6e09a8d1446e2640a18c93fdbb0fdabfb913e31af7ca946dd4b171d6796d8283",
     "src-tauri/gen/schemas/capabilities.json": "ee5989f2da424f6247baacb2e93e445a53d9265f2ab5ad453c738e001f02220d",
     "src-tauri/gen/schemas/desktop-schema.json": "1d75d79fc208fd9703b312646c8ac6ead58e9acdf90e0af236eb2aeef928c9de",
@@ -2094,7 +2096,7 @@
     "src-tauri/src/utils/mod.rs": "bb7273be15007066a27b40d1fb8285c4f151034e20cc046bef8c131b3eabcf7b",
     "src-tauri/src/utils/pane_id.rs": "81d1e702be5468d013a52b4dd00fd45011b5e3d69184d8a99945df61d99369e8",
     "src-tauri/src/utils/pty_log.rs": "5cf120a817a7b15162562a36a69150392a346f91e657ba3c220e5a5f25b0cb44",
-    "src-tauri/tauri.conf.json": "3c14f6f7ac38eaecac5b4506c5543cfcb0d91ad561609577d2b88920b6dcdc9f",
+    "src-tauri/tauri.conf.json": "c76776ad1c9512e75091a7be58e6dc81562462d9b5f105a6b2ccaa7ff3188dc3",
     "src-tauri/tests/win_manifest_boot.rs": "5d6cdc73371fb907cdc5ab03c5e821483275d4f79477045fe35660936115f934",
     "src-tauri/wix/path-env.wxs": "0b4fa57aab8854d864d5ab1bc68a7b2086491485e9b0d3785da17c58aa6faf2c",
     "static/1.jpg": "b5ec3fd433d81f9f7b217571e76aabf35557cce8d8d619aba580486e4e78faa4",
@@ -2135,6 +2137,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-28fe2439a88a",
-  "manifestHash": "28fe2439a88a6eec3faf86c554f7d95c800552c83f02d5a631916c2142ede301"
+  "buildId": "BUILD-c3130f7ca9ca",
+  "manifestHash": "c3130f7ca9caed2cabc3ce8621c45a9981b1c36d87fbf10a431ee54bf2b524f1"
 }

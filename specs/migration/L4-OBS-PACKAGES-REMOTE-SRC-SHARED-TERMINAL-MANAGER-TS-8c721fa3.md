@@ -51,4 +51,4 @@ verified_by:
 
 # manager.ts
 
-TerminalManager paints link affordance only for validated HTTP(S) links or origin-proven workspace files. Path validation starts only on modifier-hover, ignores stale async results, and reuses bounded probe caches. DOM hover underlines use one CSS-pixel thickness and device-aligned continuous geometry.
+TerminalManager paints link affordance only for validated HTTP(S) links or origin-proven workspace files. Path validation starts only on modifier-hover, ignores stale async results, and reuses bounded probe caches. DOM hover underlines use one CSS-pixel thickness and device-aligned continuous geometry. An explicit pane-size claim returns a promise that settles only after the forced measured fit and its host resize callback settle, while retaining the bounded resize round-trip self-heal.

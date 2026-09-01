@@ -4915,14 +4915,16 @@ export class TerminalManager {
 	 *  container size; the broadcast Resize delta then grows every viewer's
 	 *  kernel grid, and the centered-letterbox tracking re-clips to it. In
 	 *  normal (non-shared) mode it is identical to `fitPaneNow`. */
-	claimPaneSize(paneId: string): void {
+	claimPaneSize(paneId: string): Promise<void> {
 		const entry = this.panes.get(paneId);
-		if (!entry || entry.parked) return;
+		if (!entry || entry.parked) return Promise.resolve();
 		if (entry.pendingFitTimer !== null) {
 			clearTimeout(entry.pendingFitTimer);
 			entry.pendingFitTimer = null;
 		}
-		void this.fitPane(entry, true, true);
+		// Preserve the forced-fit path formerly invoked as
+		// `void this.fitPane(entry, true, true)`, but expose its host acknowledgement.
+		const claim = this.fitPane(entry, true, true);
 		// iter-60 G2 self-heal: a claim is only "done" when the broadcast
 		// Resize delta round-trips into THIS kernel. If after 1s the kernel
 		// grid still disagrees with the last claimed target (delta dropped /
@@ -4943,6 +4945,7 @@ export class TerminalManager {
 			);
 			void this.fitPane(e, true, true);
 		}, 1000);
+		return claim;
 	}
 
 	/** Apply the canonical grid announced by another refresh owner. */

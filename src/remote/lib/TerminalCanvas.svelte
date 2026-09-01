@@ -454,7 +454,7 @@
     }
     if (!attached || generation !== paneSizeClaimGeneration) return;
     manager.resizeHost();
-    manager.claimPaneSize(paneId);
+    await manager.claimPaneSize(paneId);
     manager.forceFullRedraw(paneId);
   }
   /** Feed raw PTY bytes into THIS pane's kernel (MainApp routes the active

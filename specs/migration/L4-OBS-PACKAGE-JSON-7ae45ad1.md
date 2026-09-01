@@ -15,4 +15,4 @@ code_targets:
 
 # package.json
 
-The root package version is the release source of truth. Release v0.1.83 requires Cargo.lock to record the same Ridge package version before tag creation.
+The root package version is the release source of truth. Release v0.1.84 requires Cargo.lock to record the same Ridge package version before tag creation.
