@@ -1707,18 +1707,26 @@ describe('TerminalManager explicit claim remount', () => {
 		fixture.setCols(80);
 		fixture.pane.lastReportedRows = 20;
 		fixture.pane.lastReportedCols = 80;
-		const resizeHandler = vi.fn().mockResolvedValue(undefined);
+		let resolveResize!: () => void;
+		const resizeHandler = vi.fn(() => new Promise<void>((resolve) => {
+			resolveResize = resolve;
+		}));
 		manager.onResize(PANE, resizeHandler);
 
 		manager.fitPaneNow(PANE);
 		await Promise.resolve();
 		expect(resizeHandler).not.toHaveBeenCalled();
 
-		manager.claimPaneSize(PANE);
+		let claimSettled = false;
+		const claim = manager.claimPaneSize(PANE).then(() => { claimSettled = true; });
 		await Promise.resolve();
 		expect(resizeHandler).toHaveBeenCalledTimes(1);
+		expect(claimSettled).toBe(false);
 		expect(resizeHandler).toHaveBeenCalledWith(20, 80, false, false);
 		expect(resizeHandler.mock.calls[0][0]).not.toBe(24);
+		resolveResize();
+		await claim;
+		expect(claimSettled).toBe(true);
 		expect(fixture.handle.invalidateAll).toHaveBeenCalled();
 	});
 

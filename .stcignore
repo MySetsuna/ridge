@@ -3,6 +3,7 @@
 
 # Local checkouts and generated indexes.
 .claude/worktrees/
+.claude/settings.local.json
 ridge-code/
 .codegraph/
 
