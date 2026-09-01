@@ -18,4 +18,4 @@ verified_by:
 
 # Cargo.toml
 
-The desktop Ridge crate version is v0.1.82 and matches the root release version exactly before the release tag is created.
+The desktop Ridge crate version is v0.1.83 and matches the root release version exactly before the release tag is created.

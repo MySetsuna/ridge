@@ -68,4 +68,4 @@ verified_by:
 
 # main.ts
 
-The Remote terminal host bridge supports non-opening file validation through the connected origin while preserving URL opening in the browser.
+The Remote client preserves LAN session tokens and Cloud controller identity across refresh and PWA application updates. Cache lifecycle messages must not clear localStorage, sessionStorage, or IndexedDB; explicit logout and authorization failure remain the only credential-removal paths.

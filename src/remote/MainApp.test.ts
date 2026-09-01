@@ -29,9 +29,19 @@ describe('remote Agent attention monitor', () => {
     expect(source).toContain("return ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight, 'remote');");
   });
 
-  it('settles current mobile geometry before refresh and atomically prepends history', () => {
+  it('settles current mobile geometry, drops stale frames, and requests a canonical screen on refresh', () => {
     expect(source).toContain('async function handleRefresh()');
-    expect(source).toContain('await canvasRef.claimPaneSize();');
+    const start = source.indexOf('async function handleRefresh()');
+    const end = source.indexOf('\n  }\n\n  let _refreshSeq', start);
+    const refresh = source.slice(start, end);
+    expect(refresh.indexOf('await canvasRef.claimPaneSize();')).toBeLessThan(refresh.indexOf('paneFeedScheduler.clear(key);'));
+    expect(refresh).toContain('pendingRawFrames.drop(key);');
+    expect(refresh).toContain('canvasRef?.clearPendingFeed(key);');
+    expect(refresh).toContain('clearFeedResync(key);');
+    expect(refresh).toContain('ws.resyncPane?.(pane);');
+  });
+
+  it('atomically prepends lazy scrollback pages', () => {
     expect(source).toContain('page.commit(() => targetCanvas.prependScrollbackForPane(key, bytes))');
   });
 

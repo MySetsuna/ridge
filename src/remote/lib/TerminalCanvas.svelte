@@ -392,9 +392,18 @@
   function openSoftKeyboard() {
     if (!attached) return;
     activateIme({
-      scrollToBottom: () => manager.scrollToBottom(paneId),
+      scrollToBottom: () => {
+        manager.scrollToBottom(paneId);
+        // The first mounted pane has no prior switch/focus cycle to seed this
+        // anchor. Capture it inside the trusted tap before focus so keyboard
+        // avoidance never falls back to a null input position.
+        manager.captureImeAnchor(paneId);
+      },
       positionAtCursorOrCenter: positionInputAtCursorOrCenter,
       focus: focusHiddenInput,
+    });
+    requestAnimationFrame(() => {
+      if (alive && document.activeElement === hiddenInput) requestKeyboardShift();
     });
   }
 
@@ -1288,7 +1297,10 @@
   $effect(() => {
     if (!attached || !alive) return;
     return manager.onImeAnchor(paneId, () => {
-      if (alive && document.activeElement === hiddenInput) positionInputAtCursorOrCenter();
+      if (alive && document.activeElement === hiddenInput) {
+        positionInputAtCursorOrCenter();
+        requestKeyboardShift();
+      }
     });
   });
 
@@ -1414,7 +1426,7 @@
      anchors to a detectable element. */
   .hidden-input{position:absolute;top:0;left:0;width:1px;height:1em;margin:0;padding:0;border:0;font-size:16px;
     opacity:0.01;pointer-events:none;resize:none;overflow:hidden;white-space:nowrap;z-index:5;
-    background:transparent;color:transparent;caret-color:var(--rg-accent,#58a6ff);outline:none;font-family:inherit}
+    background:transparent;color:transparent;caret-color:transparent;outline:none;font-family:inherit}
   .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--rg-fg-muted);font-size:14px;z-index:4}
   .copy-pill{position:absolute;top:8px;right:8px;z-index:6;display:flex;align-items:center;justify-content:center;height:32px;padding:0 16px;border:1px solid var(--rg-accent);border-radius:16px;background:color-mix(in srgb,var(--rg-accent) 22%,var(--rg-surface));color:var(--rg-fg);font-size:13px;font-weight:600;cursor:pointer;box-shadow:0 4px 14px -2px rgba(0,0,0,.5);-webkit-tap-highlight-color:transparent}
   .copy-pill:active{background:color-mix(in srgb,var(--rg-accent) 36%,var(--rg-surface))}

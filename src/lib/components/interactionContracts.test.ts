@@ -65,4 +65,16 @@ describe('cross-surface interaction contracts', () => {
     expect(manager).toContain("container.addEventListener('pointercancel', pointerCancelListener)");
     expect(manager).toContain("entry.container.removeEventListener('pointercancel', entry.pointerCancelListener)");
   });
+
+  it('keeps inline-TUI routing across non-replacing terminal menu actions', () => {
+    const pane = read('./RidgePane.svelte');
+    expect(pane).toContain('let tuiHostInteractionUntil = 0;');
+    expect(pane).toContain('if (now < tuiHostInteractionUntil) return true;');
+    expect(pane).toContain('const openedInTui = touchTuiSticky();');
+    expect(pane).toContain('const preserveTuiAfterMenu = (action: () => void) => () => {');
+    expect(pane).toContain('manager.setFocused(paneId, true);');
+    expect(pane).toContain("action: preserveTuiAfterMenu(() => { void writeText(sel); })");
+    expect(pane).toContain("id: 'term-paste'");
+    expect(pane).toContain("id: 'term-clear'");
+  });
 });

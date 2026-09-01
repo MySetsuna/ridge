@@ -73,4 +73,4 @@ verified_by:
 
 # TerminalCanvas.svelte
 
-Mobile terminal taps cancel the browser's compatibility mouse default before focusing the hidden IME sink, so the synthetic click cannot immediately steal focus and collapse the soft keyboard. Explicit refresh waits for current viewport geometry, force-claims the measured pane grid, resizes the shared host surface, and redraws the active pane. Older scrollback is prepended only through a synchronous cursor-checked transaction.
+On every explicit mobile keyboard open, including the first pane before any switch, the terminal captures the authoritative IME cursor anchor before focus and recomputes keyboard avoidance after focus and viewport change. The active input cell is shifted above the soft keyboard without relying on prior pane initialization. The hidden IME textarea never paints a second fixed caret; the focused terminal renderer remains the sole visible cursor owner, so its cursor follows the live TUI row and blink state.
