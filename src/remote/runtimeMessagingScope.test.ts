@@ -44,9 +44,9 @@ describe('Remote runtime messaging scope', () => {
     }
   });
 
-  it('keeps service-worker messages one-way and lifecycle-scoped', () => {
-    expect(remoteMainSource).toContain("navigator.serviceWorker.addEventListener('message'");
-    expect(serviceWorkerSource).toContain('sw.clients.matchAll');
-    expect(serviceWorkerSource).toContain('client.postMessage');
+  it('keeps cache upgrades independent from Remote credential storage', () => {
+    expect(remoteMainSource).not.toContain("navigator.serviceWorker.addEventListener('message'");
+    expect(serviceWorkerSource).not.toContain('CLEAR_STORAGE');
+    expect(serviceWorkerSource).not.toContain('client.postMessage');
   });
 });

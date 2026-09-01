@@ -7,18 +7,15 @@
 // (src/routes/+layout.svelte); the Tauri build sets kit.serviceWorker.register
 // = false, so this file is built but never activated there.
 //
-// §version-gate: on install/activate, compare the build version (injected by
-// Vite via $service-worker) with the version stored in client-side storage.
-// If they differ, it means the remote server was updated — nuke ALL client-side
-// caches (Cache API, localStorage, sessionStorage, IndexedDB) so we start fresh
-// with the new build. This prevents stale tickets, old WASM, or mismatched
-// static assets from causing "卡在验证码" or broken UI.
+// §version-gate: on install/activate, compare the injected build version with
+// the Cache API marker. A mismatch invalidates application caches only. Browser
+// credentials and controller identity are user data, not build artifacts; they
+// must survive refreshes and asset upgrades.
 
 import { build, version } from '$service-worker';
 
 const CACHE = `ridge-web-remote-${version}`;
 const HTML_CACHE = `ridge-html-${version}`;
-const VERSION_KEY = 'ridge-web-remote-version';
 // Precache the content-hashed `_app` bundle (immutable). We intentionally skip
 // `files` (favicon, 1.jpg/2.jpg, the nested mobile build) to keep install light.
 const PRECACHE = build;
@@ -41,11 +38,8 @@ async function checkVersionAndNukeIfNeeded(): Promise<void> {
         if (text.trim() === version) return; // version matches, no action needed
       }
     }
-    // Version mismatch or first run — nuke all caches.
+    // Version mismatch or first run — invalidate only versioned app caches.
     await Promise.all(caches.map(c => self.caches.delete(c)));
-    // Also clear client-side storage via postMessage to all clients.
-    const clients = await sw.clients.matchAll({ includeUncontrolled: true });
-    clients.forEach(client => client.postMessage({ type: 'CLEAR_STORAGE', version }));
   } catch {
     // If anything fails, continue — the activate handler will also clean up.
   }

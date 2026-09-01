@@ -102,7 +102,7 @@ describe('Remote bootstrap and service-worker recovery', () => {
     expect(mocks.applyUpdate).toHaveBeenCalledWith(true);
   });
 
-  it('clears all client stores and reloads after a version mismatch message', async () => {
+  it('does not install a cache-version handler that clears Remote credentials', async () => {
     const documentMock = {
       visibilityState: 'visible',
       documentElement: { dataset: {} as Record<string, string> },
@@ -123,11 +123,10 @@ describe('Remote bootstrap and service-worker recovery', () => {
     vi.stubGlobal('indexedDB', { databases: vi.fn(async () => [{ name: 'ridge' }]), deleteDatabase: state.deleteDatabase });
     vi.resetModules();
     await import('./main');
-    state.messageHandler?.({ data: { type: 'CLEAR_STORAGE', version: 'next' } });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(state.clearLocal).toHaveBeenCalled();
-    expect(state.clearSession).toHaveBeenCalled();
-    expect(state.deleteDatabase).toHaveBeenCalledWith('ridge');
-    expect(state.reload).toHaveBeenCalled();
+    expect(state.messageHandler).toBeUndefined();
+    expect(state.clearLocal).not.toHaveBeenCalled();
+    expect(state.clearSession).not.toHaveBeenCalled();
+    expect(state.deleteDatabase).not.toHaveBeenCalled();
+    expect(state.reload).not.toHaveBeenCalled();
   });
 });

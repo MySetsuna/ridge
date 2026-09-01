@@ -32,4 +32,4 @@ verified_by:
 
 # RidgePane.svelte
 
-Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+A desktop context menu opened while an inline TUI signal is live grants that pane a bounded host-interaction lease. Choosing a non-terminal-replacing menu action renews the lease and restores pane focus, so a visible TUI cursor or heuristic decay during menu use cannot route subsequent input through shell mode. Plain shell context menus never create the lease.

@@ -37,7 +37,8 @@ describe('remote pane Agent status chrome contract', () => {
   it('keeps renderer cursor ownership when the mobile IME sink blurs', () => {
     expect(source).toContain('manager.setFocused(paneId, true);');
     expect(source).not.toContain('onblur={() => manager.setFocused(paneId, false)}');
-    expect(source).toContain('caret-color:var(--rg-accent,#58a6ff)');
+    expect(source).toContain('caret-color:transparent');
+    expect(source).not.toContain('caret-color:var(--rg-accent,#58a6ff)');
   });
 
   it('pins IME composition to the captured input cursor and updates after PTY input', () => {
@@ -91,6 +92,12 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain('Cancel its compatibility');
     expect(source).toMatch(/if \(elapsed >= TOUCH_TAP_MAX_MS\) return;\r?\n\s+\/\/ Focus happens[\s\S]*?e\.preventDefault\(\);/);
     expect(source).toMatch(/if \(!wasDragging\) \{\r?\n\s+e\.preventDefault\(\);\r?\n\s+openSoftKeyboard\(\);/);
+  });
+
+  it('seeds first-pane keyboard avoidance from the trusted tap', () => {
+    expect(source).toMatch(/scrollToBottom: \(\) => \{[\s\S]*?manager\.scrollToBottom\(paneId\);[\s\S]*?manager\.captureImeAnchor\(paneId\);/);
+    expect(source).toMatch(/activateIme\(\{[\s\S]*?requestAnimationFrame\(\(\) => \{[\s\S]*?requestKeyboardShift\(\);/);
+    expect(source).toMatch(/manager\.onImeAnchor\(paneId,[\s\S]*?positionInputAtCursorOrCenter\(\);[\s\S]*?requestKeyboardShift\(\);/);
   });
 
   it('requires the platform modifier for mouse links while preserving touch taps', () => {

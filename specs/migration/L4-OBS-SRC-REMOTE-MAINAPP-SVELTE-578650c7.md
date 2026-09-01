@@ -68,4 +68,4 @@ verified_by:
 
 # MainApp.svelte
 
-Remote mobile refresh settles the current VisualViewport before remeasuring and re-rendering the active terminal. Lazy scrollback fetch, validation, prepend, and cursor advancement form one latest-pane transaction: stale pages never mutate a kernel and failed prepends never advance the transport cursor.
+Remote mobile refresh settles and claims current viewport geometry, discards stale queued mirror bytes, then explicitly requests a canonical full-screen resync for the currently active pane. A first-entry switch from a shell to an already-running TUI can therefore recover its complete present screen on demand. Lazy scrollback commits remain atomic and independent.

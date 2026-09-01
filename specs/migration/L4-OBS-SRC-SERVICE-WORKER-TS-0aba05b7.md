@@ -416,4 +416,4 @@ verified_by:
 
 # service-worker.ts
 
-Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+Remote PWA version changes invalidate only versioned application caches. They never request deletion of browser credentials, device identity, controller trust keys, session state, or other user data; LAN and Cloud authorization therefore survive refresh and asset upgrades.

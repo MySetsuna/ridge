@@ -675,11 +675,23 @@
   }
 
   async function handleRefresh() {
-    if (ui.activePaneId && canvasRef) {
+    const pane = activePaneRef();
+    if (pane && canvasRef) {
       // Pane box is the sole geometry authority. Measure the settled box and
       // force a host remount/redraw at that grid, even when rows×cols match
       // the last claim (same-size fit used to be a silent no-op).
       await canvasRef.claimPaneSize();
+    }
+    if (pane) {
+      // Refresh is an explicit canonical-screen recovery boundary. Do not let
+      // bytes queued against the pre-claim geometry race ahead of the host's
+      // full-screen replay.
+      const key = paneRefKey(pane);
+      paneFeedScheduler.clear(key);
+      pendingRawFrames.drop(key);
+      canvasRef?.clearPendingFeed(key);
+      clearFeedResync(key);
+      ws.resyncPane?.(pane);
     }
     ws.listPanes();
     refreshWorkspaces();
