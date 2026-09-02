@@ -18,4 +18,4 @@ verified_by:
 
 # tauri.conf.json
 
-Tauri bundle metadata carries v0.1.84, matching package.json, the Ridge crate, Cargo.lock, and the Git tag.
+Tauri bundle metadata carries v0.1.85, matching package.json, the Ridge crate, Cargo.lock, and the Git tag.
