@@ -24,6 +24,8 @@
   } from '@ridge/remote/shared/terminal/imeDelta';
   import { SentenceBuffer, SENTENCE_FLUSH_MS } from '@ridge/remote/shared/terminal/sentenceBuffer';
   import { activateIme } from '@ridge/remote/shared/terminal/imeAnchor';
+  import { REMOTE_TERM_FONT } from '@ridge/remote/shared/terminal/fontStack';
+  import { isSafeHttpUrl } from '@ridge/remote/shared/terminal/linkOpenHost';
 
   // P4 (2026-07-25): this component no longer owns a single `TerminalController`
   // + canvas. It is now the MOBILE INPUT-ADAPTATION LAYER over the SHARED
@@ -69,6 +71,50 @@
   } = $props();
 
   const paneId = $derived(paneRefKey({ workspaceId, paneId: remotePaneId }));
+  const hostPortSnapshot = {
+    terminalScrollbackLines: 2000,
+    terminalFontFamily: REMOTE_TERM_FONT,
+    defaultShell: '',
+  };
+  TerminalManager.setHostPorts({
+    settings: {
+      get: () => hostPortSnapshot,
+      subscribe: (cb) => { cb(hostPortSnapshot); return () => {}; },
+    },
+    openTextLink: (request) => {
+      if (request.type === 'url' && request.href && isSafeHttpUrl(request.href)) {
+        window.open(request.href, '_blank', 'noopener,noreferrer');
+        return { handled: true };
+      }
+      window.dispatchEvent(new CustomEvent('ridge:remote-open-text-link', {
+        detail: { ...request, origin: { ...request.origin, kind: 'shared' } },
+      }));
+      return { handled: true };
+    },
+    validateTextLink: (request) => {
+      if (request.type === 'url') {
+        return { valid: !!request.href && isSafeHttpUrl(request.href) };
+      }
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (result: { valid: boolean; reason?: string }) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(result);
+        };
+        const timer = setTimeout(() => finish({ valid: false, reason: 'probe_timeout' }), 2_500);
+        window.dispatchEvent(new CustomEvent('ridge:remote-open-text-link', {
+          detail: {
+            ...request,
+            origin: { ...request.origin, kind: 'shared' },
+            validateOnly: true,
+            resolveValidation: finish,
+          },
+        }));
+      });
+    },
+  });
   const manager = TerminalManager.instance();
   const td = new TextDecoder();
 

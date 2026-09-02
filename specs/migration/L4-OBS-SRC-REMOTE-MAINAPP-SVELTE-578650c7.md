@@ -2,7 +2,7 @@
 id: L4-OBS-SRC-REMOTE-MAINAPP-SVELTE-578650c7
 level: L4
 parent: L3-OBS-SRC-REMOTE-2674e0ea
-title: MainApp.svelte
+title: src/remote/MainApp.svelte
 status: LOCKED
 origin: observed
 migration_state: CONFIRMED
@@ -11,32 +11,7 @@ observed_source_hash: 818be4df993b9bce2ea80f7e8c6e71eff235432927f95f50ff567a75e0
 code_targets:
   - src/remote/MainApp.svelte
 test_targets:
-  - src/remote/BottomTabBar.test.ts
-  - src/remote/lib/clipboard.test.ts
-  - src/remote/lib/cloudRemote.test.ts
-  - src/remote/lib/generationGuard.test.ts
-  - src/remote/lib/keyboardOffset.test.ts
-  - src/remote/lib/listenerCleanup.test.ts
-  - src/remote/lib/paneFeedScheduler.test.ts
-  - src/remote/lib/paneLifecycle.test.ts
-  - src/remote/lib/paneSwitchBuffer.test.ts
-  - src/remote/lib/remoteGitActions.test.ts
-  - src/remote/lib/RemoteGitPanel.test.ts
-  - src/remote/lib/remoteQueries.test.ts
-  - src/remote/lib/RemoteSidebar.test.ts
-  - src/remote/lib/scrollbackWorker.test.ts
-  - src/remote/lib/sidebarProvider.test.ts
-  - src/remote/lib/SidebarTeamRoster.test.ts
-  - src/remote/lib/teamRosterScope.test.ts
-  - src/remote/lib/TerminalCanvas.test.ts
-  - src/remote/lib/theme.test.ts
-  - src/remote/lib/treeState.test.ts
-  - src/remote/lib/WorkspaceTree.test.ts
-  - src/remote/main.test.ts
   - src/remote/MainApp.test.ts
-  - src/remote/pwaInstallScope.test.ts
-  - src/remote/queryPolicy.test.ts
-  - src/remote/runtimeMessagingScope.test.ts
 verified_by:
   - TEST-OBS-SRC-REMOTE-BOTTOMTABBAR-TEST-TS-fad01c6a
   - TEST-OBS-SRC-REMOTE-LIB-CLIPBOARD-TEST-TS-acf18327
@@ -66,6 +41,6 @@ verified_by:
   - TEST-OBS-SRC-REMOTE-RUNTIMEMESSAGINGSCOPE-TEST-TS-e4055737
 ---
 
-# MainApp.svelte
+# src/remote/MainApp.svelte
 
-Remote mobile refresh settles and claims current viewport geometry, discards stale queued mirror bytes, then explicitly requests a canonical full-screen resync for the currently active pane. A first-entry switch from a shell to an already-running TUI can therefore recover its complete present screen on demand. Lazy scrollback commits remain atomic and independent.
+Optional remote UI modules are loaded after connection and on feature demand, while pane switching keeps the active canvas identity stable.
