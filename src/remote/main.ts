@@ -2,69 +2,6 @@
 import { mount } from 'svelte';
 import App from './App.svelte';
 import { registerSW } from 'virtual:pwa-register';
-import { REMOTE_TERM_FONT } from '@ridge/remote/shared/terminal/fontStack';
-import { isSafeHttpUrl } from '@ridge/remote/shared/terminal/linkOpenHost';
-
-// §P4 host-ports (2026-07-25): the shared TerminalManager reads app capabilities
-// (terminal scrollback lines / font / shell) through injected HostPorts. Mobile
-// has no desktop settings store, so inject a minimal static port BEFORE the
-// terminal mounts (attach happens post-auth, long after this dynamic import
-// resolves). Dynamic import keeps the large manager out of the mobile entry
-// bundle — the lazy TerminalCanvas loads it on first pane attach; this just
-// primes the module-level ports it will read. Only `settings` is meaningful for
-// mobile (scrollback capacity at attach); the rest default gracefully.
-try {
-  const { TerminalManager } = await import('@ridge/remote/shared/terminal/manager');
-  const snapshot = {
-    terminalScrollbackLines: 2000,
-    terminalFontFamily: REMOTE_TERM_FONT,
-    defaultShell: '',
-  };
-  TerminalManager.setHostPorts({
-    settings: {
-      get: () => snapshot,
-      subscribe: (cb) => { cb(snapshot); return () => {}; },
-    },
-    openTextLink: (request) => {
-      if (request.type === 'url' && request.href && isSafeHttpUrl(request.href)) {
-        window.open(request.href, '_blank', 'noopener,noreferrer');
-        return { handled: true };
-      }
-      window.dispatchEvent(new CustomEvent('ridge:remote-open-text-link', {
-        detail: {
-          ...request,
-          origin: { ...request.origin, kind: 'shared' },
-        },
-      }));
-      return { handled: true };
-    },
-    validateTextLink: (request) => {
-      if (request.type === 'url') {
-        return { valid: !!request.href && isSafeHttpUrl(request.href) };
-      }
-      return new Promise((resolve) => {
-        let settled = false;
-        const finish = (result: { valid: boolean; reason?: string }) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve(result);
-        };
-        const timer = setTimeout(() => finish({ valid: false, reason: 'probe_timeout' }), 2_500);
-        window.dispatchEvent(new CustomEvent('ridge:remote-open-text-link', {
-          detail: {
-            ...request,
-            origin: { ...request.origin, kind: 'shared' },
-            validateOnly: true,
-            resolveValidation: finish,
-          },
-        }));
-      });
-    },
-  });
-} catch (error) {
-  console.warn('[remote] terminal manager preload failed', error);
-}
 
 // iOS standalone historically exposed `navigator.standalone` without making
 // `(display-mode: standalone)` match. Mark the document before Svelte mounts

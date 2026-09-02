@@ -2,7 +2,7 @@
 id: L4-OBS-SRC-REMOTE-LIB-TERMINALCANVAS-SVELTE-7a29f415
 level: L4
 parent: L3-OBS-SRC-REMOTE-LIB-f2853d2d
-title: TerminalCanvas.svelte
+title: src/remote/lib/TerminalCanvas.svelte
 status: LOCKED
 origin: observed
 migration_state: CONFIRMED
@@ -11,26 +11,7 @@ observed_source_hash: 818be4df993b9bce2ea80f7e8c6e71eff235432927f95f50ff567a75e0
 code_targets:
   - src/remote/lib/TerminalCanvas.svelte
 test_targets:
-  - src/remote/lib/clipboard.test.ts
-  - src/remote/lib/cloudRemote.test.ts
-  - src/remote/lib/generationGuard.test.ts
-  - src/remote/lib/keyboardOffset.test.ts
-  - src/remote/lib/listenerCleanup.test.ts
-  - src/remote/lib/paneFeedScheduler.test.ts
-  - src/remote/lib/paneLifecycle.test.ts
-  - src/remote/lib/paneSwitchBuffer.test.ts
-  - src/remote/lib/remoteGitActions.test.ts
-  - src/remote/lib/RemoteGitPanel.test.ts
-  - src/remote/lib/remoteQueries.test.ts
-  - src/remote/lib/RemoteSidebar.test.ts
-  - src/remote/lib/scrollbackWorker.test.ts
-  - src/remote/lib/sidebarProvider.test.ts
-  - src/remote/lib/SidebarTeamRoster.test.ts
-  - src/remote/lib/teamRosterScope.test.ts
   - src/remote/lib/TerminalCanvas.test.ts
-  - src/remote/lib/theme.test.ts
-  - src/remote/lib/treeState.test.ts
-  - src/remote/lib/WorkspaceTree.test.ts
 public_interface:
   - "export function applyTheme(theme: Record<string, string>)"
   - export function claimPaneSize()
@@ -71,6 +52,6 @@ verified_by:
   - TEST-OBS-SRC-REMOTE-LIB-WORKSPACETREE-TEST-TS-9753d5fd
 ---
 
-# TerminalCanvas.svelte
+# src/remote/lib/TerminalCanvas.svelte
 
-On every explicit mobile keyboard open, including the first pane before any switch, the terminal captures the authoritative IME cursor anchor before focus and recomputes keyboard avoidance after focus and viewport change. The active input cell is shifted above the soft keyboard without relying on prior pane initialization. The hidden IME textarea never paints a second fixed caret; the focused terminal renderer remains the sole visible cursor owner, so its cursor follows the live TUI row and blink state. Explicit Remote refresh settles the current pane box, awaits the forced host size claim, and only then completes its local redraw step, allowing the caller to request the canonical current screen at the newly acknowledged dimensions.
+Terminal manager host configuration occurs at first authenticated attachment, before manager readiness or pane rendering.

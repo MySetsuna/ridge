@@ -79,12 +79,11 @@ impl Default for RemoteAuth {
     }
 }
 
-/// SECURITY (audit H5): shortened from 3 days to 12 hours. A session token is a
-/// bearer credential for full shell/file control over the LAN; a 3-day window
-/// gave a stolen/forgotten token a very long replay life. 12h still spans a
-/// normal working session while bounding exposure if a device is lost or a token
-/// leaks (e.g. via the `?token=` query string in logs/history).
-const SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
+/// SECURITY (audit H5): a session token is a bearer credential for full
+/// shell/file control over the LAN. Keep the one-day convenience window bounded
+/// by the existing device and source-IP pins; a stolen token still cannot be
+/// replayed from another device or address.
+const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Per-token binding + issue time. SECURITY (audit H5): tokens are pinned to the
 /// device id and source IP they were issued to, so a token sniffed/exfiltrated
