@@ -38,7 +38,7 @@ import type { ActiveWallpaperGpu, InputBufferState } from './types';
 import { perfMark } from './perfTrace';
 import { unknownText } from '../transport/unknownText';
 import { DEFAULT_TERM_FONT } from './fontStack';
-import { loadTerminalFonts, type FontDataInstaller } from './fontDataService';
+import type { FontDataInstaller } from './fontDataService';
 import { imeHelperCssPosition, type ImeAnchorInput } from './imeAnchor';
 import {
 	cellFromVisualClientPoint,
@@ -67,6 +67,12 @@ import {
 import { shouldWipeHostOnPaneRemount } from './hostRemountPolicy';
 import { shouldForwardPointerMotion, sgrReleaseButton } from './mouseForwardPolicy';
 import { SYNC_OUTPUT_TIMEOUT_MS, TUI_CURSOR_SETTLE_MS } from './renderTransaction';
+
+// Remote Web rasterizes with controller-side browser fonts; only desktop
+// installs Host-resolved font bytes into the shared WASM renderer.
+const loadHostFontDataService = import.meta.env.RIDGE_WEB_REMOTE === true
+	? null
+	: () => import('./fontDataService');
 
 // Shells use Ctrl+L as their clear-screen action. Keep this as input rather
 // than an ANSI output sequence so the shell/ConPTY cursor state is reset too.
@@ -131,6 +137,7 @@ import {
 import {
 	buildOpenPlanFromHit,
 	encodeUnderlineDataset,
+	isSafeHttpUrl,
 	planHostOpen,
 	underlineCssTokens,
 	type HostOpenAction,
@@ -504,6 +511,9 @@ interface PaneEntry {
 	linkUnderlineRegions: { row: number; c0: number; c1: number }[];
 	linkHintEl: HTMLDivElement | null;
 	linkHintRegion: { row: number; c0: number; c1: number } | null;
+	linkValidationKey: string | null;
+	linkValidationState: 'idle' | 'pending' | 'valid' | 'invalid';
+	linkValidationToken: number;
 	/** P1.3 (2026-05-19): last (offset, total) pair we surfaced via
 	 *  `scrollStateHandler`. The RAF tick diffs against this and emits
 	 *  only on change, so an idle pane never wakes the subscriber.
@@ -913,13 +923,21 @@ export class TerminalManager {
 	 */
 	private _ensureFontStack(stack: string): Promise<void> {
 		const key = stack.trim();
+		const fontDataServiceLoader = loadHostFontDataService;
+		if (!fontDataServiceLoader) {
+			this.loadedFontStacks.add(key);
+			return Promise.resolve();
+		}
 		if (this.loadedFontStacks.has(key)) return Promise.resolve();
 		const active = this.fontLoadPromises.get(key);
 		if (active) return active;
 		if (!this.fontInstaller) {
 			return Promise.reject(new Error('FONT_DATA_MISSING: wasm font installer is unavailable'));
 		}
-		const pending = loadTerminalFonts(key, this.fontInstaller).then(
+		const installer = this.fontInstaller;
+		const pending = fontDataServiceLoader().then(({ loadTerminalFonts }) => (
+			loadTerminalFonts(key, installer)
+		)).then(
 			() => {
 				this.loadedFontStacks.add(key);
 				this.fontLoadPromises.delete(key);
@@ -938,13 +956,15 @@ export class TerminalManager {
 		if (this.wasmReadyPromise !== null) return this.wasmReadyPromise;
 		const pending = (async () => {
 			await init(wasmUrl);
-			const fontModule = (await import('@ridge/term-wasm')) as unknown as {
-				installFontData?: (data: Uint8Array) => boolean;
-			};
-			if (typeof fontModule.installFontData !== 'function') {
-				throw new Error('FONT_DATA_MISSING: wasm bundle has no system-font installer');
+			if (loadHostFontDataService) {
+				const fontModule = (await import('@ridge/term-wasm')) as unknown as {
+					installFontData?: (data: Uint8Array) => boolean;
+				};
+				if (typeof fontModule.installFontData !== 'function') {
+					throw new Error('FONT_DATA_MISSING: wasm bundle has no system-font installer');
+				}
+				this.fontInstaller = fontModule.installFontData;
 			}
-			this.fontInstaller = fontModule.installFontData;
 			await this._ensureFontStack(this.opts.fontFamily);
 			this.wasmReady = true;
 			// §atlas-race forensics (2026-06-22): expose detector counters on
@@ -1468,15 +1488,17 @@ export class TerminalManager {
 				el.style.display = 'none';
 				continue;
 			}
-			const left = gridLeft + region.c0 * cellW;
-			const top = gridTop + (region.row + 1) * cellH - 1;
+			const dpr = window.devicePixelRatio || 1;
+			const left = Math.round((gridLeft + region.c0 * cellW) * dpr) / dpr;
+			const right = Math.round((gridLeft + region.c1 * cellW) * dpr) / dpr;
+			const top = Math.round((gridTop + (region.row + 1) * cellH - 1) * dpr) / dpr;
 			if (![left, top].every(Number.isFinite)) {
 				el.style.display = 'none';
 				continue;
 			}
 			el.style.left = `${left}px`;
 			el.style.top = `${top}px`;
-			el.style.width = `${Math.max(1, (region.c1 - region.c0) * cellW)}px`;
+			el.style.width = `${Math.max(1, right - left)}px`;
 			el.style.display = 'block';
 		}
 	}
@@ -1746,6 +1768,11 @@ export class TerminalManager {
 	}
 
 		private _clearPointerHover(entry: PaneEntry): void {
+			if (entry.linkValidationKey !== null) {
+				entry.linkValidationKey = null;
+				entry.linkValidationState = 'idle';
+				entry.linkValidationToken += 1;
+			}
 			if (entry.container.style.cursor !== 'pointer' && !entry.container.dataset.linkUnderline && entry.linkUnderlineRegions.length === 0 && !entry.linkHintRegion) return;
 			entry.container.style.cursor = '';
 			delete entry.container.dataset.linkUnderline;
@@ -1777,8 +1804,18 @@ export class TerminalManager {
 
 		private _updatePointerHover(entry: PaneEntry, pending: PointerEvent, hoverCell: { row: number; col: number } | null): void {
 			if (!hoverCell) return this._clearPointerHover(entry);
-			const link = entry.kernel.hyperlinkAt(hoverCell.row, hoverCell.col) as { uri?: string } | null;
+			const rawLink = entry.kernel.hyperlinkAt(hoverCell.row, hoverCell.col) as { uri?: string } | null;
+			const link = rawLink?.uri && isSafeHttpUrl(rawLink.uri) ? rawLink : null;
 			const span = link ? null : entry.linkSpans.hitTest(entry.kernel, hoverCell.row, hoverCell.col);
+			if (span?.kind === 'path') {
+				this._updatePathPointerHover(entry, pending, hoverCell, span);
+				return;
+			}
+			if (entry.linkValidationKey !== null) {
+				entry.linkValidationKey = null;
+				entry.linkValidationState = 'idle';
+				entry.linkValidationToken += 1;
+			}
 			const decision = decideHoverUnderline({
 				hasLinkHit: !!(link || span),
 				modifierHeld: linkModifierHeld(pending),
@@ -1786,6 +1823,72 @@ export class TerminalManager {
 				spanText: link?.uri ?? span?.text ?? null,
 			});
 			this._applyHoverDecision(entry, hoverCell, link, span, decision);
+		}
+
+		private _updatePathPointerHover(
+			entry: PaneEntry,
+			pending: PointerEvent,
+			hoverCell: { row: number; col: number },
+			span: LinkSpan,
+		): void {
+			const modifierHeld = linkModifierHeld(pending);
+			const cwd = TerminalManager._currentPaneCwd(entry);
+			const workspaceRoot = TerminalManager._workspaceRoot(entry);
+			const plan = buildOpenPlanFromHit({ text: span.text, kind: span.kind, paneCwd: cwd, workspaceRoot });
+			const validator = _hostPorts?.validateTextLink;
+			if (!modifierHeld || plan.type !== 'open_file' || !validator) {
+				if (entry.linkValidationKey !== null) {
+					entry.linkValidationKey = null;
+					entry.linkValidationState = 'idle';
+					entry.linkValidationToken += 1;
+				}
+				this._applyHoverDecision(entry, hoverCell, null, null, decideHoverUnderline({
+					hasLinkHit: false,
+					modifierHeld,
+				}));
+				return;
+			}
+			const key = [entry.workspaceId, entry.paneId, cwd ?? '', workspaceRoot ?? '', plan.path].join('\0');
+			if (entry.linkValidationKey === key && entry.linkValidationState === 'valid') {
+				this._applyHoverDecision(entry, hoverCell, null, span, decideHoverUnderline({
+					hasLinkHit: true,
+					modifierHeld: true,
+					isMac: isMacPlatform(),
+					spanText: span.text,
+				}));
+				return;
+			}
+			if (entry.linkValidationKey === key && entry.linkValidationState === 'pending') return;
+			if (entry.linkValidationKey === key && entry.linkValidationState === 'invalid') return;
+			entry.linkValidationKey = key;
+			entry.linkValidationState = 'pending';
+			const token = ++entry.linkValidationToken;
+			this._applyHoverDecision(entry, hoverCell, null, null, decideHoverUnderline({
+				hasLinkHit: false,
+				modifierHeld: true,
+			}));
+			const request: TerminalLinkOpenRequest = {
+				type: 'path',
+				path: plan.path,
+				line: plan.line,
+				col: plan.col,
+				cwd,
+				workspaceRoot,
+				origin: { kind: 'local', workspaceId: entry.workspaceId, paneId: entry.paneId },
+			};
+			void Promise.resolve(validator(request)).then((result) => {
+				if (this.panes.get(entry.paneId) !== entry || entry.linkValidationToken !== token || entry.linkValidationKey !== key) return;
+				entry.linkValidationState = result.valid ? 'valid' : 'invalid';
+				if (!result.valid || !linkModifierHeld(pending)) return;
+				this._applyHoverDecision(entry, hoverCell, null, span, decideHoverUnderline({
+					hasLinkHit: true,
+					modifierHeld: true,
+					isMac: isMacPlatform(),
+					spanText: span.text,
+				}));
+			}).catch(() => {
+				if (entry.linkValidationToken === token && entry.linkValidationKey === key) entry.linkValidationState = 'invalid';
+			});
 		}
 
 	private _flushPointerMove(paneId: string, pending: PointerEvent): void {
@@ -1840,7 +1943,8 @@ export class TerminalManager {
 		const linkMod = linkModifierHeld(event);
 		const terminalMod = event.ctrlKey || (isMac && event.metaKey);
 		const mouseReportingOn = entry.kernel.mouseReportingModes() !== 0;
-		const link = entry.kernel.hyperlinkAt(cell.row, cell.col) as { uri: string; id: string | null } | null;
+		const rawLink = entry.kernel.hyperlinkAt(cell.row, cell.col) as { uri: string; id: string | null } | null;
+		const link = rawLink?.uri && isSafeHttpUrl(rawLink.uri) ? rawLink : null;
 		const span = link ? null : entry.linkSpans.hitTest(entry.kernel, cell.row, cell.col);
 		const decision = decideLinkClick({
 			mouseReportingOn,
@@ -2390,6 +2494,9 @@ export class TerminalManager {
 			linkUnderlineRegions: [],
 			linkHintEl: bindings.linkHintEl,
 			linkHintRegion: null,
+			linkValidationKey: null,
+			linkValidationState: 'idle',
+			linkValidationToken: 0,
 			lastScrollOffset: -1,
 			lastScrollTotal: -1,
 			scrollStateHandler: null,
@@ -2674,6 +2781,8 @@ export class TerminalManager {
 		Object.assign(entry, {
 			container, canvas, handle, rendererRetained: false, linkUnderlineEls: [],
 			linkUnderlineRegions: [], linkHintEl, linkHintRegion: null,
+			linkValidationKey: null, linkValidationState: 'idle',
+			linkValidationToken: entry.linkValidationToken + 1,
 			cellW: Number(cellW), cellH: Number(cellH),
 			lastConfiguredDpr: dpr, lastReportedRows: -1, lastReportedCols: -1, lastAppliedPaddingPx: undefined,
 			renderPending: true,
@@ -4058,7 +4167,8 @@ export class TerminalManager {
 	openLinkAt(paneId: string, row: number, col: number): boolean {
 		const entry = this.panes.get(paneId);
 		if (!entry) return false;
-		const oscLink = entry.kernel.hyperlinkAt(row, col) as { uri?: string } | null;
+		const rawOscLink = entry.kernel.hyperlinkAt(row, col) as { uri?: string } | null;
+		const oscLink = rawOscLink?.uri && isSafeHttpUrl(rawOscLink.uri) ? rawOscLink : null;
 		const textSpan = oscLink
 			? null
 			: entry.linkSpans.hitTest(entry.kernel, row, col);
@@ -4086,7 +4196,8 @@ export class TerminalManager {
 	hasLinkAt(paneId: string, row: number, col: number): boolean {
 		const entry = this.panes.get(paneId);
 		if (!entry) return false;
-		const oscLink = entry.kernel.hyperlinkAt(row, col) as { uri?: string } | null;
+		const rawOscLink = entry.kernel.hyperlinkAt(row, col) as { uri?: string } | null;
+		const oscLink = rawOscLink?.uri && isSafeHttpUrl(rawOscLink.uri) ? rawOscLink : null;
 		return Boolean(oscLink?.uri || entry.linkSpans.hitTest(entry.kernel, row, col));
 	}
 
@@ -4804,14 +4915,16 @@ export class TerminalManager {
 	 *  container size; the broadcast Resize delta then grows every viewer's
 	 *  kernel grid, and the centered-letterbox tracking re-clips to it. In
 	 *  normal (non-shared) mode it is identical to `fitPaneNow`. */
-	claimPaneSize(paneId: string): void {
+	claimPaneSize(paneId: string): Promise<void> {
 		const entry = this.panes.get(paneId);
-		if (!entry || entry.parked) return;
+		if (!entry || entry.parked) return Promise.resolve();
 		if (entry.pendingFitTimer !== null) {
 			clearTimeout(entry.pendingFitTimer);
 			entry.pendingFitTimer = null;
 		}
-		void this.fitPane(entry, true, true);
+		// Preserve the forced-fit path formerly invoked as
+		// `void this.fitPane(entry, true, true)`, but expose its host acknowledgement.
+		const claim = this.fitPane(entry, true, true);
 		// iter-60 G2 self-heal: a claim is only "done" when the broadcast
 		// Resize delta round-trips into THIS kernel. If after 1s the kernel
 		// grid still disagrees with the last claimed target (delta dropped /
@@ -4832,6 +4945,7 @@ export class TerminalManager {
 			);
 			void this.fitPane(e, true, true);
 		}, 1000);
+		return claim;
 	}
 
 	/** Apply the canonical grid announced by another refresh owner. */

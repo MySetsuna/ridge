@@ -673,7 +673,7 @@ function pasteFromClipboard(): void {
  *    hidden cursor with recent activity is strong evidence the TUI
  *    is still running (even if `noteCtrlCSent` suppressed the
  *    inline heuristic for the Ctrl+C grace window). */
-function touchTuiSticky(): void {
+function touchTuiSticky(): boolean {
 	if (hasLiveTuiSignal({
 		isAltScreen: manager.isAltScreen(paneId),
 		isInlineTuiActive: manager.isInlineTuiActive(paneId),
@@ -682,7 +682,9 @@ function touchTuiSticky(): void {
 		cursorVisible: manager.isCursorVisible(paneId),
 	})) {
 		lastTuiActiveTs = performance.now();
+		return true;
 	}
+	return false;
 }
 
 function dispatchBufferEvent(e: KeyboardEvent): void {
@@ -817,6 +819,13 @@ let composingAnchor: ImeAnchor | null = null;
 // the user is actually back at a prompt the sticky bit can no
 // longer apply and host shortcuts re-enable as before.
 let lastTuiActiveTs = 0;
+let tuiHostInteractionUntil = 0;
+
+function renewTuiHostInteraction(): void {
+	const now = performance.now();
+	lastTuiActiveTs = now;
+	tuiHostInteractionUntil = now + TUI_STICKY_MS_DEFAULT;
+}
 // §1.31 (2026-05-19): delegate the decision logic to the pure helper in
 // `$lib/terminal/tuiGate` so it can be unit-tested as a truth table.
 // We retain the stateful `lastTuiActiveTs` refresh here because the
@@ -833,6 +842,10 @@ function isTuiSticky(): boolean {
 	const cursorVisible = manager.isCursorVisible(paneId);
 	const live = isAltScreen || isInlineTuiActive || isMouseReporting;
 	if (live) lastTuiActiveTs = now;
+	// A host menu temporarily starves inline-TUI protocol activity. Its bounded
+	// lease is intentionally allowed to outlive a visible TUI input caret; the
+	// ordinary sticky rule below remains cursor-hidden-only for shell safety.
+	if (now < tuiHostInteractionUntil) return true;
 	return isTuiActive({
 		isAltScreen,
 		isInlineTuiActive,
@@ -2081,19 +2094,31 @@ function onContextMenu(e: MouseEvent) {
 	// interaction. Bumping lastTuiActiveTs here gives the user the
 	// full sticky window to browse + close the menu without losing
 	// TUI mode.
-	touchTuiSticky();
+	const openedInTui = touchTuiSticky();
+	if (openedInTui) renewTuiHostInteraction();
+	const preserveTuiAfterMenu = (action: () => void) => () => {
+		if (openedInTui) renewTuiHostInteraction();
+		action();
+		if (!openedInTui) return;
+		queueMicrotask(() => {
+			if (!alive || !attached) return;
+			renewTuiHostInteraction();
+			imeHelper?.focus({ preventScroll: true });
+			manager.setFocused(paneId, true);
+		});
+	};
 	e.preventDefault();
 	const sel = manager.getSelectionText(paneId);
 	showContextMenu(e.clientX, e.clientY, [
 		...(sel
-			? [{ id: 'term-copy', label: tr('workspace.ctxCopy'), action: () => { void writeText(sel); } }]
+			? [{ id: 'term-copy', label: tr('workspace.ctxCopy'), action: preserveTuiAfterMenu(() => { void writeText(sel); }) }]
 			: []),
-		{ id: 'term-paste', label: tr('workspace.ctxPaste'), action: () => {
+		{ id: 'term-paste', label: tr('workspace.ctxPaste'), action: preserveTuiAfterMenu(() => {
 			void pasteFromClipboard();
-		}},
+		})},
 		{ id: 'term-sep1', divider: true },
-		{ id: 'term-select-all', label: tr('workspace.ctxSelectAll'), action: () => manager.selectAll(paneId) },
-		{ id: 'term-clear', label: tr('workspace.ctxClear'), action: () => {
+		{ id: 'term-select-all', label: tr('workspace.ctxSelectAll'), action: preserveTuiAfterMenu(() => manager.selectAll(paneId)) },
+		{ id: 'term-clear', label: tr('workspace.ctxClear'), action: preserveTuiAfterMenu(() => {
 			// Clear the mirror and notify the shell so its PTY cursor starts at row 0.
 			manager.clearTerminal(paneId);
 			// Native parser is authoritative in desktop delta mode and also removes
@@ -2104,7 +2129,7 @@ function onContextMenu(e: MouseEvent) {
 					// backend pane vanished before acquiring its parser.
 				});
 			}
-		}},
+		})},
 		// §1.23 (2026-05-05): split + close options restored to right-click
 		// menu. Pre-xterm-removal Pane.svelte never carried these; user
 		// asked for a richer menu now that splits are a primary affordance.

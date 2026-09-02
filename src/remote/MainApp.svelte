@@ -6,18 +6,14 @@
   // the bind:this instance ref below. Erased at build, so it does NOT defeat
   // the dynamic import / lazy-load on the next line.
   import type TerminalCanvasComponent from './lib/TerminalCanvas.svelte';
-  // §lazy-load: heavy components loaded on demand to reduce initial bundle.
-  // TerminalCanvas (with WASM) is only needed after auth + pane selection.
-  const TerminalCanvas = import('./lib/TerminalCanvas.svelte');
-  // VirtualKeyboard is only needed when user toggles it via header button.
-  const VirtualKeyboard = import('./lib/VirtualKeyboard.svelte');
-  // RemoteSidebar (file tree, git, search) loaded when sidebar is opened.
-  const RemoteSidebar = import('./lib/RemoteSidebar.svelte');
-  // Agent roster attention must keep running while the drawer is closed; the
-  // visible drawer reuses the same component when its Team tab is open.
-  const RemoteTeamRoster = import('./lib/SidebarTeamRoster.svelte');
-  // FileViewer (read-only file / git-diff overlay) loaded on first open.
-  const FileViewer = import('./lib/FileViewer.svelte');
+  // §lazy-load: creating an import promise starts a request immediately. Keep
+  // these promises null until the authenticated feature actually needs them;
+  // this prevents five optional chunks from competing with the first pane.
+  let terminalCanvasPromise: Promise<typeof import('./lib/TerminalCanvas.svelte')> | null = $state(null);
+  let virtualKeyboardPromise: Promise<typeof import('./lib/VirtualKeyboard.svelte')> | null = $state(null);
+  let remoteSidebarPromise: Promise<typeof import('./lib/RemoteSidebar.svelte')> | null = $state(null);
+  let remoteTeamRosterPromise: Promise<typeof import('./lib/SidebarTeamRoster.svelte')> | null = $state(null);
+  let fileViewerPromise: Promise<typeof import('./lib/FileViewer.svelte')> | null = $state(null);
   import BottomTabBar from './BottomTabBar.svelte';
   import {
     getRemotePanelAvailability,
@@ -44,8 +40,8 @@
     remotePerfStart,
   } from '@ridge/remote/shared/transport/remotePerfTrace';
   import { getTransport, type DataProvider } from '$lib/transport';
-  import type { TerminalLinkOpenRequest } from '@ridge/remote/shared/terminal/ports';
-  import { probePathWithCache } from '@ridge/remote/shared/terminal/linkOpenHost';
+  import type { TerminalLinkOpenRequest, TerminalLinkValidationResult } from '@ridge/remote/shared/terminal/ports';
+  import { looksOutsideWorkspace, probePathWithCache } from '@ridge/remote/shared/terminal/linkOpenHost';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { MobileRemoteUiState } from './lib/mobileRemoteUiState.svelte';
   import {
@@ -232,9 +228,16 @@
   }
 
   function handleRemoteTextLink(event: Event): void {
-    const detail = (event as CustomEvent<TerminalLinkOpenRequest>).detail;
+    const detail = (event as CustomEvent<TerminalLinkOpenRequest & {
+      validateOnly?: boolean;
+      resolveValidation?: (result: TerminalLinkValidationResult) => void;
+    }>).detail;
     const path = detail?.type === 'path' ? detail.path?.trim() : '';
-    if (!path) return;
+    const scope = detail.cwd?.trim() || detail.workspaceRoot?.trim();
+    if (!path || !scope || looksOutsideWorkspace(path, scope)) {
+      detail.resolveValidation?.({ valid: false, reason: 'outside_workspace' });
+      return;
+    }
     const line = detail.line;
     linkError = '';
     const provider = dataProvider ?? getTransport();
@@ -256,19 +259,23 @@
         throw error;
       }
     }).then((proof) => {
+      if (detail.validateOnly) {
+        detail.resolveValidation?.({
+          valid: proof.exists && proof.isDirectory !== true,
+          reason: !proof.exists ? 'missing_path' : proof.isDirectory ? 'directory_path' : undefined,
+        });
+        return;
+      }
       if (!proof.exists) {
         linkError = `路径不存在：${path}`;
       } else if (proof.isDirectory) {
-        linkedDirectory = {
-          workspaceId: detail.origin.workspaceId,
-          paneId: detail.origin.paneId,
-          path,
-        };
-        ui.sidebarTab = 'files';
+        linkError = `非文件路径：${path}`;
       } else {
         openFileViewer(path, line);
       }
     }).catch((error) => {
+      detail.resolveValidation?.({ valid: false, reason: 'probe_failed' });
+      if (detail.validateOnly) return;
       linkError = `路径验证失败：${error instanceof Error ? error.message : String(error)}`;
     });
   }
@@ -385,7 +392,10 @@
       page = await ws.fetchOlderScrollback(pane);
       if (!page || !remoteAppAlive) return;
       const bytes = await scrollbackDecoder.decode(pane, page.startSeq, page.endSeq, page.bytes);
-      if (remoteAppAlive && bytes && targetCanvas.prependScrollbackForPane(key, bytes)) page.commit();
+      if (!remoteAppAlive || !bytes) return;
+      if (!page.commit(() => targetCanvas.prependScrollbackForPane(key, bytes))) {
+        throw new Error('scrollback page changed before prepend commit');
+      }
     } catch {
       if (remoteAppAlive && !scrollbackErrorPaneIds.includes(key)) {
         scrollbackErrorPaneIds = [...scrollbackErrorPaneIds, key];
@@ -660,12 +670,24 @@
     return ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight, 'remote');
   }
 
-  function handleRefresh() {
-    if (ui.activePaneId && canvasRef) {
+  async function handleRefresh() {
+    const pane = activePaneRef();
+    if (pane && canvasRef) {
       // Pane box is the sole geometry authority. Measure the settled box and
       // force a host remount/redraw at that grid, even when rows×cols match
       // the last claim (same-size fit used to be a silent no-op).
-      canvasRef.claimPaneSize();
+      await canvasRef.claimPaneSize();
+    }
+    if (pane) {
+      // Refresh is an explicit canonical-screen recovery boundary. Do not let
+      // bytes queued against the pre-claim geometry race ahead of the host's
+      // full-screen replay.
+      const key = paneRefKey(pane);
+      paneFeedScheduler.clear(key);
+      pendingRawFrames.drop(key);
+      canvasRef?.clearPendingFeed(key);
+      clearFeedResync(key);
+      ws.resyncPane?.(pane);
     }
     ws.listPanes();
     refreshWorkspaces();
@@ -676,6 +698,9 @@
   function refreshActivePane() {
     if (!ui.activePaneId || !canvasRef) return;
     const pid = ui.activePaneId;
+    const workspaceId = ui.activeWorkspaceId;
+    const targetCanvas = canvasRef;
+    const targetKey = paneRefKey({ workspaceId, paneId: pid });
     // Debounce: coalesce rapid calls
     if (_refreshTimer !== null) clearTimeout(_refreshTimer);
     _refreshTimer = setTimeout(() => {
@@ -684,8 +709,8 @@
       if (cur <= _refreshSeq) return; // stale, a newer call already went through
       _refreshSeq = cur;
       const pane = activePaneRef();
-      if (pane && pane.paneId === pid) {
-        canvasRef?.fitPaneNow();
+      if (pane && paneRefKey(pane) === targetKey && canvasRef === targetCanvas) {
+        void targetCanvas.fitPaneNow();
       }
     }, 100);
   }
@@ -1093,6 +1118,35 @@
     if (canvasRef && kernelTheme) canvasRef.applyTheme(kernelTheme);
   });
 
+  // Trigger each optional chunk only after the authenticated app is connected
+  // and the corresponding surface is relevant. The promises are cached so a
+  // pane/sidebar switch never creates duplicate module requests.
+  $effect(() => {
+    if (wsState === 'connected' && ui.activePaneId) {
+      terminalCanvasPromise ??= import('./lib/TerminalCanvas.svelte');
+    }
+  });
+  $effect(() => {
+    if (wsState === 'connected' && ui.showKeyboard) {
+      virtualKeyboardPromise ??= import('./lib/VirtualKeyboard.svelte');
+    }
+  });
+  $effect(() => {
+    if (wsState === 'connected' && ui.sidebarTab !== null) {
+      remoteSidebarPromise ??= import('./lib/RemoteSidebar.svelte');
+    }
+  });
+  $effect(() => {
+    if (wsState === 'connected' && panelAvailability.team) {
+      remoteTeamRosterPromise ??= import('./lib/SidebarTeamRoster.svelte');
+    }
+  });
+  $effect(() => {
+    if (wsState === 'connected' && ui.viewer) {
+      fileViewerPromise ??= import('./lib/FileViewer.svelte');
+    }
+  });
+
   // Seed the sidebar root from the active pane's cwd (pty-meta refines it live).
   $effect(() => {
     const p = panes.find((pp) => pp.id === ui.activePaneId);
@@ -1224,11 +1278,15 @@
       </div>
       {#if ui.showKeyboard}
         <div class="vk-section">
-          {#await VirtualKeyboard}
+          {#if virtualKeyboardPromise}
+            {#await virtualKeyboardPromise}
+              <div class="vk-loading">{$t('mobile.initializingTerminal')}</div>
+            {:then module}
+              <module.default onKey={(k: string, c: boolean, a: boolean, s: boolean) => canvasRef?.handleVirtualKey(k, c, a, s)} />
+            {/await}
+          {:else}
             <div class="vk-loading">{$t('mobile.initializingTerminal')}</div>
-          {:then module}
-            <module.default onKey={(k: string, c: boolean, a: boolean, s: boolean) => canvasRef?.handleVirtualKey(k, c, a, s)} />
-          {/await}
+          {/if}
         </div>
       {/if}
     </header>
@@ -1237,98 +1295,110 @@
         inside the terminal region; initialization failures remain visible. -->
     <div class="term-stage" style:transform={`translateY(${ui.keyboardShift}px)`}>
       <canvas class="host-canvas" data-rg-host aria-hidden="true" use:hostCanvas></canvas>
-      {#await TerminalCanvas}
+      {#if terminalCanvasPromise}
+        {#await terminalCanvasPromise}
+          <div class="terminal-loading">{$t('mobile.initializingTerminal')}</div>
+        {:then module}
+          <!-- §keep-alive (P4): key on activePaneId so switching panes REMOUNTS the
+               input surface (onMount attach/unpark, onDestroy park) — mirroring the
+               desktop RidgePane mount/unmount → attach/park lifecycle. The pane's
+               kernel survives the remount (parked), so no wipe / no white-screen. -->
+          {#key `${ui.activeWorkspaceId}:${ui.activePaneId}`}
+            <module.default
+              bind:this={canvasRef}
+               bind:backendName
+               hostError={hostCanvasError}
+               paneId={ui.activePaneId}
+              workspaceId={ui.activeWorkspaceId}
+              agentState={activePane?.agentState ?? (activePane?.isAgent ? 'busy' : undefined)}
+              agentNeedsAttention={paneNeedsAttention(activePane)}
+              {onStdin}
+              {onInputTask}
+              onFocus={onPaneFocus}
+              {onResize}
+              onDrainPending={drainPendingRawFrames}
+              onFirstPaint={markPaneFirstPaint}
+              onHostClipboard={(text) => ws.setHostClipboard(text)}
+              onNearTop={loadOlderScrollback}
+              onKeyboardShift={(shift: number) => ui.keyboardShift = shift}
+              scrollbackLoading={scrollbackLoadingPaneIds.includes(`${ui.activeWorkspaceId}:${ui.activePaneId}`)}
+              scrollbackError={scrollbackErrorPaneIds.includes(`${ui.activeWorkspaceId}:${ui.activePaneId}`)}
+              onRetryScrollback={loadOlderScrollback}
+              bind:selectionMode={ui.selectionMode}
+              sentenceBuffer={ui.sentenceBuffer}
+            />
+          {/key}
+        {/await}
+      {:else}
         <div class="terminal-loading">{$t('mobile.initializingTerminal')}</div>
-      {:then module}
-        <!-- §keep-alive (P4): key on activePaneId so switching panes REMOUNTS the
-             input surface (onMount attach/unpark, onDestroy park) — mirroring the
-             desktop RidgePane mount/unmount → attach/park lifecycle. The pane's
-             kernel survives the remount (parked), so no wipe / no white-screen. -->
-        {#key `${ui.activeWorkspaceId}:${ui.activePaneId}`}
-          <module.default
-            bind:this={canvasRef}
-             bind:backendName
-             hostError={hostCanvasError}
-             paneId={ui.activePaneId}
-            workspaceId={ui.activeWorkspaceId}
-            agentState={activePane?.agentState ?? (activePane?.isAgent ? 'busy' : undefined)}
-            agentNeedsAttention={paneNeedsAttention(activePane)}
-            {onStdin}
-            {onInputTask}
-            onFocus={onPaneFocus}
-            {onResize}
-            onDrainPending={drainPendingRawFrames}
-            onFirstPaint={markPaneFirstPaint}
-            onHostClipboard={(text) => ws.setHostClipboard(text)}
-            onNearTop={loadOlderScrollback}
-            onKeyboardShift={(shift: number) => ui.keyboardShift = shift}
-            scrollbackLoading={scrollbackLoadingPaneIds.includes(`${ui.activeWorkspaceId}:${ui.activePaneId}`)}
-            scrollbackError={scrollbackErrorPaneIds.includes(`${ui.activeWorkspaceId}:${ui.activePaneId}`)}
-            onRetryScrollback={loadOlderScrollback}
-            bind:selectionMode={ui.selectionMode}
-            sentenceBuffer={ui.sentenceBuffer}
-          />
-        {/key}
-      {/await}
+      {/if}
     </div>
   {/if}
 
   {#if ui.sidebarTab !== null && panelAvailability[ui.sidebarTab]}
     <div class="sidebar-overlay" onclick={() => ui.sidebarTab = null} role="presentation"></div>
-    {#await RemoteSidebar}
-      <div class="sidebar-loading">{$t('mobile.loading')}</div>
-    {:then module}
-      <module.default
-        tab={ui.sidebarTab}
-        available={panelAvailability}
-        cwd={activeCwd}
-        workspaceId={ui.activeWorkspaceId}
-        paneId={ui.activePaneId ?? undefined}
-        initialDirectory={linkedDirectory?.workspaceId === ui.activeWorkspaceId
-          && linkedDirectory?.paneId === ui.activePaneId
-          ? linkedDirectory.path
-          : ''}
-        {ws}
-        {panes}
-        attentionPaneIds={activeAttentionPaneIds()}
-        {dataProvider}
-        onClose={() => ui.sidebarTab = null}
-        onTabChange={selectSidebarTab}
-        onOpenFile={openFileViewer}
-        onOpenDiff={openDiffViewer}
-        onSelectPane={selectAgentPane}
-        onAttentionChange={updateAgentAttention}
-      />
-    {/await}
-  {/if}
-
-  {#if panelAvailability.team && wsState === 'connected' && ui.sidebarTab !== 'team'}
-    <div class="agent-attention-monitor" aria-hidden="true">
-      {#await RemoteTeamRoster then module}
+    {#if remoteSidebarPromise}
+      {#await remoteSidebarPromise}
+        <div class="sidebar-loading">{$t('mobile.loading')}</div>
+      {:then module}
         <module.default
-          {ws}
+          tab={ui.sidebarTab}
+          available={panelAvailability}
+          cwd={activeCwd}
           workspaceId={ui.activeWorkspaceId}
-          {queryClient}
+          paneId={ui.activePaneId ?? undefined}
+          initialDirectory={linkedDirectory?.workspaceId === ui.activeWorkspaceId
+            && linkedDirectory?.paneId === ui.activePaneId
+            ? linkedDirectory.path
+            : ''}
+          {ws}
           {panes}
           attentionPaneIds={activeAttentionPaneIds()}
+          {dataProvider}
+          onClose={() => ui.sidebarTab = null}
+          onTabChange={selectSidebarTab}
+          onOpenFile={openFileViewer}
+          onOpenDiff={openDiffViewer}
           onSelectPane={selectAgentPane}
           onAttentionChange={updateAgentAttention}
         />
       {/await}
+    {:else}
+      <div class="sidebar-loading">{$t('mobile.loading')}</div>
+    {/if}
+  {/if}
+
+  {#if panelAvailability.team && wsState === 'connected' && ui.sidebarTab !== 'team'}
+    <div class="agent-attention-monitor" aria-hidden="true">
+      {#if remoteTeamRosterPromise}
+        {#await remoteTeamRosterPromise then module}
+          <module.default
+            {ws}
+            workspaceId={ui.activeWorkspaceId}
+            {queryClient}
+            {panes}
+            attentionPaneIds={activeAttentionPaneIds()}
+            onSelectPane={selectAgentPane}
+            onAttentionChange={updateAgentAttention}
+          />
+        {/await}
+      {/if}
     </div>
   {/if}
 
   {#if ui.viewer}
     {@const v = ui.viewer}
-    {#await FileViewer then module}
-      <module.default
-        provider={sidebarProvider}
-        kind={v.kind}
-        path={v.path}
-        line={v.line}
-        onClose={closeViewer}
-      />
-    {/await}
+    {#if fileViewerPromise}
+      {#await fileViewerPromise then module}
+        <module.default
+          provider={sidebarProvider}
+          kind={v.kind}
+          path={v.path}
+          line={v.line}
+          onClose={closeViewer}
+        />
+      {/await}
+    {/if}
   {/if}
 
   <BottomTabBar

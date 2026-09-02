@@ -78,9 +78,7 @@ describe('web-remote service worker', () => {
     expect(state.caches.open).toHaveBeenCalledWith('ridge-web-remote-test-version');
     expect(state.caches.open).toHaveBeenCalledWith('ridge-version-test-version');
     expect((globalThis.self as any).skipWaiting).toHaveBeenCalled();
-    expect(state.clients[0].postMessage).toHaveBeenCalledWith({
-      type: 'CLEAR_STORAGE', version: 'test-version',
-    });
+    expect(state.clients[0].postMessage).not.toHaveBeenCalled();
 
     state.cacheKeys.add('old-cache');
     const activateWait = vi.fn();

@@ -318,8 +318,19 @@ describe('RemoteConnection public communication contract', () => {
 		ws.receive({ type: 'scrollback-before-result', _reqId: pageFrame._reqId, bytes: 'old', startSeq: 1, endSeq: 10, atOldest: false });
 		const page = await pagePromise;
 		if (!page) throw new Error('missing scrollback page');
+		const rejectedApply = vi.fn(() => false);
+		expect(page.commit(rejectedApply)).toBe(false);
+		expect(rejectedApply).toHaveBeenCalledOnce();
 		page.discard();
-		expect(page.commit()).toBe(false);
+		expect(page.commit(() => true)).toBe(false);
+
+		const retryPromise = conn.fetchOlderScrollback(pane);
+		const retryFrame = [...ws.sent].reverse().find((item) => item.type === 'scrollback-before');
+		if (!retryFrame) throw new Error('missing retry scrollback request');
+		expect(retryFrame.beforeSeq).toBe(10);
+		ws.receive({ type: 'scrollback-before-result', _reqId: retryFrame._reqId, bytes: 'old', startSeq: 1, endSeq: 10, atOldest: true });
+		const retryPage = await retryPromise;
+		expect(retryPage?.commit(() => true)).toBe(true);
 		conn.disconnect();
 	});
 

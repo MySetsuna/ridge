@@ -571,7 +571,7 @@ export interface PendingScrollbackPage {
   startSeq: number;
   endSeq: number;
   atOldest: boolean;
-  commit(): boolean;
+  commit(apply: () => boolean): boolean;
   discard(): void;
 }
 
@@ -1457,8 +1457,13 @@ export class RemoteConnection implements RemoteLink {
         startSeq,
         endSeq,
         atOldest: !!result.atOldest,
-        commit: () => {
+        commit: (apply) => {
           if (settled || this.scrollbackCursor.get(key)?.oldestSeq !== endSeq) return false;
+          try {
+            if (!apply()) return false;
+          } catch {
+            return false;
+          }
           this.scrollbackCursor.set(key, { oldestSeq: startSeq, atOldest: !!result.atOldest });
           finish();
           return true;

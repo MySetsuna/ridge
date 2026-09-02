@@ -45,8 +45,9 @@ class ErrorReplyWorker {
 
 describe('scrollback worker protocol', () => {
   it('decodes bounded page without owning pane state', () => {
-    const result = decodeScrollback({ type: 'decode', requestId: 7, workspaceId: 'ws', paneId: 'p', startSeq: 1, endSeq: 2, bytes: new TextEncoder().encode('ok').buffer });
-    expect(result?.text).toBe('ok');
+    const raw = new Uint8Array([0xf0, 0x28, 0x8c, 0x28]);
+    const result = decodeScrollback({ type: 'decode', requestId: 7, workspaceId: 'ws', paneId: 'p', startSeq: 1, endSeq: 5, bytes: raw.buffer });
+    expect(new Uint8Array(result?.bytes ?? new ArrayBuffer(0))).toEqual(raw);
     expect(result?.requestId).toBe(7);
   });
   it('rejects invalid or stale seq range', () => {
@@ -56,8 +57,8 @@ describe('scrollback worker protocol', () => {
   it('settles and falls back when the worker message channel is closed', async () => {
     await withWorker(ClosedWorker as unknown as typeof Worker, async () => {
       const decoder = new ScrollbackDecoder();
-      await expect(decoder.decode({ workspaceId: 'ws', paneId: 'p' }, 1, 2, requestBytes())).resolves.toBeNull();
-      await expect(decoder.decode({ workspaceId: 'ws', paneId: 'p' }, 1, 2, requestBytes())).resolves.toEqual(requestBytes());
+      await expect(decoder.decode({ workspaceId: 'ws', paneId: 'p' }, 1, 3, requestBytes())).resolves.toBeNull();
+      await expect(decoder.decode({ workspaceId: 'ws', paneId: 'p' }, 1, 3, requestBytes())).resolves.toEqual(requestBytes());
       decoder.dispose();
     });
   });
@@ -65,7 +66,7 @@ describe('scrollback worker protocol', () => {
   it('resolves pending work on dispose and leaves no worker callback alive', async () => {
     await withWorker(SilentWorker as unknown as typeof Worker, async () => {
       const decoder = new ScrollbackDecoder();
-      const result = decoder.decode({ workspaceId: 'ws', paneId: 'p' }, 1, 2, requestBytes());
+      const result = decoder.decode({ workspaceId: 'ws', paneId: 'p' }, 1, 3, requestBytes());
       decoder.dispose();
       await expect(result).resolves.toBeNull();
       decoder.dispose();
@@ -75,44 +76,27 @@ describe('scrollback worker protocol', () => {
   it('settles a worker decode error immediately instead of waiting for timeout', async () => {
     await withWorker(ErrorReplyWorker as unknown as typeof Worker, async () => {
       const decoder = new ScrollbackDecoder();
-      const result = decoder.decode({ workspaceId: 'ws', paneId: 'p' }, 1, 2, requestBytes());
+      const result = decoder.decode({ workspaceId: 'ws', paneId: 'p' }, 1, 3, requestBytes());
       await expect(result).resolves.toBeNull();
       decoder.dispose();
     });
   });
 
-  it('worker catches decoder faults and emits a request-scoped error', () => {
+  it('worker rejects a byte-range mismatch with a request-scoped error', () => {
     const scope = {
       onmessage: null as ((event: MessageEvent) => void) | null,
       postMessage: vi.fn(),
     };
-    const PreviousDecoder = globalThis.TextDecoder;
-    class ThrowingDecoder {
-      decode(): string { throw new Error('malformed bytes'); }
-    }
-    Object.defineProperty(globalThis, 'TextDecoder', {
-      configurable: true,
-      writable: true,
-      value: ThrowingDecoder,
-    });
-    try {
-      installScrollbackWorker(scope);
-      scope.onmessage?.({
-        data: {
-          type: 'decode', requestId: 42, workspaceId: 'ws', paneId: 'p',
-          startSeq: 1, endSeq: 2, bytes: new ArrayBuffer(1),
-        },
-      } as MessageEvent);
-      expect(scope.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-        type: 'error', requestId: 42, workspaceId: 'ws', paneId: 'p',
-      }));
-    } finally {
-      Object.defineProperty(globalThis, 'TextDecoder', {
-        configurable: true,
-        writable: true,
-        value: PreviousDecoder,
-      });
-    }
+    installScrollbackWorker(scope);
+    scope.onmessage?.({
+      data: {
+        type: 'decode', requestId: 42, workspaceId: 'ws', paneId: 'p',
+        startSeq: 1, endSeq: 3, bytes: new ArrayBuffer(1),
+      },
+    } as MessageEvent);
+    expect(scope.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error', requestId: 42, workspaceId: 'ws', paneId: 'p',
+    }));
   });
 
   it('worker settles invalid sequence requests instead of leaving them pending', () => {
@@ -132,14 +116,9 @@ describe('scrollback worker protocol', () => {
     }));
   });
 
-  it('synchronous fallback settles decoder faults as null', async () => {
+  it('synchronous fallback settles malformed ranges as null', async () => {
     const previousWorker = (globalThis as typeof globalThis & { Worker?: typeof Worker }).Worker;
-    const PreviousDecoder = globalThis.TextDecoder;
-    class ThrowingDecoder {
-      decode(): string { throw new Error('malformed bytes'); }
-    }
     Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: undefined });
-    Object.defineProperty(globalThis, 'TextDecoder', { configurable: true, writable: true, value: ThrowingDecoder });
     try {
       const decoder = new ScrollbackDecoder();
       await expect(decoder.decode({ workspaceId: 'ws', paneId: 'p' }, 1, 2, requestBytes())).resolves.toBeNull();
@@ -147,15 +126,14 @@ describe('scrollback worker protocol', () => {
     } finally {
       if (previousWorker) Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker });
       else Reflect.deleteProperty(globalThis, 'Worker');
-      Object.defineProperty(globalThis, 'TextDecoder', { configurable: true, writable: true, value: PreviousDecoder });
     }
   });
 
   it('cancels only the destroyed pane and keeps other pane work pending', async () => {
     await withWorker(SilentWorker as unknown as typeof Worker, async () => {
       const decoder = new ScrollbackDecoder();
-      const destroyed = decoder.decode({ workspaceId: 'ws', paneId: 'gone' }, 1, 2, requestBytes());
-      const retained = decoder.decode({ workspaceId: 'ws', paneId: 'live' }, 1, 2, requestBytes());
+      const destroyed = decoder.decode({ workspaceId: 'ws', paneId: 'gone' }, 1, 3, requestBytes());
+      const retained = decoder.decode({ workspaceId: 'ws', paneId: 'live' }, 1, 3, requestBytes());
 
       decoder.cancel('ws:gone');
       await expect(destroyed).resolves.toBeNull();

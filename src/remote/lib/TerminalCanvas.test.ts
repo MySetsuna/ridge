@@ -37,7 +37,8 @@ describe('remote pane Agent status chrome contract', () => {
   it('keeps renderer cursor ownership when the mobile IME sink blurs', () => {
     expect(source).toContain('manager.setFocused(paneId, true);');
     expect(source).not.toContain('onblur={() => manager.setFocused(paneId, false)}');
-    expect(source).toContain('caret-color:var(--rg-accent,#58a6ff)');
+    expect(source).toContain('caret-color:transparent');
+    expect(source).not.toContain('caret-color:var(--rg-accent,#58a6ff)');
   });
 
   it('pins IME composition to the captured input cursor and updates after PTY input', () => {
@@ -57,8 +58,11 @@ describe('remote pane Agent status chrome contract', () => {
       source.indexOf('const pendingFrames = onDrainPending?.(paneId) ?? [];'),
     );
     expect(source).toContain('return onPaneResize(pane, rows, cols');
-    expect(source).toContain('export function claimPaneSize()');
-    expect(source).toContain('manager.claimPaneSize(paneId)');
+    expect(source).toContain('export function claimPaneSize(): Promise<void>');
+    expect(source).toContain('for (let frame = 0; frame < 30; frame += 1)');
+    expect(source).toContain('const viewport = window.visualViewport;');
+    expect(source).toContain('manager.resizeHost();');
+    expect(source).toContain('await manager.claimPaneSize(paneId);');
     expect(source).toContain('manager.forceFullRedraw(paneId)');
     expect(source).toContain('export function resizeKernel(rows: number, cols: number)');
     expect(source).toContain('manager.applyPaneResize(paneId, rows, cols)');
@@ -82,6 +86,18 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain("decideTouchMouseGesture('release')");
     expect(source).toContain('manager.hasLinkAt(paneId, startCell.row, startCell.col)');
     expect(source).toContain('ontouchcancel={handleTouchCancel}');
+  });
+
+  it('cancels compatibility clicks before focusing the mobile IME sink', () => {
+    expect(source).toContain('Cancel its compatibility');
+    expect(source).toMatch(/if \(elapsed >= TOUCH_TAP_MAX_MS\) return;\r?\n\s+\/\/ Focus happens[\s\S]*?e\.preventDefault\(\);/);
+    expect(source).toMatch(/if \(!wasDragging\) \{\r?\n\s+e\.preventDefault\(\);\r?\n\s+openSoftKeyboard\(\);/);
+  });
+
+  it('seeds first-pane keyboard avoidance from the trusted tap', () => {
+    expect(source).toMatch(/scrollToBottom: \(\) => \{[\s\S]*?manager\.scrollToBottom\(paneId\);[\s\S]*?manager\.captureImeAnchor\(paneId\);/);
+    expect(source).toMatch(/activateIme\(\{[\s\S]*?requestAnimationFrame\(\(\) => \{[\s\S]*?requestKeyboardShift\(\);/);
+    expect(source).toMatch(/manager\.onImeAnchor\(paneId,[\s\S]*?positionInputAtCursorOrCenter\(\);[\s\S]*?requestKeyboardShift\(\);/);
   });
 
   it('requires the platform modifier for mouse links while preserving touch taps', () => {

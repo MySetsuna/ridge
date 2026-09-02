@@ -2,45 +2,6 @@
 import { mount } from 'svelte';
 import App from './App.svelte';
 import { registerSW } from 'virtual:pwa-register';
-import { REMOTE_TERM_FONT } from '@ridge/remote/shared/terminal/fontStack';
-
-// §P4 host-ports (2026-07-25): the shared TerminalManager reads app capabilities
-// (terminal scrollback lines / font / shell) through injected HostPorts. Mobile
-// has no desktop settings store, so inject a minimal static port BEFORE the
-// terminal mounts (attach happens post-auth, long after this dynamic import
-// resolves). Dynamic import keeps the large manager out of the mobile entry
-// bundle — the lazy TerminalCanvas loads it on first pane attach; this just
-// primes the module-level ports it will read. Only `settings` is meaningful for
-// mobile (scrollback capacity at attach); the rest default gracefully.
-try {
-  const { TerminalManager } = await import('@ridge/remote/shared/terminal/manager');
-  const snapshot = {
-    terminalScrollbackLines: 2000,
-    terminalFontFamily: REMOTE_TERM_FONT,
-    defaultShell: '',
-  };
-  TerminalManager.setHostPorts({
-    settings: {
-      get: () => snapshot,
-      subscribe: (cb) => { cb(snapshot); return () => {}; },
-    },
-    openTextLink: (request) => {
-      if (request.type === 'url' && request.href) {
-        window.open(request.href, '_blank', 'noopener,noreferrer');
-        return { handled: true };
-      }
-      window.dispatchEvent(new CustomEvent('ridge:remote-open-text-link', {
-        detail: {
-          ...request,
-          origin: { ...request.origin, kind: 'shared' },
-        },
-      }));
-      return { handled: true };
-    },
-  });
-} catch (error) {
-  console.warn('[remote] terminal manager preload failed', error);
-}
 
 // iOS standalone historically exposed `navigator.standalone` without making
 // `(display-mode: standalone)` match. Mark the document before Svelte mounts
@@ -127,29 +88,5 @@ applyUpdate = registerSW({
 });
 
 document.addEventListener('visibilitychange', flushUpdateWhenHidden);
-
-// §version-gate: listen for CLEAR_STORAGE message from SW (sent on version
-// mismatch). This clears all client-side storage to ensure a clean slate with
-// the new build. Then reload to re-authenticate cleanly.
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.addEventListener('message', (event) => {
-    if (event.data?.type === 'CLEAR_STORAGE') {
-      console.log('[remote] Clearing client storage due to version mismatch:', event.data.version);
-      try { localStorage.clear(); } catch {}
-      try { sessionStorage.clear(); } catch {}
-      // IndexedDB clearing is async; best-effort for known DBs.
-      void Promise.resolve()
-        .then(() => indexedDB.databases?.())
-        .then((dbs) => {
-          for (const db of dbs ?? []) {
-            if (db.name) indexedDB.deleteDatabase(db.name);
-          }
-        })
-        .catch((error) => console.warn('[remote] IndexedDB cleanup failed', error));
-      // Reload to start fresh with new build.
-      window.location.reload();
-    }
-  });
-}
 
 export default app;

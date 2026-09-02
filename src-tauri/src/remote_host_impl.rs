@@ -3868,6 +3868,15 @@ async fn dispatch_core_git_offloaded(
 /// JSON-RPC `INTERNAL_ERROR` (-32603) code with that message preserved; the
 /// `code`/`data` fidelity improves automatically as each handler migrates into
 /// `ridge-core` (S1 ledger).
+#[tauri::command]
+pub async fn dispatch_remote_invoke(
+    method: String,
+    args: serde_json::Value,
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, serde_json::Value> {
+    dispatch_invoke_jsonrpc(&method, &args, state.inner()).await
+}
+
 async fn dispatch_invoke_jsonrpc(
     cmd: &str,
     args: &serde_json::Value,

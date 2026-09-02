@@ -36,10 +36,11 @@ describe('linkOpenHost (C51)', () => {
     const a = planHostOpen('https://example.com/x', 'url');
     expect(a).toEqual({ type: 'open_url', href: 'https://example.com/x' });
     expect(isSafeHttpUrl('javascript:alert(1)')).toBe(false);
+    expect(isSafeHttpUrl('https://user:secret@example.com/x')).toBe(false);
   });
 
   it('resolves relative path against cwd (rel kind)', () => {
-    const a = planHostOpen('src/main.rs:10:2', 'rel', {
+    const a = planHostOpen('src/main.rs:10:2', 'path', {
       paneCwd: 'C:\\code\\wind',
       workspaceRoot: 'C:\\code\\wind',
     });
@@ -51,17 +52,18 @@ describe('linkOpenHost (C51)', () => {
     }
   });
 
-  it('resolves win-abs / posix-abs / home path kinds', () => {
-    const win = planHostOpen('C:\\code\\wind\\src\\x.rs', 'win-abs');
+  it('resolves workspace-contained absolute paths', () => {
+    const win = planHostOpen('C:\\code\\wind\\src\\x.rs', 'path', { workspaceRoot: 'C:\\code\\wind' });
     expect(win.type).toBe('open_file');
-    const posix = planHostOpen('/home/u/proj/a.ts', 'posix-abs');
+    const posix = planHostOpen('/home/u/proj/a.ts', 'path', { workspaceRoot: '/home/u/proj' });
     expect(posix.type).toBe('open_file');
-    const home = planHostOpen('~/proj/a.ts', 'home');
-    expect(home.type).toBe('open_file');
+    expect(planHostOpen('/home/u/other/a.ts', 'path', { workspaceRoot: '/home/u/proj' })).toEqual({
+      type: 'noop', reason: 'outside_workspace',
+    });
   });
 
   it('rejects empty path', () => {
-    const a = planHostOpen('', 'rel');
+    const a = planHostOpen('', 'path');
     expect(a.type).toBe('noop');
   });
 
@@ -72,14 +74,10 @@ describe('linkOpenHost (C51)', () => {
     expect(decodeUnderlineDataset(osc)).toEqual({ row: 2, osc8: true });
   });
 
-  it('css tokens cover granular path kinds', () => {
+  it('css tokens expose only web and path kinds', () => {
     expect(underlineCssTokens({ show: false, kind: 'url' })).toEqual([]);
-    expect(underlineCssTokens({ show: true, kind: 'rel' })).toContain('ridge-link-path');
-    expect(underlineCssTokens({ show: true, kind: 'win-abs' })).toContain('ridge-link-path');
-    expect(underlineCssTokens({ show: true, kind: 'posix-abs' })).toContain('ridge-link-path');
-    expect(underlineCssTokens({ show: true, kind: 'home' })).toContain('ridge-link-path');
-    expect(underlineCssTokens({ show: true, kind: 'file-url' })).toContain('ridge-link-file');
-    expect(isPathSpanKind('rel')).toBe(true);
+    expect(underlineCssTokens({ show: true, kind: 'path' })).toContain('ridge-link-path');
+    expect(isPathSpanKind('path')).toBe(true);
     expect(isPathSpanKind('url')).toBe(false);
   });
 

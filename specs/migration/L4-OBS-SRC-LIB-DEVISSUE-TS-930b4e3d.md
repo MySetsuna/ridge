@@ -1,0 +1,213 @@
+---
+id: L4-OBS-SRC-LIB-DEVISSUE-TS-930b4e3d
+level: L4
+parent: L3-OBS-SRC-LIB-91be6cfb
+title: devIssue.ts
+status: LOCKED
+origin: observed
+migration_state: CONFIRMED
+confidence: INFERRED
+observed_source_hash: 818be4df993b9bce2ea80f7e8c6e71eff235432927f95f50ff567a75e0538727
+code_targets:
+  - src/lib/devIssue.ts
+test_targets:
+  - src/lib/actions/hostSessionDrag.test.ts
+  - src/lib/actions/overlayScroll.test.ts
+  - src/lib/actions/paneDockDrag.test.ts
+  - src/lib/components/customTheme.test.ts
+  - src/lib/components/explorerPaste.test.ts
+  - src/lib/components/GitGraph.test.ts
+  - src/lib/components/inputBufferTracker.test.ts
+  - src/lib/components/interactionContracts.test.ts
+  - src/lib/components/SettingsPanel.test.ts
+  - src/lib/components/SidebarLazyMount.test.ts
+  - src/lib/components/SplitContainer.test.ts
+  - src/lib/hosts/compositionHarness.test.ts
+  - src/lib/hosts/foreignHistorySession.test.ts
+  - src/lib/hosts/hostConnectFlow.test.ts
+  - src/lib/hosts/hostControlSurface.test.ts
+  - src/lib/hosts/hostForest.test.ts
+  - src/lib/hosts/hostSessionIsolation.test.ts
+  - src/lib/hosts/remotePaneBindings.test.ts
+  - src/lib/lsp/lspClient.test.ts
+  - src/lib/monaco/ridgeTheme.test.ts
+  - src/lib/pure-logic-coverage.test.ts
+  - src/lib/remote/cloud/cloudControllerBoot.integration.test.ts
+  - src/lib/remote/cloud/cloudControllerBoot.test.ts
+  - src/lib/remote/cloud/cloudHostStore.test.ts
+  - src/lib/remote/cloud/cloudHostTopologyLink.test.ts
+  - src/lib/remote/cloud/sharedWorkspaceProjection.behavior.test.ts
+  - src/lib/remote/cloud/sharedWorkspaceProjection.test.ts
+  - src/lib/remote/remoteBootMode.test.ts
+  - src/lib/remote/totpIdentitySync.test.ts
+  - src/lib/stores/clipboardResolve.test.ts
+  - src/lib/stores/contextMenu.test.ts
+  - src/lib/stores/dockRegionPicker.test.ts
+  - src/lib/stores/editorWindow.test.ts
+  - src/lib/stores/explorerLayout.test.ts
+  - src/lib/stores/fileEditor.test.ts
+  - src/lib/stores/fileExplorer.test.ts
+  - src/lib/stores/fileWatcherSync.test.ts
+  - src/lib/stores/fsEvents.test.ts
+  - src/lib/stores/gitGuardStats.test.ts
+  - src/lib/stores/hostReconnect.test.ts
+  - src/lib/stores/hostReconnectProduct.test.ts
+  - src/lib/stores/hosts.connect.test.ts
+  - src/lib/stores/hosts.refresh.test.ts
+  - src/lib/stores/hostsMutation.test.ts
+  - src/lib/stores/hostsOutbound.test.ts
+  - src/lib/stores/hostsOutboundProduct.test.ts
+  - src/lib/stores/hostsPublic.test.ts
+  - src/lib/stores/imagePreviewVersion.test.ts
+  - src/lib/stores/paneGitStatus.test.ts
+  - src/lib/stores/paneTree.coverage.test.ts
+  - src/lib/stores/paneTree.test.ts
+  - src/lib/stores/processGuardPolicy.test.ts
+  - src/lib/stores/project.test.ts
+  - src/lib/stores/remoteStatus.test.ts
+  - src/lib/stores/scmCache.test.ts
+  - src/lib/stores/searchState.test.ts
+  - src/lib/stores/settings.test.ts
+  - src/lib/stores/terminalHistory.test.ts
+  - src/lib/stores/termSettings.test.ts
+  - src/lib/stores/themes.slug.test.ts
+  - src/lib/stores/themes.test.ts
+  - src/lib/teammate/agentCommuneModel.test.ts
+  - src/lib/teammate/agentPaneHighlightSync.test.ts
+  - src/lib/teammate/hitlAuditFilter.test.ts
+  - src/lib/teammate/hitlAuditPanel.test.ts
+  - src/lib/teammate/layoutEvent.test.ts
+  - src/lib/teammate/memberTasks.test.ts
+  - src/lib/teammate/orchControlPlane.test.ts
+  - src/lib/teammate/teammateGroups.test.ts
+  - src/lib/teammate/teammateModel.test.ts
+  - src/lib/teammate/workspaceMemory.test.ts
+  - src/lib/terminal/desktopPaneResize.test.ts
+  - src/lib/terminal/hostPorts.test.ts
+  - src/lib/terminal/paneSizeSync.test.ts
+  - src/lib/terminal/ptyRuntimeSnapshot.test.ts
+  - src/lib/terminal/ptyWriteQueue.test.ts
+  - src/lib/terminal/refreshEntrypoints.test.ts
+  - src/lib/terminal/rendererBackend.test.ts
+  - src/lib/transport/tauri.test.ts
+  - src/lib/transport/tauriShim/bridge.test.ts
+  - src/lib/transport/tauriShim/compatibility.test.ts
+  - src/lib/transport/tauriShim/opener.test.ts
+  - src/lib/transport/tauriShim/window.test.ts
+  - src/lib/transport/ws.test.ts
+  - src/lib/utils/anchorRect.test.ts
+  - src/lib/utils/ansi.test.ts
+  - src/lib/utils/linkResolver.test.ts
+  - src/lib/utils/linkTrust.test.ts
+  - src/lib/utils/markdown.test.ts
+  - src/lib/utils/path.test.ts
+  - src/lib/utils/pathToken.test.ts
+  - src/lib/utils/pLimit.test.ts
+  - src/lib/utils/repeatedError.test.ts
+  - src/lib/utils/resizeThrottle.test.ts
+  - src/lib/utils/withTimeout.test.ts
+public_interface:
+  - "export function clearDevIssue(): void"
+  - "export function reportDevIssue(payload: DevIssuePayload): void"
+  - export type DevIssuePayload
+verified_by:
+  - TEST-OBS-SRC-LIB-ACTIONS-HOSTSESSIONDRAG-TEST-TS-fe959003
+  - TEST-OBS-SRC-LIB-ACTIONS-OVERLAYSCROLL-TEST-TS-9878339d
+  - TEST-OBS-SRC-LIB-ACTIONS-PANEDOCKDRAG-TEST-TS-3c0ebf73
+  - TEST-OBS-SRC-LIB-COMPONENTS-CUSTOMTHEME-TEST-TS-0b73284d
+  - TEST-OBS-SRC-LIB-COMPONENTS-EXPLORERPASTE-TEST-TS-e29ef2f9
+  - TEST-OBS-SRC-LIB-COMPONENTS-GITGRAPH-TEST-TS-69aabbd2
+  - TEST-OBS-SRC-LIB-COMPONENTS-INPUTBUFFERTRACKER-TEST-TS-a37220a2
+  - TEST-OBS-SRC-LIB-COMPONENTS-INTERACTIONCONTRACTS-TEST-TS-6ff9d90a
+  - TEST-OBS-SRC-LIB-COMPONENTS-SETTINGSPANEL-TEST-TS-a77c4772
+  - TEST-OBS-SRC-LIB-COMPONENTS-SIDEBARLAZYMOUNT-TEST-TS-a0bebf5d
+  - TEST-OBS-SRC-LIB-COMPONENTS-SPLITCONTAINER-TEST-TS-1932765d
+  - TEST-OBS-SRC-LIB-HOSTS-COMPOSITIONHARNESS-TEST-TS-911c519a
+  - TEST-OBS-SRC-LIB-HOSTS-FOREIGNHISTORYSESSION-TEST-TS-0de097ce
+  - TEST-OBS-SRC-LIB-HOSTS-HOSTCONNECTFLOW-TEST-TS-a765764d
+  - TEST-OBS-SRC-LIB-HOSTS-HOSTCONTROLSURFACE-TEST-TS-3e384126
+  - TEST-OBS-SRC-LIB-HOSTS-HOSTFOREST-TEST-TS-b3e38a29
+  - TEST-OBS-SRC-LIB-HOSTS-HOSTSESSIONISOLATION-TEST-TS-a2500470
+  - TEST-OBS-SRC-LIB-HOSTS-REMOTEPANEBINDINGS-TEST-TS-2377e089
+  - TEST-OBS-SRC-LIB-LSP-LSPCLIENT-TEST-TS-bab87361
+  - TEST-OBS-SRC-LIB-MONACO-RIDGETHEME-TEST-TS-3b597c0b
+  - TEST-OBS-SRC-LIB-PURE-LOGIC-COVERAGE-TEST-TS-f70127cd
+  - TEST-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDCONTROLLERBOOT-INTEGRATION-TEST-TS-d930e02e
+  - TEST-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDCONTROLLERBOOT-TEST-TS-7f1c661a
+  - TEST-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDHOSTSTORE-TEST-TS-a2df9830
+  - TEST-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDHOSTTOPOLOGYLINK-TEST-TS-7c92f09e
+  - TEST-OBS-SRC-LIB-REMOTE-CLOUD-SHAREDWORKSPACEPROJECTION-BEHAVIOR-TEST-TS-69e303c4
+  - TEST-OBS-SRC-LIB-REMOTE-CLOUD-SHAREDWORKSPACEPROJECTION-TEST-TS-0dde9c6f
+  - TEST-OBS-SRC-LIB-REMOTE-REMOTEBOOTMODE-TEST-TS-0c3742d1
+  - TEST-OBS-SRC-LIB-REMOTE-TOTPIDENTITYSYNC-TEST-TS-a0141da8
+  - TEST-OBS-SRC-LIB-STORES-CLIPBOARDRESOLVE-TEST-TS-d8cab7c6
+  - TEST-OBS-SRC-LIB-STORES-CONTEXTMENU-TEST-TS-c5d624d2
+  - TEST-OBS-SRC-LIB-STORES-DOCKREGIONPICKER-TEST-TS-b7ce6df6
+  - TEST-OBS-SRC-LIB-STORES-EDITORWINDOW-TEST-TS-965f4022
+  - TEST-OBS-SRC-LIB-STORES-EXPLORERLAYOUT-TEST-TS-489203e2
+  - TEST-OBS-SRC-LIB-STORES-FILEEDITOR-TEST-TS-396c0017
+  - TEST-OBS-SRC-LIB-STORES-FILEEXPLORER-TEST-TS-8df44237
+  - TEST-OBS-SRC-LIB-STORES-FILEWATCHERSYNC-TEST-TS-9e135a5d
+  - TEST-OBS-SRC-LIB-STORES-FSEVENTS-TEST-TS-f628ded6
+  - TEST-OBS-SRC-LIB-STORES-GITGUARDSTATS-TEST-TS-680ef77e
+  - TEST-OBS-SRC-LIB-STORES-HOSTRECONNECT-TEST-TS-e82e61be
+  - TEST-OBS-SRC-LIB-STORES-HOSTRECONNECTPRODUCT-TEST-TS-9598a61c
+  - TEST-OBS-SRC-LIB-STORES-HOSTS-CONNECT-TEST-TS-3c065b9c
+  - TEST-OBS-SRC-LIB-STORES-HOSTS-REFRESH-TEST-TS-57fb3707
+  - TEST-OBS-SRC-LIB-STORES-HOSTSMUTATION-TEST-TS-ef74d67d
+  - TEST-OBS-SRC-LIB-STORES-HOSTSOUTBOUND-TEST-TS-afc6c610
+  - TEST-OBS-SRC-LIB-STORES-HOSTSOUTBOUNDPRODUCT-TEST-TS-c9cf71df
+  - TEST-OBS-SRC-LIB-STORES-HOSTSPUBLIC-TEST-TS-b49d4adf
+  - TEST-OBS-SRC-LIB-STORES-IMAGEPREVIEWVERSION-TEST-TS-c18c0477
+  - TEST-OBS-SRC-LIB-STORES-PANEGITSTATUS-TEST-TS-73bc40e2
+  - TEST-OBS-SRC-LIB-STORES-PANETREE-COVERAGE-TEST-TS-747ca055
+  - TEST-OBS-SRC-LIB-STORES-PANETREE-TEST-TS-8fb828ce
+  - TEST-OBS-SRC-LIB-STORES-PROCESSGUARDPOLICY-TEST-TS-a94798ee
+  - TEST-OBS-SRC-LIB-STORES-PROJECT-TEST-TS-b97586fc
+  - TEST-OBS-SRC-LIB-STORES-REMOTESTATUS-TEST-TS-a66e6e00
+  - TEST-OBS-SRC-LIB-STORES-SCMCACHE-TEST-TS-69c519de
+  - TEST-OBS-SRC-LIB-STORES-SEARCHSTATE-TEST-TS-7c629e13
+  - TEST-OBS-SRC-LIB-STORES-SETTINGS-TEST-TS-ebb9f869
+  - TEST-OBS-SRC-LIB-STORES-TERMINALHISTORY-TEST-TS-49edc8b5
+  - TEST-OBS-SRC-LIB-STORES-TERMSETTINGS-TEST-TS-222ac7cd
+  - TEST-OBS-SRC-LIB-STORES-THEMES-SLUG-TEST-TS-146943ed
+  - TEST-OBS-SRC-LIB-STORES-THEMES-TEST-TS-8b9fb08d
+  - TEST-OBS-SRC-LIB-TEAMMATE-AGENTCOMMUNEMODEL-TEST-TS-313d1942
+  - TEST-OBS-SRC-LIB-TEAMMATE-AGENTPANEHIGHLIGHTSYNC-TEST-TS-68715b97
+  - TEST-OBS-SRC-LIB-TEAMMATE-HITLAUDITFILTER-TEST-TS-1bebca23
+  - TEST-OBS-SRC-LIB-TEAMMATE-HITLAUDITPANEL-TEST-TS-44e3a8b8
+  - TEST-OBS-SRC-LIB-TEAMMATE-LAYOUTEVENT-TEST-TS-b130fa00
+  - TEST-OBS-SRC-LIB-TEAMMATE-MEMBERTASKS-TEST-TS-0d803223
+  - TEST-OBS-SRC-LIB-TEAMMATE-ORCHCONTROLPLANE-TEST-TS-71f485a7
+  - TEST-OBS-SRC-LIB-TEAMMATE-TEAMMATEGROUPS-TEST-TS-e7ea1fa2
+  - TEST-OBS-SRC-LIB-TEAMMATE-TEAMMATEMODEL-TEST-TS-99fea951
+  - TEST-OBS-SRC-LIB-TEAMMATE-WORKSPACEMEMORY-TEST-TS-ac0bbd3e
+  - TEST-OBS-SRC-LIB-TERMINAL-DESKTOPPANERESIZE-TEST-TS-38627314
+  - TEST-OBS-SRC-LIB-TERMINAL-HOSTPORTS-TEST-TS-bed9ff49
+  - TEST-OBS-SRC-LIB-TERMINAL-PANESIZESYNC-TEST-TS-8a1e46ba
+  - TEST-OBS-SRC-LIB-TERMINAL-PTYRUNTIMESNAPSHOT-TEST-TS-a223e946
+  - TEST-OBS-SRC-LIB-TERMINAL-PTYWRITEQUEUE-TEST-TS-b49b9e91
+  - TEST-OBS-SRC-LIB-TERMINAL-REFRESHENTRYPOINTS-TEST-TS-dcf05e4d
+  - TEST-OBS-SRC-LIB-TERMINAL-RENDERERBACKEND-TEST-TS-3fecf7c5
+  - TEST-OBS-SRC-LIB-TRANSPORT-TAURI-TEST-TS-c25dafa7
+  - TEST-OBS-SRC-LIB-TRANSPORT-TAURISHIM-BRIDGE-TEST-TS-77e048ec
+  - TEST-OBS-SRC-LIB-TRANSPORT-TAURISHIM-COMPATIBILITY-TEST-TS-ca9e9ee4
+  - TEST-OBS-SRC-LIB-TRANSPORT-TAURISHIM-OPENER-TEST-TS-4fc60727
+  - TEST-OBS-SRC-LIB-TRANSPORT-TAURISHIM-WINDOW-TEST-TS-d57bdd41
+  - TEST-OBS-SRC-LIB-TRANSPORT-WS-TEST-TS-fa7eff79
+  - TEST-OBS-SRC-LIB-UTILS-ANCHORRECT-TEST-TS-105aff0a
+  - TEST-OBS-SRC-LIB-UTILS-ANSI-TEST-TS-a521e4e0
+  - TEST-OBS-SRC-LIB-UTILS-LINKRESOLVER-TEST-TS-a1aef792
+  - TEST-OBS-SRC-LIB-UTILS-LINKTRUST-TEST-TS-a7833726
+  - TEST-OBS-SRC-LIB-UTILS-MARKDOWN-TEST-TS-a9cb2814
+  - TEST-OBS-SRC-LIB-UTILS-PATH-TEST-TS-82e03b6a
+  - TEST-OBS-SRC-LIB-UTILS-PATHTOKEN-TEST-TS-b83f28c9
+  - TEST-OBS-SRC-LIB-UTILS-PLIMIT-TEST-TS-47b9ca9a
+  - TEST-OBS-SRC-LIB-UTILS-REPEATEDERROR-TEST-TS-16483412
+  - TEST-OBS-SRC-LIB-UTILS-RESIZETHROTTLE-TEST-TS-34afb027
+  - TEST-OBS-SRC-LIB-UTILS-WITHTIMEOUT-TEST-TS-02d14903
+---
+
+# devIssue.ts
+
+Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.

@@ -1,0 +1,173 @@
+---
+id: L4-OBS-PACKAGES-REMOTE-SRC-SHARED-RECONNECTPOLICY-TS-78647d30
+level: L4
+parent: L3-OBS-PACKAGES-REMOTE-SRC-SHARED-9518faec
+title: reconnectPolicy.ts
+status: LOCKED
+origin: observed
+migration_state: CONFIRMED
+confidence: INFERRED
+observed_source_hash: 818be4df993b9bce2ea80f7e8c6e71eff235432927f95f50ff567a75e0538727
+code_targets:
+  - packages/remote/src/shared/reconnectPolicy.ts
+test_targets:
+  - packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts
+  - packages/remote/src/shared/cloud/apiClient.refresh.test.ts
+  - packages/remote/src/shared/cloud/apiClient.test.ts
+  - packages/remote/src/shared/cloud/auth.test.ts
+  - packages/remote/src/shared/cloud/cloudHostBridge.test.ts
+  - packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts
+  - packages/remote/src/shared/cloud/controllerCloudProvider.test.ts
+  - packages/remote/src/shared/cloud/controllerIdentity.test.ts
+  - packages/remote/src/shared/cloud/controllerInstanceId.test.ts
+  - packages/remote/src/shared/cloud/deviceTrust.test.ts
+  - packages/remote/src/shared/cloud/e2ee.test.ts
+  - packages/remote/src/shared/cloud/faultInjection.test.ts
+  - packages/remote/src/shared/cloud/keyBinding.test.ts
+  - packages/remote/src/shared/cloud/priorityFrameQueue.test.ts
+  - packages/remote/src/shared/cloud/remoteAllowlist.test.ts
+  - packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts
+  - packages/remote/src/shared/cloud/signaling/conformance.test.ts
+  - packages/remote/src/shared/cloud/signaling/drift.test.ts
+  - packages/remote/src/shared/cloud/weakNetLab.test.ts
+  - packages/remote/src/shared/cloud/workspaceScope.test.ts
+  - packages/remote/src/shared/hosts/foreignPaneStatus.test.ts
+  - packages/remote/src/shared/hosts/liveBackpressure.test.ts
+  - packages/remote/src/shared/hosts/livePumpPolicy.test.ts
+  - packages/remote/src/shared/hosts/outboundLifecycle.test.ts
+  - packages/remote/src/shared/hosts/outboundReconnect.test.ts
+  - packages/remote/src/shared/reconnectPolicy.test.ts
+  - packages/remote/src/shared/teammate/hitlAuditRemote.test.ts
+  - packages/remote/src/shared/terminal/clipboardImage.test.ts
+  - packages/remote/src/shared/terminal/dropPaste.test.ts
+  - packages/remote/src/shared/terminal/fontDataService.test.ts
+  - packages/remote/src/shared/terminal/fontStack.test.ts
+  - packages/remote/src/shared/terminal/hostRemountPolicy.test.ts
+  - packages/remote/src/shared/terminal/imeAnchor.test.ts
+  - packages/remote/src/shared/terminal/imeDelta.test.ts
+  - packages/remote/src/shared/terminal/initialPaneFit.test.ts
+  - packages/remote/src/shared/terminal/linkAffordance.test.ts
+  - packages/remote/src/shared/terminal/linkOpenHost.test.ts
+  - packages/remote/src/shared/terminal/linkSpans.test.ts
+  - packages/remote/src/shared/terminal/manager.attach.test.ts
+  - packages/remote/src/shared/terminal/manager.test.ts
+  - packages/remote/src/shared/terminal/mobileCopy.test.ts
+  - packages/remote/src/shared/terminal/mobileTouchScroll.test.ts
+  - packages/remote/src/shared/terminal/mouseForwardPolicy.test.ts
+  - packages/remote/src/shared/terminal/paneDockResolve.test.ts
+  - packages/remote/src/shared/terminal/paneGeometry.test.ts
+  - packages/remote/src/shared/terminal/paneInputGate.test.ts
+  - packages/remote/src/shared/terminal/paneOrigin.test.ts
+  - packages/remote/src/shared/terminal/paneShell.test.ts
+  - packages/remote/src/shared/terminal/ptyBridge.test.ts
+  - packages/remote/src/shared/terminal/sentenceBuffer.test.ts
+  - packages/remote/src/shared/terminal/shellInputSnapshot.test.ts
+  - packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts
+  - packages/remote/src/shared/terminal/terminalFocus.test.ts
+  - packages/remote/src/shared/terminal/terminalMemoryPolicy.test.ts
+  - packages/remote/src/shared/terminal/themeBridge.test.ts
+  - packages/remote/src/shared/terminal/tuiGate.test.ts
+  - packages/remote/src/shared/transport/capabilityContract.test.ts
+  - packages/remote/src/shared/transport/cloudChunk.test.ts
+  - packages/remote/src/shared/transport/cloudMux.test.ts
+  - packages/remote/src/shared/transport/cloudWebrtcAdapter.test.ts
+  - packages/remote/src/shared/transport/conformance.test.ts
+  - packages/remote/src/shared/transport/lanWsAdapter.test.ts
+  - packages/remote/src/shared/transport/matrixParity.test.ts
+  - packages/remote/src/shared/transport/paneRpcScheduler.test.ts
+  - packages/remote/src/shared/transport/protocolAdmission.test.ts
+  - packages/remote/src/shared/transport/protocolAdmissionProduct.test.ts
+  - packages/remote/src/shared/transport/random.test.ts
+  - packages/remote/src/shared/transport/remoteInvokeAdmit.test.ts
+  - packages/remote/src/shared/transport/remotePerfTrace.test.ts
+  - packages/remote/src/shared/transport/rpcClient.test.ts
+  - packages/remote/src/shared/transport/unknownText.test.ts
+  - packages/remote/src/shared/transport/wsRemote.behavior.test.ts
+  - packages/remote/src/shared/transport/wsRemotePending.test.ts
+  - packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts
+  - packages/remote/src/shared/transport/wsRemoteUrl.test.ts
+public_interface:
+  - "export function backoffMs( attempt: number, baseMs: number =
+    RECONNECT_BASE_MS, maxMs: number = RECONNECT_MAX_MS, ): number"
+  - "export function shouldRetry(attempt: number, maxAttempts: number): boolean"
+verified_by:
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CLOUDE2EHARNESS-TEST-TS-369a5af1
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-APICLIENT-REFRESH-TEST-TS-ae2beee9
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-APICLIENT-TEST-TS-54ddea70
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-AUTH-TEST-TS-8907fcc2
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CLOUDHOSTBRIDGE-TEST-TS-731be498
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CLOUDHOSTPANESOURCE-TEST-TS-5698aba6
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CONTROLLERCLOUDPROVIDER-TEST-TS-fa839b23
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CONTROLLERIDENTITY-TEST-TS-dd543ad2
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CONTROLLERINSTANCEID-TEST-TS-471305fa
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-DEVICETRUST-TEST-TS-356a0744
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-E2EE-TEST-TS-81cb1212
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-FAULTINJECTION-TEST-TS-7005e479
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-KEYBINDING-TEST-TS-3c0d052f
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-PRIORITYFRAMEQUEUE-TEST-TS-8e7fa935
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-REMOTEALLOWLIST-TEST-TS-ad14903f
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-RIDGECLOUDPROVIDER-TEST-TS-149b31d2
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-SIGNALING-CONFORMANCE-TEST-TS-50aa4f26
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-SIGNALING-DRIFT-TEST-TS-52f30651
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-WEAKNETLAB-TEST-TS-e7298069
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-WORKSPACESCOPE-TEST-TS-184beaf5
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-HOSTS-FOREIGNPANESTATUS-TEST-TS-9fbe3344
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-HOSTS-LIVEBACKPRESSURE-TEST-TS-cfea6cb6
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-HOSTS-LIVEPUMPPOLICY-TEST-TS-1ed634a5
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-HOSTS-OUTBOUNDLIFECYCLE-TEST-TS-9e8e8887
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-HOSTS-OUTBOUNDRECONNECT-TEST-TS-1dd36e13
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-RECONNECTPOLICY-TEST-TS-3622e40f
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TEAMMATE-HITLAUDITREMOTE-TEST-TS-27ed6157
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-CLIPBOARDIMAGE-TEST-TS-53411e31
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-DROPPASTE-TEST-TS-510e73ab
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-FONTDATASERVICE-TEST-TS-a11e69bb
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-FONTSTACK-TEST-TS-65f97da6
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-HOSTREMOUNTPOLICY-TEST-TS-117c2a90
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-IMEANCHOR-TEST-TS-105d9abf
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-IMEDELTA-TEST-TS-67f86c2c
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-INITIALPANEFIT-TEST-TS-fe5c49cf
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKAFFORDANCE-TEST-TS-d1be43bc
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKOPENHOST-TEST-TS-19b69752
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKSPANS-TEST-TS-8d7f240f
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MANAGER-ATTACH-TEST-TS-35aae100
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MANAGER-TEST-TS-290fe11f
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MOBILECOPY-TEST-TS-4906f450
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MOBILETOUCHSCROLL-TEST-TS-ddb6edb0
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MOUSEFORWARDPOLICY-TEST-TS-ddc8b0dc
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANEDOCKRESOLVE-TEST-TS-4fdcb558
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANEGEOMETRY-TEST-TS-ad29e3d7
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANEINPUTGATE-TEST-TS-06a1530b
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANEORIGIN-TEST-TS-6d99d562
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANESHELL-TEST-TS-e9209065
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PTYBRIDGE-TEST-TS-3f30eb8e
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-SENTENCEBUFFER-TEST-TS-4bcd3337
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-SHELLINPUTSNAPSHOT-TEST-TS-9e6558fc
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-TERMINALFEEDPOLICY-TEST-TS-a929e750
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-TERMINALFOCUS-TEST-TS-ff98409c
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-TERMINALMEMORYPOLICY-TEST-TS-19d7b4ce
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-THEMEBRIDGE-TEST-TS-4fb837c0
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-TUIGATE-TEST-TS-146c1508
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-CAPABILITYCONTRACT-TEST-TS-b0bfbedf
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-CLOUDCHUNK-TEST-TS-cd20cdb9
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-CLOUDMUX-TEST-TS-2d7e0111
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-CLOUDWEBRTCADAPTER-TEST-TS-8470c932
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-CONFORMANCE-TEST-TS-6908b6ac
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-LANWSADAPTER-TEST-TS-a2b9af4c
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-MATRIXPARITY-TEST-TS-d457ef87
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-PANERPCSCHEDULER-TEST-TS-ad772920
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-PROTOCOLADMISSION-TEST-TS-535b3e0d
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-PROTOCOLADMISSIONPRODUCT-TEST-TS-1940534e
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-RANDOM-TEST-TS-d885afcc
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-REMOTEINVOKEADMIT-TEST-TS-d1037371
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-REMOTEPERFTRACE-TEST-TS-a6430a11
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-RPCCLIENT-TEST-TS-605f379d
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-UNKNOWNTEXT-TEST-TS-ffdcdbcf
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-WSREMOTE-BEHAVIOR-TEST-TS-8b7a590c
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-WSREMOTEPENDING-TEST-TS-ee9c7d29
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-WSREMOTERPCSCHEDULER-TEST-TS-04be1fed
+  - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-WSREMOTEURL-TEST-TS-a219c8e6
+---
+
+# reconnectPolicy.ts
+
+Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.

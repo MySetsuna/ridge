@@ -9,9 +9,12 @@ const mocks = vi.hoisted(() => {
     blacklist: vi.fn(),
   };
   const construct = vi.fn();
+  const bridgeConstruct = vi.fn();
+  let lastCallbacks: unknown;
   class FakeRidgeCloudHost {
     constructor(...args: unknown[]) {
       construct(...args);
+      lastCallbacks = args[1];
       return host;
     }
   }
@@ -21,6 +24,8 @@ const mocks = vi.hoisted(() => {
     listen: vi.fn(),
     snapshot: vi.fn(),
     construct,
+    bridgeConstruct,
+    getLastCallbacks: () => lastCallbacks,
     RidgeCloudHost: FakeRidgeCloudHost,
   };
 });
@@ -33,7 +38,11 @@ vi.mock('@ridge/remote/shared/cloud/ridgeCloudProvider', () => ({
   RidgeCloudHost: mocks.RidgeCloudHost,
 }));
 vi.mock('@ridge/remote/shared/cloud/cloudHostBridge', () => ({
-  CloudHostBridge: class FakeCloudHostBridge {},
+  CloudHostBridge: class FakeCloudHostBridge {
+    constructor(config: unknown) {
+      mocks.bridgeConstruct(config);
+    }
+  },
 }));
 vi.mock('@ridge/remote/shared/cloud/cloudHostPaneSource', () => ({
   makeCloudHostPaneSource: vi.fn(),
@@ -56,6 +65,7 @@ describe('cloudHostStore lifecycle', () => {
     mocks.invoke.mockReset();
     mocks.snapshot.mockReset();
     mocks.construct.mockClear();
+    mocks.bridgeConstruct.mockClear();
     for (const method of Object.values(mocks.host)) method.mockReset();
     mocks.snapshot.mockReturnValue({});
     hostState.set('offline');
@@ -100,6 +110,68 @@ describe('cloudHostStore lifecycle', () => {
     expect(mocks.host.goOffline).toHaveBeenCalledOnce();
     expect(get(hostState)).toBe('offline');
     expect(mocks.invoke).toHaveBeenLastCalledWith('set_cloud_remote_active', { active: false });
+  });
+
+  it('routes Cloud RPC through the runtime-agnostic remote dispatcher', async () => {
+    mocks.snapshot.mockReturnValue({
+      deviceToken: 'token',
+      deviceName: 'desktop',
+      user: { username: 'alice' },
+    });
+    mocks.invoke.mockImplementation(async (command: string) =>
+      command === 'get_device_identity_pub' ? [1, 2, 3] : undefined,
+    );
+    mocks.host.goOnline.mockResolvedValue(undefined);
+
+    await goOnline();
+    const callbacks = mocks.getLastCallbacks() as {
+      createBridge?: (...args: unknown[]) => unknown;
+    };
+    callbacks.createBridge?.('controller', vi.fn(), new Uint8Array(), null);
+    const bridge = mocks.bridgeConstruct.mock.calls[0]?.[0] as {
+      invoke: (method: string, params?: unknown) => Promise<unknown>;
+    };
+    mocks.invoke.mockClear();
+
+    const params = {
+      workspaceId: 'workspace-1',
+      paneId: 'pane-1',
+      rows: 32,
+      cols: 96,
+      owner: 'remote',
+    };
+    await bridge.invoke('resize_pane', params);
+
+    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(mocks.invoke).toHaveBeenCalledWith('dispatch_remote_invoke', {
+      method: 'resize_pane',
+      args: params,
+    });
+
+    callbacks.createBridge?.('controller-scoped', vi.fn(), new Uint8Array(), {
+      grantId: 'grant-1',
+      granteeUserId: 'bob',
+      ownerUserId: 'alice',
+      deviceName: 'desktop',
+      workspaceId: 'workspace-1',
+      role: 'operator',
+      delegable: false,
+    });
+    const scopedBridge = mocks.bridgeConstruct.mock.calls[1]?.[0] as {
+      invoke: (method: string, params?: unknown) => Promise<unknown>;
+    };
+    mocks.invoke.mockReset();
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_pane_layout_for') return { type: 'leaf', paneId: 'pane-1' };
+      return undefined;
+    });
+
+    await scopedBridge.invoke('resize_pane', params);
+    expect(mocks.invoke).toHaveBeenLastCalledWith('dispatch_remote_invoke', {
+      method: 'resize_pane',
+      args: params,
+    });
+    await goOffline();
   });
 
   it('surfaces host startup and shutdown failures', async () => {

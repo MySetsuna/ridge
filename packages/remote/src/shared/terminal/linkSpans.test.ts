@@ -15,12 +15,12 @@ function fakeKernel(lines: string[], wrapped: Set<number> = new Set()) {
 describe('LinkSpanIndex', () => {
   it.each([
     ['https://example.com/a', 'https://example.com/a', 'url'],
-    ['C:\\repo\\src\\main.ts:12:3', 'C:\\repo\\src\\main.ts:12:3', 'win-abs'],
-    ['/home/u/repo/main.rs:9:2', '/home/u/repo/main.rs:9:2', 'posix-abs'],
-    ['./src/main.ts:4', './src/main.ts:4', 'rel'],
-    ['src/components', 'src/components', 'rel'],
-    ['"C:\\My Project\\main.ts:7:2"', 'C:\\My Project\\main.ts:7:2', 'win-abs'],
-    ["'../My Project/main.rs:8'", '../My Project/main.rs:8', 'rel'],
+    ['C:\\repo\\src\\main.ts:12:3', 'C:\\repo\\src\\main.ts:12:3', 'path'],
+    ['/home/u/repo/main.rs:9:2', '/home/u/repo/main.rs:9:2', 'path'],
+    ['./src/main.ts:4', './src/main.ts:4', 'path'],
+    ['src/components', 'src/components', 'path'],
+    ['"C:\\My Project\\main.ts:7:2"', 'C:\\My Project\\main.ts:7:2', 'path'],
+    ["'../My Project/main.rs:8'", '../My Project/main.rs:8', 'path'],
   ])('classifies %s without quote or location loss', (line, text, kind) => {
     const index = new LinkSpanIndex();
     const hit = index.hitTest(fakeKernel([line]), 0, Math.max(0, line.indexOf(text) + 1));
@@ -28,6 +28,17 @@ describe('LinkSpanIndex', () => {
   });
 
   it.each(['/word', '/help', 'value / count', '--output=/tmp'])('keeps ambiguous bare POSIX text inert: %s', (line) => {
+    const index = new LinkSpanIndex();
+    for (let col = 0; col < line.length; col += 1) {
+      expect(index.hitTest(fakeKernel([line]), 0, col)).toBeNull();
+    }
+  });
+
+  it.each([
+    'file:///C:/repo/main.ts',
+    'mailto:user@example.com',
+    'https://user:secret@example.com/path',
+  ])('keeps unsupported or credential-bearing URLs inert: %s', (line) => {
     const index = new LinkSpanIndex();
     for (let col = 0; col < line.length; col += 1) {
       expect(index.hitTest(fakeKernel([line]), 0, col)).toBeNull();

@@ -71,6 +71,10 @@ export interface HostPorts {
   openTextLink?(
     request: TerminalLinkOpenRequest,
   ): Promise<TerminalLinkOpenResult> | TerminalLinkOpenResult;
+  /** Non-opening proof used by modifier-hover. Only existing workspace files validate. */
+  validateTextLink?(
+    request: TerminalLinkOpenRequest,
+  ): Promise<TerminalLinkValidationResult> | TerminalLinkValidationResult;
 }
 
 export interface TerminalPathOrigin {
@@ -94,5 +98,10 @@ export interface TerminalLinkOpenRequest {
 
 export interface TerminalLinkOpenResult {
   handled: boolean;
+  reason?: string;
+}
+
+export interface TerminalLinkValidationResult {
+  valid: boolean;
   reason?: string;
 }
