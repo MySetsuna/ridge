@@ -454,7 +454,7 @@ describe('CloudRemoteConnection panes', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(older && new TextDecoder().decode(older.bytes)).toBe('OLDER');
-    expect(older?.commit()).toBe(true);
+    expect(older?.commit(() => true)).toBe(true);
 
     // The mock's page reported at_oldest → a further scroll-up is a no-op (null),
     // and doesn't fire another before-fetch.
@@ -462,6 +462,26 @@ describe('CloudRemoteConnection panes', () => {
     expect(await conn.fetchOlderScrollback(PANE)).toBeNull();
     const after = invokeMock.mock.calls.filter((c) => c[0] === 'get_pane_scrollback_before').length;
     expect(after).toBe(before); // stopped — no redundant fetch at oldest
+  });
+
+  it('advances the older cursor only with a successful atomic prepend', async () => {
+    const conn = await connected();
+    conn.subscribePane(PANE);
+    await flush();
+
+    const first = await conn.fetchOlderScrollback(PANE);
+    const rejectedApply = vi.fn(() => false);
+    expect(first?.commit(rejectedApply)).toBe(false);
+    expect(rejectedApply).toHaveBeenCalledOnce();
+    first?.discard();
+
+    const retry = await conn.fetchOlderScrollback(PANE);
+    expect(invokeMock).toHaveBeenLastCalledWith(
+      'get_pane_scrollback_before',
+      expect.objectContaining({ beforeSeq: 100 }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(retry?.commit(() => true)).toBe(true);
   });
 
   it('fetchOlderScrollback returns null when the pane was never subscribed (no cursor)', async () => {
@@ -1243,7 +1263,7 @@ describe('CloudRemoteConnection bounded parity guards', () => {
     const page = await conn.fetchOlderScrollback(PANE);
     expect(page?.startSeq).toBe(1);
     expect(page?.bytes).toEqual(new TextEncoder().encode('OLDER'));
-    expect(page?.commit()).toBe(true);
+    expect(page?.commit(() => true)).toBe(true);
     expect(await conn.fetchOlderScrollback(PANE)).toBeNull();
     expect(await conn.fetchOlderScrollback({ workspaceId: 'ws1', paneId: 'missing' })).toBeNull();
   });

@@ -26,12 +26,15 @@ import {
   stripQuery,
 } from '$lib/utils/path';
 import {
+  isSafeHttpUrl,
+  looksOutsideWorkspace,
   probePathWithCache,
   type PathProbeResult,
 } from '@ridge/remote/shared/terminal/linkOpenHost';
 import type {
   TerminalLinkOpenRequest,
   TerminalLinkOpenResult,
+  TerminalLinkValidationResult,
   TerminalPathOrigin,
 } from '@ridge/remote/shared/terminal/ports';
 
@@ -281,7 +284,7 @@ export async function openTerminalLink(
   dependencies: TerminalLinkDependencies = {},
 ): Promise<TerminalLinkOpenResult> {
   if (request.type === 'url') {
-    if (!request.href || !/^https?:\/\//i.test(request.href)) {
+    if (!request.href || !isSafeHttpUrl(request.href)) {
       return { handled: false, reason: 'unsafe_url' };
     }
     await (dependencies.openUrl ?? openExternalWithTrust)(request.href, request.workspaceRoot);
@@ -290,6 +293,10 @@ export async function openTerminalLink(
 
   const path = request.path?.trim();
   if (!path || path.includes('\0')) return { handled: false, reason: 'invalid_path' };
+  const scope = request.cwd?.trim() || request.workspaceRoot?.trim();
+  if (!scope || looksOutsideWorkspace(path, scope)) {
+    return { handled: false, reason: 'outside_workspace' };
+  }
   const isLocal = localFilesystemOrigin(request.origin);
   const inspector = dependencies.inspectPath ?? (isLocal ? inspectLocalPath : undefined);
   if (!inspector) {
@@ -320,18 +327,7 @@ export async function openTerminalLink(
     return { handled: true, reason: 'missing_path' };
   }
 
-  if (proof.isDirectory) {
-    if (!isLocal) {
-      notify(dependencies, '远端目录已验证；当前桌面 Explorer 尚无该来源的文件通道。', 'info');
-      return { handled: true, reason: 'foreign_directory_fallback' };
-    }
-    const revealed = await (dependencies.revealDirectory ?? revealDirectoryInRidge)(
-      path,
-      request.origin.workspaceId,
-    );
-    if (!revealed) await executeAction({ kind: 'reveal', path });
-    return { handled: true };
-  }
+  if (proof.isDirectory) return { handled: false, reason: 'directory_path' };
 
   if (!isLocal) {
     notify(dependencies, '远端文件已验证；当前桌面编辑器尚无该来源的读取通道。', 'info');
@@ -343,6 +339,40 @@ export async function openTerminalLink(
     await fileEditorStore.openFile(path, { line: request.line, column: request.col });
   }
   return { handled: true };
+}
+
+/** Prove a terminal target without navigation or user-visible side effects. */
+export async function validateTerminalLink(
+  request: TerminalLinkOpenRequest,
+  dependencies: TerminalLinkDependencies = {},
+): Promise<TerminalLinkValidationResult> {
+  if (request.type === 'url') {
+    return { valid: !!request.href && isSafeHttpUrl(request.href), reason: 'unsafe_url' };
+  }
+  const path = request.path?.trim();
+  if (!path || path.includes('\0')) return { valid: false, reason: 'invalid_path' };
+  const scope = request.cwd?.trim() || request.workspaceRoot?.trim();
+  if (!scope || looksOutsideWorkspace(path, scope)) {
+    return { valid: false, reason: 'outside_workspace' };
+  }
+  const isLocal = localFilesystemOrigin(request.origin);
+  const inspector = dependencies.inspectPath ?? (isLocal ? inspectLocalPath : undefined);
+  if (!inspector) return { valid: false, reason: 'origin_probe_unavailable' };
+  try {
+    const originKey = [
+      request.origin.kind,
+      request.origin.hostId ?? '',
+      request.origin.workspaceId,
+      request.origin.paneId,
+      path,
+    ].join('\0');
+    const proof = await probePathWithCache(originKey, (signal) => inspector(path, signal));
+    if (!proof.exists) return { valid: false, reason: 'missing_path' };
+    if (proof.isDirectory) return { valid: false, reason: 'directory_path' };
+    return { valid: true };
+  } catch {
+    return { valid: false, reason: 'probe_failed' };
+  }
 }
 
 /** 复用 markdown preview 的同会话信任流程。mailto/tel 跳过弹窗。 */

@@ -672,7 +672,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 			origin: { kind: 'local', workspaceId: 'workspace-a', paneId: 'manager-test-pane' },
 	});
 		fixture.kernel.hyperlinkAt.mockReturnValue(null);
-		fixture.pane.linkSpans.hitTest.mockReturnValue({ text: 'src/main.ts:4', kind: 'rel' });
+		fixture.pane.linkSpans.hitTest.mockReturnValue({ text: 'src/main.ts:4', kind: 'path' });
 		expect(manager.hasLinkAt(PANE, 1, 2)).toBe(true);
 		const ports = TerminalManager.hostPorts()!;
 		expect(manager.openLinkAt(PANE, 1, 2)).toBe(true);
@@ -732,7 +732,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		const { manager, fixture } = makeManager();
 		const entry = fixture.pane;
 		const open = vi.spyOn(manager, 'openLinkAt').mockReturnValue(true);
-		entry.linkSpans.hitTest.mockReturnValue({ row: 1, c0: 2, c1: 6, text: 'src/main.ts', kind: 'rel' });
+		entry.linkSpans.hitTest.mockReturnValue({ row: 1, c0: 2, c1: 6, text: 'src/main.ts', kind: 'path' });
 		const target = { setPointerCapture: vi.fn() };
 		const event = (ctrlKey: boolean) => ({
 			clientX: 35, clientY: 65, button: 0, buttons: 1, pointerId: 2, detail: 1,
@@ -1707,18 +1707,26 @@ describe('TerminalManager explicit claim remount', () => {
 		fixture.setCols(80);
 		fixture.pane.lastReportedRows = 20;
 		fixture.pane.lastReportedCols = 80;
-		const resizeHandler = vi.fn().mockResolvedValue(undefined);
+		let resolveResize!: () => void;
+		const resizeHandler = vi.fn(() => new Promise<void>((resolve) => {
+			resolveResize = resolve;
+		}));
 		manager.onResize(PANE, resizeHandler);
 
 		manager.fitPaneNow(PANE);
 		await Promise.resolve();
 		expect(resizeHandler).not.toHaveBeenCalled();
 
-		manager.claimPaneSize(PANE);
+		let claimSettled = false;
+		const claim = manager.claimPaneSize(PANE).then(() => { claimSettled = true; });
 		await Promise.resolve();
 		expect(resizeHandler).toHaveBeenCalledTimes(1);
+		expect(claimSettled).toBe(false);
 		expect(resizeHandler).toHaveBeenCalledWith(20, 80, false, false);
 		expect(resizeHandler.mock.calls[0][0]).not.toBe(24);
+		resolveResize();
+		await claim;
+		expect(claimSettled).toBe(true);
 		expect(fixture.handle.invalidateAll).toHaveBeenCalled();
 	});
 

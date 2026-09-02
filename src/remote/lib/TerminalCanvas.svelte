@@ -24,6 +24,8 @@
   } from '@ridge/remote/shared/terminal/imeDelta';
   import { SentenceBuffer, SENTENCE_FLUSH_MS } from '@ridge/remote/shared/terminal/sentenceBuffer';
   import { activateIme } from '@ridge/remote/shared/terminal/imeAnchor';
+  import { REMOTE_TERM_FONT } from '@ridge/remote/shared/terminal/fontStack';
+  import { isSafeHttpUrl } from '@ridge/remote/shared/terminal/linkOpenHost';
 
   // P4 (2026-07-25): this component no longer owns a single `TerminalController`
   // + canvas. It is now the MOBILE INPUT-ADAPTATION LAYER over the SHARED
@@ -69,6 +71,50 @@
   } = $props();
 
   const paneId = $derived(paneRefKey({ workspaceId, paneId: remotePaneId }));
+  const hostPortSnapshot = {
+    terminalScrollbackLines: 2000,
+    terminalFontFamily: REMOTE_TERM_FONT,
+    defaultShell: '',
+  };
+  TerminalManager.setHostPorts({
+    settings: {
+      get: () => hostPortSnapshot,
+      subscribe: (cb) => { cb(hostPortSnapshot); return () => {}; },
+    },
+    openTextLink: (request) => {
+      if (request.type === 'url' && request.href && isSafeHttpUrl(request.href)) {
+        window.open(request.href, '_blank', 'noopener,noreferrer');
+        return { handled: true };
+      }
+      window.dispatchEvent(new CustomEvent('ridge:remote-open-text-link', {
+        detail: { ...request, origin: { ...request.origin, kind: 'shared' } },
+      }));
+      return { handled: true };
+    },
+    validateTextLink: (request) => {
+      if (request.type === 'url') {
+        return { valid: !!request.href && isSafeHttpUrl(request.href) };
+      }
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (result: { valid: boolean; reason?: string }) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(result);
+        };
+        const timer = setTimeout(() => finish({ valid: false, reason: 'probe_timeout' }), 2_500);
+        window.dispatchEvent(new CustomEvent('ridge:remote-open-text-link', {
+          detail: {
+            ...request,
+            origin: { ...request.origin, kind: 'shared' },
+            validateOnly: true,
+            resolveValidation: finish,
+          },
+        }));
+      });
+    },
+  });
   const manager = TerminalManager.instance();
   const td = new TextDecoder();
 
@@ -392,9 +438,18 @@
   function openSoftKeyboard() {
     if (!attached) return;
     activateIme({
-      scrollToBottom: () => manager.scrollToBottom(paneId),
+      scrollToBottom: () => {
+        manager.scrollToBottom(paneId);
+        // The first mounted pane has no prior switch/focus cycle to seed this
+        // anchor. Capture it inside the trusted tap before focus so keyboard
+        // avoidance never falls back to a null input position.
+        manager.captureImeAnchor(paneId);
+      },
       positionAtCursorOrCenter: positionInputAtCursorOrCenter,
       focus: focusHiddenInput,
+    });
+    requestAnimationFrame(() => {
+      if (alive && document.activeElement === hiddenInput) requestKeyboardShift();
     });
   }
 
@@ -420,10 +475,32 @@
     if (attached) manager.fitPaneNow(paneId);
   }
   /** Explicit refresh: measure this pane and remount the shared host PTY even
-   * when the claimed rows×cols match the last fit (same-size is not a no-op). */
-  export function claimPaneSize() {
-    if (!attached) return;
-    manager.claimPaneSize(paneId);
+  * when the claimed rows×cols match the last fit (same-size is not a no-op). */
+  let paneSizeClaimGeneration = 0;
+  export function claimPaneSize(): Promise<void> {
+    const generation = ++paneSizeClaimGeneration;
+    if (!attached) return Promise.resolve();
+    return claimSettledPaneSize(generation);
+  }
+  async function claimSettledPaneSize(generation: number): Promise<void> {
+    let previousGeometry = '';
+    let stableFrames = 0;
+    for (let frame = 0; frame < 30; frame += 1) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      if (!attached || generation !== paneSizeClaimGeneration) return;
+      const rect = containerEl?.getBoundingClientRect();
+      const viewport = window.visualViewport;
+      const geometry = [
+        rect?.left, rect?.top, rect?.width, rect?.height,
+        viewport?.offsetLeft, viewport?.offsetTop, viewport?.width, viewport?.height,
+      ].map((value) => Math.round(value ?? 0)).join(':');
+      stableFrames = geometry === previousGeometry ? stableFrames + 1 : 0;
+      previousGeometry = geometry;
+      if (frame >= 3 && stableFrames >= 2) break;
+    }
+    if (!attached || generation !== paneSizeClaimGeneration) return;
+    manager.resizeHost();
+    await manager.claimPaneSize(paneId);
     manager.forceFullRedraw(paneId);
   }
   /** Feed raw PTY bytes into THIS pane's kernel (MainApp routes the active
@@ -651,7 +728,10 @@
         if (bytes.length > 0) onStdin(td.decode(bytes));
       }
       touchMouseDragging = false;
-      if (elapsed < TOUCH_TAP_MAX_MS) openSoftKeyboard();
+      if (elapsed < TOUCH_TAP_MAX_MS) {
+        e.preventDefault();
+        openSoftKeyboard();
+      }
       return;
     }
     if (selectionMode) {
@@ -678,10 +758,16 @@
       }
       // §select-tap-keyboard: a TAP (not a drag) in selection mode also raises
       // the soft keyboard so you can type without first leaving select mode.
-      if (!wasDragging) openSoftKeyboard();
+      if (!wasDragging) {
+        e.preventDefault();
+        openSoftKeyboard();
+      }
       return;
     }
     if (elapsed >= TOUCH_TAP_MAX_MS) return;
+    // Focus happens inside this trusted touchend. Cancel its compatibility
+    // mouse/click event or that later event refocuses the canvas and closes IME.
+    e.preventDefault();
     // Light tap clears an existing selection (and re-raises the keyboard).
     if (hasSelectionState || hasSelection()) {
       manager.clearSelection(paneId);
@@ -1257,7 +1343,10 @@
   $effect(() => {
     if (!attached || !alive) return;
     return manager.onImeAnchor(paneId, () => {
-      if (alive && document.activeElement === hiddenInput) positionInputAtCursorOrCenter();
+      if (alive && document.activeElement === hiddenInput) {
+        positionInputAtCursorOrCenter();
+        requestKeyboardShift();
+      }
     });
   });
 
@@ -1383,7 +1472,7 @@
      anchors to a detectable element. */
   .hidden-input{position:absolute;top:0;left:0;width:1px;height:1em;margin:0;padding:0;border:0;font-size:16px;
     opacity:0.01;pointer-events:none;resize:none;overflow:hidden;white-space:nowrap;z-index:5;
-    background:transparent;color:transparent;caret-color:var(--rg-accent,#58a6ff);outline:none;font-family:inherit}
+    background:transparent;color:transparent;caret-color:transparent;outline:none;font-family:inherit}
   .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--rg-fg-muted);font-size:14px;z-index:4}
   .copy-pill{position:absolute;top:8px;right:8px;z-index:6;display:flex;align-items:center;justify-content:center;height:32px;padding:0 16px;border:1px solid var(--rg-accent);border-radius:16px;background:color-mix(in srgb,var(--rg-accent) 22%,var(--rg-surface));color:var(--rg-fg);font-size:13px;font-weight:600;cursor:pointer;box-shadow:0 4px 14px -2px rgba(0,0,0,.5);-webkit-tap-highlight-color:transparent}
   .copy-pill:active{background:color-mix(in srgb,var(--rg-accent) 36%,var(--rg-surface))}

@@ -4,7 +4,7 @@
 //! `src-tauri/src/remote/mod.rs` so the desktop LAN host, the `rdg` CLI, and the
 //! cloud relay all share ONE implementation instead of drifting copies.
 
-use std::net::{IpAddr, ToSocketAddrs, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs, UdpSocket};
 
 fn computer_name() -> String {
     std::env::var("COMPUTERNAME").unwrap_or_else(|_| "localhost".to_string())
@@ -72,5 +72,39 @@ pub fn detect_lan_ips() -> Vec<String> {
     if out.is_empty() {
         out.push(detect_lan_ip());
     }
+    out.sort_by_key(|value| value.parse::<Ipv4Addr>().map(ip_priority).unwrap_or(9));
     out
+}
+
+fn ip_priority(ip: Ipv4Addr) -> u8 {
+    let octets = ip.octets();
+    if octets[0] == 192 && octets[1] == 168 {
+        0
+    } else if octets[0] == 10 {
+        1
+    } else if octets[0] == 172 && (16..=31).contains(&octets[1]) {
+        2
+    } else if octets[0] == 100 && (64..=127).contains(&octets[1]) {
+        4
+    } else {
+        3
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ip_priority;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn conventional_lan_precedes_virtual_and_overlay_ranges() {
+        assert!(
+            ip_priority(Ipv4Addr::new(192, 168, 1, 11))
+                < ip_priority(Ipv4Addr::new(172, 25, 192, 1))
+        );
+        assert!(
+            ip_priority(Ipv4Addr::new(172, 25, 192, 1))
+                < ip_priority(Ipv4Addr::new(100, 108, 76, 113))
+        );
+    }
 }

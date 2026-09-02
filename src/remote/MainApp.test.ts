@@ -5,7 +5,7 @@ const source = readFileSync(new URL('./MainApp.svelte', import.meta.url), 'utf8'
 
 describe('remote Agent attention monitor', () => {
   it('keeps live roster attention polling while the drawer is closed', () => {
-    expect(source).toContain("const RemoteTeamRoster = import('./lib/SidebarTeamRoster.svelte');");
+    expect(source).toContain("remoteTeamRosterPromise ??= import('./lib/SidebarTeamRoster.svelte');");
     expect(source).toContain("ui.sidebarTab !== 'team'");
     expect(source).toContain('class="agent-attention-monitor"');
     expect(source).toContain('onAttentionChange={updateAgentAttention}');
@@ -27,6 +27,22 @@ describe('remote Agent attention monitor', () => {
 
   it('marks browser-driven pane fits as remote-owned claims', () => {
     expect(source).toContain("return ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight, 'remote');");
+  });
+
+  it('settles current mobile geometry, drops stale frames, and requests a canonical screen on refresh', () => {
+    expect(source).toContain('async function handleRefresh()');
+    const start = source.indexOf('async function handleRefresh()');
+    const end = source.indexOf('\n  }\n\n  let _refreshSeq', start);
+    const refresh = source.slice(start, end);
+    expect(refresh.indexOf('await canvasRef.claimPaneSize();')).toBeLessThan(refresh.indexOf('paneFeedScheduler.clear(key);'));
+    expect(refresh).toContain('pendingRawFrames.drop(key);');
+    expect(refresh).toContain('canvasRef?.clearPendingFeed(key);');
+    expect(refresh).toContain('clearFeedResync(key);');
+    expect(refresh).toContain('ws.resyncPane?.(pane);');
+  });
+
+  it('atomically prepends lazy scrollback pages', () => {
+    expect(source).toContain('page.commit(() => targetCanvas.prependScrollbackForPane(key, bytes))');
   });
 
   it('releases every pane-owned queue, timer, trace, transport, and kernel', () => {

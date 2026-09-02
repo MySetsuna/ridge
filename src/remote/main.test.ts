@@ -10,10 +10,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock('svelte', () => ({ mount: mocks.mount }));
 vi.mock('./App.svelte', () => ({ default: {} }));
 vi.mock('virtual:pwa-register', () => ({ registerSW: mocks.registerSW }));
-vi.mock('@ridge/remote/shared/terminal/fontStack', () => ({ REMOTE_TERM_FONT: 'remote-mono' }));
-vi.mock('@ridge/remote/shared/terminal/manager', () => ({
-  TerminalManager: { setHostPorts: mocks.setHostPorts },
-}));
 
 const state = vi.hoisted(() => ({
   visibility: 'visible' as DocumentVisibilityState,
@@ -46,7 +42,7 @@ beforeEach(() => {
 });
 
 describe('Remote bootstrap and service-worker recovery', () => {
-  it('mounts the app, injects mobile host ports, and marks standalone PWA', async () => {
+  it('mounts the app without preloading terminal ports, and marks standalone PWA', async () => {
     const serviceWorker = {
       register: state.register,
       addEventListener: vi.fn((type: string, handler: (event: any) => void) => {
@@ -82,16 +78,8 @@ describe('Remote bootstrap and service-worker recovery', () => {
     await import('./main');
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(mocks.mount).toHaveBeenCalledWith({}, { target: { id: 'app' } });
-    expect(mocks.setHostPorts).toHaveBeenCalledWith(expect.objectContaining({
-      settings: expect.objectContaining({ get: expect.any(Function), subscribe: expect.any(Function) }),
-      openTextLink: expect.any(Function),
-    }));
+    expect(mocks.setHostPorts).not.toHaveBeenCalled();
     expect(documentMock.documentElement.dataset.ridgePwa).toBe('standalone');
-    const ports = mocks.setHostPorts.mock.calls[0][0];
-    const unsubscribe = ports.settings.subscribe(vi.fn());
-    expect(unsubscribe()).toBeUndefined();
-    ports.openTextLink('url', { cwd: '/repo', knownCwds: ['/repo'] });
-    expect(state.dispatched).toHaveLength(1);
 
     const options = mocks.registerSW.mock.calls[0][0];
     options.onRegisteredSW('/sw.js', { scope: '/wrong' });
@@ -102,7 +90,7 @@ describe('Remote bootstrap and service-worker recovery', () => {
     expect(mocks.applyUpdate).toHaveBeenCalledWith(true);
   });
 
-  it('clears all client stores and reloads after a version mismatch message', async () => {
+  it('does not install a cache-version handler that clears Remote credentials', async () => {
     const documentMock = {
       visibilityState: 'visible',
       documentElement: { dataset: {} as Record<string, string> },
@@ -123,11 +111,10 @@ describe('Remote bootstrap and service-worker recovery', () => {
     vi.stubGlobal('indexedDB', { databases: vi.fn(async () => [{ name: 'ridge' }]), deleteDatabase: state.deleteDatabase });
     vi.resetModules();
     await import('./main');
-    state.messageHandler?.({ data: { type: 'CLEAR_STORAGE', version: 'next' } });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(state.clearLocal).toHaveBeenCalled();
-    expect(state.clearSession).toHaveBeenCalled();
-    expect(state.deleteDatabase).toHaveBeenCalledWith('ridge');
-    expect(state.reload).toHaveBeenCalled();
+    expect(state.messageHandler).toBeUndefined();
+    expect(state.clearLocal).not.toHaveBeenCalled();
+    expect(state.clearSession).not.toHaveBeenCalled();
+    expect(state.deleteDatabase).not.toHaveBeenCalled();
+    expect(state.reload).not.toHaveBeenCalled();
   });
 });

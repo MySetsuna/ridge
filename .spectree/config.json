@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "specs": "specs",
+  "changes": "changes",
+  "language": "zh-CN",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "ignoreFile": ".stcignore",
+  "baselineIgnore": [
+    "docs/archive"
+  ]
+}

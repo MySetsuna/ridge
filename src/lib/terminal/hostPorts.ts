@@ -126,5 +126,10 @@ export function makeHostPorts(): HostPorts {
 					return { handled: false, reason: String(error) };
 				});
 		},
+		validateTextLink(request) {
+			return import('$lib/utils/linkResolver')
+				.then(({ validateTerminalLink }) => validateTerminalLink(request))
+				.catch((error) => ({ valid: false, reason: String(error) }));
+		},
 	};
 }

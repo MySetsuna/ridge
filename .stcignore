@@ -1,2 +1,30 @@
 # Project-specific SpecTree ignore patterns.
 # Common generated directories are ignored by default.
+
+# Local checkouts and generated indexes.
+.claude/worktrees/
+.claude/settings.local.json
+ridge-code/
+.codegraph/
+
+# Build, package, test, and runtime output.
+build/
+dist/
+remote-dist/
+release/
+.svelte-kit/
+package/
+coverage/
+test-results/
+target/
+target-*/
+packages/ridge-term/pkg/
+scripts/perf-runs/
+artifacts/
+static/remote/
+web-remote-dist/
+obsidian-vault/
+.ridge/
+
+# Local browser/CDP state.
+.webview2-dev-cdp/

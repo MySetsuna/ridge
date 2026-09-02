@@ -248,7 +248,7 @@
   }
 
   async function startWebRemoteBoot() {
-    const { RemoteConnection } = await import('@ridge/remote');
+    const { RemoteConnection, getRemoteDeviceId } = await import('@ridge/remote');
     const { bridge } = await import('$lib/transport/tauriShim/bridge');
     const { createLanWsTransport } = await import('@ridge/remote');
     const TOKEN_KEY = 'ridge_remote_token';
@@ -344,7 +344,8 @@
       fetch('/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `code=${encodeURIComponent(numeric)}`,
+        // §L-3: the token and WebSocket must use the same device binding.
+        body: `code=${encodeURIComponent(numeric)}&device=${encodeURIComponent(getRemoteDeviceId())}`,
       })
         .then((r) => r.json())
         .then((d) => {
