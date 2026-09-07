@@ -28,14 +28,6 @@ export interface AgentReplyLookupProfile {
   cwd?: string;
 }
 
-function normalizeCwdIdentity(cwd: string): string {
-  const normalized = cwd.trim().replaceAll('\\', '/');
-  if (/^(?:[a-z]:)?\/+$/i.test(normalized)) {
-    return normalized.replace(/\/+$/, '/').toLocaleLowerCase();
-  }
-  return normalized.replace(/\/+$/, '').toLocaleLowerCase();
-}
-
 const CANONICAL_AGENT_NAMES: Readonly<Record<string, string>> = {
   'claude-code': 'claude',
   'codex-cli': 'codex',
@@ -84,22 +76,26 @@ function historyReplyMatchesAgent<T extends AgentHistoryReplyLike>(
   return agentIdentityAliases(reply.agent).some((alias) => profileIdentities.has(alias));
 }
 
-/** Match a persisted reply to a live profile without confusing same-type agents.
- * Native ids win; synthetic kernel ids fall back to the pane cwd. */
+/**
+ * Match only the conversation identity carried by both sides.
+ *
+ * A CWD is useful presentation metadata but is not a conversation identity:
+ * two Codex/Claude panes can legitimately share one checkout.  In particular,
+ * never turn Ridge's synthetic `session:*` runtime id into a CWD/name guess.
+ * Such a guess was the source of members showing each other's latest reply.
+ */
 export function historyReplyMatchesProfile<T extends AgentHistoryReplyLike>(
   reply: T,
   profile: AgentReplyLookupProfile,
 ): boolean {
   if (!historyReplyMatchesAgent(reply, profile)) return false;
   const sessionId = profile.sessionId?.trim();
-  if (sessionId && reply.sessionId === sessionId) return true;
-  if (sessionId && !sessionId.startsWith('session:')) return false;
-  return !!profile.cwd && !!reply.cwd
-    && normalizeCwdIdentity(reply.cwd) === normalizeCwdIdentity(profile.cwd);
+  return !!sessionId
+    && !sessionId.startsWith('session:')
+    && reply.sessionId === sessionId;
 }
 
-/** Bind a live card to history by native session id, with a cwd fallback for
- * synthetic kernel session ids and launchers that do not expose resume ids. */
+/** Bind a live card to history only by its native conversation session id. */
 export function latestReplyForProfile<T extends AgentHistoryReplyLike>(
   replies: readonly T[],
   profile: AgentReplyLookupProfile,

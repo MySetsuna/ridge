@@ -477,6 +477,7 @@ pub(crate) fn topology_snapshot(state: &AppState, wid: Uuid) -> Result<Value, St
         topo
     };
     inject_kernel_identity_fields(&mut topo, wid);
+    inject_service_delivery_identities(&mut topo, wid);
     inject_roster_runtime(&mut topo, state, wid);
     if let Some(obj) = topo.as_object_mut() {
         obj.insert("rosterChanged".into(), json!(changed));
@@ -540,6 +541,62 @@ fn inject_identity_fields(
         object.insert("capabilities".into(), json!(identity.capabilities));
         object.insert("executable".into(), json!(identity.executable));
         object.insert("argv".into(), json!(identity.argv));
+    }
+}
+
+/// Every visible live teammate needs a service-owned delivery identity, even
+/// when the Kernel roster has not yet registered that auto-discovered process.
+/// This identity is deliberately separate from the stable roster/member id:
+/// it is only a durable Hub inbox address and never a transcript binding.
+/// PTY is not used as a delivery fallback.
+fn inject_service_delivery_identities(topology: &mut Value, wid: Uuid) {
+    let Some(roster) = topology.get_mut("roster").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for entry in roster {
+        if entry
+            .get("generation")
+            .and_then(Value::as_u64)
+            .is_some_and(|generation| generation > 0)
+        {
+            continue;
+        }
+        let Some(pane_id) = entry
+            .get("paneId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let agent_id = entry
+            .get("agentId")
+            .or_else(|| entry.get("id"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_default()
+            .to_string();
+        if agent_id.is_empty() {
+            continue;
+        }
+        let offline = matches!(
+            entry.get("status").and_then(Value::as_str),
+            Some("Disappeared") | Some("Suspended")
+        );
+        let Some(object) = entry.as_object_mut() else {
+            continue;
+        };
+        object.insert("agentId".into(), json!(agent_id));
+        object.insert("workspaceId".into(), json!(wid.to_string()));
+        object.entry("sessionId").or_insert_with(|| json!(format!("session:{pane_id}")));
+        object.insert("generation".into(), json!(1_u64));
+        object.insert("lease".into(), json!(format!("desktop-service:{wid}:{pane_id}")));
+        object.insert(
+            "lifecycle".into(),
+            json!(if offline { "Stopped" } else { "Online" }),
+        );
+        object.insert("online".into(), json!(!offline));
+        object.insert("capabilities".into(), json!(["messages"]));
     }
 }
 
@@ -1370,6 +1427,27 @@ mod tests {
         });
         inject_roster_cwds(&mut topology, &ws);
         assert_eq!(topology["roster"][0]["cwd"], "C:/repo/agent");
+    }
+
+    #[test]
+    fn auto_discovered_member_gets_durable_service_identity_without_history_guessing() {
+        let workspace = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let mut topology = serde_json::json!({
+            "roster": [{
+                "id": "auto:codex:fixture",
+                "paneId": pane.to_string(),
+                "status": "Working"
+            }]
+        });
+        inject_service_delivery_identities(&mut topology, workspace);
+        let member = &topology["roster"][0];
+        assert_eq!(member["agentId"], "auto:codex:fixture");
+        assert_eq!(member["workspaceId"], workspace.to_string());
+        assert_eq!(member["generation"], 1);
+        assert_eq!(member["online"], true);
+        assert_eq!(member["capabilities"], serde_json::json!(["messages"]));
+        assert!(member["sessionId"].as_str().is_some_and(|id| id.starts_with("session:")));
     }
 
     #[test]

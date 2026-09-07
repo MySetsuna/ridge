@@ -292,6 +292,10 @@
     return m.cwd?.trim() || panes.find((pane) => pane.id === m.paneId)?.cwd?.trim() || '';
   }
 
+  function historyProjectPaths(): string[] {
+    return [...new Set(panes.map((pane) => pane.cwd?.trim() ?? '').filter(Boolean))];
+  }
+
   function titleFor(m: TeammateRosterMember): string {
     return m.title?.trim() || m.name;
   }
@@ -376,6 +380,8 @@
               ws,
               queryClient,
               sessionId,
+              workspaceId,
+              historyProjectPaths(),
               HISTORY_PAGE_SIZE,
               signal,
               0,
@@ -426,6 +432,8 @@
         ws,
         queryClient,
         remoteSessionId(ws),
+        workspaceId,
+        historyProjectPaths(),
         HISTORY_PAGE_SIZE,
         undefined,
         historyOffset,

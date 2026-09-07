@@ -1315,9 +1315,9 @@ export class CloudRemoteConnection implements RemoteLink {
     });
   }
 
-  async listAgentHistory(limit = 24, offset = 0, query = ''): Promise<AgentHistoryReply[]> {
+  async listAgentHistory(projectPaths: readonly string[], limit = 24, offset = 0, query = ''): Promise<AgentHistoryReply[]> {
     const result = await this.bridge.invoke<unknown>('read_agent_recent_replies', {
-      projectPaths: [],
+      projectPaths: [...new Set(projectPaths.map((path) => path.trim()).filter(Boolean))],
       limit: Math.max(1, Math.min(100, Math.floor(limit))),
       offset: Math.max(0, Math.floor(offset)),
       query: query.trim(),

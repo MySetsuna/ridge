@@ -93,15 +93,16 @@
   const topology = $derived(
     workspaceId ? ($agentTopologyStore[workspaceId] ?? EMPTY_TOPOLOGY) : EMPTY_TOPOLOGY
   );
+  /** Commune only renders the selected workspace. Cross-workspace aggregation
+   * made identical agent sessions and groups bleed into the active tab. */
   const allMembers = $derived(
     sortMembersBySessionId(
-      $workspacesList.flatMap((workspace) =>
-        ($agentTopologyStore[workspace.id]?.roster ?? []).map((profile) => ({
-          workspaceId: workspace.id,
-          workspaceName: workspace.name?.trim() || `工作区 ${workspace.displaySeq}`,
-          profile,
-        }))
-      ),
+      (topology.roster ?? []).map((profile) => ({
+        workspaceId: workspaceId ?? '',
+        workspaceName: $workspacesList.find((workspace) => workspace.id === workspaceId)?.name?.trim()
+          || '当前工作区',
+        profile,
+      })),
     )
   );
   const nativeSessions = $derived(
@@ -149,6 +150,19 @@
   let refreshQueuedHeavy = false;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let historyRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The history API is intentionally denied an empty scope. Prefer the live
+   * pane CWDs, then the roster's process CWD, all from this workspace only. */
+  const historyProjectPaths = $derived.by(() => {
+    if (!workspaceId) return [] as string[];
+    const paths = new Set<string>();
+    for (const [key, cwd] of Object.entries($paneCwdStore)) {
+      if (key.startsWith(`${workspaceId}:`) && cwd.trim()) paths.add(cwd.trim());
+    }
+    for (const profile of topology.roster) {
+      if (profile.cwd?.trim()) paths.add(profile.cwd.trim());
+    }
+    return [...paths];
+  });
   const agentProfilesByIdentity = $derived.by(() => {
     const profiles = new Map<string, TeammateProfile>();
     for (const member of allMembers) {
@@ -223,8 +237,15 @@
     if (historyRefreshInFlight) return historyRefreshInFlight;
     historyRefreshInFlight = (async () => {
       try {
+        if (historyProjectPaths.length === 0) {
+          recentReplies = [];
+          historyOffset = 0;
+          historyHasMore = false;
+          historyLoadedAt = Date.now();
+          return;
+        }
         const page = await invoke<AgentRecentReply[]>('read_agent_recent_replies', {
-          projectPaths: [],
+          projectPaths: historyProjectPaths,
           limit: HISTORY_PAGE_SIZE,
           offset: 0,
           query: historySearch.trim(),
@@ -243,11 +264,11 @@
   }
 
   async function loadMoreHistory(): Promise<void> {
-    if (!historyHasMore || historyLoadingMore || historyRefreshInFlight) return;
+    if (!historyHasMore || historyLoadingMore || historyRefreshInFlight || historyProjectPaths.length === 0) return;
     historyLoadingMore = true;
     try {
       const page = await invoke<AgentRecentReply[]>('read_agent_recent_replies', {
-        projectPaths: [],
+        projectPaths: historyProjectPaths,
         limit: HISTORY_PAGE_SIZE,
         offset: historyOffset,
         query: historySearch.trim(),
@@ -301,10 +322,7 @@
     }
     const exactSession = allMembers.find((member) => member.profile.sessionId === sessionId);
     if (exactSession) return exactSession;
-    const candidates = allMembers.filter((member) =>
-      historyReplyMatchesProfile(reply, lookupProfileFor(member))
-    );
-    return candidates.length === 1 ? candidates[0] : null;
+    return null;
   }
 
   async function resumeAgentSession(reply: AgentRecentReply): Promise<void> {

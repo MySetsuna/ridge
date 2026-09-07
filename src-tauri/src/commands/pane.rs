@@ -1032,7 +1032,11 @@ pub(crate) fn remote_resume_agent_pane(
     cwd: String,
 ) -> Result<Uuid, AppError> {
     let requested_cwd = std::path::PathBuf::from(cwd.trim());
-    let recorded_cwd = crate::commands::project::recorded_agent_session_cwd(&agent, &session_id)
+    let recorded_cwd = crate::commands::project::recorded_agent_session_cwd(
+        &agent,
+        &session_id,
+        Some(requested_cwd.as_path()),
+    )
         .map_err(AppError::PtyError)?;
     let requested_canonical = std::fs::canonicalize(&requested_cwd)
         .map_err(|_| AppError::PtyError("Agent session CWD is not a directory".into()))?;
@@ -1124,8 +1128,19 @@ pub(crate) fn desktop_resume_agent_pane(
                 .to_string()
         }
     };
-    let plan =
-        crate::commands::project::plan_agent_resume(agent, session_id, cwd, yolo, overrides)?;
+    let requested_cwd = std::path::PathBuf::from(cwd.trim());
+    let recorded_cwd = crate::commands::project::recorded_agent_session_cwd(
+        &agent,
+        &session_id,
+        Some(requested_cwd.as_path()),
+    )?;
+    let plan = crate::commands::project::plan_agent_resume(
+        agent,
+        session_id,
+        recorded_cwd.to_string_lossy().into_owned(),
+        yolo,
+        overrides,
+    )?;
     let cwd_path = std::path::PathBuf::from(&plan.cwd);
     terminal::validate_agent_launch(&plan.executable, &cwd_path)?;
     let split = split_pane_inner(state, source, "horizontal".into()).map_err(|e| e.to_string())?;

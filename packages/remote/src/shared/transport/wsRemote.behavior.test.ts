@@ -187,7 +187,7 @@ describe('RemoteConnection public communication contract', () => {
 			deliveryAdapter: 'hub', deliveryReliability: 'durable', terminalAccepted: false, agentAcknowledged: true,
 		});
 		await expect(receipt).resolves.toMatchObject({ messageId: 'm1' });
-		const history = conn.listAgentHistory(1000);
+		const history = conn.listAgentHistory(['C:/repo'], 1000);
 		invoke(ws, 'read_agent_recent_replies', []);
 		await expect(history).resolves.toEqual([]);
 		const groups = conn.setTeammateGroups('workspace-a', []);

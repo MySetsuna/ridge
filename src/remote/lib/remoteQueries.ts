@@ -38,11 +38,11 @@ export const remoteQueryKeys = {
   /** Agent sidebar data is scoped by remote session + active workspace. */
   teamRoster: (sessionId: number, workspaceId?: string) =>
     ['remote', sessionId, 'team', workspaceId ?? ''] as const,
-  /** Agent history is host-wide; CWD grouping happens in the sidebar. */
-  agentHistory: (sessionId: number, limit = 24, offset = 0, query = '') =>
+  /** Transcript cache identity includes the selected workspace and exact CWD scope. */
+  agentHistory: (sessionId: number, workspaceId: string, projectPaths: readonly string[], limit = 24, offset = 0, query = '') =>
     offset === 0 && !query
-      ? ['remote', sessionId, 'team', 'history', limit] as const
-      : ['remote', sessionId, 'team', 'history', limit, offset, query] as const,
+      ? ['remote', sessionId, 'team', workspaceId, 'history', normalizedHistoryPaths(projectPaths), limit] as const
+      : ['remote', sessionId, 'team', workspaceId, 'history', normalizedHistoryPaths(projectPaths), limit, offset, query] as const,
   /**
    * Sidebar reads use the same TanStack Query cache as workspace/pane reads.
    * Keep cwd and target in every key: two panes can point at the same path
@@ -86,6 +86,10 @@ export const REMOTE_SIDEBAR_STALE_TIME_MS = 30_000;
 /** Live roster attention must converge quickly; history remains five-minute. */
 export const REMOTE_ROSTER_STALE_TIME_MS = 3_000;
 export const REMOTE_QUERY_TIMEOUT_MS = 15_000;
+
+function normalizedHistoryPaths(paths: readonly string[]): string[] {
+  return [...new Set(paths.map(normalizeRemotePath))].sort();
+}
 
 export interface RemoteQueryClientLike {
   fetchQuery<T>(options: {
@@ -164,6 +168,8 @@ export function fetchRemoteAgentHistory(
   link: RemoteLink,
   queryClient: RemoteQueryClientLike | undefined,
   sessionId: number,
+  workspaceId: string,
+  projectPaths: readonly string[],
   limit = 24,
   signal?: AbortSignal,
   offset = 0,
@@ -171,11 +177,9 @@ export function fetchRemoteAgentHistory(
 ): Promise<AgentHistoryReply[]> {
   return fetchRemoteQuery(
     queryClient,
-    remoteQueryKeys.agentHistory(sessionId, limit, offset, query),
+    remoteQueryKeys.agentHistory(sessionId, workspaceId, projectPaths, limit, offset, query),
     (context) => abortable(
-      offset === 0 && !query
-        ? link.listAgentHistory(limit)
-        : link.listAgentHistory(limit, offset, query),
+      link.listAgentHistory(projectPaths, limit, offset, query),
       [signal, context?.signal],
     ),
     REMOTE_SIDEBAR_STALE_TIME_MS,

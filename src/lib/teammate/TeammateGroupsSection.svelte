@@ -15,8 +15,6 @@
   import { Users, Plus, Trash2, Pencil, Send, Ghost, Palette } from 'lucide-svelte';
   import { alertDialog, confirmDialog, promptDialog } from '$lib/components/RidgeDialog.svelte';
   import { autoGrow } from '$lib/actions/autoGrow';
-  import { enqueuePtyWrite } from '$lib/terminal/ptyWriteQueue';
-  import { enqueuePaneInput } from '@ridge/remote/shared/terminal/paneInputGate';
   import { recordMemberTask } from './memberTasks';
   import AgentMemberRow from './AgentMemberRow.svelte';
   import type { TeammateProfile, PendingApproval } from './teammateModel';
@@ -139,9 +137,8 @@
   // 给组派任务 —— **只派给组长**（手动指定）。由组长统一接收、再自行分派给组内其它智能体。
   // 无组长 / 组长离线一律弹提示，绝不静默无投递。
   //
-  // 关键：投递以 `\r`（CR，回车键的真实字节）结尾，而非 `\n`（LF）——终端里 Enter 经 xterm
-  // key-encoder 编码为 `\r`，Claude Code 等 TUI 据此提交；发 `\n` 只在输入框插一个换行、不触发
-  // 发送（此前的回车失灵 bug 即源于此）。
+  // 投递只能走内置 teammate 服务/HUB。编组绝不把文本写入 PTY：那会绕过
+  // durable receipt、身份围栏以及 agent 自己的 inbox 消费协议。
   async function dispatchTask(g: TeammateGroup) {
     const text = (taskInput[g.id] ?? '').trim();
     if (!text) return;
@@ -157,15 +154,21 @@
       return;
     }
     try {
-      const key = `${workspaceId}:${leader.paneId}`;
-      await enqueuePaneInput(key, () => enqueuePtyWrite(key, () =>
-        invoke('write_to_pty', { workspaceId, paneId: leader.paneId, data: `${text}\r` }),
-      ));
+      await invoke('send_agent_message', {
+        workspaceId,
+        paneId: leader.paneId,
+        agentId: leader.agentId,
+        generation: leader.profile?.generation,
+        lease: leader.profile?.lease,
+        message: text,
+        from: 'desktop-group-ui',
+        idempotency_key: crypto.randomUUID(),
+      });
       store.recordTask(g.id, text, [leader.agentId]);
       recordMemberTask(leader.agentId, text); // 成员级「最近任务」同步（成员列表展示）
       taskInput = { ...taskInput, [g.id]: '' };
     } catch (e) {
-      console.error('[teammate-groups] dispatch write_to_pty failed', e);
+      console.error('[teammate-groups] teammate service dispatch failed', e);
       void alertDialog({ title: '给组派任务', message: '向组长投递任务失败，请重试。' });
     }
   }

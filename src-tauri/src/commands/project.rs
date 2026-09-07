@@ -801,6 +801,11 @@ pub async fn read_agent_recent_replies(
     offset: Option<usize>,
     query: Option<String>,
 ) -> Vec<AgentRecentReply> {
+    // IPC/Remote callers must name an actual workspace scope. Internal resume
+    // validation uses the synchronous reader with an exact CWD independently.
+    if normalized_paths(&project_paths).is_empty() {
+        return Vec::new();
+    }
     tokio::task::spawn_blocking(move || {
         let Some(home) = dirs::home_dir() else {
             return Vec::new();
@@ -879,7 +884,10 @@ fn read_agent_recent_replies_page_sync(
     }
     files.sort_by(|a, b| b.2.cmp(&a.2));
 
-    let mut sessions: HashMap<(String, String), AgentRecentReply> = HashMap::new();
+    // Session ids are provider-local, not host-global. Keep the recorded cwd
+    // in the dedupe identity so two workspaces with the same id cannot evict
+    // each other's history before workspace filtering runs.
+    let mut sessions: HashMap<(String, String, String), AgentRecentReply> = HashMap::new();
     for (agent, path, modified, kind) in files {
         let Ok(content) = read_jsonl_window(&path) else {
             continue;
@@ -895,10 +903,7 @@ fn read_agent_recent_replies_page_sync(
         for session in
             parse_agent_jsonl_with_fallback(agent, &content, modified, fallback_session.as_deref())
         {
-            let key = (
-                session.agent.to_ascii_lowercase(),
-                session.session_id.clone(),
-            );
+            let key = history_reply_identity(&session);
             match sessions.get(&key) {
                 Some(current) if current.timestamp > session.timestamp => {}
                 _ => {
@@ -909,10 +914,7 @@ fn read_agent_recent_replies_page_sync(
     }
     // Grok Build：`~/.grok/sessions/<encoded-cwd>/<session-id>/summary.json` + chat_history.jsonl
     for session in collect_grok_sessions(home) {
-        let key = (
-            session.agent.to_ascii_lowercase(),
-            session.session_id.clone(),
-        );
+        let key = history_reply_identity(&session);
         match sessions.get(&key) {
             Some(current) if current.timestamp > session.timestamp => {}
             _ => {
@@ -933,6 +935,14 @@ fn read_agent_recent_replies_page_sync(
     }
     replies.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     page_history_replies(replies, limit, offset)
+}
+
+fn history_reply_identity(reply: &AgentRecentReply) -> (String, String, String) {
+    (
+        reply.agent.to_ascii_lowercase(),
+        reply.session_id.clone(),
+        reply.cwd.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase(),
+    )
 }
 
 fn history_reply_matches_query(reply: &AgentRecentReply, query: &str) -> bool {
@@ -1027,15 +1037,23 @@ fn limit_history_replies(replies: Vec<AgentRecentReply>, limit: usize) -> Vec<Ag
 /// session id to the CWD recorded in the host's history files before creating
 /// a PTY.  Exact `(agent, session_id)` matching is intentional: CWD/title
 /// guesses would let a stale card resume a different project.
-pub(crate) fn recorded_agent_session_cwd(agent: &str, session_id: &str) -> Result<PathBuf, String> {
+pub(crate) fn recorded_agent_session_cwd(
+    agent: &str,
+    session_id: &str,
+    expected_cwd: Option<&Path>,
+) -> Result<PathBuf, String> {
     let agent = agent.trim();
     let session_id = session_id.trim();
     if agent.is_empty() || session_id.is_empty() {
         return Err("Agent session identity is required".into());
     }
     let home = dirs::home_dir().ok_or_else(|| "Agent history home is unavailable".to_string())?;
-    let replies = read_agent_recent_replies_sync(&home, Vec::new(), usize::MAX);
-    let cwd = find_recorded_agent_session_cwd(&replies, agent, session_id)
+    let scope = expected_cwd
+        .map(|path| path.to_string_lossy().into_owned())
+        .into_iter()
+        .collect();
+    let replies = read_agent_recent_replies_sync(&home, scope, usize::MAX);
+    let cwd = find_recorded_agent_session_cwd(&replies, agent, session_id, expected_cwd)
         .ok_or_else(|| format!("Agent session not found in host history: {agent}/{session_id}"))?;
     let path = PathBuf::from(cwd);
     if !path.is_dir() {
@@ -1048,12 +1066,30 @@ fn find_recorded_agent_session_cwd(
     replies: &[AgentRecentReply],
     agent: &str,
     session_id: &str,
+    expected_cwd: Option<&Path>,
 ) -> Option<String> {
     replies
         .iter()
-        .find(|reply| reply.agent.eq_ignore_ascii_case(agent) && reply.session_id == session_id)
+        .find(|reply| {
+            reply.agent.eq_ignore_ascii_case(agent)
+                && reply.session_id == session_id
+                && expected_cwd.is_none_or(|expected| same_history_cwd(&reply.cwd, expected))
+        })
         .map(|reply| reply.cwd.trim().to_string())
         .filter(|cwd| !cwd.is_empty())
+}
+
+fn same_history_cwd(recorded: &str, expected: &Path) -> bool {
+    let Ok(recorded) = std::fs::canonicalize(recorded) else {
+        return false;
+    };
+    let Ok(expected) = std::fs::canonicalize(expected) else {
+        return false;
+    };
+    #[cfg(windows)]
+    return recorded.to_string_lossy().eq_ignore_ascii_case(&expected.to_string_lossy());
+    #[cfg(not(windows))]
+    return recorded == expected;
 }
 
 /// 扫描 Grok 会话目录，每会话一条最近摘要（summary.json + chat_history 尾部）。
@@ -1806,11 +1842,11 @@ mod tests {
             },
         ];
         assert_eq!(
-            find_recorded_agent_session_cwd(&replies, "codex", "same-id").as_deref(),
+            find_recorded_agent_session_cwd(&replies, "codex", "same-id", None).as_deref(),
             Some(r"D:\one")
         );
-        assert!(find_recorded_agent_session_cwd(&replies, "codex", "missing").is_none());
-        assert!(find_recorded_agent_session_cwd(&replies, "grok", "same-id").is_none());
+        assert!(find_recorded_agent_session_cwd(&replies, "codex", "missing", None).is_none());
+        assert!(find_recorded_agent_session_cwd(&replies, "grok", "same-id", None).is_none());
     }
 
     #[test]

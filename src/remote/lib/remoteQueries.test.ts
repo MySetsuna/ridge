@@ -96,15 +96,15 @@ describe('remoteQueries', () => {
     }));
   });
 
-	it('routes history through the host-wide query key and limit', async () => {
+	it('scopes history by workspace and CWD before querying the host', async () => {
     const remote = link();
     const history = [{ agent: 'Codex', sessionId: 's1' }];
     vi.mocked(remote.listAgentHistory).mockResolvedValueOnce(history as never);
     const fetchQuery = makeFetchQuery();
-    await expect(fetchRemoteAgentHistory(remote, { fetchQuery }, 9, 12)).resolves.toEqual(history);
-    expect(remote.listAgentHistory).toHaveBeenCalledWith(12);
+		await expect(fetchRemoteAgentHistory(remote, { fetchQuery }, 9, 'workspace-a', ['/repo'], 12)).resolves.toEqual(history);
+    expect(remote.listAgentHistory).toHaveBeenCalledWith(['/repo'], 12, 0, '');
 		expect(fetchQuery).toHaveBeenCalledWith(expect.objectContaining({
-			queryKey: remoteQueryKeys.agentHistory(9, 12),
+			queryKey: remoteQueryKeys.agentHistory(9, 'workspace-a', ['/repo'], 12),
 		}));
 	});
 

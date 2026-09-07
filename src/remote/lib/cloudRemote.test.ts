@@ -1204,7 +1204,7 @@ describe('CloudRemoteConnection bounded parity guards', () => {
       id: 'pwsh', label: 'PowerShell', program: 'pwsh', args: ['-NoLogo'],
     });
     expect(await conn.getTeammateTopology('ws1')).toBeUndefined();
-    expect(await conn.listAgentHistory(999)).toEqual([]);
+    expect(await conn.listAgentHistory(['/repo'], 999)).toEqual([]);
     expect(await conn.listHitlPending()).toBeUndefined();
     expect(await conn.resolveHitlRemote('hitl-1', 'nonce-1', 'reject')).toBe('already-resolved');
     expect(await conn.getOrchestrationHealth()).toEqual({ suspendedAgents: 0, pendingHitl: 0 });

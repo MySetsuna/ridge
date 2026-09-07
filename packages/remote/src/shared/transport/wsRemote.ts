@@ -527,8 +527,8 @@ export interface RemoteLink {
   listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }>;
   /** P1 roster：只读拓扑快照（capability `teammate` 协商后可用；UI 轮询取数）。 */
   getTeammateTopology(workspaceId?: string): Promise<TeammateTopology>;
-  /** Real session-file history, paged and searchable by the client. */
-  listAgentHistory(limit?: number, offset?: number, query?: string): Promise<AgentHistoryReply[]>;
+  /** Real session-file history, always restricted to the selected workspace's pane CWDs. */
+  listAgentHistory(projectPaths: readonly string[], limit?: number, offset?: number, query?: string): Promise<AgentHistoryReply[]>;
   /** Persist the current workspace's Agent groups for Remote/desktop parity. */
   setTeammateGroups(workspaceId: string, groups: readonly TeammateGroup[]): Promise<void>;
   /** Create a new pane and resume a recorded Agent session in its CWD. */
@@ -1657,13 +1657,13 @@ export class RemoteConnection implements RemoteLink {
     return data._result as AgentMessageReceipt;
   }
 
-  async listAgentHistory(limit = 24, offset = 0, query = ''): Promise<AgentHistoryReply[]> {
+  async listAgentHistory(projectPaths: readonly string[], limit = 24, offset = 0, query = ''): Promise<AgentHistoryReply[]> {
     const data = (await this._sendAndWait(
       {
         type: 'invoke-request',
         cmd: 'read_agent_recent_replies',
         args: {
-          projectPaths: [],
+          projectPaths: [...new Set(projectPaths.map((path) => path.trim()).filter(Boolean))],
           limit: Math.max(1, Math.min(100, Math.floor(limit))),
           offset: Math.max(0, Math.floor(offset)),
           query: query.trim(),

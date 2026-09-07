@@ -56,7 +56,7 @@ describe('agent commune view model', () => {
     expect(latestReplyForProfile(replies, { id: 'Codex', name: 'Codex' })).toBeUndefined();
   });
 
-  it('falls back from Ridge synthetic session ids to exact agent type and cwd', () => {
+  it('does not bind a synthetic Ridge runtime id by agent type or cwd', () => {
     const replies = [
       { agent: 'Codex', sessionId: 'native-a', timestamp: 2, cwd: 'C:/repo', text: 'right' },
       { agent: 'Codex', sessionId: 'native-b', timestamp: 8, cwd: 'C:/other', text: 'wrong cwd' },
@@ -64,16 +64,16 @@ describe('agent commune view model', () => {
     expect(latestReplyForProfile(replies, {
       id: 'kernel:pane', name: 'Pane title', executable: 'codex.exe',
       sessionId: 'session:ridge-generated', cwd: 'C:\\repo',
-    })?.text).toBe('right');
+    })).toBeUndefined();
   });
 
-  it('treats a process cwd trailing separator as the same native session cwd', () => {
+  it('does not use normalized cwd as a session binding fallback', () => {
     const replies = [
       { agent: 'Codex', sessionId: 'native-a', timestamp: 2, cwd: 'C:/code/wind', text: 'right' },
     ];
     expect(latestReplyForProfile(replies, {
       id: 'auto:codex:pane', name: 'codex', sessionId: 'session:ridge-generated', cwd: 'C:\\code\\wind\\',
-    })?.text).toBe('right');
+    })).toBeUndefined();
   });
 
   it('prioritizes approval and active states over history completion', () => {

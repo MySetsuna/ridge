@@ -547,7 +547,7 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
       messageId: 'm', deliveryId: 'd', targetKey: 'workspace-a/agent', status: 'delivered',
       deliveryAdapter: 'mcp_pull', deliveryReliability: 'durable', terminalAccepted: true, agentAcknowledged: false,
     }, 'send_agent_message')).toMatchObject({ messageId: 'm' });
-    expect(await resolveInvoke(() => conn.listAgentHistory(200), [], 'read_agent_recent_replies')).toEqual([]);
+    expect(await resolveInvoke(() => conn.listAgentHistory(['/repo'], 200), [], 'read_agent_recent_replies')).toEqual([]);
     await resolveInvoke(() => conn.setTeammateGroups('workspace-a', []), null, 'set_teammate_groups');
     expect(await resolveInvoke(() => conn.resumeAgentSession('workspace-a', 'codex', 'session', '/repo'), { paneId: 'new-pane' }, 'resume_agent_session')).toBe('new-pane');
     expect(await resolveInvoke(() => conn.listHitlPending(), [], 'list_hitl_pending')).toEqual([]);

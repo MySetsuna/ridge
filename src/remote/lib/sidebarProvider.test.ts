@@ -300,8 +300,8 @@ describe('remote sidebar query contract', () => {
     await Promise.all([
       fetchRemoteTeamRoster(link, client, 12, 'workspace-a'),
       fetchRemoteTeamRoster(link, client, 12, 'workspace-a'),
-      fetchRemoteAgentHistory(link, client, 12),
-      fetchRemoteAgentHistory(link, client, 12),
+      fetchRemoteAgentHistory(link, client, 12, 'workspace-a', ['/tmp/repo']),
+      fetchRemoteAgentHistory(link, client, 12, 'workspace-a', ['/tmp/repo']),
     ]);
     expect(link.getTeammateTopology).toHaveBeenCalledOnce();
     expect(link.listHitlPending).toHaveBeenCalledOnce();
@@ -309,7 +309,7 @@ describe('remote sidebar query contract', () => {
     expect(link.listAgentHistory).toHaveBeenCalledOnce();
 
     await fetchRemoteTeamRoster(link, client, 12, 'workspace-a');
-    await fetchRemoteAgentHistory(link, client, 12);
+    await fetchRemoteAgentHistory(link, client, 12, 'workspace-a', ['/tmp/repo']);
     expect(link.getTeammateTopology).toHaveBeenCalledOnce();
     expect(link.listAgentHistory).toHaveBeenCalledOnce();
 
