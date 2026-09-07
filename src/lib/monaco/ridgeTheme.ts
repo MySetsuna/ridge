@@ -53,8 +53,10 @@ export function ridgeMonacoThemeId(themeId: string): string {
  * unavailable, falls back to plain `vs` / `vs-dark` so the editor
  * still renders something reasonable until the next theme application.
  */
-export function applyRidgeMonacoTheme(themeId: string): void {
-	const isDark = THEMES_DARK.has(themeId);
+export function applyRidgeMonacoTheme(themeId: string, themeType?: 'dark' | 'light'): void {
+	// Custom themes are runtime data, so their declared type is authoritative.
+	// Keep the built-in id list only as a pre-bootstrap/unknown-theme fallback.
+	const isDark = themeType === 'dark' || (themeType === undefined && THEMES_DARK.has(themeId));
 	const monacoId = ridgeMonacoThemeId(themeId);
 
 	if (typeof document === 'undefined') {

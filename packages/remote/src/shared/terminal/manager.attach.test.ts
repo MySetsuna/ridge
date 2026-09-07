@@ -42,6 +42,7 @@ const wasm = vi.hoisted(() => {
 		e2eEncodeCursorDeltaFrame = vi.fn((seq: number, row: number, col: number) =>
 			new Uint8Array([seq, row, col]));
 		shouldAllowShellHistory = vi.fn(() => true);
+		isTuiKeyboardLease = vi.fn(() => false);
 		isMouseReporting = vi.fn(() => this.mouseMode !== 0);
 		backendName = vi.fn(() => 'WebGPU');
 		setPresentFast = vi.fn();

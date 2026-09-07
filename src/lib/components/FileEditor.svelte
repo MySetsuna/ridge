@@ -77,6 +77,7 @@
   import { portal } from '$lib/actions/portal';
   import { popupStyleFor } from '$lib/utils/anchorRect';
   import { settingsStore } from '$lib/stores/settings';
+  import { themeData } from '$lib/stores/themes';
   import { applyRidgeMonacoTheme, ridgeMonacoThemeId } from '$lib/monaco/ridgeTheme';
   import { showContextMenu, type ContextMenuItem } from '$lib/stores/contextMenu';
   import { alertDialog } from './RidgeDialog.svelte';
@@ -101,9 +102,10 @@
   // The $effect re-runs on every theme change, which re-defines the
   // theme (picking up the latest CSS-var values) and retints both the
   // inline editor and any active diff editor via setTheme.
+  const activeTheme = $derived($themeData.themes.find((theme) => theme.id === $settingsStore.theme));
   const monacoTheme = $derived(ridgeMonacoThemeId($settingsStore.theme));
   $effect(() => {
-    applyRidgeMonacoTheme($settingsStore.theme);
+    applyRidgeMonacoTheme($settingsStore.theme, activeTheme?.type);
     // `monaco.editor.setTheme` is the global retint — it switches the
     // active registered theme for every Monaco editor instance at once,
     // including diff editors whose `IDiffEditorOptions` doesn't accept
@@ -502,7 +504,7 @@
     if (current?.isImage || current?.diffArgs) return;
     
     // Ensure theme is applied before creating editor
-    applyRidgeMonacoTheme($settingsStore.theme);
+    applyRidgeMonacoTheme($settingsStore.theme, activeTheme?.type);
 
     // 显式构造初始 model 并塞进 modelCache，后续切回这个 path 才能复用 undo/redo 栈。
     let initialModel: monaco.editor.ITextModel;

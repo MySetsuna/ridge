@@ -47,6 +47,7 @@ function makePane() {
 		isAltScreen: vi.fn(() => altScreen),
 		backendName: vi.fn(() => 'WebGPU'),
 		shouldAllowShellHistory: vi.fn(() => true),
+		isTuiKeyboardLease: vi.fn(() => false),
 		isMouseReporting: vi.fn(() => mouseModes !== 0),
 		isAppCursorKeys: vi.fn(() => false),
 		isCursorVisible: vi.fn(() => true),
@@ -598,6 +599,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		unsubscribeIme();
 
 		expect(manager.shouldAllowShellHistory(PANE)).toBe(true);
+		expect(manager.isTuiKeyboardLease(PANE)).toBe(false);
 		expect(manager.isMouseReporting(PANE)).toBe(false);
 		expect(manager.isInlineTuiActive(PANE)).toBe(false);
 		expect(manager.isAppCursorKeys(PANE)).toBe(false);

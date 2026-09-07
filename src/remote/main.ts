@@ -2,6 +2,7 @@
 import { mount } from 'svelte';
 import App from './App.svelte';
 import { registerSW } from 'virtual:pwa-register';
+import { configurePwaUpdate, markPwaUpdateReady } from './lib/pwaUpdate';
 
 // iOS standalone historically exposed `navigator.standalone` without making
 // `(display-mode: standalone)` match. Mark the document before Svelte mounts
@@ -64,6 +65,7 @@ applyUpdate = registerSW({
   immediate: true,
   onNeedRefresh() {
     updateReady = true;
+		markPwaUpdateReady();
     // If already backgrounded apply now; otherwise wait for the next time the
     // user switches away (frequent on mobile) — never interrupt the foreground.
     flushUpdateWhenHidden();
@@ -86,6 +88,7 @@ applyUpdate = registerSW({
     manualRegisterWithRetry();
   },
 });
+if (applyUpdate) configurePwaUpdate(applyUpdate);
 
 document.addEventListener('visibilitychange', flushUpdateWhenHidden);
 

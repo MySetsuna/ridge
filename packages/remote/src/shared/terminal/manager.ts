@@ -70,6 +70,8 @@ import { SYNC_OUTPUT_TIMEOUT_MS, TUI_CURSOR_SETTLE_MS } from './renderTransactio
 
 // Remote Web rasterizes with controller-side browser fonts; only desktop
 // installs Host-resolved font bytes into the shared WASM renderer.
+// Keep this direct compile-time branch: Vite must erase the dynamic import
+// entirely from the Remote browser artifact, not merely skip it at runtime.
 const loadHostFontDataService = import.meta.env.RIDGE_WEB_REMOTE === true
 	? null
 	: () => import('./fontDataService');
@@ -1956,7 +1958,10 @@ export class TerminalManager {
 			event.preventDefault();
 			return;
 		}
-		if (decision.forwardToProgram && mouseReportingOn && this._sendPointerDown(entry, cell, event, terminalMod)) return;
+		if (decision.forwardToProgram && mouseReportingOn && this._sendPointerDown(entry, cell, event, terminalMod)) {
+			event.preventDefault?.();
+			return;
+		}
 		if (event.button !== 0 || this._extendPointerSelection(entry, cell, event)) return;
 		if (this._handleMultiClick(entry, cell, event.detail)) return;
 		try { (event.target as Element | null)?.setPointerCapture?.(event.pointerId); } catch { /* best effort */ }
@@ -4133,6 +4138,16 @@ export class TerminalManager {
 		if (!entry) return false;
 		const k = entry.kernel as unknown as { shouldAllowShellHistory?: () => boolean };
 		return k.shouldAllowShellHistory?.() ?? false;
+	}
+
+	/** Durable keyboard ownership reported by the terminal parser. This is
+	 * separate from the short-lived visual inline-TUI signal so host UI cannot
+	 * time out and steal ArrowUp while an idle TUI still owns input. */
+	isTuiKeyboardLease(paneId: string): boolean {
+		const entry = this.panes.get(paneId);
+		if (!entry) return false;
+		const k = entry.kernel as unknown as { isTuiKeyboardLease?: () => boolean };
+		return k.isTuiKeyboardLease?.() ?? false;
 	}
 
 	/** Whether the pane has DEC mouse reporting enabled (?1000/?1002/?1003).

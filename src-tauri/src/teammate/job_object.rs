@@ -35,12 +35,45 @@ pub fn create_job() -> Result<JobHandle, String> {
             if h == 0 {
                 return Err("CreateJobObjectW failed".into());
             }
+            let mut limits: JobObjectExtendedLimitInformation = core::mem::zeroed();
+            limits.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                h,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+                &limits as *const _ as *const core::ffi::c_void,
+                core::mem::size_of::<JobObjectExtendedLimitInformation>() as u32,
+            );
+            if ok == 0 {
+                CloseHandle(h);
+                return Err("SetInformationJobObject(KILL_ON_JOB_CLOSE) failed".into());
+            }
             Ok(JobHandle { raw: h })
         }
     }
     #[cfg(not(windows))]
     {
         Ok(JobHandle {})
+    }
+}
+
+/// Terminate every process currently assigned to a job. Returns `true` only
+/// on Windows, where Job Objects own the complete spawned process tree. The
+/// caller must retain its legacy PID-tree fallback for non-Windows or a failed
+/// job assignment.
+pub fn terminate_job_tree(job: &JobHandle) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        unsafe {
+            if TerminateJobObject(job.raw, 1) == 0 {
+                return Err("TerminateJobObject failed".into());
+            }
+        }
+        Ok(true)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = job;
+        Ok(false)
     }
 }
 
@@ -125,6 +158,46 @@ const PROCESS_SET_QUOTA: u32 = 0x0100;
 const PROCESS_TERMINATE: u32 = 0x0001;
 #[cfg(windows)]
 const PROCESS_SUSPEND_RESUME: u32 = 0x0800;
+#[cfg(windows)]
+const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: u32 = 9;
+#[cfg(windows)]
+const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
+
+#[cfg(windows)]
+#[repr(C)]
+struct JobObjectBasicLimitInformation {
+    per_process_user_time_limit: i64,
+    per_job_user_time_limit: i64,
+    limit_flags: u32,
+    minimum_working_set_size: usize,
+    maximum_working_set_size: usize,
+    active_process_limit: u32,
+    affinity: usize,
+    priority_class: u32,
+    scheduling_class: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct IoCounters {
+    read_operation_count: u64,
+    write_operation_count: u64,
+    other_operation_count: u64,
+    read_transfer_count: u64,
+    write_transfer_count: u64,
+    other_transfer_count: u64,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct JobObjectExtendedLimitInformation {
+    basic_limit_information: JobObjectBasicLimitInformation,
+    io_info: IoCounters,
+    process_memory_limit: usize,
+    job_memory_limit: usize,
+    peak_process_memory_used: usize,
+    peak_job_memory_used: usize,
+}
 
 // Match os_freeze.rs HANDLE = isize to avoid clashing_extern_declarations.
 #[cfg(windows)]
@@ -132,6 +205,13 @@ const PROCESS_SUSPEND_RESUME: u32 = 0x0800;
 extern "system" {
     fn CreateJobObjectW(attrs: *mut core::ffi::c_void, name: *const u16) -> isize;
     fn AssignProcessToJobObject(job: isize, process: isize) -> i32;
+    fn SetInformationJobObject(
+        job: isize,
+        class: u32,
+        info: *const core::ffi::c_void,
+        info_len: u32,
+    ) -> i32;
+    fn TerminateJobObject(job: isize, exit_code: u32) -> i32;
     fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
     fn CloseHandle(h: isize) -> i32;
 }
@@ -152,6 +232,16 @@ mod tests {
     fn assign_pid_zero_err() {
         let j = create_job().unwrap();
         assert!(assign_pid(&j, 0).is_err());
+    }
+
+    #[test]
+    fn terminate_job_tree_is_safe_before_assignment() {
+        let j = create_job().unwrap();
+        let result = terminate_job_tree(&j);
+        #[cfg(windows)]
+        assert_eq!(result, Ok(true));
+        #[cfg(not(windows))]
+        assert_eq!(result, Ok(false));
     }
 
     #[test]

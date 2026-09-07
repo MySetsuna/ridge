@@ -992,6 +992,15 @@ impl JsTerminal {
             return false;
         }
 
+        // The parser records a durable ownership lease as soon as a strong
+        // TUI signal is seen. Do not infer an exit from a quiet interval:
+        // inline TUIs can intentionally sit idle with a visible cursor and no
+        // mode bits while still owning the arrow keys. Only parser-observed
+        // exit signals (prompt OSC, alt-screen leave, or RIS) release it.
+        if self.inner.grid().is_inline_tui_sticky() {
+            return false;
+        }
+
         // §1.33 — sticky reference is the MAX of:
         //   - this gate's own bump (set above whenever JS queried during
         //     a live signal), and
@@ -1011,6 +1020,20 @@ impl JsTerminal {
         }
 
         true
+    }
+
+    /// Whether this terminal currently owns host keyboard routing. Unlike the
+    /// live inline-TUI heuristic, this includes the parser's durable lease and
+    /// remains true while a TUI is idle or a host context menu has focus.
+    #[wasm_bindgen(js_name = isTuiKeyboardLease)]
+    pub fn is_tui_keyboard_lease(&self) -> bool {
+        let m = self.inner.modes();
+        m.app_cursor_keys
+            || self.inner.is_alt_screen()
+            || m.mouse_normal
+            || m.mouse_button_event
+            || m.mouse_any_event
+            || self.inner.grid().is_inline_tui_sticky()
     }
 
     /// Synchronous output mode `?2026`. While `true`, the manager should
@@ -1903,20 +1926,21 @@ mod shell_history_gate_tests {
     }
 
     #[test]
-    fn opens_immediately_after_tui_signal_clears() {
-        // §1.35 — SHELL_HISTORY_STICKY_MS = 0, so the gate opens
-        // immediately as soon as every live signal is false. A TUI
-        // that flickered a signal on/off (e.g. `?25l?25h`) must NOT
-        // gate the popup once the cursor is visible again.
+    fn keeps_history_closed_after_a_tui_signal_until_an_explicit_exit() {
+        // A quiet/visible-cursor inline TUI is not a shell prompt. The durable
+        // lease keeps host history out of its keyboard path until the parser
+        // sees an explicit terminal exit signal.
         let mut t = JsTerminal::new(24, 80, 200);
         t.feed(b"\x1b[?25l\x1b[?25h"); // hide and re-show in one chunk
         let baseline = clock_baseline();
-        // With sticky=0 the gate must open immediately — no extra
-        // buffer after the last signal clears.
         assert!(
-            t.should_allow_shell_history_at(baseline + 100),
-            "gate must open immediately after TUI signal clears (sticky=0)",
+            !t.should_allow_shell_history_at(baseline + 60_000),
+            "a timer must never release TUI keyboard ownership",
         );
+        assert!(t.is_tui_keyboard_lease());
+        t.feed(b"\x1b]633;A\x07");
+        assert!(t.should_allow_shell_history_at(baseline + 60_001));
+        assert!(!t.is_tui_keyboard_lease());
     }
 
     #[test]
@@ -1934,28 +1958,26 @@ mod shell_history_gate_tests {
             !t.should_allow_shell_history_at(baseline + 5_000),
             "live cursor-hidden must block regardless of sticky window",
         );
-        // Show cursor → gate opens immediately.
+        // Showing a cursor alone is not an exit; a prompt OSC is.
         t.feed(b"\x1b[?25h");
         assert!(
-            t.should_allow_shell_history_at(baseline + 5_100),
-            "gate must open immediately once cursor is visible",
+            !t.should_allow_shell_history_at(baseline + 5_100),
+            "a visible cursor does not release a TUI lease",
         );
+        t.feed(b"\x1b]133;A\x07");
+        assert!(t.should_allow_shell_history_at(baseline + 5_101));
     }
 
     #[test]
-    fn allows_history_even_when_inline_tui_csi_is_stale() {
-        // Once a real shell prompt has been up for >> sticky window
-        // with no further TUI activity AND cursor is visible, the gate
-        // must permit the popup. Without this assertion a regression
-        // that locked sticky permanently after the first TUI use would
-        // pass the earlier negative tests but break daily use.
+    fn prompt_osc_releases_an_idle_inline_tui_lease() {
         let mut t = JsTerminal::new(24, 80, 200);
         t.feed(b"\x1b[H"); // CUP — abs-positioning CSI
         t.feed(b"\x1b[?25l"); // hide cursor (TUI active)
         let baseline = clock_baseline();
         assert!(!t.should_allow_shell_history_at(baseline));
-        t.feed(b"\x1b[?25h"); // back to shell
-                              // Far past both sticky and inline-TUI decay.
-        assert!(t.should_allow_shell_history_at(baseline + 10_000));
+        t.feed(b"\x1b[?25h");
+        assert!(!t.should_allow_shell_history_at(baseline + 10_000));
+        t.feed(b"\x1b]133;A\x07");
+        assert!(t.should_allow_shell_history_at(baseline + 10_001));
     }
 }

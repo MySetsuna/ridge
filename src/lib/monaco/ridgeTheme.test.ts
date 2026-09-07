@@ -45,11 +45,11 @@ describe('ridge Monaco theme projection', () => {
 
 	it('uses the base Monaco theme during SSR', () => {
 		applyRidgeMonacoTheme('dark');
-		applyRidgeMonacoTheme('sand');
+		applyRidgeMonacoTheme('custom-night', 'dark');
 
 		expect(monacoSpies.defineTheme).not.toHaveBeenCalled();
 		expect(monacoSpies.setTheme).toHaveBeenNthCalledWith(1, 'vs-dark');
-		expect(monacoSpies.setTheme).toHaveBeenNthCalledWith(2, 'vs');
+		expect(monacoSpies.setTheme).toHaveBeenNthCalledWith(2, 'vs-dark');
 	});
 
 	it('registers CSS colors and applies the custom browser theme', () => {
@@ -104,5 +104,21 @@ describe('ridge Monaco theme projection', () => {
 		expect(theme.colors['editor.background']).toBe('#ffffffff');
 		expect(theme.colors['editor.foreground']).toBe('#000000ff');
 		expect(monacoSpies.setTheme).toHaveBeenCalledWith('ridge-sand');
+	});
+
+	it('uses custom theme metadata instead of the built-in id fallback', () => {
+		Object.defineProperty(globalThis, 'document', {
+			configurable: true,
+			value: { documentElement: {} },
+		});
+		Object.defineProperty(globalThis, 'getComputedStyle', {
+			configurable: true,
+			value: () => ({ getPropertyValue: () => '' }),
+		});
+
+		applyRidgeMonacoTheme('user-ocean', 'dark');
+
+		const theme = monacoSpies.defineTheme.mock.calls[0][1] as { base: string };
+		expect(theme.base).toBe('vs-dark');
 	});
 });

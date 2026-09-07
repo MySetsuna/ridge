@@ -44,6 +44,7 @@
   import { looksOutsideWorkspace, probePathWithCache } from '@ridge/remote/shared/terminal/linkOpenHost';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { MobileRemoteUiState } from './lib/mobileRemoteUiState.svelte';
+  import { applyPwaUpdate, pwaUpdateReady } from './lib/pwaUpdate';
   import {
     dedupeRemoteItems,
     mergeRemoteItems,
@@ -1204,6 +1205,12 @@
 </script>
 
 <div class="app-root" class:embedded>
+  {#if $pwaUpdateReady}
+    <div class="pwa-update-banner" role="status">
+      <span>新版 Remote 已就绪</span>
+      <button class="conn-action" onclick={() => void applyPwaUpdate()}>刷新</button>
+    </div>
+  {/if}
   {#if linkError}
     <button class="link-error" onclick={() => linkError = ''} aria-label="关闭路径错误">{linkError}</button>
   {/if}
@@ -1492,6 +1499,7 @@
     :global(html[data-ridge-pwa="standalone"]) .conn-banner-safe{margin-top:max(64px,env(safe-area-inset-top,0px))}
   }
   .conn-banner.lost{background:var(--rg-ansi-red,#cf222e)}
+  .pwa-update-banner{position:relative;z-index:51;display:flex;align-items:center;justify-content:center;gap:10px;padding:6px 12px;background:var(--rg-accent);color:var(--rg-bg);font-size:12px;font-weight:600}
   .conn-msg{flex:0 1 auto}
   .conn-action{flex-shrink:0;border:1px solid rgba(255,255,255,.7);background:rgba(255,255,255,.15);color:#fff;font-size:12px;font-weight:600;border-radius:6px;padding:3px 10px;cursor:pointer}
   .conn-action:hover{background:rgba(255,255,255,.28)}

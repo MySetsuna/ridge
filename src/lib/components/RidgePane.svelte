@@ -31,7 +31,7 @@ import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
 import { enqueuePtyInput, enqueuePtyWrite, flushPtyInput } from '$lib/terminal/ptyWriteQueue';
 import { enqueuePaneInput, tryEnqueuePaneInputImmediate } from '@ridge/remote/shared/terminal/paneInputGate';
 import { activateRemotePaneBinding, promoteRemotePaneBinding, remotePaneBinding } from '$lib/hosts/remotePaneBindings';
-import { isTuiActive, hasLiveTuiSignal, TUI_STICKY_MS_DEFAULT } from '@ridge/remote/shared/terminal/tuiGate';
+import { hasLiveTuiSignal } from '@ridge/remote/shared/terminal/tuiGate';
 import {
 	deriveBufferEvent,
 	updateInputBuffer,
@@ -674,17 +674,7 @@ function pasteFromClipboard(): void {
  *    is still running (even if `noteCtrlCSent` suppressed the
  *    inline heuristic for the Ctrl+C grace window). */
 function touchTuiSticky(): boolean {
-	if (hasLiveTuiSignal({
-		isAltScreen: manager.isAltScreen(paneId),
-		isInlineTuiActive: manager.isInlineTuiActive(paneId),
-		isMouseReporting: manager.isMouseReporting(paneId),
-		isAppCursorKeys: manager.isAppCursorKeys(paneId),
-		cursorVisible: manager.isCursorVisible(paneId),
-	})) {
-		lastTuiActiveTs = performance.now();
-		return true;
-	}
-	return false;
+	return isTuiSticky();
 }
 
 function dispatchBufferEvent(e: KeyboardEvent): void {
@@ -818,43 +808,17 @@ let composingAnchor: ImeAnchor | null = null;
 // Shell prompts always run with the cursor visible, so the moment
 // the user is actually back at a prompt the sticky bit can no
 // longer apply and host shortcuts re-enable as before.
-let lastTuiActiveTs = 0;
-let tuiHostInteractionUntil = 0;
-
-function renewTuiHostInteraction(): void {
-	const now = performance.now();
-	lastTuiActiveTs = now;
-	tuiHostInteractionUntil = now + TUI_STICKY_MS_DEFAULT;
-}
-// §1.31 (2026-05-19): delegate the decision logic to the pure helper in
-// `$lib/terminal/tuiGate` so it can be unit-tested as a truth table.
-// We retain the stateful `lastTuiActiveTs` refresh here because the
-// gate function is intentionally stateless. The new DECCKM branch
-// (`isAppCursorKeys`) lives inside `isTuiActive` and dominates every
-// other signal — once an app sets DECCKM the shell-history popup is
-// unreachable, which is exactly what the user asked for.
+// The parser's lease is authoritative. Keep the live check as a fallback for
+// an older wasm artifact during an in-place update, but never use a JS timer
+// to release keyboard ownership.
 function isTuiSticky(): boolean {
-	const now = performance.now();
-	const isAltScreen = manager.isAltScreen(paneId);
-	const isInlineTuiActive = manager.isInlineTuiActive(paneId);
-	const isMouseReporting = manager.isMouseReporting(paneId);
-	const isAppCursorKeys = manager.isAppCursorKeys(paneId);
-	const cursorVisible = manager.isCursorVisible(paneId);
-	const live = isAltScreen || isInlineTuiActive || isMouseReporting;
-	if (live) lastTuiActiveTs = now;
-	// A host menu temporarily starves inline-TUI protocol activity. Its bounded
-	// lease is intentionally allowed to outlive a visible TUI input caret; the
-	// ordinary sticky rule below remains cursor-hidden-only for shell safety.
-	if (now < tuiHostInteractionUntil) return true;
-	return isTuiActive({
-		isAltScreen,
-		isInlineTuiActive,
-		isMouseReporting,
-		isAppCursorKeys,
-		cursorVisible,
-		lastTuiActiveTs,
-		now,
-		stickyMs: TUI_STICKY_MS_DEFAULT,
+	if (manager.isTuiKeyboardLease(paneId)) return true;
+	return hasLiveTuiSignal({
+		isAltScreen: manager.isAltScreen(paneId),
+		isInlineTuiActive: manager.isInlineTuiActive(paneId),
+		isMouseReporting: manager.isMouseReporting(paneId),
+		isAppCursorKeys: manager.isAppCursorKeys(paneId),
+		cursorVisible: manager.isCursorVisible(paneId),
 	});
 }
 
@@ -1912,6 +1876,7 @@ $effect(() => {
 			// alone wouldn't catch them.
 			&& !foregroundProcessRunning
 			&& !commandRunning
+			&& !isTui
 			&& manager.shouldAllowShellHistory(paneId)
 		) {
 			if (openHistoryOverlay()) {
@@ -2085,24 +2050,16 @@ function attachSubmenuChildren(targetPaneId: string): ContextMenuItem[] {
 function onContextMenu(e: MouseEvent) {
 	if (!alive || !attached) return;
 	// TUI 鼠标上报模式下，右键由 TUI 处理，不显示 RidgePane 右键菜单
-	if (manager.isMouseReporting(paneId)) return;
+	if (manager.isMouseReporting(paneId)) {
+		e.preventDefault();
+		return;
+	}
 	// 异步刷新主机/会话快照（不阻塞本次菜单构建；供下次打开时已是最新）。
 	void refreshHosts();
-	// §TUI: refresh sticky timestamp BEFORE showing the context menu.
-	// While the menu is open no keyboard/wheel events reach the pane,
-	// so the inline-TUI heuristic (2 s decay) can expire during menu
-	// interaction. Bumping lastTuiActiveTs here gives the user the
-	// full sticky window to browse + close the menu without losing
-	// TUI mode.
-	const openedInTui = touchTuiSticky();
-	if (openedInTui) renewTuiHostInteraction();
-	const preserveTuiAfterMenu = (action: () => void) => () => {
-		if (openedInTui) renewTuiHostInteraction();
+	const restorePaneFocus = (action: () => void) => () => {
 		action();
-		if (!openedInTui) return;
 		queueMicrotask(() => {
 			if (!alive || !attached) return;
-			renewTuiHostInteraction();
 			imeHelper?.focus({ preventScroll: true });
 			manager.setFocused(paneId, true);
 		});
@@ -2111,14 +2068,14 @@ function onContextMenu(e: MouseEvent) {
 	const sel = manager.getSelectionText(paneId);
 	showContextMenu(e.clientX, e.clientY, [
 		...(sel
-			? [{ id: 'term-copy', label: tr('workspace.ctxCopy'), action: preserveTuiAfterMenu(() => { void writeText(sel); }) }]
+			? [{ id: 'term-copy', label: tr('workspace.ctxCopy'), action: restorePaneFocus(() => { void writeText(sel); }) }]
 			: []),
-		{ id: 'term-paste', label: tr('workspace.ctxPaste'), action: preserveTuiAfterMenu(() => {
+		{ id: 'term-paste', label: tr('workspace.ctxPaste'), action: restorePaneFocus(() => {
 			void pasteFromClipboard();
 		})},
 		{ id: 'term-sep1', divider: true },
-		{ id: 'term-select-all', label: tr('workspace.ctxSelectAll'), action: preserveTuiAfterMenu(() => manager.selectAll(paneId)) },
-		{ id: 'term-clear', label: tr('workspace.ctxClear'), action: preserveTuiAfterMenu(() => {
+		{ id: 'term-select-all', label: tr('workspace.ctxSelectAll'), action: restorePaneFocus(() => manager.selectAll(paneId)) },
+		{ id: 'term-clear', label: tr('workspace.ctxClear'), action: restorePaneFocus(() => {
 			// Clear the mirror and notify the shell so its PTY cursor starts at row 0.
 			manager.clearTerminal(paneId);
 			// Native parser is authoritative in desktop delta mode and also removes

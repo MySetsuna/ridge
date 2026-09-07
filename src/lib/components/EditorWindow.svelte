@@ -30,6 +30,8 @@
   import { initSettingsBoot } from '$lib/stores/settings';
   import { initFileWatcherSync } from '$lib/stores/fileWatcherSync';
 
+  let ready = $state(false);
+
   /** 读取并载入交接快照（弹出时主窗口写入的打开文件列表）。 */
   function loadHandoff(): void {
     let raw: string | null = null;
@@ -71,6 +73,7 @@
       // 1) 主题：CSS 变量 bootstrap（独立窗口不经 splash init script）。
       await initThemeSystem();
       initSettingsBoot();
+	  ready = true;
       // 2) 外部文件变更监听（idempotent）。
       initFileWatcherSync();
       // 3) 载入交接的标签。
@@ -94,6 +97,8 @@
 
 <!-- FileEditor 的 popout 分支让其 position:fixed inset:0 铺满窗口。
      ContextMenu / RidgeDialog 为编辑器的右键菜单与保存/确认对话框宿主。 -->
-<FileEditor />
+{#if ready}
+  <FileEditor />
+{/if}
 <ContextMenu />
 <WindDialog />

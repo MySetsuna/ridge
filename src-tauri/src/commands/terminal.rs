@@ -674,6 +674,15 @@ fn kill_pty_process_tree(handle: &mut PtyHandle) {
         }
         return;
     }
+    if let Some(job) = handle.job.take() {
+        match crate::teammate::job_object::terminate_job_tree(&job) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(target: "ridge::job", %error, "job tree termination failed; using pid fallback")
+            }
+        }
+    }
     let child_pid = handle.child_pid;
     if let Some(child) = handle._child.as_mut() {
         let _ = child.kill();
@@ -2950,6 +2959,7 @@ mod pty_lifecycle_contract_tests {
             2,
             "replacement and explicit PTY teardown must share tree-kill guard",
         );
+        assert!(source.contains("terminate_job_tree(&job)"));
         assert!(source.contains("ridge_core::process_guard::kill_process_tree(pid);"));
     }
 

@@ -6,9 +6,9 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = resolve(process.env.RIDGE_REMOTE_DIST || join(ROOT, 'remote-dist', 'mobile'));
-const OUTPUT = resolve(
-  process.env.RIDGE_PWA_EVIDENCE || join(ROOT, '.iteration', 'artifacts', 'remote-pwa-build.json'),
-);
+const OUTPUT = process.env.RIDGE_PWA_EVIDENCE
+  ? resolve(process.env.RIDGE_PWA_EVIDENCE)
+  : null;
 
 function read(name) {
   const path = join(DIST, name);
@@ -43,6 +43,7 @@ const checks = {
   serviceWorkerGenerated: /precacheAndRoute|precache|workbox/i.test(serviceWorker),
   safeAreaCssPresent: false,
   noInAppInstallHook: true,
+  noDesktopFontRpc: true,
 };
 const assetText = listFiles(DIST)
   .filter((path) => /\.(?:js|css|html)$/i.test(path))
@@ -50,6 +51,7 @@ const assetText = listFiles(DIST)
   .join('\n');
 checks.safeAreaCssPresent = /safe-area-inset-(?:top|bottom)/.test(assetText);
 checks.noInAppInstallHook = !/(beforeinstallprompt|PwaInstallAction|deferredPrompt)/.test(assetText);
+checks.noDesktopFontRpc = !/(load_terminal_font_faces|read_terminal_font_face_chunk)/.test(assetText);
 
 for (const [name, ok] of Object.entries(checks)) check(ok, `Remote PWA build check failed: ${name}`);
 
@@ -66,6 +68,8 @@ const evidence = {
     icons: manifest.icons?.map((icon) => ({ src: icon.src, sizes: icon.sizes })),
   },
 };
-mkdirSync(dirname(OUTPUT), { recursive: true });
-writeFileSync(OUTPUT, `${JSON.stringify(evidence, null, 2)}\n`);
+if (OUTPUT) {
+  mkdirSync(dirname(OUTPUT), { recursive: true });
+  writeFileSync(OUTPUT, `${JSON.stringify(evidence, null, 2)}\n`);
+}
 console.log(JSON.stringify({ evidence: OUTPUT, ...checks }));
