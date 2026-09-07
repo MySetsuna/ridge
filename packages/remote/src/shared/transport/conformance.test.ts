@@ -43,6 +43,7 @@ interface HostState {
   responders: Record<string, (params: unknown) => unknown>;
   hostCapabilities: string[];
   hostProtocolVersion: number;
+  terminalProtocolVersion: number;
 }
 
 /**
@@ -63,7 +64,11 @@ function hostReply(msg: Record<string, unknown>, host: HostState): Record<string
     return {
       jsonrpc: '2.0',
       method: '$/hello',
-      params: { protocolVersion: host.hostProtocolVersion, capabilities: host.hostCapabilities },
+      params: {
+        protocolVersion: host.hostProtocolVersion,
+        terminalProtocolVersion: host.terminalProtocolVersion,
+        capabilities: host.hostCapabilities,
+      },
     };
   }
   if (method === '$/cancel') return null; // notification — record only
@@ -100,6 +105,7 @@ function freshHost(): HostState {
     responders: {},
     hostCapabilities: ['pane', 'invoke', 'fs', 'git', 'search', 'workspace', 'theme'],
     hostProtocolVersion: 1,
+    terminalProtocolVersion: 2,
   };
 }
 
@@ -236,7 +242,11 @@ describe.each(ARMS)('S7 conformance (%s) — D9 $/hello handshake', (_name, make
     expect(hello).toEqual({
       jsonrpc: '2.0',
       method: '$/hello',
-      params: { protocolVersion: 1, capabilities: [...CLIENT_CAPABILITIES] },
+      params: {
+        protocolVersion: 1,
+        terminalProtocolVersion: 2,
+        capabilities: [...CLIENT_CAPABILITIES],
+      },
     });
   });
 

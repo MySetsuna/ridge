@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use ridge_core::workspace::pane_tree::{Direction, PaneTree, SplitDirection};
+use ridge_term::remote_v2::{RemoteTerminalProducer, RemoteTerminalUpdate};
 use ridge_term::term::modes::Modes;
 use ridge_term::term::ModeTracker;
 use tokio::sync::broadcast;
@@ -19,8 +20,10 @@ pub struct SessionHandle {
     pub cwd: Option<String>,
     pub session: Arc<LocalPtySession>,
     output_tx: broadcast::Sender<Vec<u8>>,
+    semantic_tx: broadcast::Sender<RemoteTerminalUpdate>,
     scrollback: Arc<Mutex<ScrollbackRing>>,
     modes: Arc<Mutex<ModeTracker>>,
+    semantic: Arc<Mutex<RemoteTerminalProducer>>,
 }
 
 impl SessionHandle {
@@ -33,6 +36,20 @@ impl SessionHandle {
         (ring.snapshot(), self.output_tx.subscribe())
     }
 
+    pub fn subscribe_semantic(
+        &self,
+    ) -> (
+        ridge_term::terminal_v2::TerminalSnapshot,
+        broadcast::Receiver<RemoteTerminalUpdate>,
+    ) {
+        let producer = self.semantic.lock().unwrap();
+        (producer.snapshot(), self.semantic_tx.subscribe())
+    }
+
+    pub fn semantic_snapshot(&self) -> ridge_term::terminal_v2::TerminalSnapshot {
+        self.semantic.lock().unwrap().snapshot()
+    }
+
     pub fn modes_snapshot(&self) -> (Modes, bool) {
         self.modes.lock().unwrap().snapshot()
     }
@@ -42,7 +59,10 @@ impl SessionHandle {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
-        self.session.resize(cols, rows)
+        self.session.resize(cols, rows)?;
+        let update = self.semantic.lock().unwrap().resize(rows, cols);
+        let _ = self.semantic_tx.send(update);
+        Ok(())
     }
 }
 
@@ -95,20 +115,42 @@ impl Workspace {
         };
 
         let (session, rx) = LocalPtySession::spawn_with_id(id, shell, actual_cwd.as_deref())?;
+        let session = Arc::new(session);
         self.pane_tree = next_tree;
 
         let (tx, _) = broadcast::channel(BROADCAST_CAP);
+        let (semantic_tx, _) = broadcast::channel(BROADCAST_CAP);
         let scrollback = Arc::new(Mutex::new(ScrollbackRing::new(DEFAULT_SCROLLBACK_CAP)));
         let modes = Arc::new(Mutex::new(ModeTracker::new()));
+        let semantic = Arc::new(Mutex::new(RemoteTerminalProducer::new(
+            24,
+            80,
+            5_000,
+            actual_cwd.clone().unwrap_or_default(),
+        )));
         let tx2 = tx.clone();
+        let semantic_tx2 = semantic_tx.clone();
         let scrollback2 = scrollback.clone();
         let modes2 = modes.clone();
+        let semantic2 = semantic.clone();
+        let response_session = session.clone();
         tokio::spawn(async move {
             let mut rx = rx;
             while let Some(bytes) = rx.recv().await {
                 let mut ring = scrollback2.lock().unwrap();
                 ring.append(&bytes);
+                drop(ring);
                 modes2.lock().unwrap().feed(&bytes);
+                let (update, response) = {
+                    let mut producer = semantic2.lock().unwrap();
+                    let update = producer.feed(&bytes);
+                    let response = producer.take_pending_response();
+                    (update, response)
+                };
+                if !response.is_empty() {
+                    let _ = response_session.send_input(&response);
+                }
+                let _ = semantic_tx2.send(update);
                 let _ = tx2.send(bytes);
             }
         });
@@ -117,10 +159,12 @@ impl Workspace {
             id,
             title: actual_cwd.as_deref().unwrap_or("shell").to_string(),
             cwd: actual_cwd,
-            session: Arc::new(session),
+            session,
             output_tx: tx,
+            semantic_tx,
             scrollback,
             modes,
+            semantic,
         });
         Ok(id)
     }

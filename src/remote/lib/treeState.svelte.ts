@@ -5,13 +5,16 @@
 // remount ("每次都要重新载入").
 //
 // §data-realtime: ONLY the UI *preference* (which rows are expanded) is
-// persisted. The actual workspace list + each workspace's panes stay LIVE —
-// fetched from the host on connect and refreshed by the tree's poll — so nothing
-// stale is ever shown. Persisting a preference is safe; persisting host data
-// would risk showing terminals that no longer exist.
+// persisted. Actual workspace/pane snapshots live in host-scoped TanStack Query
+// entries: the last good value paints immediately and is silently revalidated.
 
 const LS_KEY_EXPANDED = 'rg-remote-tree-expanded';
 const LS_KEY_SEEN = 'rg-remote-tree-seen';
+let storageScope = 'unscoped';
+
+function scopedKey(base: string): string {
+  return `${base}:${storageScope}`;
+}
 
 function load(key: string): Set<string> {
   try {
@@ -32,20 +35,29 @@ function load(key: string): Set<string> {
 //   • seen     — workspace ids we've auto-expanded once on first appearance, so a
 //                later manual collapse survives refresh instead of being re-seeded.
 export const treeState = $state<{ expanded: Set<string>; seen: Set<string> }>({
-  expanded: load(LS_KEY_EXPANDED),
-  seen: load(LS_KEY_SEEN),
+  expanded: new Set(),
+  seen: new Set(),
 });
+
+/** Switch the preference store when the connected host changes. */
+export function setTreeStorageScope(scope: string): void {
+  const next = scope.trim() || 'unscoped';
+  if (next === storageScope) return;
+  storageScope = next;
+  treeState.expanded = load(scopedKey(LS_KEY_EXPANDED));
+  treeState.seen = load(scopedKey(LS_KEY_SEEN));
+}
 
 function persistExpanded(): void {
   try {
-    localStorage.setItem(LS_KEY_EXPANDED, JSON.stringify([...treeState.expanded]));
+    localStorage.setItem(scopedKey(LS_KEY_EXPANDED), JSON.stringify([...treeState.expanded]));
   } catch {
     /* quota exceeded / storage disabled — keep the in-memory set */
   }
 }
 function persistSeen(): void {
   try {
-    localStorage.setItem(LS_KEY_SEEN, JSON.stringify([...treeState.seen]));
+    localStorage.setItem(scopedKey(LS_KEY_SEEN), JSON.stringify([...treeState.seen]));
   } catch {
     /* ignore */
   }

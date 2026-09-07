@@ -478,6 +478,7 @@
     const offRaw = ws.onRawBytes((pane) => {
       if (pane.workspaceId === workspaceId) scheduleLiveRefresh();
     });
+    const offTerminal = ws.onTerminalFrame?.(() => scheduleLiveRefresh()) ?? (() => {});
     const offReconnect = ws.onReconnect(() => { void startRefresh(true); });
     const offCapabilities = ws.onCapabilitiesChanged(() => { void startRefresh(true); });
     return () => {
@@ -489,6 +490,7 @@
       onAttentionChange?.([]);
       offMessage();
       offRaw();
+      offTerminal();
       offReconnect();
       offCapabilities();
     };

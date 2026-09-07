@@ -33,6 +33,14 @@ pub enum RemotePtyEvent {
         pane_id: Uuid,
         bytes: Arc<Vec<u8>>,
     },
+    /// Canonical parser output for Remote Terminal Protocol v2. The socket
+    /// task supplies its controller-specific PaneRef and activation fence.
+    SemanticDelta {
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        frame: ridge_term::term::delta::DeltaFrame,
+        is_alt: bool,
+    },
     /// Title / cwd update for a pane. Either field may be `None` when only the
     /// other changed. Sent out-of-band from the raw byte stream so the client
     /// can update its tab/document title without parsing the PTY stream itself.

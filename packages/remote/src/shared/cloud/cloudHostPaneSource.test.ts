@@ -23,6 +23,48 @@ describe('base64ToBytes', () => {
 });
 
 describe('makeCloudHostPaneSource', () => {
+  it('uses the activation-scoped terminal-v2 event and commands without raw fallback', async () => {
+    const invoke = vi.fn().mockResolvedValue(undefined);
+    let handler: ((e: { payload: unknown }) => void) | null = null;
+    const unlisten = vi.fn();
+    const listen: ListenFn = vi.fn(async (_event, h) => {
+      handler = h as typeof handler;
+      return unlisten;
+    });
+    const got: Uint8Array[] = [];
+    const stop = makeCloudHostPaneSource({ invoke, listen })(
+      'pane-7',
+      'workspace-3',
+      (raw) => got.push(raw),
+      { activationId: 41 },
+    );
+
+    expect(listen).toHaveBeenCalledWith(
+      'pane-terminal-v2-workspace-3-pane-7-41',
+      expect.any(Function),
+    );
+    await Promise.resolve();
+    expect(invoke).toHaveBeenCalledWith('subscribe_pane_terminal_v2', {
+      paneId: 'pane-7',
+      workspaceId: 'workspace-3',
+      activationId: 41,
+    });
+    handler!({ payload: { b64: b64([0x13, 1, 2, 3]) } });
+    expect(got).toEqual([new Uint8Array([0x13, 1, 2, 3])]);
+
+    stop();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(unlisten).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledWith('unsubscribe_pane_terminal_v2', {
+      paneId: 'pane-7',
+      workspaceId: 'workspace-3',
+      activationId: 41,
+    });
+    expect(invoke).not.toHaveBeenCalledWith('subscribe_pane_raw', expect.anything());
+  });
+
   it('subscribes: asks the host to stream + wires the pane-raw listener', async () => {
     const invoke = vi.fn().mockResolvedValue(undefined);
     let handler: ((e: { payload: unknown }) => void) | null = null;

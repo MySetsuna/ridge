@@ -3033,6 +3033,39 @@ export class TerminalManager {
 		if (this._applyDeltaFrame(entry, bytes)) this._noteTuiCursorSettle(entry, performance.now());
 	}
 
+	/** Apply one Remote Terminal Protocol v2 envelope to a keyed kernel. The
+	 * WASM boundary verifies PaneRef + activation + revision before mutation. */
+	applyRemoteFrame(
+		paneId: string,
+		bytes: Uint8Array,
+		workspaceId: string,
+		remotePaneId: string,
+		activationId: number,
+	): boolean {
+		const entry = this.panes.get(paneId);
+		if (!entry) return false;
+		// A snapshot supersedes anything retained by the old raw/delta path.
+		dropPendingFeedBuffers(entry);
+		this._clearQueuedDeltaFrames(entry);
+		const settle = (
+			entry.kernel as unknown as {
+				applyRemoteFrame: (
+					frame: Uint8Array,
+					workspaceId: string,
+					paneId: string,
+					activationId: number,
+				) => boolean | void;
+			}
+		).applyRemoteFrame(bytes, workspaceId, remotePaneId, activationId) === true;
+		this._drainFeedOutputs(entry);
+		entry.linkSpans.markDirty();
+		entry.renderPending = true;
+		if (settle) this._noteTuiCursorSettle(entry, performance.now());
+		this._syncPendingFrameWork(entry);
+		this.wake();
+		return true;
+	}
+
 	private _applyDeltaFrame(entry: PaneEntry, bytes: Uint8Array): boolean {
 		return perfMark('rg.ptyDelta.apply', () => {
 			if ((globalThis as { __RIDGE_PERF_TRACE?: unknown }).__RIDGE_PERF_TRACE === true) {

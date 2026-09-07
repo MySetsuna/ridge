@@ -543,6 +543,54 @@ describe('CloudRemoteConnection panes', () => {
     expect(regCalls).toHaveLength(1);
   });
 
+  it('activatePane tears down the old composite stream before seeding the new pane', async () => {
+    const conn = await connected();
+    const next = { workspaceId: 'ws2', paneId: 'pane-b' };
+    conn.activatePane?.(PANE, { active: true });
+    await flush();
+    invokeMock.mockClear();
+
+    conn.activatePane?.(next, { active: true });
+    await flush();
+
+    expect(handlers['pty-output-ws1-pane-a']).toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith('unsubscribe_pane_raw', {
+      paneId: PANE.paneId,
+      workspaceId: PANE.workspaceId,
+    });
+    expect(invokeMock).toHaveBeenCalledWith(
+      'register_pane_delta_channel',
+      expect.objectContaining({ paneId: 'pane-b', workspaceId: 'ws2', active: true }),
+    );
+  });
+
+  it('routes terminal-v2 bytes as one frame and subscribes with the activation fence', async () => {
+    const sendControl = vi.fn();
+    const handle = { ...fakeHandle(), adapter: { sendControl } };
+    const conn = new CloudRemoteConnection(handle as never);
+    await conn.init();
+    const frames: Uint8Array[] = [];
+    conn.onTerminalFrame((frame) => frames.push(frame));
+
+    conn.activatePane?.(PANE, { active: true, activationId: 29 });
+    await flush();
+    expect(sendControl).toHaveBeenCalledWith({
+      jsonrpc: '2.0',
+      method: 'subscribe-pane',
+      params: {
+        paneId: PANE.paneId,
+        workspaceId: PANE.workspaceId,
+        active: true,
+        activationId: 29,
+      },
+    });
+
+    const semantic = new Uint8Array([0x13, 4, 5, 6]);
+    handlers['pty-output-ws1-pane-a']({ payload: { bytes: semantic } });
+    expect(frames).toEqual([semantic]);
+    expect(invokeMock).not.toHaveBeenCalledWith('get_pane_resync_frame', expect.anything());
+  });
+
   it('retries a transient subscribe failure with bounded backoff', async () => {
     const conn = await connected();
     vi.useFakeTimers();

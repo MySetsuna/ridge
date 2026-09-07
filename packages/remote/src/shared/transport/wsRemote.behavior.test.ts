@@ -131,6 +131,37 @@ describe('RemoteConnection public communication contract', () => {
 		conn.disconnect();
 	});
 
+	it('keeps terminal-v2 envelopes atomic and sends an activation fence with the subscription', () => {
+		const { conn, ws } = connect();
+		const frames: Uint8Array[] = [];
+		conn.onTerminalFrame((frame) => frames.push(frame));
+		conn.activatePane?.(pane, { active: true, activationId: 23 });
+		const semantic = new Uint8Array([0x13, 4, 5, 6, 7]);
+		ws.receiveBinary(semantic);
+
+		expect(ws.sent).toContainEqual({
+			type: 'subscribe-pane',
+			workspaceId: pane.workspaceId,
+			paneId: pane.paneId,
+			active: true,
+			activationId: 23,
+		});
+		expect(frames).toEqual([semantic]);
+		conn.disconnect();
+	});
+
+	it('fails with an explicit upgrade message when a real host advertises an older terminal protocol', () => {
+		const { conn, ws } = connect();
+		ws.receive({
+			type: 'hello',
+			protocol: 'ridge-remote-ws',
+			terminalProtocolVersion: 1,
+		});
+		expect(conn.state()).toBe('error');
+		expect(conn.lastFailure()?.message).toContain('升级 Ridge/rdg');
+		expect(ws.readyState).toBe(FakeWebSocket.CLOSED);
+	});
+
 	it('uses the typed Agent, HITL, workspace, shell, and saved-history APIs', async () => {
 		const { conn, ws } = connect();
 		conn.listPanes();

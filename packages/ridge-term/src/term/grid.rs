@@ -58,7 +58,7 @@ pub enum EraseMode {
 /// the active one. Each screen carries its own cursor + saved cursor +
 /// scroll region — switching to alt resets none of those, mirroring xterm.
 pub struct Screen {
-    rows: Vec<Row>,
+    pub(crate) rows: Vec<Row>,
     pub cursor: Cursor,
     pub saved_cursor: Option<SavedCursor>,
     /// Top of the scroll region, 0-based inclusive. Default 0.
@@ -68,7 +68,7 @@ pub struct Screen {
 }
 
 impl Screen {
-    fn new(rows: usize, cols: usize) -> Self {
+    pub(crate) fn new(rows: usize, cols: usize) -> Self {
         Self {
             rows: (0..rows).map(|_| Row::new(cols)).collect(),
             cursor: Cursor::default(),
@@ -190,10 +190,10 @@ pub struct Grid {
     /// stay attached to moved content so the delta producer can still detect
     /// a write that happened before that content scrolled.
     pending_scroll_ops: Vec<ScrollOp>,
-    primary: Screen,
-    alt: Screen,
+    pub(crate) primary: Screen,
+    pub(crate) alt: Screen,
     /// `false` = primary is active, `true` = alt is active.
-    is_alt: bool,
+    pub(crate) is_alt: bool,
     pub attrs: AttrTable,
     pub scrollback: Scrollback,
     /// Monotonic count of user-visible scrollback clears (ED 2/3 or the

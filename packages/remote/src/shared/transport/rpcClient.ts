@@ -50,6 +50,7 @@ export const HELLO_METHOD = '$/hello';
 export const BYE_METHOD = '$/bye';
 /** Protocol version this client implements (D9). */
 export const CLIENT_PROTOCOL_VERSION = 1;
+export const TERMINAL_PROTOCOL_VERSION = 2;
 /** Capabilities this client (controller SPA) can drive (contract §7.3). */
 export const CLIENT_CAPABILITIES = [
   'pane',
@@ -67,6 +68,7 @@ export const CLIENT_CAPABILITIES = [
 export interface NegotiatedProtocol {
   /** Highest common protocol version the host agreed to. */
   protocolVersion: number;
+  terminalProtocolVersion: number;
   /** Capability intersection (host ∩ client). Panels outside this are hidden. */
   capabilities: Set<string>;
   /** True if the host sent `$/bye` (version mismatch) — the SPA should prompt
@@ -384,6 +386,7 @@ export class RpcClient {
     this.transport.sendControl(
       buildNotification(HELLO_METHOD, {
         protocolVersion: CLIENT_PROTOCOL_VERSION,
+        terminalProtocolVersion: TERMINAL_PROTOCOL_VERSION,
         capabilities: [...CLIENT_CAPABILITIES],
       }),
     );
@@ -392,15 +395,29 @@ export class RpcClient {
   /** Process the host's `$/hello` (or `$/bye`) reply and store the negotiated
    *  capability intersection. */
   private handleHello(params: unknown, rejected: boolean): void {
-    const p = (params ?? {}) as { protocolVersion?: number; capabilities?: unknown; reason?: string };
+    const p = (params ?? {}) as {
+      protocolVersion?: number;
+      terminalProtocolVersion?: number;
+      capabilities?: unknown;
+      reason?: string;
+    };
+    const terminalProtocolVersion = typeof p.terminalProtocolVersion === 'number'
+      ? p.terminalProtocolVersion
+      : 0;
+    const terminalRejected = !rejected && terminalProtocolVersion !== TERMINAL_PROTOCOL_VERSION;
     const caps = Array.isArray(p.capabilities)
       ? new Set(p.capabilities.filter((c): c is string => typeof c === 'string'))
       : new Set<string>();
     this.negotiated = {
       protocolVersion: typeof p.protocolVersion === 'number' ? p.protocolVersion : 0,
+      terminalProtocolVersion,
       capabilities: caps,
-      rejected,
-      reason: typeof p.reason === 'string' ? p.reason : undefined,
+      rejected: rejected || terminalRejected,
+      reason: typeof p.reason === 'string'
+        ? p.reason
+        : terminalRejected
+          ? 'terminal-protocol-upgrade-required'
+          : undefined,
     };
     for (const cb of this.negotiatedListeners) {
       try {

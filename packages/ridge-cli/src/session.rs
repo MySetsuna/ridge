@@ -49,6 +49,8 @@ use crate::rtc::{HostPeer, PeerInbound, PeerOutbound};
 use crate::signaling::{SignalMsg, SignalSender};
 use crate::totp::RemoteTotp;
 use ridge_core::DeviceIdentity;
+use ridge_term::remote_v2::{RemoteTerminalProducer, RemoteTerminalUpdate};
+use ridge_term::terminal_v2::{self, PaneRef, TerminalEnvelope};
 
 /// cli host 服务的固定 pane id。cli 是单 pane terminal host：controller 订阅这个
 /// 已知 paneId、对它 `write_to_pty`/`resize_pane`，host 用它给 PTY 字节打 0x10 帧。
@@ -70,6 +72,35 @@ enum Gate {
     DropSilently,
     /// 非业务帧（忽略的坏帧 / response）。
     Ignore,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InboundEffect {
+    ActivateTerminal(u64),
+    ResizeTerminal { rows: u16, cols: u16 },
+    DeactivateTerminal,
+}
+
+fn inbound_effect(env: &Envelope) -> Option<InboundEffect> {
+    let (method, params) = match env {
+        Envelope::Notification { method, params } | Envelope::Request { method, params, .. } => {
+            (method.as_str(), params)
+        }
+        Envelope::Ignore => return None,
+    };
+    match method {
+        "subscribe-pane" => params
+            .get("activationId")
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+            .map(InboundEffect::ActivateTerminal),
+        "unsubscribe-pane" => Some(InboundEffect::DeactivateTerminal),
+        "resize_pane" | "resize_pty" => Some(InboundEffect::ResizeTerminal {
+            rows: params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16,
+            cols: params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16,
+        }),
+        _ => None,
+    }
 }
 
 /// 判定一帧 0x11 JSON-RPC 信封在当前验证态下的处置（契约 §4 门控）。
@@ -142,6 +173,9 @@ impl RemoteSession {
 
         // 3. PTY。
         let (pty, mut pty_out_rx) = PtyBridge::spawn(shell.as_deref(), cwd.as_deref())?;
+        let mut semantic =
+            RemoteTerminalProducer::new(24, 80, 5_000, cwd.clone().unwrap_or_default());
+        let mut semantic_activation: Option<u64> = None;
 
         // 4. E2EE 握手（**事件驱动，修 D-GM-10 握手时序死锁**）。
         //
@@ -257,17 +291,33 @@ impl RemoteSession {
                 maybe_out = pty_out_rx.recv() => {
                     match maybe_out {
                         Some(bytes) => {
-                            batch.push(&bytes);
+                            let semantic_update = semantic.feed(&bytes);
+                            let response = semantic.take_pending_response();
+                            if !response.is_empty() {
+                                let _ = pty.write_input(&response);
+                            }
+                            if semantic_activation.is_none() {
+                                batch.push(&bytes);
+                            }
                             // 仅在 verified+subscribed 后才 flush 到线上；否则继续累积。
                             // crypto 此刻必为 Some（verified 需先经握手+TOTP），守卫防御性。
-                            if verified && subscribed && batch.should_flush() {
+                            if verified && subscribed && semantic_activation.is_none() && batch.should_flush() {
                                 if let Some(c) = crypto.as_mut() {
                                     Self::flush_pane(&mut batch, c, &dc_io.tx).await?;
+                                }
+                            } else if verified && subscribed {
+                                if let (Some(c), Some(activation_id)) = (crypto.as_mut(), semantic_activation) {
+                                    Self::send_semantic_update(
+                                        semantic_update,
+                                        activation_id,
+                                        c,
+                                        &dc_io.tx,
+                                    ).await?;
                                 }
                             }
                         }
                         None => {
-                            if verified && subscribed {
+                            if verified && subscribed && semantic_activation.is_none() {
                                 if let Some(c) = crypto.as_mut() {
                                     Self::flush_pane(&mut batch, c, &dc_io.tx).await.ok();
                                 }
@@ -279,7 +329,7 @@ impl RemoteSession {
                 }
 
                 _ = &mut flush_sleep => {
-                    if verified && subscribed {
+                    if verified && subscribed && semantic_activation.is_none() {
                         if let Some(c) = crypto.as_mut() {
                             Self::flush_pane(&mut batch, c, &dc_io.tx).await?;
                         }
@@ -349,15 +399,47 @@ impl RemoteSession {
                                 let crypto_ref =
                                     crypto.as_mut().expect("crypto present after handshake");
                                 let was_subscribed = subscribed;
-                                if let Err(e) = Self::handle_inbound(
+                                let effect = match Self::handle_inbound(
                                     &frame, crypto_ref, &pty, &dc_io.tx, &roots,
                                     &totp, &mut verified, &mut subscribed,
                                     bind_transcript.as_deref(),
                                 ).await {
-                                    tracing::warn!(target: "ridge_cli::session", error = %e, "inbound frame rejected");
+                                    Ok(effect) => effect,
+                                    Err(e) => {
+                                        tracing::warn!(target: "ridge_cli::session", error = %e, "inbound frame rejected");
+                                        None
+                                    }
+                                };
+                                match effect {
+                                    Some(InboundEffect::ActivateTerminal(activation_id)) => {
+                                        semantic_activation = Some(activation_id);
+                                        let _ = batch.take();
+                                        Self::send_semantic_update(
+                                            RemoteTerminalUpdate::Snapshot(semantic.snapshot()),
+                                            activation_id,
+                                            crypto_ref,
+                                            &dc_io.tx,
+                                        ).await?;
+                                    }
+                                    Some(InboundEffect::ResizeTerminal { rows, cols }) => {
+                                        let update = semantic.resize(rows, cols);
+                                        if let Some(activation_id) = semantic_activation {
+                                            Self::send_semantic_update(
+                                                update,
+                                                activation_id,
+                                                crypto_ref,
+                                                &dc_io.tx,
+                                            ).await?;
+                                        }
+                                    }
+                                    Some(InboundEffect::DeactivateTerminal) => {
+                                        semantic_activation = None;
+                                        let _ = batch.take();
+                                    }
+                                    None => {}
                                 }
                                 // 刚验证并订阅 → 把暂存的初始 PTY 输出立即推出。
-                                if verified && subscribed && (!was_subscribed || batch.should_flush()) {
+                                if verified && subscribed && semantic_activation.is_none() && (!was_subscribed || batch.should_flush()) {
                                     Self::flush_pane(&mut batch, crypto_ref, &dc_io.tx).await.ok();
                                 }
                             }
@@ -472,6 +554,32 @@ impl RemoteSession {
         Ok(())
     }
 
+    async fn send_semantic_update(
+        update: RemoteTerminalUpdate,
+        activation_id: u64,
+        crypto: &mut CryptoSession,
+        tx: &mpsc::Sender<Vec<u8>>,
+    ) -> Result<()> {
+        let pane = PaneRef::new(CLI_WORKSPACE_ID, CLI_PANE_ID);
+        let envelope = match update {
+            RemoteTerminalUpdate::Snapshot(snapshot) => {
+                TerminalEnvelope::snapshot(pane, activation_id, snapshot)
+            }
+            RemoteTerminalUpdate::Delta(delta) => {
+                TerminalEnvelope::delta(pane, activation_id, delta)
+            }
+        };
+        let frame = terminal_v2::encode_frame(&envelope)
+            .map_err(|error| anyhow!("terminal-v2 encode failed: {error}"))?;
+        let plaintext = mux::encode_pane(CLI_PANE_ID, &frame)
+            .map_err(|error| anyhow!("terminal-v2 pane mux failed: {error}"))?;
+        let sealed = crypto.seal(&plaintext)?;
+        tx.send(sealed)
+            .await
+            .map_err(|_| anyhow!("data channel send channel closed"))?;
+        Ok(())
+    }
+
     /// 把本会话的 6 位 TOTP + otpauth URI 打到 stderr（引导用户在浏览器 controller 输入）。
     fn print_totp_prompt(totp: &RemoteTotp) {
         // TUI 活跃时（仪表盘内起 daemon）跳过 stderr banner 避免糊屏——仪表盘 Status
@@ -524,18 +632,21 @@ impl RemoteSession {
         verified: &mut bool,
         subscribed: &mut bool,
         bind_transcript: Option<&[u8]>,
-    ) -> Result<()> {
+    ) -> Result<Option<InboundEffect>> {
         let plaintext = crypto.open(frame)?;
 
         match mux::demux(&plaintext) {
             Inbound::Control(body) => {
-                Self::handle_control(&body, crypto, tx, totp, verified, bind_transcript).await
+                Self::handle_control(&body, crypto, tx, totp, verified, bind_transcript).await?;
+                Ok(None)
             }
             Inbound::Json(body) => {
                 let env = rpc::parse_envelope(&body);
                 match gate_envelope(env, *verified) {
                     Gate::Allow(env) => {
-                        Self::handle_envelope(env, crypto, pty, tx, roots, subscribed).await
+                        let effect = inbound_effect(&env);
+                        Self::handle_envelope(env, crypto, pty, tx, roots, subscribed).await?;
+                        Ok(effect)
                     }
                     Gate::RejectWithError { id } => {
                         let err = RpcError::with_data(
@@ -543,24 +654,25 @@ impl RemoteSession {
                             "TOTP verification required",
                             serde_json::json!({ "kind": "totp-required" }),
                         );
-                        Self::send_json(crypto, tx, &rpc::error_response(&id, &err)).await
+                        Self::send_json(crypto, tx, &rpc::error_response(&id, &err)).await?;
+                        Ok(None)
                     }
                     Gate::DropSilently => {
                         tracing::warn!(target: "ridge_cli::session", "business notification dropped before TOTP verification");
-                        Ok(())
+                        Ok(None)
                     }
-                    Gate::Ignore => Ok(()),
+                    Gate::Ignore => Ok(None),
                 }
             }
             Inbound::Pane { pane_id, .. } => {
                 tracing::warn!(target: "ridge_cli::session", pane_id = %pane_id, "unexpected inbound PANE_RAW; ignored");
-                Ok(())
+                Ok(None)
             }
             Inbound::Unknown(tag) => {
                 tracing::debug!(target: "ridge_cli::session", tag, "unknown mux channel; ignored");
-                Ok(())
+                Ok(None)
             }
-            Inbound::Empty => Ok(()),
+            Inbound::Empty => Ok(None),
         }
     }
 
@@ -659,6 +771,11 @@ impl RemoteSession {
             "subscribe-pane" => {
                 *subscribed = true;
                 tracing::info!(target: "ridge_cli::session", "controller subscribed pane; streaming PTY");
+                Ok(())
+            }
+            "unsubscribe-pane" => {
+                *subscribed = false;
+                tracing::info!(target: "ridge_cli::session", "controller unsubscribed pane; PTY stream parked");
                 Ok(())
             }
             // controller 启动时发的全局工作区意图（桌面 SPA 行为）；cli 单 ws，no-op。
@@ -1101,7 +1218,7 @@ mod tests {
         // 1) $/hello（门控前放行）：host 应回一帧 0x11 $/hello，能力为 cli 子集。
         let hello = encode_json(&json!({
             "jsonrpc": "2.0", "method": "$/hello",
-            "params": { "protocolVersion": 1, "capabilities": ["pane","invoke","fs","git","search","workspace","theme"] }
+            "params": { "protocolVersion": 1, "terminalProtocolVersion": 2, "capabilities": ["pane","invoke","fs","git","search","workspace","theme"] }
         }));
         let frame = seal(&mut ctrl_crypto, hello);
         RemoteSession::handle_inbound(

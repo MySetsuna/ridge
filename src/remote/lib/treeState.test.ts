@@ -6,17 +6,19 @@ let setWsExpanded: typeof import('./treeState.svelte').setWsExpanded;
 let toggleWsExpanded: typeof import('./treeState.svelte').toggleWsExpanded;
 let seedActiveWorkspace: typeof import('./treeState.svelte').seedActiveWorkspace;
 let pruneExpanded: typeof import('./treeState.svelte').pruneExpanded;
+let setTreeStorageScope: typeof import('./treeState.svelte').setTreeStorageScope;
 
 const values = new Map<string, string>();
 const getItem = vi.fn((key: string) => values.get(key) ?? null);
 const setItem = vi.fn((key: string, value: string) => values.set(key, value));
 
 beforeAll(async () => {
-	values.set('rg-remote-tree-expanded', JSON.stringify(['loaded', 42, 'also-loaded']));
-	values.set('rg-remote-tree-seen', '{bad json');
+	values.set('rg-remote-tree-expanded:test', JSON.stringify(['loaded', 42, 'also-loaded']));
+	values.set('rg-remote-tree-seen:test', '{bad json');
 	vi.stubGlobal('$state', <T>(value: T) => value);
 	vi.stubGlobal('localStorage', { getItem, setItem });
-	({ treeState, isWsExpanded, setWsExpanded, toggleWsExpanded, seedActiveWorkspace, pruneExpanded } = await import('./treeState.svelte'));
+	({ treeState, isWsExpanded, setWsExpanded, toggleWsExpanded, seedActiveWorkspace, pruneExpanded, setTreeStorageScope } = await import('./treeState.svelte'));
+	setTreeStorageScope('test');
 });
 
 beforeEach(() => {
@@ -39,7 +41,7 @@ describe('remote workspace tree persistence', () => {
 		expect(setItem).not.toHaveBeenCalled();
 		setWsExpanded('new', true);
 		expect(isWsExpanded('new')).toBe(true);
-		expect(values.get('rg-remote-tree-expanded')).toContain('new');
+		expect(values.get('rg-remote-tree-expanded:test')).toContain('new');
 		expect(toggleWsExpanded('new')).toBe(false);
 		expect(toggleWsExpanded('new')).toBe(true);
 	});

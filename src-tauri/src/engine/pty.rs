@@ -544,6 +544,12 @@ impl PtyReaderThread {
                     // post-transition parser snapshot.
                     let emit_delta = self.native_delta_mode.load(Ordering::Acquire);
                     let frame = parser.feed_and_diff(payload.as_bytes());
+                    self.state.forward_remote_terminal_delta(
+                        self.workspace_id(),
+                        self.pane_id,
+                        frame.clone(),
+                        parser.is_alt_screen(),
+                    );
                     let clears_scrollback = frame.deltas.iter().any(|delta| {
                         matches!(delta, ridge_term::term::delta::GridDelta::ScrollbackClear)
                     });

@@ -96,6 +96,7 @@ function uuidFromBytes(bytes: Uint8Array, offset: number = 0): string {
 }
 
 export type RawByteListener = (pane: PaneRef, data: Uint8Array) => void;
+export type TerminalFrameListener = (data: Uint8Array) => void;
 export type MetaListener = (pane: PaneRef, title: string | null, cwd: string | null) => void;
 export type PtyResizeListener = (
   pane: PaneRef,
@@ -423,6 +424,8 @@ export interface OrchestrationHealth {
 }
 
 export interface RemoteLink {
+  /** Stable host scope for lightweight navigation preferences; never contains auth. */
+  cacheScope?(): string;
   state(): ConnectionState;
   /**
    * 最近一次进入 'error' 的失败详情（分级 + 服务端 code）。UI 据此区分「用户问题
@@ -437,6 +440,7 @@ export interface RemoteLink {
   onReconnect(fn: () => void): () => void;
   onMessage(fn: Listener): () => void;
   onRawBytes(fn: RawByteListener): () => void;
+  onTerminalFrame?(fn: TerminalFrameListener): () => void;
   onMetadata(fn: MetaListener): () => void;
   onPtyResize(fn: PtyResizeListener): () => void;
   onTheme(fn: ThemeListener): () => void;
@@ -468,7 +472,13 @@ export interface RemoteLink {
       sinceSeq?: number;
       /** Foreground pane owns the transport's reserved priority lane. */
       active?: boolean;
+      activationId?: number;
     },
+  ): void;
+  /** Mobile foreground activation: transports must leave no background PTY streams. */
+  activatePane?(
+    pane: PaneRef,
+    opts?: { resume?: boolean; sinceSeq?: number; active?: boolean; activationId?: number },
   ): void;
   /** Re-seed one pane after local render backpressure shed output. */
   resyncPane?(pane: PaneRef): void;
@@ -593,6 +603,7 @@ export class RemoteConnection implements RemoteLink {
   private readonly messageListeners: Set<Listener> = new Set();
   private readonly binaryDeltaListeners: Set<RawByteListener> = new Set();
   private readonly rawByteListeners: Set<RawByteListener> = new Set();
+  private readonly terminalFrameListeners: Set<TerminalFrameListener> = new Set();
   private readonly metaListeners: Set<MetaListener> = new Set();
   private readonly resizeListeners: Set<PtyResizeListener> = new Set();
   private readonly themeListeners: Set<ThemeListener> = new Set();
@@ -670,6 +681,9 @@ export class RemoteConnection implements RemoteLink {
   } = { connectStart: null, upgradeStart: null, firstFrame: null, firstPtyBytes: null };
 
   state() { return this._state; }
+  cacheScope() {
+    return this._host && this._port ? `lan:${this._host.toLowerCase()}:${this._port}` : 'lan:pending';
+  }
   lastFailure() { return this._failure; }
   hasCapability(capability: string) {
     return (this._capabilities === null || this._capabilities.has(capability))
@@ -766,6 +780,11 @@ export class RemoteConnection implements RemoteLink {
   onRawBytes(fn: RawByteListener) {
     this.rawByteListeners.add(fn);
     return () => this.rawByteListeners.delete(fn);
+  }
+
+  onTerminalFrame(fn: TerminalFrameListener) {
+    this.terminalFrameListeners.add(fn);
+    return () => this.terminalFrameListeners.delete(fn);
   }
 
   onMetadata(fn: MetaListener) {
@@ -907,8 +926,13 @@ export class RemoteConnection implements RemoteLink {
     ws.onmessage = (event) => this._handleMessage(event);
   }
 
-  private _handleBinaryMessage(data: ArrayBuffer): void {
-    const buf = new Uint8Array(data);
+	private _handleBinaryMessage(data: ArrayBuffer): void {
+		const buf = new Uint8Array(data);
+		if (buf[0] === 0x13) {
+			this.terminalFrameListeners.forEach((fn) => fn(buf));
+			return;
+		}
+		if (buf.byteLength < 16) return;
     const paneId = uuidFromBytes(buf, 0);
     const rawBytes = buf.subarray(16);
     remotePerfMark('raw-receive', { paneKey: paneId, bytes: rawBytes.byteLength, transport: 'lan-ws' });
@@ -987,6 +1011,21 @@ export class RemoteConnection implements RemoteLink {
       return true;
     }
     if (type === 'pong') return true;
+    if (type === 'hello' && rec.protocol === 'ridge-remote-ws') {
+      if (rec.terminalProtocolVersion !== 2) {
+        this._intentionalClose = true;
+        if (this.ws) {
+          this.ws.onopen = this.ws.onclose = this.ws.onerror = this.ws.onmessage = null;
+          try { this.ws.close(); } catch { /* already closed */ }
+          this.ws = null;
+        }
+        this.failWith({
+          category: 'channel',
+          message: 'Remote 主机终端协议过旧，请升级 Ridge/rdg 后重连',
+        });
+        return true;
+      }
+    }
     if (type === 'hello' && Array.isArray(rec.capabilities)) this.applyAdvertisedCapabilities(rec.capabilities);
     if (this._handlePtyEvent(msg, type, rec)) return true;
     if (type === 'scrollback-meta') {
@@ -1390,7 +1429,7 @@ export class RemoteConnection implements RemoteLink {
   listPanes() { this.send({ type: 'list-panes' }); }
   subscribePane(
     pane: PaneRef,
-    opts?: { resume?: boolean; sinceSeq?: number; active?: boolean },
+    opts?: { resume?: boolean; sinceSeq?: number; active?: boolean; activationId?: number },
   ) {
     const { paneId, workspaceId } = pane;
     if (!paneId || !workspaceId) return;
@@ -1399,7 +1438,19 @@ export class RemoteConnection implements RemoteLink {
     if (opts?.resume) msg.resume = true;
     if (opts?.sinceSeq !== undefined) msg.sinceSeq = opts.sinceSeq;
     if (opts?.active !== undefined) msg.active = opts.active;
+    if (opts?.activationId !== undefined) msg.activationId = opts.activationId;
     this.send(msg);
+  }
+
+  activatePane(
+    pane: PaneRef,
+    opts?: { resume?: boolean; sinceSeq?: number; active?: boolean; activationId?: number },
+  ) {
+    const activeKey = paneRefKey(pane);
+    for (const key of [...this.paneRefs.keys()]) {
+      if (key !== activeKey) this._deletePaneRef(key);
+    }
+    this.subscribePane(pane, { ...opts, active: true });
   }
 
   resyncPane(pane: PaneRef) {

@@ -43,22 +43,31 @@ export function makeCloudHostPaneSource(deps: CloudHostPaneSourceDeps): PaneOutp
     paneId: string,
     workspaceId: string | undefined,
     onOutput: (raw: Uint8Array) => void,
+    options?: { activationId?: number },
   ): Unsubscribe => {
     let active = true;
     let unlisten: (() => void) | null = null;
     let subscribePromise: Promise<void> | null = null;
     let stopRequested = false;
     let stopSent = false;
-    const eventName = workspaceId
-      ? `pane-raw-${workspaceId}-${paneId}`
-      : `pane-raw-${paneId}`;
+    const semantic = options?.activationId !== undefined && workspaceId !== undefined;
+    const eventName = semantic
+      ? `pane-terminal-v2-${workspaceId}-${paneId}-${options.activationId}`
+      : workspaceId
+        ? `pane-raw-${workspaceId}-${paneId}`
+        : `pane-raw-${paneId}`;
+    const subscribeCommand = semantic ? 'subscribe_pane_terminal_v2' : 'subscribe_pane_raw';
+    const unsubscribeCommand = semantic ? 'unsubscribe_pane_terminal_v2' : 'unsubscribe_pane_raw';
+    const commandArgs = semantic
+      ? { paneId, workspaceId, activationId: options!.activationId }
+      : { paneId, workspaceId };
 
     const sendStop = () => {
       if (stopSent || subscribePromise === null) return;
       stopSent = true;
       void Promise.resolve()
-        .then(() => deps.invoke('unsubscribe_pane_raw', { paneId, workspaceId }))
-        .catch((e) => log('unsubscribe_pane_raw failed', e));
+        .then(() => deps.invoke(unsubscribeCommand, commandArgs))
+        .catch((e) => log(`${unsubscribeCommand} failed`, e));
     };
     const requestStop = () => {
       stopRequested = true;
@@ -84,12 +93,12 @@ export function makeCloudHostPaneSource(deps: CloudHostPaneSourceDeps): PaneOutp
           return;
         }
         unlisten = u;
-        const started = deps.invoke('subscribe_pane_raw', { paneId, workspaceId });
+        const started = deps.invoke(subscribeCommand, commandArgs);
         // Always settle bookkeeping, even when the host rejects.
         subscribePromise = Promise.resolve(started).then(
           () => undefined,
           (e) => {
-            log('subscribe_pane_raw failed', e);
+            log(`${subscribeCommand} failed`, e);
           },
         );
         if (stopRequested) void subscribePromise.then(sendStop);

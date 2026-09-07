@@ -132,6 +132,49 @@ impl Terminal {
         }
     }
 
+    pub fn remote_v2_snapshot(
+        &self,
+        revision: u64,
+        title: String,
+        cwd: String,
+    ) -> crate::terminal_v2::TerminalSnapshot {
+        crate::remote_v2::snapshot(&self.grid, &self.modes, revision, title, cwd)
+    }
+
+    pub fn apply_remote_v2_snapshot(&mut self, snapshot: &crate::terminal_v2::TerminalSnapshot) {
+        crate::remote_v2::install_snapshot(&mut self.grid, &mut self.modes, snapshot);
+        self.current_attrs = Attrs::DEFAULT;
+        self.scroll_offset = 0;
+        self.user_scroll_locked = false;
+        self.pending_response.clear();
+        self.pending_events.clear();
+        if !snapshot.title.is_empty() {
+            self.pending_events
+                .push(KernelEvent::TitleChanged(snapshot.title.clone()));
+        }
+        if !snapshot.cwd.is_empty() {
+            self.pending_events
+                .push(KernelEvent::CwdChanged(snapshot.cwd.clone()));
+        }
+        self.last_printed = None;
+        self.current_link = None;
+        self.grapheme_buf.clear();
+        self.pending_reset = false;
+        self.last_applied_frame_seq = None;
+    }
+
+    pub fn apply_remote_v2_delta(&mut self, frame: &crate::terminal_v2::TerminalDeltaFrame) {
+        for delta in &frame.deltas {
+            if let Some(local) = crate::remote_v2::delta_to_local(delta) {
+                self.apply_delta(&local);
+            }
+        }
+    }
+
+    pub fn prepend_remote_v2_history(&mut self, lines: &[crate::terminal_v2::WireLine]) {
+        crate::remote_v2::prepend_history(&mut self.grid, lines);
+    }
+
     /// P3.10 — drain the RIS-observed flag. Used by `PaneParser` to
     /// decide whether the next frame should be prefixed with a
     /// `GridDelta::Reset` so the mirror can clear its state before

@@ -23,11 +23,34 @@ const VENDORED_GENERATED = join(here, 'generated');
 const VENDORED_FIXTURES = join(here, 'fixtures');
 const SRC_BINDINGS = join(srcRepo, 'bindings');
 const SRC_FIXTURES = join(srcRepo, 'fixtures', 'signaling');
+const SRC_TERMINAL_FIXTURES = join(srcRepo, 'fixtures', 'terminal-v2');
+const SRC_TERMINAL_CODEC = join(srcRepo, 'src', 'terminal_v2.rs');
+const VENDORED_TERMINAL_CODEC = join(
+  windRoot,
+  'packages',
+  'ridge-term',
+  'src',
+  'remote_protocol_generated.rs',
+);
 
-const siblingPresent = existsSync(srcRepo) && existsSync(SRC_BINDINGS) && existsSync(SRC_FIXTURES);
+const siblingPresent =
+  existsSync(srcRepo) &&
+  existsSync(SRC_BINDINGS) &&
+  existsSync(SRC_FIXTURES) &&
+  existsSync(SRC_TERMINAL_FIXTURES) &&
+  existsSync(SRC_TERMINAL_CODEC);
 
 /** ts-rs 生成的 bindings 相对路径（与 sync 脚本一致）。 */
-const BINDING_FILES = ['SignalMsg.ts', 'Role.ts', join('serde_json', 'JsonValue.ts')];
+const BINDING_FILES = [
+  'SignalMsg.ts',
+  'Role.ts',
+  'PaneRef.ts',
+  'ActivateTerminalParams.ts',
+  'TerminalHello.ts',
+  'PointerAction.ts',
+  'PointerEvent.ts',
+  join('serde_json', 'JsonValue.ts'),
+];
 
 const RESYNC_HINT = '与同级 ridge-signaling 漂移——运行 `pnpm sync:signaling` 重新 vendor。';
 
@@ -60,6 +83,25 @@ describe.skipIf(!siblingPresent)('signaling drift guard（同级 ridge-signaling
       const b = readBytes(join(SRC_FIXTURES, name));
       expect(a.equals(b), `fixture ${name} 不一致：${RESYNC_HINT}`).toBe(true);
     }
+  });
+
+  it('terminal-v2 golden fixture 与 Rust codec 均逐字节来自协议仓库', () => {
+    const vendoredDir = join(VENDORED_FIXTURES, 'terminal-v2');
+    const vendoredNames = readdirSync(vendoredDir).filter((f) => f.endsWith('.hex')).sort();
+    const sourceNames = readdirSync(SRC_TERMINAL_FIXTURES).filter((f) => f.endsWith('.hex')).sort();
+    expect(new Set(vendoredNames), `terminal-v2 fixture 集合不一致：${RESYNC_HINT}`).toEqual(
+      new Set(sourceNames),
+    );
+    for (const name of sourceNames) {
+      expect(
+        readBytes(join(vendoredDir, name)).equals(readBytes(join(SRC_TERMINAL_FIXTURES, name))),
+        `terminal-v2 fixture ${name} 不一致：${RESYNC_HINT}`,
+      ).toBe(true);
+    }
+    expect(
+      readBytes(VENDORED_TERMINAL_CODEC).equals(readBytes(SRC_TERMINAL_CODEC)),
+      `terminal v2 Rust codec 不一致：${RESYNC_HINT}`,
+    ).toBe(true);
   });
 
   it('SOURCE_REV === 源 git rev-parse HEAD', () => {

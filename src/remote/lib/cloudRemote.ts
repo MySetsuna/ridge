@@ -45,6 +45,7 @@ import {
   type WorkspaceInfo,
   type WsMessage,
   type RawByteListener,
+  type TerminalFrameListener,
   type MetaListener,
   type PtyResizeListener,
   type PaneRenderOwner,
@@ -146,6 +147,7 @@ interface SubscribeRetryIntent {
   resume: boolean;
   active: boolean;
   attempts: number;
+  activationId?: number;
 }
 
 interface LiveSeedState {
@@ -218,6 +220,7 @@ export class CloudRemoteConnection implements RemoteLink {
   private readonly handle: CloudControllerHandle;
   private readonly bridge: CloudRemoteBridge;
   private readonly fixedAuthorized: boolean;
+  private readonly directCloudTransport: boolean;
 
   private _state: ConnectionState = 'connecting';
   // 最近一次失败分级（任务 A 问题1）。云端服务端「已认证但无权」会经信令 error 帧把
@@ -235,12 +238,15 @@ export class CloudRemoteConnection implements RemoteLink {
   private readonly reconnectListeners = new Set<() => void>();
   private readonly messageListeners = new Set<(msg: WsMessage) => void>();
   private readonly rawByteListeners = new Set<RawByteListener>();
+  private readonly terminalFrameListeners = new Set<TerminalFrameListener>();
   private readonly metaListeners = new Set<MetaListener>();
   private readonly resizeListeners = new Set<PtyResizeListener>();
   private readonly themeListeners = new Set<ThemeListener>();
 
   // Per-pane `pty-output-*` unlisten handles (bounded via pruneOutputs / disconnect).
   private readonly ptyUnlisten = new Map<string, UnlistenFn>();
+  /** Exact identities for the currently registered live streams. */
+  private readonly streamPaneRefs = new Map<string, PaneRef>();
   // Panes whose subscribe is in flight (so concurrent subscribe calls stay idempotent).
   private readonly subscribing = new Set<string>();
   // Subscription intent survives one transient failure, but never beyond a
@@ -279,6 +285,7 @@ export class CloudRemoteConnection implements RemoteLink {
   ) {
     this.handle = handle;
     this.bridge = bridgeInstance;
+    this.directCloudTransport = bridgeInstance === defaultCloudRemoteBridge;
     this.fixedAuthorized = options.fixedAuthorized === true;
     this.paneScheduler = new PaneRpcScheduler(
       {
@@ -365,14 +372,61 @@ export class CloudRemoteConnection implements RemoteLink {
       this.ptyUnlisten.delete(key);
       try { unlisten(); } catch { /* already gone */ }
     }
+    this.streamPaneRefs.delete(key);
+  }
+
+  private _unsubscribePaneStream(pane: PaneRef): void {
+    const key = paneRefKey(pane);
+    this.subscribing.delete(key);
+    const timer = this.subscribeRetryTimers.get(key);
+    if (timer) clearTimeout(timer);
+    this.subscribeRetryTimers.delete(key);
+    this.subscribeRetryIntents.delete(key);
+    this.fetchingOlder.delete(key);
+    this.scrollbackCursor.delete(key);
+    const unlisten = this.ptyUnlisten.get(key);
+    if (unlisten) {
+      this.ptyUnlisten.delete(key);
+      try { unlisten(); } catch { /* listener already gone */ }
+    }
+    this.streamPaneRefs.delete(key);
+    if (this.activePaneKey === key) this.activePaneKey = null;
+    if (this.pendingActivePromotion && paneRefKey(this.pendingActivePromotion) === key) {
+      this.pendingActivePromotion = null;
+    }
+    if (this.directCloudTransport && typeof this.handle.adapter.sendControl === 'function') {
+      this.handle.adapter.sendControl({
+        jsonrpc: '2.0',
+        method: 'unsubscribe-pane',
+        params: { paneId: pane.paneId, workspaceId: pane.workspaceId },
+      });
+    } else {
+      void this.bridge.invoke('unsubscribe_pane_raw', {
+        paneId: pane.paneId,
+        workspaceId: pane.workspaceId,
+      }).catch(() => undefined);
+    }
   }
 
   hasCapability(capability: string): boolean {
     return this.bridge.hasCapability(capability);
   }
 
+  cacheScope(): string {
+    return `cloud:${this.handle.hostDevice.trim().toLowerCase() || 'unknown-host'}`;
+  }
+
   onCapabilitiesChanged(fn: () => void): () => void {
-    return this.bridge.onCapabilitiesChanged(fn);
+    return this.bridge.onCapabilitiesChanged(() => {
+      if (!this.bridge.hasCapability('pane')) {
+        this._failure = {
+          category: 'channel',
+          message: 'Remote 主机终端协议过旧，请升级 Ridge/rdg 后重连',
+        };
+        this.setState('error');
+      }
+      fn();
+    });
   }
 
   /**
@@ -511,6 +565,7 @@ export class CloudRemoteConnection implements RemoteLink {
       try { unlisten(); } catch { /* handle points at a dead transport — ignore */ }
     }
     this.ptyUnlisten.clear();
+    this.streamPaneRefs.clear();
     this.subscribing.clear();
     this.activePaneKey = null;
     this.activePromotionInFlight = false;
@@ -659,18 +714,20 @@ export class CloudRemoteConnection implements RemoteLink {
 
   subscribePane(
     pane: PaneRef,
-    opts?: { resume?: boolean; sinceSeq?: number; active?: boolean },
+    opts?: { resume?: boolean; sinceSeq?: number; active?: boolean; activationId?: number },
   ): void {
     const { paneId, workspaceId } = pane;
     if (!paneId || !workspaceId) return;
     const key = paneRefKey(pane);
     if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
+    this.streamPaneRefs.set(key, pane);
     const previous = this.subscribeRetryIntents.get(key);
     this.subscribeRetryIntents.set(key, {
       pane,
       resume: opts?.resume ?? previous?.resume ?? false,
       active: opts?.active === true || previous?.active === true,
       attempts: previous?.attempts ?? 0,
+      activationId: opts?.activationId ?? previous?.activationId,
     });
     this.paneScheduler.resume(pane);
     if (this.ptyUnlisten.has(key)) {
@@ -681,7 +738,23 @@ export class CloudRemoteConnection implements RemoteLink {
     if (this.subscribing.has(key) || this.subscribeRetryTimers.has(key)) return;
     this.subscribing.add(key);
     const intent = this.subscribeRetryIntents.get(key)!;
-    void this._subscribe(pane, intent.resume, intent.active);
+    void this._subscribe(pane, intent.resume, intent.active, intent.activationId);
+  }
+  onTerminalFrame(fn: TerminalFrameListener): () => void {
+    this.terminalFrameListeners.add(fn);
+    return () => this.terminalFrameListeners.delete(fn);
+  }
+
+  activatePane(
+    pane: PaneRef,
+    opts?: { resume?: boolean; sinceSeq?: number; active?: boolean; activationId?: number },
+  ): void {
+    const targetKey = paneRefKey(pane);
+    for (const [key, current] of [...this.streamPaneRefs]) {
+      if (key !== targetKey) this._unsubscribePaneStream(current);
+    }
+    this.deadPaneKeys.delete(targetKey);
+    this.subscribePane(pane, { ...opts, active: true });
   }
 
   private queueActivePromotion(pane: PaneRef): void {
@@ -811,7 +884,15 @@ export class CloudRemoteConnection implements RemoteLink {
         const bytes = event.payload?.bytes instanceof Uint8Array
           ? event.payload.bytes
           : PTY_ENCODER.encode(event.payload?.data ?? '');
-        if (bytes.length) this.emitSeededLive(pane, key, state, bytes);
+        if (!bytes.length) return;
+        if (bytes[0] === 0x13) {
+          state.seeding = false;
+          state.pendingLive.length = 0;
+          state.pendingLiveBytes = 0;
+          this.terminalFrameListeners.forEach((fn) => fn(bytes));
+          return;
+        }
+        this.emitSeededLive(pane, key, state, bytes);
       },
     );
   }
@@ -889,6 +970,7 @@ export class CloudRemoteConnection implements RemoteLink {
     pane: PaneRef,
     resume = false,
     active?: boolean,
+    activationId?: number,
   ): Promise<void> {
     const { paneId, workspaceId } = pane;
     const key = paneRefKey(pane);
@@ -919,12 +1001,36 @@ export class CloudRemoteConnection implements RemoteLink {
       // through the same latest-wins gate used by already-subscribed panes;
       // passing `active` directly here lets rapid first visits enqueue one
       // channel registration per Pane before the switch settles.
-      await this.bridge.subscribePane(paneId, workspaceId, false);
+      if (
+        this.directCloudTransport
+        && activationId !== undefined
+        && typeof this.handle.adapter.sendControl === 'function'
+      ) {
+        this.handle.adapter.sendControl({
+          jsonrpc: '2.0',
+          method: 'subscribe-pane',
+          params: { paneId, workspaceId, active: active === true, activationId },
+        });
+      } else {
+        await this.bridge.subscribePane(paneId, workspaceId, active === true);
+      }
+      if (!this.subscribing.has(key)) {
+        if (this.directCloudTransport && typeof this.handle.adapter.sendControl === 'function') {
+          this.handle.adapter.sendControl({
+            jsonrpc: '2.0',
+            method: 'unsubscribe-pane',
+            params: { paneId, workspaceId },
+          });
+        } else {
+          void this.bridge.invoke('unsubscribe_pane_raw', { paneId, workspaceId }).catch(() => undefined);
+        }
+        return;
+      }
       subscribed = true;
       const intent = this.subscribeRetryIntents.get(key);
-      if (active || intent?.active) this.queueActivePromotion(pane);
+      if (!active && intent?.active) this.queueActivePromotion(pane);
 
-      if (!resume) {
+      if (!resume && activationId === undefined) {
         // §R-CLOUD-CONVERGE: the host builds ONE complete resync frame (RIS + active-
         // mode preamble + scrollback tail) via the shared build_resync_frame SSOT — we
         // feed it verbatim, NO client-side assembly. The preamble (?1002h/?1049h/?1006h…)
@@ -988,7 +1094,12 @@ export class CloudRemoteConnection implements RemoteLink {
       const current = this.subscribeRetryIntents.get(key);
       if (!current) return;
       this.subscribing.add(key);
-      void this._subscribe(current.pane, current.resume, current.active);
+      void this._subscribe(
+        current.pane,
+        current.resume,
+        current.active,
+        current.activationId,
+      );
     }, delay);
     this.subscribeRetryTimers.set(key, timer);
   }

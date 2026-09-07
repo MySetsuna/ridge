@@ -146,6 +146,17 @@ pub fn negotiate_hello(params: &Value) -> Value {
             "params": { "reason": "protocol-version-mismatch" },
         });
     }
+    let terminal_version = params
+        .get("terminalProtocolVersion")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if terminal_version != ridge_term::terminal_v2::PROTOCOL_VERSION as u64 {
+        return serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": BYE_METHOD,
+            "params": { "reason": "terminal-protocol-upgrade-required" },
+        });
+    }
     // peerCaps 为空 ⇒ 不约束（与桌面 `peerCaps.size === 0` 分支一致）。
     let peer_caps: Vec<&str> = params
         .get("capabilities")
@@ -160,7 +171,12 @@ pub fn negotiate_hello(params: &Value) -> Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "method": HELLO_METHOD,
-        "params": { "protocolVersion": HOST_PROTOCOL_VERSION, "capabilities": agreed },
+        "params": {
+            "protocolVersion": HOST_PROTOCOL_VERSION,
+            "terminalProtocolVersion": ridge_term::terminal_v2::PROTOCOL_VERSION,
+            "terminalMaxFrameBytes": ridge_term::terminal_v2::MAX_FRAME_BYTES,
+            "capabilities": agreed,
+        },
     })
 }
 
@@ -319,6 +335,7 @@ mod tests {
         // controller 公告全 IDE 能力集；cli 只回它支持的子集（pane/fs/search）。
         let reply = negotiate_hello(&json!({
             "protocolVersion": 1,
+            "terminalProtocolVersion": 2,
             "capabilities": ["pane", "invoke", "fs", "git", "search", "workspace", "theme"]
         }));
         assert_eq!(reply["method"], HELLO_METHOD);
@@ -336,7 +353,7 @@ mod tests {
     #[test]
     fn hello_empty_peer_caps_returns_full_cli_set() {
         // peerCaps 为空 ⇒ 不约束（桌面同款分支）：回 cli 全能力集。
-        let reply = negotiate_hello(&json!({ "protocolVersion": 1 }));
+        let reply = negotiate_hello(&json!({ "protocolVersion": 1, "terminalProtocolVersion": 2 }));
         let caps: Vec<String> =
             serde_json::from_value(reply["params"]["capabilities"].clone()).unwrap();
         assert_eq!(caps, vec!["pane", "fs", "search"]);

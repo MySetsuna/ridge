@@ -36,7 +36,7 @@
   // + scrollback preserved across pane switches). All touch / soft-keyboard /
   // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
   // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
-  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onInputTask: onPaneInputTask, onResize: onPaneResize, onFocus: onPaneFocus, onDrainPending, onFirstPaint, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('WebGPU'), hostError = null, sentenceBuffer = false }: {
+  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onInputTask: onPaneInputTask, onResize: onPaneResize, onFocus: onPaneFocus, onDrainPending, onDrainSemantic, onFirstPaint, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('WebGPU'), hostError = null, sentenceBuffer = false }: {
     paneId: string;
     workspaceId: string;
     /** Host teammate state; retained for diagnostics, never a persistent pane border. */
@@ -50,6 +50,11 @@
     onFocus?: (pane: PaneRef) => void;
     /** Drain raw frames captured during a keyed pane-switch mount gap. */
     onDrainPending?: (paneKey: string) => Uint8Array[];
+    onDrainSemantic?: (paneKey: string) => Array<{
+      bytes: Uint8Array;
+      pane: PaneRef;
+      activationId: number;
+    }>;
     /** Performance probe callback after the first post-switch browser frame. */
     onFirstPaint?: (paneKey: string) => void;
     /** iter-60：句级输入缓冲开关（语音/高频改写场景；alt-screen/TUI 鼠标态自动旁路）。 */
@@ -308,6 +313,16 @@
     if (!alive) { manager.park(paneId); return; }
     const pendingFrames = onDrainPending?.(paneId) ?? [];
     for (const frame of pendingFrames) manager.feed(paneId, frame);
+    const pendingSemantic = onDrainSemantic?.(paneId) ?? [];
+    for (const frame of pendingSemantic) {
+      manager.applyRemoteFrame(
+        paneId,
+        frame.bytes,
+        frame.pane.workspaceId,
+        frame.pane.paneId,
+        frame.activationId,
+      );
+    }
     manager.flushPaneFeed(paneId);
     flushPendingStdin();
     manager.setFocused(paneId, true);
@@ -511,6 +526,20 @@
     manager.feed(targetPaneId, bytes);
     return manager.feedStats(targetPaneId);
   }
+  export function applyRemoteFrameForPane(
+    targetPaneId: string,
+    bytes: Uint8Array,
+    pane: PaneRef,
+    activationId: number,
+  ) {
+    return manager.applyRemoteFrame(
+      targetPaneId,
+      bytes,
+      pane.workspaceId,
+      pane.paneId,
+      activationId,
+    );
+  }
   export function clearPendingFeed(targetPaneId: string) {
     return manager.clearPendingFeed(targetPaneId);
   }
@@ -634,25 +663,14 @@
     // Reserve the gesture for link opening only when this cell is actually a
     // link. A valid grid cell is not itself a link: treating every cell as one
     // prevented mouse-reporting TUIs from ever entering touch drag mode.
-    touchLinkCell = startCell && manager.hasLinkAt(paneId, startCell.row, startCell.col)
+    touchLinkCell = !selectionMode && startCell && manager.hasLinkAt(paneId, startCell.row, startCell.col)
       ? { row: startCell.row, col: startCell.col }
       : null;
-    // §select-as-mouse (R5): the select toggle SIMULATES A MOUSE — emit mouse
-    // signals and let the receiving terminal decide (parity with desktop). When
-    // the app captures the mouse (mouse-reporting TUI) we forward a press and the
-    // TUI owns the gesture/selection/scroll. ONLY a plain shell falls back to
-    // LOCAL text selection + copy pill.
+    // Explicit selection mode always belongs to the controller. This gives the
+    // user an escape hatch even when a full-screen TUI captures every mouse event.
     if (selectionMode) {
       const cell = clientToCell(t.clientX, t.clientY);
-      if (cell) {
-        if (isMouseReporting()) {
-          const g = decideTouchMouseGesture('press');
-          const bytes = kEncodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
-          if (bytes.length > 0) onStdin(td.decode(bytes));
-        } else {
-          startSelection(cell.row, cell.col);
-        }
-      }
+      if (cell) startSelection(cell.row, cell.col);
     } else if (isMouseReporting() && !touchLinkCell) {
       const cell = clientToCell(t.clientX, t.clientY);
       if (cell) {
@@ -687,17 +705,7 @@
     if (selectionMode) {
       selDragging = true;
       const cell = clientToCell(t.clientX, t.clientY);
-      // §select-as-mouse (R5): mouse-reporting TUI → motion report (the TUI
-      // extends its own selection); plain shell → local text selection.
-      if (cell) {
-        if (isMouseReporting()) {
-          const g = decideTouchMouseGesture('drag');
-          const bytes = kEncodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
-          if (bytes.length > 0) onStdin(td.decode(bytes));
-        } else {
-          extendSelection(cell.row, cell.col);
-        }
-      }
+      if (cell) extendSelection(cell.row, cell.col);
       return;
     }
     touchScrollAccum += touchLastY - t.clientY;
@@ -737,22 +745,11 @@
     if (selectionMode) {
       const wasDragging = selDragging;
       selDragging = false;
-      const cell = touch ? clientToCell(touch.clientX, touch.clientY) : null;
-      if (isMouseReporting()) {
-        // §select-as-mouse (R5): complete the simulated gesture with a release —
-        // a tap becomes a click (the TUI focuses its own input), a drag becomes a
-        // drag-end. decideTouchMouseGesture is the SSOT for button/action.
-        if (cell) {
-          const g = decideTouchMouseGesture('release');
-          const bytes = kEncodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
-          if (bytes.length > 0) onStdin(td.decode(bytes));
-        }
-      } else if (wasDragging) {
-        // Plain shell: finish the local text selection + surface the copy pill.
+      if (wasDragging) {
         endSelectionLocal();
         hasSelectionState = hasSelection();
       } else {
-        // A tap in shell selection mode clears any existing selection.
+        // A tap in selection mode clears any existing local selection.
         manager.clearSelection(paneId);
         hasSelectionState = false;
       }

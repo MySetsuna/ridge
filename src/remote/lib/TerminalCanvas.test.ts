@@ -47,7 +47,7 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain('manager.noteUserInput(paneId);');
     expect(source).toContain('manager.onImeAnchor(paneId');
     expect(source).toContain('pinImeCaretToAnchor(el);');
-    expect(source).toContain('positionInputAtCursorOrCenter();\n    if (sbufActive()');
+    expect(source).toMatch(/positionInputAtCursorOrCenter\(\);\r?\n\s+if \(sbufActive\(\)/);
   });
 
   it('keeps pane geometry authoritative for host resize recovery', () => {
@@ -86,6 +86,13 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain("decideTouchMouseGesture('release')");
     expect(source).toContain('manager.hasLinkAt(paneId, startCell.row, startCell.col)');
     expect(source).toContain('ontouchcancel={handleTouchCancel}');
+  });
+
+  it('keeps explicit selection local even when a TUI captures the mouse', () => {
+    expect(source).toContain('Explicit selection mode always belongs to the controller.');
+    expect(source).toContain('if (cell) startSelection(cell.row, cell.col);');
+    expect(source).toContain('if (cell) extendSelection(cell.row, cell.col);');
+    expect(source).not.toContain('§select-as-mouse');
   });
 
   it('cancels compatibility clicks before focusing the mobile IME sink', () => {

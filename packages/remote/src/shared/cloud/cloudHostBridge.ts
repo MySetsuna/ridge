@@ -122,6 +122,7 @@ export type PaneOutputSource = (
   paneId: string,
   workspaceId: string | undefined,
   onOutput: (raw: Uint8Array) => void,
+  options?: { activationId?: number },
 ) => Unsubscribe;
 
 export type Unsubscribe = () => void;
@@ -252,6 +253,7 @@ export class CloudHostBridge {
   private readonly backpressuredPanes = new Set<string>();
   private activePaneId: string | null = null;
   private readonly paneWorkspaces = new Map<string, string | undefined>();
+  private readonly paneActivations = new Map<string, number>();
   private readonly recoveringPanes = new Set<string>();
 
   constructor(config: CloudHostBridgeConfig) {
@@ -575,6 +577,11 @@ export class CloudHostBridge {
       case 'subscribe-pane':
         this.handleSubscribePane(params);
         return;
+      case 'unsubscribe-pane': {
+        const paneId = (params as { paneId?: unknown } | null)?.paneId;
+        if (typeof paneId === 'string' && paneId) this.unsubscribePane(paneId);
+        return;
+      }
       default:
         // 其它 controller→host 事件（如 resize、switch-workspace）尚未在本桥落地：
         // 作为 invoke 转发给本地命令（与 LAN host 把控制消息也走 dispatch 一致），
@@ -743,6 +750,7 @@ export class CloudHostBridge {
       paneId?: unknown;
       workspaceId?: unknown;
       active?: unknown;
+      activationId?: unknown;
     } | null | undefined;
     const paneId = rec?.paneId;
     if (typeof paneId !== 'string' || paneId.length === 0) {
@@ -750,7 +758,21 @@ export class CloudHostBridge {
       return;
     }
     const workspaceId = typeof rec?.workspaceId === 'string' ? rec.workspaceId : undefined;
+    const activationId = typeof rec?.activationId === 'number'
+      && Number.isSafeInteger(rec.activationId)
+      && rec.activationId > 0
+      ? rec.activationId
+      : undefined;
+    const existingActivation = this.paneActivations.get(paneId);
+    const existingWorkspace = this.paneWorkspaces.get(paneId);
+    if (
+      this.paneSubs.has(paneId)
+      && (existingActivation !== activationId || existingWorkspace !== workspaceId)
+    ) {
+      this.unsubscribePane(paneId);
+    }
     this.paneWorkspaces.set(paneId, workspaceId);
+    if (activationId !== undefined) this.paneActivations.set(paneId, activationId);
     if (rec?.active === true) {
       this.activePaneId = paneId;
       if (this.backpressuredPanes.has(paneId)) void this.recoverPane(paneId);
@@ -771,7 +793,7 @@ export class CloudHostBridge {
     try {
       unsub = this.paneOutputSource(paneId, workspaceId, (raw) => {
         this.pushPaneOutput(paneId, raw);
-      });
+      }, { activationId });
     } catch (error) {
       // A source failure must not escape the notification handler or strand a
       // half-registered Pane subscription in the bridge.
@@ -817,6 +839,18 @@ export class CloudHostBridge {
     }
     if (this.recoveringPanes.has(paneId)) {
       this.backpressuredPanes.add(paneId);
+      return;
+    }
+    // A v2 envelope is one atomic postcard value. Keep it intact inside the
+    // encrypted pane lane; splitting it would turn every chunk into a malformed
+    // terminal frame at the controller. It still obeys the same channel
+    // backpressure gate; recovery below asks Rust for a fresh exact snapshot.
+    if (raw[0] === 0x13) {
+      try {
+        this.sendFrame(encodePaneFrame(paneId, raw));
+      } catch (e) {
+        this.log('error', `failed to encode semantic pane frame for ${paneId}; dropped`, e);
+      }
       return;
     }
     try {
@@ -865,6 +899,21 @@ export class CloudHostBridge {
     this.recoveringPanes.add(paneId);
     const workspaceId = this.paneWorkspaces.get(paneId);
     try {
+      const activationId = this.paneActivations.get(paneId);
+      if (activationId !== undefined && workspaceId) {
+        const encoded = await this.invoke('get_pane_terminal_snapshot_v2', {
+          paneId,
+          workspaceId,
+          activationId,
+        });
+        if (this.activePaneId !== paneId || typeof encoded !== 'string') return;
+        const bytes = base64ToBytes(encoded);
+        if (!bytes) return;
+        if (bytes[0] !== 0x13) return;
+        this.sendFrame(encodePaneFrame(paneId, bytes));
+        this.backpressuredPanes.delete(paneId);
+        return;
+      }
       const frame = await this.invoke('get_pane_resync_frame', {
         paneId,
         workspaceId,
@@ -902,6 +951,7 @@ export class CloudHostBridge {
     }
     if (this.activePaneId === paneId) this.activePaneId = null;
     this.paneWorkspaces.delete(paneId);
+    this.paneActivations.delete(paneId);
     this.recoveringPanes.delete(paneId);
   }
 
@@ -925,6 +975,7 @@ export class CloudHostBridge {
     this.paneSubs.clear();
     this.backpressuredPanes.clear(); // 弱网 P1：清背压待重同步集
     this.paneWorkspaces.clear();
+    this.paneActivations.clear();
     this.recoveringPanes.clear();
     this.channelUnsub?.();
     this.channelUnsub = null;
@@ -995,13 +1046,24 @@ export function toJsonRpcError(e: unknown): { code: number; message: string; dat
  * 与 server.rs `negotiate_hello` 逐字对齐。
  */
 export function negotiateHello(params: unknown): Record<string, unknown> {
-  const p = (params ?? {}) as { protocolVersion?: unknown; capabilities?: unknown };
+  const p = (params ?? {}) as {
+    protocolVersion?: unknown;
+    terminalProtocolVersion?: unknown;
+    capabilities?: unknown;
+  };
   const peerVersion = typeof p.protocolVersion === 'number' ? p.protocolVersion : 0;
   if (peerVersion < HOST_PROTOCOL_VERSION) {
     return {
       jsonrpc: '2.0',
       method: BYE_METHOD,
       params: { reason: 'protocol-version-mismatch' },
+    };
+  }
+  if (p.terminalProtocolVersion !== 2) {
+    return {
+      jsonrpc: '2.0',
+      method: BYE_METHOD,
+      params: { reason: 'terminal-protocol-upgrade-required' },
     };
   }
   const peerCaps = Array.isArray(p.capabilities)
@@ -1012,7 +1074,12 @@ export function negotiateHello(params: unknown): Record<string, unknown> {
   return {
     jsonrpc: '2.0',
     method: HELLO_METHOD,
-    params: { protocolVersion: HOST_PROTOCOL_VERSION, capabilities: agreed },
+    params: {
+      protocolVersion: HOST_PROTOCOL_VERSION,
+      terminalProtocolVersion: 2,
+      terminalMaxFrameBytes: 16 * 1024 * 1024,
+      capabilities: agreed,
+    },
   };
 }
 

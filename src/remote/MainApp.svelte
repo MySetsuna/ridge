@@ -64,9 +64,7 @@
   } = $props();
 
   function activePaneRef(): PaneRef | null {
-    return ui.activeWorkspaceId && ui.activePaneId
-      ? { workspaceId: ui.activeWorkspaceId, paneId: ui.activePaneId }
-      : null;
+    return ui.activePaneRef();
   }
   const LS_SBUF_KEY = 'rg-remote-sentence-buffer';
   const ui = new MobileRemoteUiState(((): boolean => {
@@ -99,7 +97,6 @@
     paneFeedScheduler.dispose();
     pendingRawFrames.clear();
     paneSwitchPerf.clear();
-    replayedPanes.clear();
     attachedPanes.clear();
     scrollbackDecoder.dispose();
   });
@@ -159,7 +156,7 @@
     }));
   }
   function selectAgentPane(paneId: string): void {
-    ui.activePaneId = paneId;
+    ui.navigate(ui.activeWorkspaceId, paneId);
     ui.sidebarTab = null;
   }
   function activeAttentionPaneIds(): string[] {
@@ -303,8 +300,9 @@
   // a re-selection every time. sessionStorage holds the heavy scrollback; these
   // lightweight "which ws / which pane" pointers go to localStorage so they also
   // survive a tab close, not just a reload.
-  const LS_WS_KEY = 'rg-remote-active-ws';
-  const LS_PANEMAP_KEY = 'rg-remote-pane-map';
+  const storageScope = untrack(() => ws.cacheScope?.() ?? `session-${sessionId()}`);
+  const LS_WS_KEY = `rg-remote-active-ws:${storageScope}`;
+  const LS_PANEMAP_KEY = `rg-remote-pane-map:${storageScope}`;
 
   function loadPaneMap(): Map<string, string> {
     try {
@@ -417,6 +415,20 @@
   // workspace-tagged set of attached panes so we can DETACH (free the kernel)
   // when the host truly closes a pane / workspace.
   let subscribedPaneId: string | null = null;
+  let activationCounter = 0;
+  let activeTerminalActivation: { key: string; id: number } | null = null;
+  const pendingSemanticFrames = new Map<
+    string,
+    Array<{ bytes: Uint8Array; pane: PaneRef; activationId: number }>
+  >();
+
+  function nextTerminalActivation(key: string): number {
+    activationCounter = activationCounter >= Number.MAX_SAFE_INTEGER - 1
+      ? 1
+      : activationCounter + 1;
+    activeTerminalActivation = { key, id: activationCounter };
+    return activationCounter;
+  }
 
   // Workspace each attached (visited) pane belongs to. Mirrors the retired
   // paneCache cross-ws prune: release only panes that vanished from THEIR OWN
@@ -444,14 +456,12 @@
     return frames;
   }
 
-  // §keep-alive resume: panes whose mirror kernel has ALREADY received its full
-  // RIS resync (scrollback + mode reattach) this session and is in-sync. On a
-  // switch-BACK to such a pane we resubscribe with `{ resume: true }` so the host
-  // skips the RIS resync (which would wipe the surviving keep-alive kernel down to
-  // the tail — the RIS-vs-keep-alive conflict). Fresh panes (not in the set) get a
-  // full resync. Cleared on reconnect (a disconnect leaves every mirror gapped →
-  // force a full resync); a truly-closed pane is removed when its kernel is detached.
-  const replayedPanes = new Set<string>();
+  function drainPendingSemanticFrames(key: string) {
+    const frames = pendingSemanticFrames.get(key) ?? [];
+    pendingSemanticFrames.delete(key);
+    return frames;
+  }
+
   // A render overflow can arrive as a burst of raw frames. Collapse it to one
   // full-pane resync so the recovery path cannot itself become an RPC storm.
   const feedResyncPending = new Set<string>();
@@ -524,8 +534,8 @@
     attachedPanes.delete(key);
     paneFeedScheduler.clear(key);
     pendingRawFrames.drop(key);
+    pendingSemanticFrames.delete(key);
     paneSwitchPerf.delete(key);
-    replayedPanes.delete(key);
     clearFeedResync(key);
     canvasRef?.clearPendingFeed(key);
   }
@@ -535,9 +545,6 @@
   // loaded it by the time any pane exists, so this resolves instantly.
   async function detachPaneKernels(refs: PaneRef[]) {
     if (refs.length === 0) return;
-    // A truly-closed pane can never resume — drop it from the resume set so a later
-    // pane reusing the same id (unlikely, but ids are host-assigned) starts fresh.
-    for (const ref of refs) replayedPanes.delete(paneRefKey(ref));
     try {
       const { TerminalManager } = await import('@ridge/remote/shared/terminal/manager');
       const mgr = TerminalManager.tryInstance();
@@ -738,8 +745,7 @@
       if (!bootRestoreDone) {
         if (savedActiveWs && savedActiveWs !== (hostActive?.id ?? '')
             && next.some(w => w.id === savedActiveWs)) {
-          ui.activeWorkspaceId = savedActiveWs;
-          ui.activePaneId = null; // force the panes handler to re-pick for the restored ws
+          ui.navigate(savedActiveWs, lastActivePanePerWorkspace.get(savedActiveWs) ?? null);
           const ok = await ws.switchWorkspace(savedActiveWs);
           if (!isCurrent()) return;
           if (ok) ws.listPanes();
@@ -749,10 +755,11 @@
           queryClient.setQueryData(remoteQueryKeys.workspaces(sessionId()), after);
           next = after;
           const a2 = after.find(w => w.active);
-          ui.activeWorkspaceId = a2 ? a2.id : savedActiveWs;
-          if (a2?.panes && (!ui.activePaneId || !a2.panes.some((pane) => pane.id === ui.activePaneId))) {
-            ui.activePaneId = a2.panes[0]?.id ?? null;
-          }
+          const restoredWorkspaceId = a2 ? a2.id : savedActiveWs;
+          const restoredPaneId = a2?.panes?.some((pane) => pane.id === ui.activePaneId)
+            ? ui.activePaneId
+            : a2?.panes?.[0]?.id ?? null;
+          ui.navigate(restoredWorkspaceId, restoredPaneId);
           bootRestoreDone = true;
           return;
         }
@@ -762,10 +769,10 @@
       }
       if (!isCurrent()) return;
       if (hostActive) {
-        ui.activeWorkspaceId = hostActive.id;
-        if (hostActive.panes && (!ui.activePaneId || !hostActive.panes.some((pane) => pane.id === ui.activePaneId))) {
-          ui.activePaneId = hostActive.panes[0]?.id ?? null;
-        }
+        const paneId = hostActive.panes?.some((pane) => pane.id === ui.activePaneId)
+          ? ui.activePaneId
+          : hostActive.panes?.[0]?.id ?? null;
+        ui.navigate(hostActive.id, paneId);
       }
     } catch { /* ignore */ }
   }
@@ -838,7 +845,7 @@
     try {
       const newId = await ws.createPane();
       if (newId) {
-        ui.activePaneId = newId;
+        ui.navigate(ui.activeWorkspaceId, newId);
         ws.listPanes();
       } else {
         createError = tr('mobile.createTerminalFailRetry');
@@ -892,11 +899,11 @@
             ? lastActivePanePerWorkspace.get(ui.activeWorkspaceId)
             : undefined;
           if (remembered && paneIds.includes(remembered)) {
-            ui.activePaneId = remembered;
+            ui.navigate(workspaceId, remembered);
           } else if (paneIds.length > 0) {
-            ui.activePaneId = nextPanes[0].id;
+            ui.navigate(workspaceId, nextPanes[0].id);
           } else {
-            ui.activePaneId = null;
+            ui.navigate(workspaceId, null);
           }
         }
       }
@@ -912,15 +919,15 @@
         // Before that, refreshWorkspaces() owns the restore decision, so a
         // proactive push must not clobber the workspace we're about to restore.
         if (active && bootRestoreDone) {
-          ui.activeWorkspaceId = active.id;
-          if (active.panes && (!ui.activePaneId || !active.panes.some((pane) => pane.id === ui.activePaneId))) {
-            ui.activePaneId = active.panes[0]?.id ?? null;
-          }
+          const paneId = active.panes?.some((pane) => pane.id === ui.activePaneId)
+            ? ui.activePaneId
+            : active.panes?.[0]?.id ?? null;
+          ui.navigate(active.id, paneId);
         }
       }
       if (msg.type === 'switch-workspace-result') {
         if (msg.success && msg.workspaceId) {
-          ui.activeWorkspaceId = msg.workspaceId;
+          ui.navigate(msg.workspaceId, lastActivePanePerWorkspace.get(msg.workspaceId) ?? null);
         }
         refreshWorkspaces();
       }
@@ -944,11 +951,28 @@
       // isn't the mounted TerminalCanvas). No cache, no reconcile, no wipe — the
       // host's on-subscribe replay is absorbed by the alive kernel.
       const key = paneRefKey(pane);
+      const active = activePaneRef();
+      if (!active || key !== paneRefKey(active)) return;
       paneFeedScheduler.enqueue(key, data);
       // During a keyed pane switch the old canvas may already be parked and
       // the new one not yet attached. Do not drop this frame: the next canvas
       // drains it into the same keep-alive kernel before its first paint.
     }));
+    if (ws.onTerminalFrame) {
+      stops.push(ws.onTerminalFrame((data) => {
+        const pane = activePaneRef();
+        if (!pane) return;
+        const key = paneRefKey(pane);
+        const activation = activeTerminalActivation;
+        if (!activation || activation.key !== key) return;
+        if (canvasRef?.applyRemoteFrameForPane?.(key, data, pane, activation.id)) return;
+        const queued = pendingSemanticFrames.get(key) ?? [];
+        // Activation begins with a full snapshot, so retaining a short ordered
+        // burst is sufficient during the keyed component's mount gap.
+        if (queued.length < 64) queued.push({ bytes: data.slice(), pane, activationId: activation.id });
+        pendingSemanticFrames.set(key, queued);
+      }));
+    }
     stops.push(ws.onMetadata((pane, title, cwd) => {
       const { paneId, workspaceId } = pane;
       // §realtime-title: reflect the live pane title in the workspace tree (and
@@ -1015,22 +1039,20 @@
       clearAllFeedResync();
       paneFeedScheduler.clearAll();
       pendingRawFrames.clear();
+      pendingSemanticFrames.clear();
       // §keep-alive after reconnect: a disconnect leaves a gap in every mirror kernel,
       // so force a full RIS resync on the next visit to each pane (clear the replayed
       // set). The active pane is full-resynced now (subscribePane below, resume=false).
-      replayedPanes.clear();
-      for (const pane of attachedPanes.values()) {
-        if (pane.paneId !== pid || pane.workspaceId !== ui.activeWorkspaceId) {
-          ws.subscribePane(pane, { active: false });
-          replayedPanes.add(paneRefKey(pane));
-        }
-      }
       if (pid) {
         const pane = activePaneRef();
         if (!pane) return;
         const key = paneRefKey(pane);
-        ws.subscribePane(pane, { active: true });
-        replayedPanes.add(key);
+        const activationId = nextTerminalActivation(key);
+        (ws.activatePane ?? ws.subscribePane).call(ws, pane, {
+          resume: false,
+          active: true,
+          activationId,
+        });
         // The new server socket has no knowledge of our viewport size.
         // Claim it immediately so the PTY is reflowed and the terminal
         // doesn't stay stuck at the 80x24 default.
@@ -1050,7 +1072,9 @@
     // first panes/workspaces arrive so the panes handler can restore the
     // remembered pane immediately; refreshWorkspaces() then switches the host
     // back to this workspace if it's currently on a different one.
-    if (savedActiveWs) ui.activeWorkspaceId = savedActiveWs;
+    if (savedActiveWs) {
+      ui.navigate(savedActiveWs, lastActivePanePerWorkspace.get(savedActiveWs) ?? null);
+    }
     ws.listPanes();
     refreshWorkspaces();
     return () => {
@@ -1093,11 +1117,15 @@
       // and full scrollback. We only (debounced) re-subscribe so the host
       // resumes streaming THIS pane; the host's on-subscribe replay is absorbed
       // by the alive kernel.
-      // First visit seeds the kernel; later focus changes only promote the existing
-      // subscription to the active QoS lane. Background subscriptions remain live.
-      const resume = replayedPanes.has(subscriptionKey);
-      ws.subscribePane(pane, { resume, active: true });
-      replayedPanes.add(subscriptionKey);
+      // Cached pixels paint immediately, then the transport silently replaces
+      // them with a fresh host seed. Inactive panes never retain live streams:
+      // live-only resume would necessarily skip output and recreate stale TUIs.
+      const activationId = nextTerminalActivation(subscriptionKey);
+      (ws.activatePane ?? ws.subscribePane).call(ws, pane, {
+        resume: false,
+        active: true,
+        activationId,
+      });
     });
   });
 
@@ -1197,7 +1225,7 @@
             <button class="conn-action" onclick={handleBackToLogin}>{$t('mobile.refresh')}</button>
           {:else}
             <!-- channel 异常 -->
-            <span class="conn-msg">{$t('mobile.connectionLost')}</span>
+            <span class="conn-msg">{failure?.message || $t('mobile.connectionLost')}</span>
             <button class="conn-action" onclick={handleRetry}>{$t('mobile.refresh')}</button>
           {/if}
         </div>
@@ -1317,6 +1345,7 @@
               onFocus={onPaneFocus}
               {onResize}
               onDrainPending={drainPendingRawFrames}
+              onDrainSemantic={drainPendingSemanticFrames}
               onFirstPaint={markPaneFirstPaint}
               onHostClipboard={(text) => ws.setHostClipboard(text)}
               onNearTop={loadOlderScrollback}
@@ -1416,6 +1445,7 @@
     bind:activePaneId={ui.activePaneId}
     {workspaces}
     bind:activeWorkspaceId={ui.activeWorkspaceId}
+    onNavigate={(workspaceId, paneId) => ui.navigate(workspaceId, paneId)}
     onWorkspacesChanged={refreshWorkspaces}
   />
 </div>

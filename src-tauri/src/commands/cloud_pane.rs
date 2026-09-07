@@ -76,6 +76,207 @@ fn resolve_workspace(
     Ok(ws)
 }
 
+fn emit_terminal_v2(
+    app: &AppHandle,
+    event_name: &str,
+    envelope: &ridge_term::terminal_v2::TerminalEnvelope,
+) -> bool {
+    let Ok(frame) = ridge_term::terminal_v2::encode_frame(envelope) else {
+        return false;
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(frame);
+    app.emit(event_name, serde_json::json!({ "b64": b64 }))
+        .is_ok()
+}
+
+fn remove_terminal_sub_if_owner(state: &AppState, key: (Uuid, Uuid, u64), sub_id: u64) {
+    let mut subs = state.cloud_pane_terminal_subs.lock();
+    if subs.get(&key).is_some_and(|(id, _)| *id == sub_id) {
+        subs.remove(&key);
+    }
+}
+
+/// Activation-scoped semantic stream used by cloud Remote. Every subscriber
+/// gets its own envelope fence, even when several controllers view one pane.
+#[tauri::command]
+pub fn subscribe_pane_terminal_v2(
+    pane_id: String,
+    workspace_id: Option<String>,
+    activation_id: u64,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let pane = Uuid::parse_str(&pane_id).map_err(|_| "invalid paneId".to_string())?;
+    let ws = resolve_workspace(&state, workspace_id.as_deref(), pane)?;
+    let key = (ws, pane, activation_id);
+    {
+        let mut subs = state.cloud_pane_terminal_subs.lock();
+        match subs.entry(key) {
+            Entry::Occupied(mut occupied) => {
+                occupied.get_mut().1 += 1;
+                return Ok(());
+            }
+            Entry::Vacant(slot) => {
+                let sub_id = RemoteSubId::next();
+                slot.insert((sub_id, 1));
+                let (tx, mut rx) = tokio::sync::mpsc::channel(RAW_CHAN_CAP);
+                let desync = Arc::new(AtomicBool::new(false));
+                state.register_remote_sub(
+                    ws,
+                    pane,
+                    RemotePaneSub {
+                        id: sub_id,
+                        metadata_tx: tx.clone(),
+                        raw_tx: tx,
+                        semantic: true,
+                        desync: Arc::clone(&desync),
+                    },
+                );
+                let event_name = format!("pane-terminal-v2-{ws}-{pane}-{activation_id}");
+                let app_state = state.inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    let pane_ref =
+                        ridge_term::terminal_v2::PaneRef::new(ws.to_string(), pane.to_string());
+                    let Some(initial) = app_state.get_remote_terminal_snapshot(ws, pane) else {
+                        app_state.unregister_remote_sub(ws, pane, sub_id);
+                        remove_terminal_sub_if_owner(&app_state, key, sub_id);
+                        return;
+                    };
+                    let mut revision = initial.revision;
+                    if !emit_terminal_v2(
+                        &app,
+                        &event_name,
+                        &ridge_term::terminal_v2::TerminalEnvelope::snapshot(
+                            pane_ref.clone(),
+                            activation_id,
+                            initial,
+                        ),
+                    ) {
+                        app_state.unregister_remote_sub(ws, pane, sub_id);
+                        remove_terminal_sub_if_owner(&app_state, key, sub_id);
+                        return;
+                    }
+                    while let Some(event) = rx.recv().await {
+                        let RemotePtyEvent::SemanticDelta {
+                            workspace_id,
+                            pane_id,
+                            frame,
+                            is_alt,
+                        } = event
+                        else {
+                            continue;
+                        };
+                        if workspace_id != ws || pane_id != pane {
+                            continue;
+                        }
+                        if desync.swap(false, Ordering::AcqRel) {
+                            if let Some(snapshot) = app_state.get_remote_terminal_snapshot(ws, pane)
+                            {
+                                revision = snapshot.revision;
+                                if !emit_terminal_v2(
+                                    &app,
+                                    &event_name,
+                                    &ridge_term::terminal_v2::TerminalEnvelope::snapshot(
+                                        pane_ref.clone(),
+                                        activation_id,
+                                        snapshot,
+                                    ),
+                                ) {
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
+                        if frame.pane_seq <= revision {
+                            continue;
+                        }
+                        let next_revision = frame.pane_seq;
+                        let delta = ridge_term::remote_v2::frame_from_local(
+                            &frame,
+                            revision,
+                            if is_alt {
+                                ridge_term::terminal_v2::ScreenKind::Alternate
+                            } else {
+                                ridge_term::terminal_v2::ScreenKind::Primary
+                            },
+                        );
+                        if !emit_terminal_v2(
+                            &app,
+                            &event_name,
+                            &ridge_term::terminal_v2::TerminalEnvelope::delta(
+                                pane_ref.clone(),
+                                activation_id,
+                                delta,
+                            ),
+                        ) {
+                            break;
+                        }
+                        revision = next_revision;
+                    }
+                    app_state.unregister_remote_sub(ws, pane, sub_id);
+                    remove_terminal_sub_if_owner(&app_state, key, sub_id);
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Controller-private semantic recovery for DataChannel backpressure. Unlike
+/// the legacy raw resync this is an exact atomic terminal state and is returned
+/// to the requesting bridge only; no Tauri event is broadcast to peers.
+#[tauri::command]
+pub fn get_pane_terminal_snapshot_v2(
+    pane_id: String,
+    workspace_id: String,
+    activation_id: u64,
+    state: State<AppState>,
+) -> Result<String, String> {
+    let pane = Uuid::parse_str(&pane_id).map_err(|_| "invalid paneId".to_string())?;
+    let ws = Uuid::parse_str(&workspace_id).map_err(|_| "invalid workspaceId".to_string())?;
+    let snapshot = state
+        .get_remote_terminal_snapshot(ws, pane)
+        .ok_or_else(|| "terminal snapshot unavailable".to_string())?;
+    let envelope = ridge_term::terminal_v2::TerminalEnvelope::snapshot(
+        ridge_term::terminal_v2::PaneRef::new(ws.to_string(), pane.to_string()),
+        activation_id,
+        snapshot,
+    );
+    let frame = ridge_term::terminal_v2::encode_frame(&envelope)
+        .map_err(|error| format!("terminal-v2 encode failed: {error}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(frame))
+}
+
+#[tauri::command]
+pub fn unsubscribe_pane_terminal_v2(
+    pane_id: String,
+    workspace_id: String,
+    activation_id: u64,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let pane = Uuid::parse_str(&pane_id).map_err(|_| "invalid paneId".to_string())?;
+    let ws = Uuid::parse_str(&workspace_id).map_err(|_| "invalid workspaceId".to_string())?;
+    let key = (ws, pane, activation_id);
+    let teardown = {
+        let mut subs = state.cloud_pane_terminal_subs.lock();
+        match subs.get_mut(&key) {
+            Some(entry) => {
+                entry.1 = entry.1.saturating_sub(1);
+                if entry.1 == 0 {
+                    subs.remove(&key)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        }
+    };
+    if let Some((sub_id, _)) = teardown {
+        state.unregister_remote_sub(ws, pane, sub_id);
+    }
+    Ok(())
+}
+
 /// `invoke('subscribe_pane_raw', { paneId })`：开始把该 pane 的裸 PTY 字节经
 /// Tauri event `pane-raw-{paneId}` 发往本 WebView。幂等（已订阅则直接返回）。
 #[tauri::command]
@@ -118,6 +319,7 @@ pub fn subscribe_pane_raw(
                         id: sub_id,
                         metadata_tx: raw_tx.clone(),
                         raw_tx,
+                        semantic: false,
                         desync: Arc::clone(&desync),
                     },
                 );

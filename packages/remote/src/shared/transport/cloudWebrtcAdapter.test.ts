@@ -344,7 +344,7 @@ describe('CloudWebrtcAdapter + L2 RpcClient — end to end', () => {
     provider.deliverJson({
       jsonrpc: '2.0',
       method: '$/hello',
-      params: { protocolVersion: 1, capabilities: ['pane', 'invoke', 'fs'] },
+      params: { protocolVersion: 1, terminalProtocolVersion: 2, capabilities: ['pane', 'invoke', 'fs'] },
     });
     expect(rpc.protocol?.protocolVersion).toBe(1);
     expect(rpc.hasCapability('fs')).toBe(true);

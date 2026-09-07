@@ -807,6 +807,10 @@ async fn handle_ws(
     // (after the interval) performs the recovery instead of losing the signal.
     let mut last_resync_by_pane: std::collections::HashMap<(Uuid, Uuid), Instant> =
         std::collections::HashMap::new();
+    let mut activation_by_pane: std::collections::HashMap<(Uuid, Uuid), u64> =
+        std::collections::HashMap::new();
+    let mut terminal_revision_by_pane: std::collections::HashMap<(Uuid, Uuid), u64> =
+        std::collections::HashMap::new();
     // The normal GlobalEvent metadata lane is authoritative for the desktop
     // UI. Keep a per-pane raw-stream carryover as a remote-only safety net: a
     // reconnect or a busy event loop must not make OSC title/CWD disappear
@@ -867,7 +871,13 @@ async fn handle_ws(
     let ws_connect_start = std::time::Instant::now();
     // §perf (B方案): first-byte 段日志的一次性 once-guard（仅用其 None/Some 状态打一次）。
     let mut first_pty_bytes_at: Option<Instant> = None;
-    let welcome = serde_json::json!({"type": "hello","version": 1,"protocol": "ridge-remote-ws"});
+    let welcome = serde_json::json!({
+        "type": "hello",
+        "version": 1,
+        "protocol": "ridge-remote-ws",
+        "terminalProtocolVersion": ridge_term::terminal_v2::PROTOCOL_VERSION,
+        "terminalMaxFrameBytes": ridge_term::terminal_v2::MAX_FRAME_BYTES,
+    });
     if ws_tx
         .send(Message::Text(welcome.to_string()))
         .await
@@ -948,6 +958,8 @@ async fn handle_ws(
                 }
                 desync_by_pane.clear();
                 last_resync_by_pane.clear();
+                activation_by_pane.clear();
+                terminal_revision_by_pane.clear();
                 current_pane = None;
                 active_ws_id = g;
             }
@@ -1161,42 +1173,29 @@ async fn handle_ws(
                                         if let Some(old_key) = current_pane {
                                             if old_key != new_key && subscribed_panes.contains(&old_key) {
                                                 state.unregister_remote_sub(old_key.0, old_key.1, sub_id);
-                                                if let Some(flag) = desync_by_pane.get(&old_key) {
-                                                    state.register_remote_sub(
-                                                        old_key.0,
-                                                        old_key.1,
-                                                        RemotePaneSub {
-                                                            id: sub_id,
-                                                            raw_tx: background_raw_tx.clone(),
-                                                            metadata_tx: metadata_tx.clone(),
-                                                            desync: Arc::clone(flag),
-                                                        },
-                                                    );
-                                                }
+                                                subscribed_panes.remove(&old_key);
+                                                desync_by_pane.remove(&old_key);
+                                                activation_by_pane.remove(&old_key);
+                                                terminal_revision_by_pane.remove(&old_key);
                                             }
                                         }
                                         current_pane = Some(new_key);
                                     }
                                     let do_register = subscribed_panes.insert(new_key);
                                     if !do_register {
-                                        // Promotion only swaps this pane onto the active lane;
-                                        // its kernel/subscription/history remain intact.
+                                        // A duplicate active subscribe is an explicit resync.
+                                        // Re-register below so a refresh always receives the
+                                        // newest canonical seed instead of becoming a no-op.
                                         if wants_active {
                                             state.unregister_remote_sub(target_ws, pane_id, sub_id);
-                                            if let Some(flag) = desync_by_pane.get(&new_key) {
-                                                state.register_remote_sub(
-                                                    target_ws,
-                                                    pane_id,
-                                                    RemotePaneSub {
-                                                        id: sub_id,
-                                                        raw_tx: active_raw_tx.clone(),
-                                                        metadata_tx: metadata_tx.clone(),
-                                                        desync: Arc::clone(flag),
-                                                    },
-                                                );
-                                            }
+                                            subscribed_panes.remove(&new_key);
+                                            desync_by_pane.remove(&new_key);
+                                            activation_by_pane.remove(&new_key);
+                                            terminal_revision_by_pane.remove(&new_key);
+                                        } else {
+                                            continue;
                                         }
-                                        continue;
+                                        subscribed_panes.insert(new_key);
                                     }
 
                                     // Ensure the canonical parser is in delta mode so
@@ -1223,9 +1222,35 @@ async fn handle_ws(
                                                 background_raw_tx.clone()
                                             },
                                             metadata_tx: metadata_tx.clone(),
+                                            semantic: parsed["activationId"].as_u64().is_some(),
                                             desync: desync.clone(),
                                         },
                                     );
+
+                                    if let Some(activation_id) = parsed["activationId"].as_u64() {
+                                        if let Some(snapshot) =
+                                            state.get_remote_terminal_snapshot(target_ws, pane_id)
+                                        {
+                                            terminal_revision_by_pane
+                                                .insert(new_key, snapshot.revision);
+                                            activation_by_pane.insert(new_key, activation_id);
+                                            let envelope = ridge_term::terminal_v2::TerminalEnvelope::snapshot(
+                                                ridge_term::terminal_v2::PaneRef::new(
+                                                    target_ws.to_string(),
+                                                    pane_id.to_string(),
+                                                ),
+                                                activation_id,
+                                                snapshot,
+                                            );
+                                            if let Ok(frame) =
+                                                ridge_term::terminal_v2::encode_frame(&envelope)
+                                            {
+                                                let _ = ws_tx
+                                                    .send(Message::Binary(frame.into()))
+                                                    .await;
+                                            }
+                                        }
+                                    } else {
 
                                     // §D10 接入点 (integration point) — S5 per-pane screen
                                     // buffer: emit a `PaneSnapshotFrame` (rendered screen +
@@ -1317,6 +1342,7 @@ async fn handle_ws(
                                         let _ = ws_tx
                                             .send(Message::Text(meta.to_string()))
                                             .await;
+                                    }
                                     }
                                 }
                                 Ok(())
@@ -1506,6 +1532,8 @@ async fn handle_ws(
                                                 subscribed_panes.remove(&(ws, pane));
                                                 desync_by_pane.remove(&(ws, pane));
                                                 last_resync_by_pane.remove(&(ws, pane));
+                                                activation_by_pane.remove(&(ws, pane));
+                                                terminal_revision_by_pane.remove(&(ws, pane));
                                                 state.unregister_remote_sub(ws, pane, sub_id);
                                             }
                                             if current_pane.is_some_and(|(ws, _)| ws == id) {
@@ -1657,6 +1685,8 @@ async fn handle_ws(
                                         subscribed_panes.remove(&(active_ws_id, pane_id));
                                         desync_by_pane.remove(&(active_ws_id, pane_id));
                                         last_resync_by_pane.remove(&(active_ws_id, pane_id));
+                                        activation_by_pane.remove(&(active_ws_id, pane_id));
+                                        terminal_revision_by_pane.remove(&(active_ws_id, pane_id));
                                         state.unregister_remote_sub(active_ws_id, pane_id, sub_id);
                                         if current_pane == Some((active_ws_id, pane_id)) {
                                             current_pane = None;
@@ -2130,11 +2160,99 @@ async fn handle_ws(
                                 }
                             }
                             Some(crate::types::RemotePtyEvent::RawBytes { .. }) => {}
+                            Some(crate::types::RemotePtyEvent::SemanticDelta { .. }) => {}
                             None => break,
                         }
                     }
                     event = raw_rx.recv() => {
                         match event {
+                            Some((foreground, crate::types::RemotePtyEvent::SemanticDelta {
+                                workspace_id,
+                                pane_id,
+                                frame,
+                                is_alt,
+                            })) => {
+                                let key = (workspace_id, pane_id);
+                                if !subscribed_panes.contains(&key)
+                                    || (foreground && current_pane != Some(key))
+                                    || (!foreground && current_pane == Some(key))
+                                {
+                                    continue;
+                                }
+                                let Some(&activation_id) = activation_by_pane.get(&key) else {
+                                    continue;
+                                };
+                                let Some(desync) = desync_by_pane.get(&key) else {
+                                    continue;
+                                };
+                                if desync.load(Ordering::Acquire) {
+                                    if let Some(snapshot) =
+                                        state.get_remote_terminal_snapshot(workspace_id, pane_id)
+                                    {
+                                        let revision = snapshot.revision;
+                                        let envelope = ridge_term::terminal_v2::TerminalEnvelope::snapshot(
+                                            ridge_term::terminal_v2::PaneRef::new(
+                                                workspace_id.to_string(),
+                                                pane_id.to_string(),
+                                            ),
+                                            activation_id,
+                                            snapshot,
+                                        );
+                                        if let Ok(encoded) =
+                                            ridge_term::terminal_v2::encode_frame(&envelope)
+                                        {
+                                            if ws_tx
+                                                .send(Message::Binary(encoded.into()))
+                                                .await
+                                                .is_ok()
+                                            {
+                                                terminal_revision_by_pane.insert(key, revision);
+                                                desync.store(false, Ordering::Release);
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+                                let Some(&base_revision) = terminal_revision_by_pane.get(&key) else {
+                                    desync.store(true, Ordering::Release);
+                                    continue;
+                                };
+                                if frame.pane_seq <= base_revision {
+                                    continue;
+                                }
+                                let revision = frame.pane_seq;
+                                let delta = ridge_term::remote_v2::frame_from_local(
+                                    &frame,
+                                    base_revision,
+                                    if is_alt {
+                                        ridge_term::terminal_v2::ScreenKind::Alternate
+                                    } else {
+                                        ridge_term::terminal_v2::ScreenKind::Primary
+                                    },
+                                );
+                                let envelope = ridge_term::terminal_v2::TerminalEnvelope::delta(
+                                    ridge_term::terminal_v2::PaneRef::new(
+                                        workspace_id.to_string(),
+                                        pane_id.to_string(),
+                                    ),
+                                    activation_id,
+                                    delta,
+                                );
+                                match ridge_term::terminal_v2::encode_frame(&envelope) {
+                                    Ok(encoded) => {
+                                        if ws_tx
+                                            .send(Message::Binary(encoded.into()))
+                                            .await
+                                            .is_ok()
+                                        {
+                                            terminal_revision_by_pane.insert(key, revision);
+                                        } else {
+                                            desync.store(true, Ordering::Release);
+                                        }
+                                    }
+                                    Err(_) => desync.store(true, Ordering::Release),
+                                }
+                            }
                             Some((foreground, crate::types::RemotePtyEvent::RawBytes { workspace_id, pane_id, bytes })) => {
                                 // §perf (B方案): first-byte 段 = 从 raw_rx 收到的第一帧 PTY
                                 // 输出，用 Option<Instant> 守卫只打一次。
@@ -3976,6 +4094,17 @@ fn negotiate_hello(params: &serde_json::Value) -> serde_json::Value {
             "params": { "reason": "protocol-version-mismatch" },
         });
     }
+    let terminal_version = params
+        .get("terminalProtocolVersion")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    if terminal_version != ridge_term::terminal_v2::PROTOCOL_VERSION as u64 {
+        return serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "$/bye",
+            "params": { "reason": "terminal-protocol-upgrade-required" },
+        });
+    }
     let peer_caps: std::collections::HashSet<String> = params
         .get("capabilities")
         .and_then(|c| c.as_array())
@@ -3995,6 +4124,8 @@ fn negotiate_hello(params: &serde_json::Value) -> serde_json::Value {
         "method": "$/hello",
         "params": {
             "protocolVersion": REMOTE_PROTOCOL_VERSION,
+            "terminalProtocolVersion": ridge_term::terminal_v2::PROTOCOL_VERSION,
+            "terminalMaxFrameBytes": ridge_term::terminal_v2::MAX_FRAME_BYTES,
             "capabilities": agreed,
         },
     })
@@ -4237,6 +4368,7 @@ mod jsonrpc_tests {
     fn hello_negotiates_capability_intersection() {
         let reply = negotiate_hello(&serde_json::json!({
             "protocolVersion": 1,
+            "terminalProtocolVersion": 2,
             "capabilities": ["pane", "invoke", "fs"],
         }));
         assert_eq!(reply["method"], "$/hello");
@@ -4256,7 +4388,10 @@ mod jsonrpc_tests {
     #[test]
     fn hello_empty_capabilities_means_all_host_caps() {
         // A peer that omits capabilities gets the host's full set (it can drive all).
-        let reply = negotiate_hello(&serde_json::json!({ "protocolVersion": 1 }));
+        let reply = negotiate_hello(&serde_json::json!({
+            "protocolVersion": 1,
+            "terminalProtocolVersion": 2,
+        }));
         let caps = reply["params"]["capabilities"].as_array().unwrap();
         assert_eq!(caps.len(), HOST_CAPABILITIES.len());
     }
@@ -4359,14 +4494,14 @@ mod jsonrpc_tests {
     fn pty_resize_frame_carries_workspace_identity() {
         let workspace_id = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
         let pane_id = Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
-        let value: serde_json::Value =
-            serde_json::from_str(&pty_resized_message(
-                workspace_id,
-                pane_id,
-                40,
-                120,
-                crate::types::PaneResizeOwner::Remote,
-            )).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&pty_resized_message(
+            workspace_id,
+            pane_id,
+            40,
+            120,
+            crate::types::PaneResizeOwner::Remote,
+        ))
+        .unwrap();
         assert_eq!(value["type"], "pty-resized");
         assert_eq!(value["workspaceId"], workspace_id.to_string());
         assert_eq!(value["paneId"], pane_id.to_string());

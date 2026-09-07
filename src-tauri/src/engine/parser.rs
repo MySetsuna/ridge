@@ -139,6 +139,8 @@ pub struct PaneParser {
     /// `list-panes` reads it so remote terminal names match the desktop pane
     /// header's variable title. `None` until the program sets a title.
     last_title: Option<String>,
+    /// Latest OSC 7 working directory, included in atomic remote snapshots.
+    last_cwd: Option<String>,
 }
 
 impl PaneParser {
@@ -164,6 +166,7 @@ impl PaneParser {
             last_modes: None,
             pane_seq: 0,
             last_title: None,
+            last_cwd: None,
         }
     }
 
@@ -172,6 +175,21 @@ impl PaneParser {
     /// terminal names match the desktop pane header's variable title.
     pub fn title(&self) -> Option<String> {
         self.last_title.clone()
+    }
+
+    /// Build an exact terminal-v2 replacement snapshot from the same native
+    /// parser that feeds the desktop renderer. No raw scrollback replay or
+    /// second browser-side VT parser participates in activation.
+    pub fn remote_v2_snapshot(&self) -> ridge_term::terminal_v2::TerminalSnapshot {
+        self.terminal.remote_v2_snapshot(
+            self.pane_seq,
+            self.last_title.clone().unwrap_or_default(),
+            self.last_cwd.clone().unwrap_or_default(),
+        )
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.pane_seq
     }
 
     /// P3.9.r will use this to report current dimensions back to the
@@ -638,7 +656,10 @@ impl PaneParser {
                     self.last_title = Some(title.clone());
                     deltas.push(GridDelta::Title(title));
                 }
-                KernelEvent::CwdChanged(path) => deltas.push(GridDelta::Cwd(path)),
+                KernelEvent::CwdChanged(path) => {
+                    self.last_cwd = Some(path.clone());
+                    deltas.push(GridDelta::Cwd(path));
+                }
                 KernelEvent::Bell => deltas.push(GridDelta::Bell),
                 KernelEvent::IconNameChanged(_) => {}
             }
@@ -904,7 +925,10 @@ impl PaneParser {
                     self.last_title = Some(t.clone());
                     deltas.push(GridDelta::Title(t));
                 }
-                KernelEvent::CwdChanged(p) => deltas.push(GridDelta::Cwd(p)),
+                KernelEvent::CwdChanged(p) => {
+                    self.last_cwd = Some(p.clone());
+                    deltas.push(GridDelta::Cwd(p));
+                }
                 KernelEvent::Bell => deltas.push(GridDelta::Bell),
                 KernelEvent::IconNameChanged(_) => {}
             }

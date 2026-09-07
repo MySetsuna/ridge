@@ -59,6 +59,9 @@ webgpu = [
     "dep:bytemuck",
     "dep:cosmic-text",
 ]
+# The vendored ridge-signaling wire module gates ts-rs-only annotations behind
+# this feature. Ridge never enables it; declaring it keeps cfg checking clean.
+typescript = []
 
 [dependencies]
 # VT/ANSI escape sequence parser. Same crate Alacritty uses; covers the full

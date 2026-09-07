@@ -235,18 +235,23 @@ describe('CloudHostBridge — $/hello (D9) negotiation', () => {
     rig.sendJson({
       jsonrpc: '2.0',
       method: '$/hello',
-      params: { protocolVersion: 1, capabilities: ['pane', 'invoke', 'fs'] },
+      params: { protocolVersion: 1, terminalProtocolVersion: 2, capabilities: ['pane', 'invoke', 'fs'] },
     });
     expect(rig.sentJson()[0]).toEqual({
       jsonrpc: '2.0',
       method: '$/hello',
-      params: { protocolVersion: 1, capabilities: ['pane', 'invoke', 'fs'] },
+      params: {
+        protocolVersion: 1,
+        terminalProtocolVersion: 2,
+        terminalMaxFrameBytes: 16 * 1024 * 1024,
+        capabilities: ['pane', 'invoke', 'fs'],
+      },
     });
   });
 
   it('advertises full host capabilities when the controller sends none', () => {
     const rig = makeRig();
-    rig.sendJson({ jsonrpc: '2.0', method: '$/hello', params: { protocolVersion: 1 } });
+    rig.sendJson({ jsonrpc: '2.0', method: '$/hello', params: { protocolVersion: 1, terminalProtocolVersion: 2 } });
     const reply = rig.sentJson()[0] as { params: { capabilities: string[] } };
     expect(reply.params.capabilities).toEqual([
       'pane',
@@ -272,10 +277,15 @@ describe('CloudHostBridge — $/hello (D9) negotiation', () => {
 
   it('negotiateHello() matches the server.rs negotiate_hello shape', () => {
     // Mirrors src-tauri/src/remote/server.rs::negotiate_hello — keep in lock-step.
-    expect(negotiateHello({ protocolVersion: 1, capabilities: ['git'] })).toEqual({
+    expect(negotiateHello({ protocolVersion: 1, terminalProtocolVersion: 2, capabilities: ['git'] })).toEqual({
       jsonrpc: '2.0',
       method: '$/hello',
-      params: { protocolVersion: 1, capabilities: ['git'] },
+      params: {
+        protocolVersion: 1,
+        terminalProtocolVersion: 2,
+        terminalMaxFrameBytes: 16 * 1024 * 1024,
+        capabilities: ['git'],
+      },
     });
   });
 });
@@ -443,7 +453,7 @@ describe('CloudHostBridge — inbound demux edge cases', () => {
     rig.bridge.handleFrame(encodeJsonFrame('not-an-object'));
     rig.bridge.handleFrame(new Uint8Array([0x7f, 0x01]));
 
-    rig.sendJson({ jsonrpc: '2.0', id: 10, method: '$/hello', params: { protocolVersion: 1 } });
+    rig.sendJson({ jsonrpc: '2.0', id: 10, method: '$/hello', params: { protocolVersion: 1, terminalProtocolVersion: 2 } });
     rig.sendJson({ jsonrpc: '2.0', id: 11, method: '$/cancel', params: {} });
     rig.sendJson({ jsonrpc: '2.0', id: 12, method: 'get_remote_info' });
     rig.sendJson({ jsonrpc: '2.0', id: 13, method: 'not-allowlisted' });
@@ -827,6 +837,40 @@ describe('CloudHostBridge — DataChannel 背压 + 丢帧重同步 (弱网 P1)',
     expect(panes).toHaveLength(1);
     expect(panes[0].paneId).toBe('pane-1');
     expect([...panes[0].bytes]).toEqual([9, 9]);
+  });
+
+  it('keeps a terminal-v2 envelope atomic and recovers a dropped revision with an exact snapshot', async () => {
+    const recovered = new Uint8Array([0x13, 9, 8, 7]);
+    const invoke = vi.fn(async (method: string) => {
+      if (method === 'get_pane_terminal_snapshot_v2') return bytesToBase64(recovered);
+      return null;
+    });
+    const rig = makeRig({ invoke });
+    const ch = fakeChannel();
+    rig.bridge.attachChannelControl(ch.ctrl);
+    rig.sendJson({
+      jsonrpc: '2.0',
+      method: 'subscribe-pane',
+      params: {
+        paneId: 'pane-1',
+        workspaceId: 'workspace-1',
+        active: true,
+        activationId: 17,
+      },
+    });
+
+    ch.setBuffered(9 * 1024 * 1024);
+    rig.bridge.pushPaneOutput('pane-1', new Uint8Array([0x13, 1, 2, 3]));
+    expect(rig.sentPane()).toHaveLength(0);
+
+    ch.setBuffered(0);
+    ch.drain();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith(
+      'get_pane_terminal_snapshot_v2',
+      { paneId: 'pane-1', workspaceId: 'workspace-1', activationId: 17 },
+    ));
+    expect(rig.sentPane()).toHaveLength(1);
+    expect(rig.sentPane()[0].bytes).toEqual(recovered);
   });
 
   it('background stops at zero while active stays within the input latency budget', () => {

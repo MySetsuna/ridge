@@ -19,18 +19,48 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 use ridge_core::workspace::pane_tree::SplitDirection;
 use ridge_remote::auth::SessionStore;
 use ridge_remote::host::{HostAuth, HostError, HostMeta, RemoteHost, WorkspaceProvider, WsConn};
 use ridge_remote::serve::UaServeConfig;
+use ridge_term::remote_v2::RemoteTerminalUpdate;
+use ridge_term::terminal_v2::{self, PaneRef, TerminalEnvelope};
 
 use crate::fs_reuse;
 use crate::totp::RemoteTotp;
 
 use super::workspace::SharedWorkspace;
+
+#[derive(Clone)]
+struct ActivePaneStream {
+    generation: watch::Sender<u64>,
+}
+
+impl Default for ActivePaneStream {
+    fn default() -> Self {
+        let (generation, _) = watch::channel(0);
+        Self { generation }
+    }
+}
+
+impl ActivePaneStream {
+    fn begin(&self) -> (u64, watch::Receiver<u64>) {
+        let next = (*self.generation.borrow()).wrapping_add(1).max(1);
+        self.generation.send_replace(next);
+        (next, self.generation.subscribe())
+    }
+
+    fn cancel(&self) {
+        let _ = self.begin();
+    }
+
+    fn is_current(&self, generation: u64) -> bool {
+        *self.generation.borrow() == generation
+    }
+}
 
 /// rdg 没有桌面端 `.ridge` 持久化文件；为避免把“无保存文件”静默投影为空，
 /// 对外暴露一个不可伪造为本地路径的当前工作区句柄。客户端可把它原样传回
@@ -244,11 +274,18 @@ async fn run_ws(socket: WebSocket, workspace: SharedWorkspace, ws_id: Uuid) {
     // 每连接输出通道：`subscribe-pane` 派生的转发任务把 16B-前缀帧推到这里，
     // 主循环再统一写回 WS（单写者，避免对 socket 的并发 send）。
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
+    let active_pane_stream = ActivePaneStream::default();
 
     // 握手：hello（协议已统一为 ridge-remote-ws）+ 初始 pane 列表。
     // panes 必须带 workspaceId：手机 MainApp / requestPaneSnapshot 丢弃无 workspaceId 的快照
     // （REQ-RDG-REMOTE-CONNECT-01：否则 rdg LAN 永远空白壳）。
-    let hello = json!({ "type": "hello", "version": 1, "protocol": "ridge-remote-ws" });
+    let hello = json!({
+        "type": "hello",
+        "version": 1,
+        "protocol": "ridge-remote-ws",
+        "terminalProtocolVersion": ridge_term::terminal_v2::PROTOCOL_VERSION,
+        "terminalMaxFrameBytes": ridge_term::terminal_v2::MAX_FRAME_BYTES,
+    });
     if ws_tx.send(Message::Text(hello.to_string())).await.is_err() {
         return;
     }
@@ -287,7 +324,13 @@ async fn run_ws(socket: WebSocket, workspace: SharedWorkspace, ws_id: Uuid) {
                 match msg {
                     Message::Text(text) => {
                         let Ok(v) = serde_json::from_str::<Value>(&text) else { continue; };
-                        if let Some(reply) = handle_text(&v, &workspace, ws_id, &out_tx) {
+                        if let Some(reply) = handle_text_for_connection(
+                            &v,
+                            &workspace,
+                            ws_id,
+                            &out_tx,
+                            Some(&active_pane_stream),
+                        ) {
                             if ws_tx.send(Message::Text(reply)).await.is_err() {
                                 break;
                             }
@@ -305,6 +348,7 @@ async fn run_ws(socket: WebSocket, workspace: SharedWorkspace, ws_id: Uuid) {
             else => break,
         }
     }
+    active_pane_stream.cancel();
 }
 
 /// 手机/桌面 SPA 稳态 pane 快照：`workspaceId` 必填（MainApp 无则丢弃）。
@@ -381,12 +425,24 @@ fn pane_resize_owner(value: &Value) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn dispatch_lan_invoke(
     cmd: &str,
     args: &Value,
     workspace: &SharedWorkspace,
     ws_id: Uuid,
     out_tx: &mpsc::UnboundedSender<Message>,
+) -> Result<Value, String> {
+    dispatch_lan_invoke_for_connection(cmd, args, workspace, ws_id, out_tx, None)
+}
+
+fn dispatch_lan_invoke_for_connection(
+    cmd: &str,
+    args: &Value,
+    workspace: &SharedWorkspace,
+    ws_id: Uuid,
+    out_tx: &mpsc::UnboundedSender<Message>,
+    active_pane_stream: Option<&ActivePaneStream>,
 ) -> Result<Value, String> {
     match cmd {
         "write_to_pty" | "write_pty" => {
@@ -534,7 +590,13 @@ fn dispatch_lan_invoke(
         // 桌面 bridge.subscribePane → JSON-RPC notification `subscribe-pane`；
         // 亦可能经 invoke-request 到达。复用 legacy 订阅语义。
         "subscribe-pane" | "subscribe_pane_raw" | "register_pane_delta_channel" => {
-            start_pane_subscription(args, workspace, ws_id, out_tx);
+            start_pane_subscription(args, workspace, ws_id, out_tx, active_pane_stream);
+            Ok(Value::Null)
+        }
+        "unsubscribe-pane" | "unsubscribe_pane_raw" => {
+            if let Some(active_pane_stream) = active_pane_stream {
+                active_pane_stream.cancel();
+            }
             Ok(Value::Null)
         }
         // 桌面 SPA boot 可选能力：rdg 无对应实现时回空/成功，勿 error 打断「已接通」。
@@ -612,14 +674,17 @@ fn subscription_field<'a>(v: &'a Value, name: &str) -> Option<&'a Value> {
         .or_else(|| v.get("params").and_then(|params| params.get(name)))
 }
 
-fn pane_subscription_request(v: &Value) -> Option<(Uuid, bool)> {
+fn pane_subscription_request(v: &Value) -> Option<(Uuid, bool, Option<u64>)> {
     let pane_id = subscription_field(v, "paneId")
         .and_then(Value::as_str)
         .and_then(|value| Uuid::parse_str(value).ok())?;
     let resume = subscription_field(v, "resume")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    Some((pane_id, resume))
+    let activation_id = subscription_field(v, "activationId")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0);
+    Some((pane_id, resume, activation_id))
 }
 
 fn send_pane_metadata(
@@ -668,10 +733,71 @@ fn start_pane_subscription(
     workspace: &SharedWorkspace,
     ws_id: Uuid,
     out_tx: &mpsc::UnboundedSender<Message>,
+    active_pane_stream: Option<&ActivePaneStream>,
 ) {
-    let Some((pane_id, resume)) = pane_subscription_request(v) else {
+    let Some((pane_id, resume, activation_id)) = pane_subscription_request(v) else {
         return;
     };
+    let active_pane_stream = active_pane_stream.cloned().unwrap_or_default();
+    let (stream_generation, mut stream_cancel) = active_pane_stream.begin();
+    if let Some(activation_id) = activation_id {
+        let session = workspace.lock().ok().and_then(|w| w.find(pane_id).cloned());
+        let Some(session) = session else {
+            return;
+        };
+        let (snapshot, mut rx) = session.subscribe_semantic();
+        let pane = PaneRef::new(ws_id.to_string(), pane_id.to_string());
+        let tx = out_tx.clone();
+        tokio::spawn(async move {
+            if !active_pane_stream.is_current(stream_generation) {
+                return;
+            }
+            let initial = TerminalEnvelope::snapshot(pane.clone(), activation_id, snapshot);
+            let Ok(frame) = terminal_v2::encode_frame(&initial) else {
+                return;
+            };
+            if tx.send(Message::Binary(frame)).is_err() {
+                return;
+            }
+            loop {
+                let update = tokio::select! {
+                    changed = stream_cancel.changed() => {
+                        if changed.is_err() || !active_pane_stream.is_current(stream_generation) {
+                            break;
+                        }
+                        continue;
+                    }
+                    update = rx.recv() => update,
+                };
+                let envelope = match update {
+                    Ok(RemoteTerminalUpdate::Snapshot(snapshot)) => {
+                        TerminalEnvelope::snapshot(pane.clone(), activation_id, snapshot)
+                    }
+                    Ok(RemoteTerminalUpdate::Delta(delta)) => {
+                        TerminalEnvelope::delta(pane.clone(), activation_id, delta)
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        TerminalEnvelope::snapshot(
+                            pane.clone(),
+                            activation_id,
+                            session.semantic_snapshot(),
+                        )
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                let Ok(frame) = terminal_v2::encode_frame(&envelope) else {
+                    continue;
+                };
+                if !active_pane_stream.is_current(stream_generation) {
+                    break;
+                }
+                if tx.send(Message::Binary(frame)).is_err() {
+                    break;
+                }
+            }
+        });
+        return;
+    }
     let sub = {
         let w = workspace.lock().unwrap();
         w.find(pane_id)
@@ -680,6 +806,9 @@ fn start_pane_subscription(
     if let Some(((backlog, mut rx), (modes, alt))) = sub {
         let tx = out_tx.clone();
         tokio::spawn(async move {
+            if !active_pane_stream.is_current(stream_generation) {
+                return;
+            }
             let mut utf8_pending = Vec::new();
             let mut osc_carryover = ridge_core::pty::osc_stream::OscSignalCarryover::default();
             // 首订阅回放：RIS + 活动模式前导 + scrollback（共享 SSOT
@@ -687,6 +816,9 @@ fn start_pane_subscription(
             // resume 时跳过（内核已存活）。空 backlog 仍挂 live，避免永久黑屏。
             if !resume {
                 let frame = ridge_remote::pane::pane_resync_frame(pane_id, &backlog, &modes, alt);
+                if !active_pane_stream.is_current(stream_generation) {
+                    return;
+                }
                 if tx.send(Message::Binary(frame)).is_err() {
                     return;
                 }
@@ -701,7 +833,22 @@ fn start_pane_subscription(
             ) {
                 return;
             }
-            while let Ok(bytes) = rx.recv().await {
+            loop {
+                let bytes = tokio::select! {
+                    changed = stream_cancel.changed() => {
+                        if changed.is_err() || !active_pane_stream.is_current(stream_generation) {
+                            break;
+                        }
+                        continue;
+                    }
+                    bytes = rx.recv() => match bytes {
+                        Ok(bytes) => bytes,
+                        Err(_) => break,
+                    },
+                };
+                if !active_pane_stream.is_current(stream_generation) {
+                    break;
+                }
                 if !send_pane_bytes(
                     &tx,
                     ws_id,
@@ -763,19 +910,30 @@ where
     });
 }
 
+#[cfg(test)]
 fn handle_text(
     v: &Value,
     workspace: &SharedWorkspace,
     ws_id: Uuid,
     out_tx: &mpsc::UnboundedSender<Message>,
 ) -> Option<String> {
+    handle_text_for_connection(v, workspace, ws_id, out_tx, None)
+}
+
+fn handle_text_for_connection(
+    v: &Value,
+    workspace: &SharedWorkspace,
+    ws_id: Uuid,
+    out_tx: &mpsc::UnboundedSender<Message>,
+    active_pane_stream: Option<&ActivePaneStream>,
+) -> Option<String> {
     if v.get("jsonrpc").and_then(Value::as_str) == Some("2.0") {
-        return handle_json_rpc(v, workspace, ws_id, out_tx);
+        return handle_json_rpc(v, workspace, ws_id, out_tx, active_pane_stream);
     }
     if v.get("type").and_then(Value::as_str) == Some("invoke-request") {
-        return handle_invoke_request(v, workspace, ws_id, out_tx);
+        return handle_invoke_request(v, workspace, ws_id, out_tx, active_pane_stream);
     }
-    handle_legacy_message(v, workspace, ws_id, out_tx)
+    handle_legacy_message(v, workspace, ws_id, out_tx, active_pane_stream)
 }
 
 fn handle_json_rpc(
@@ -783,6 +941,7 @@ fn handle_json_rpc(
     workspace: &SharedWorkspace,
     ws_id: Uuid,
     out_tx: &mpsc::UnboundedSender<Message>,
+    active_pane_stream: Option<&ActivePaneStream>,
 ) -> Option<String> {
     let method = v.get("method").and_then(Value::as_str).unwrap_or("");
     let params = v.get("params").cloned().unwrap_or(Value::Null);
@@ -808,13 +967,24 @@ fn handle_json_rpc(
     }
     if id.is_none() {
         if matches!(method, "subscribe-pane" | "subscribe_pane_raw") {
-            start_pane_subscription(&params, workspace, ws_id, out_tx);
+            start_pane_subscription(&params, workspace, ws_id, out_tx, active_pane_stream);
+        } else if matches!(method, "unsubscribe-pane" | "unsubscribe_pane_raw") {
+            if let Some(active_pane_stream) = active_pane_stream {
+                active_pane_stream.cancel();
+            }
         }
         return None;
     }
     let id = id.expect("checked above");
     Some(
-        match dispatch_lan_invoke(method, &params, workspace, ws_id, out_tx) {
+        match dispatch_lan_invoke_for_connection(
+            method,
+            &params,
+            workspace,
+            ws_id,
+            out_tx,
+            active_pane_stream,
+        ) {
             Ok(result) => crate::rpc::result_response(&id, result).to_string(),
             Err(message) => crate::rpc::error_response(
                 &id,
@@ -830,11 +1000,19 @@ fn handle_invoke_request(
     workspace: &SharedWorkspace,
     ws_id: Uuid,
     out_tx: &mpsc::UnboundedSender<Message>,
+    active_pane_stream: Option<&ActivePaneStream>,
 ) -> Option<String> {
     let cmd = v.get("cmd").and_then(Value::as_str).unwrap_or("");
     let args = v.get("args").cloned().unwrap_or(Value::Null);
     let request_id = v.get("_reqId").cloned().unwrap_or(Value::Null);
-    let mut reply = match dispatch_lan_invoke(cmd, &args, workspace, ws_id, out_tx) {
+    let mut reply = match dispatch_lan_invoke_for_connection(
+        cmd,
+        &args,
+        workspace,
+        ws_id,
+        out_tx,
+        active_pane_stream,
+    ) {
         Ok(result) => json!({
             "type": "invoke-result",
             "_reqId": request_id,
@@ -859,18 +1037,20 @@ fn handle_legacy_message(
     workspace: &SharedWorkspace,
     ws_id: Uuid,
     out_tx: &mpsc::UnboundedSender<Message>,
+    active_pane_stream: Option<&ActivePaneStream>,
 ) -> Option<String> {
     match v["type"].as_str().unwrap_or("") {
         "ping"
         | "list-panes"
         | "list-workspace-panes"
         | "subscribe-pane"
+        | "unsubscribe-pane"
         | "stdin"
         | "resize"
         | "claim-pane"
         | "refresh-pane"
         | "create-pane"
-        | "close-pane" => handle_pane_message(v, workspace, ws_id, out_tx),
+        | "close-pane" => handle_pane_message(v, workspace, ws_id, out_tx, active_pane_stream),
         "list-workspaces" | "switch-workspace" | "create-workspace" | "close-workspace" => {
             handle_workspace_message(v, workspace, ws_id)
         }
@@ -886,6 +1066,7 @@ fn handle_pane_message(
     workspace: &SharedWorkspace,
     ws_id: Uuid,
     out_tx: &mpsc::UnboundedSender<Message>,
+    active_pane_stream: Option<&ActivePaneStream>,
 ) -> Option<String> {
     match v["type"].as_str().unwrap_or("") {
         "ping" => Some(json!({ "type": "pong" }).to_string()),
@@ -893,7 +1074,13 @@ fn handle_pane_message(
             Some(panes_snapshot(ws_id, build_pane_list(workspace)).to_string())
         }
         "subscribe-pane" => {
-            start_pane_subscription(v, workspace, ws_id, out_tx);
+            start_pane_subscription(v, workspace, ws_id, out_tx, active_pane_stream);
+            None
+        }
+        "unsubscribe-pane" => {
+            if let Some(active_pane_stream) = active_pane_stream {
+                active_pane_stream.cancel();
+            }
             None
         }
         "stdin" => handle_stdin_message(v, workspace),
@@ -1543,13 +1730,13 @@ mod tests {
                 "paneId": pane_id.to_string(),
                 "resume": true,
             })),
-            Some((pane_id, true))
+            Some((pane_id, true, None))
         );
         assert_eq!(
             pane_subscription_request(&json!({
                 "params": { "paneId": pane_id.to_string(), "resume": false },
             })),
-            Some((pane_id, false))
+            Some((pane_id, false, None))
         );
     }
 
@@ -1647,8 +1834,9 @@ mod tests {
             pane_subscription_request(&json!({
                 "paneId": pane_id.to_string(),
                 "resume": true,
+                "activationId": 19,
             })),
-            Some((pane_id, true))
+            Some((pane_id, true, Some(19)))
         );
         assert_eq!(
             pane_subscription_request(&json!({
@@ -1657,11 +1845,33 @@ mod tests {
                     "resume": true,
                 },
             })),
-            Some((pane_id, true))
+            Some((pane_id, true, None))
         );
         assert_eq!(
             pane_subscription_request(&json!({"paneId": "not-a-uuid"})),
             None
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replacing_active_pane_stream_cancels_the_previous_generation() {
+        let stream = ActivePaneStream::default();
+        let (first, mut first_cancel) = stream.begin();
+        assert!(stream.is_current(first));
+
+        let (second, mut second_cancel) = stream.begin();
+        first_cancel
+            .changed()
+            .await
+            .expect("first stream cancellation");
+        assert!(!stream.is_current(first));
+        assert!(stream.is_current(second));
+
+        stream.cancel();
+        second_cancel
+            .changed()
+            .await
+            .expect("second stream cancellation");
+        assert!(!stream.is_current(second));
     }
 }

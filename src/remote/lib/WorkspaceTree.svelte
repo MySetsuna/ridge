@@ -1,11 +1,12 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { useQueryClient } from '@tanstack/svelte-query';
   import { ListTree, Plus, X, FolderOpen, ChevronRight, Bookmark, Bot } from 'lucide-svelte';
   import { t, tr } from '$lib/i18n';
   import { portal } from '$lib/actions/portal';
   import type { PaneInfo, WorkspaceInfo, RemoteLink, SavedWorkspaceFile } from '@ridge/remote';
-  import { treeState, toggleWsExpanded, seedActiveWorkspace } from './treeState.svelte';
-  import { confirmedWorkspaceTarget } from './remoteQueries';
+  import { treeState, toggleWsExpanded, seedActiveWorkspace, setTreeStorageScope } from './treeState.svelte';
+  import { confirmedWorkspaceTarget, remoteQueryKeys, remoteSessionId } from './remoteQueries';
   import PaneShellPicker from './PaneShellPicker.svelte';
 
   // §item1（移动端导航重构）：把「工作区 + 终端」整合为一个树形级联控件，
@@ -24,6 +25,7 @@
     canManageWorkspaces = true,
     canManagePanes = true,
     onWorkspacesChanged,
+    onNavigate,
   }: {
     panes: PaneInfo[];
     activePaneId?: string | null;
@@ -36,7 +38,25 @@
     // 工作区列表发生增删后通知上层刷新（create/close-workspace-result 被
     // _sendAndWait 消费，不会触发 MainApp.onMessage，故需显式回调拉取新列表）。
     onWorkspacesChanged?: () => void;
+    /** Atomic workspace + pane commit owned by MainApp's navigation store. */
+    onNavigate?: (workspaceId: string, paneId: string | null) => void;
   } = $props();
+
+  const queryClient = useQueryClient();
+
+  $effect(() => {
+    const scope = ws?.cacheScope?.() ?? `session-${ws ? remoteSessionId(ws) : 'none'}`;
+    untrack(() => setTreeStorageScope(scope));
+  });
+
+  function navigate(workspaceId: string, paneId: string | null): void {
+    if (onNavigate) {
+      onNavigate(workspaceId, paneId);
+      return;
+    }
+    activeWorkspaceId = workspaceId;
+    activePaneId = paneId;
+  }
 
   let open = $state(false);
   let busy = $state(false);
@@ -112,8 +132,7 @@
           savedErr = tr('mobile.savedOpenFail');
           return;
         }
-        activeWorkspaceId = id;
-        activePaneId = null;
+        navigate(id, null);
         onWorkspacesChanged?.();
         ws.listPanes();
         savedOpen = false;
@@ -146,12 +165,10 @@
   // absent from the current list render nothing, so retaining the preference
   // is safe until an explicit authoritative lifecycle can prune it.
 
-  // Serialize ALL list-workspace-panes round-trips. wsRemote._sendAndWait keys
-  // pending requests by response TYPE ('workspace-panes'), so two concurrent
-  // peeks (the 3s poll fans out across several expanded workspaces) would clobber
-  // each other's pending slot and silently drop a reply. A single chain keeps at
-  // most one peek in flight.
+  // Legacy LAN replies have no request correlation, so serialize remote fetches.
+  // TanStack Query owns cached snapshots, staleness, and single-flight reuse.
   let peekChain: Promise<void> = Promise.resolve();
+  const WORKSPACE_PANES_STALE_TIME_MS = 3_000;
 
   /** Fetch a non-active workspace's panes into the peek cache (host read-only).
    *  Keep the last good snapshot on failure, but expose the failure beside the
@@ -160,10 +177,17 @@
     if (!ws || id === activeWorkspaceId) return peekChain;
     peekChain = peekChain.then(async () => {
       if (!ws || id === activeWorkspaceId) return;
+      const queryKey = remoteQueryKeys.panes(remoteSessionId(ws), id);
+      const cached = queryClient.getQueryData<PaneInfo[]>(queryKey);
+      if (cached) peekedPanes = new Map(peekedPanes).set(id, cached);
       let list: PaneInfo[] | null = null;
       let failure: string | null = null;
       try {
-        list = await ws.listWorkspacePanes(id);
+        list = await queryClient.fetchQuery({
+          queryKey,
+          queryFn: () => ws!.listWorkspacePanes(id),
+          staleTime: WORKSPACE_PANES_STALE_TIME_MS,
+        });
       } catch (e) {
         failure = e instanceof Error ? e.message : String(e);
       }
@@ -187,24 +211,16 @@
     err = '';
   }
 
-  // §live-titles: while the popup is open, poll so terminal titles (and the
-  // pane set) stay fresh — the active workspace via list-panes (updates the
-  // `panes` prop), each expanded non-active workspace via its peek fetch.
-  const REFRESH_INTERVAL_MS = 3000;
+  // Open from Query's last good value, then silently revalidate once. Continuous
+  // polling used to race workspace switches and consume another row's response.
   $effect(() => {
     if (!open || !ws) return;
-    const timer = setInterval(() => {
-      // §untrack-poll: the reads below run in a timer callback, not the effect's
-      // sync body, so they're already non-reactive — untrack makes that explicit
-      // and guards against a future write here turning into a re-render loop.
-      untrack(() => {
-        ws.listPanes();
-        for (const id of treeState.expanded) {
-          if (id !== activeWorkspaceId) void fetchPeek(id);
-        }
-      });
-    }, REFRESH_INTERVAL_MS);
-    return () => clearInterval(timer);
+    untrack(() => {
+      ws.listPanes();
+      for (const id of treeState.expanded) {
+        if (id !== activeWorkspaceId) void fetchPeek(id);
+      }
+    });
   });
 
   async function switchWorkspace(id: string) {
@@ -221,8 +237,7 @@
         err = tr('mobile.workspaceSwitchFail');
         return;
       }
-      activeWorkspaceId = target.workspaceId;
-      activePaneId = target.paneId;
+      navigate(target.workspaceId, target.paneId);
       ws.listPanes();
     } catch (e) {
       err = e instanceof Error ? e.message : String(e);
@@ -243,8 +258,7 @@
           err = tr('mobile.workspaceSwitchFail');
           return;
         }
-        activeWorkspaceId = id;
-        activePaneId = null;
+        navigate(id, null);
       } else {
         // A rejected/empty create must never look like a no-op to the user.
         err = tr('mobile.workspaceSwitchFail');
@@ -263,7 +277,7 @@
       try {
         const pid = await ws.createPane();
         // Only adopt the spawned pane if the user hasn't switched away meanwhile.
-        if (pid && activeWorkspaceId === id) activePaneId = pid;
+        if (pid && activeWorkspaceId === id) navigate(id, pid);
         ws.listPanes();
       } catch (e) {
         err = e instanceof Error ? e.message : String(e);
@@ -293,7 +307,7 @@
   // switch — browsing the list does not).
   async function selectPaneInWorkspace(wsId: string, paneId: string) {
     if (wsId === activeWorkspaceId) {
-      activePaneId = paneId;
+      navigate(wsId, paneId);
       close();
       return;
     }
@@ -310,8 +324,7 @@
         err = tr('mobile.workspaceSwitchFail');
         return;
       }
-      activeWorkspaceId = target.workspaceId;
-      activePaneId = target.paneId;
+      navigate(target.workspaceId, target.paneId);
       ws.listPanes();
       close();
     } catch (e) {
@@ -328,7 +341,7 @@
     try {
       const id = await ws.createPane();
       if (id) {
-        activePaneId = id;
+        navigate(activeWorkspaceId ?? '', id);
         ws.listPanes();
       } else {
         err = tr('mobile.createTerminalFail');
@@ -370,7 +383,7 @@
       if (ok) {
         if (id === activePaneId) {
           const remaining = panes.filter((p) => p.id !== id);
-          activePaneId = remaining.length > 0 ? remaining[Math.min(idx, remaining.length - 1)].id : null;
+          navigate(activeWorkspaceId, remaining.length > 0 ? remaining[Math.min(idx, remaining.length - 1)].id : null);
         }
         ws.listPanes();
       }

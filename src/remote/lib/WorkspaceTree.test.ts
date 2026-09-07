@@ -27,6 +27,18 @@ describe('remote workspace popup safe-area contract', () => {
     expect(source).toContain('<div class="pane-error" role="alert">{peekErrors.get(wsp.id)}</div>');
   });
 
+  it('hydrates inactive workspaces from Query and does not poll them', () => {
+    expect(source).toContain('queryClient.getQueryData<PaneInfo[]>(queryKey)');
+    expect(source).toContain('queryClient.fetchQuery({');
+    expect(source).toContain('staleTime: WORKSPACE_PANES_STALE_TIME_MS');
+    expect(source).not.toContain('setInterval(');
+  });
+
+  it('commits workspace and pane navigation atomically', () => {
+    expect(source).toContain('onNavigate?: (workspaceId: string, paneId: string | null) => void;');
+    expect(source).toContain('navigate(target.workspaceId, target.paneId);');
+  });
+
   it('keeps the active pane visible during the dedicated snapshot hydration gap', () => {
     expect(source).toContain("workspaces.find((workspace) => workspace.id === wsId)?.panes");
   });

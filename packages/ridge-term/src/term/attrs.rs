@@ -74,6 +74,12 @@ impl Flags {
     pub const fn empty() -> Self {
         Flags(0)
     }
+    /// Rebuild flags received from a trusted, versioned terminal snapshot.
+    /// Unknown future bits are retained so a relay does not silently erase
+    /// attributes it does not render yet.
+    pub const fn from_bits_retain(bits: u16) -> Self {
+        Flags(bits)
+    }
     pub fn contains(self, other: Flags) -> bool {
         (self.0 & other.0) == other.0
     }

@@ -214,6 +214,7 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
       type: 'hello',
       version: 1,
       protocol: 'ridge-remote-ws',
+      terminalProtocolVersion: 2,
       capabilities: ['pane', 'fs', 'search', 'workspace'],
     });
     expect(conn.hasCapability('pane')).toBe(true);

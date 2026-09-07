@@ -33,13 +33,24 @@ export const srcRepo =
 const DEST = join(root, 'packages', 'remote', 'src', 'shared', 'cloud', 'signaling');
 const GENERATED = join(DEST, 'generated');
 const FIXTURES = join(DEST, 'fixtures');
+const TERMINAL_FIXTURES = join(FIXTURES, 'terminal-v2');
+const GENERATED_RUST = join(root, 'packages', 'ridge-term', 'src', 'remote_protocol_generated.rs');
 
 /** Generated bindings to vendor (relative to `bindings/`), preserving subdirs. */
-const BINDING_FILES = ['SignalMsg.ts', 'Role.ts', join('serde_json', 'JsonValue.ts')];
+const BINDING_FILES = [
+  'SignalMsg.ts',
+  'Role.ts',
+  'PaneRef.ts',
+  'ActivateTerminalParams.ts',
+  'TerminalHello.ts',
+  'PointerAction.ts',
+  'PointerEvent.ts',
+  join('serde_json', 'JsonValue.ts'),
+];
 
 export function sourceError(repo = srcRepo, exists = existsSync) {
   if (!exists(repo)) return `[sync-signaling] ridge-signaling repo not found at ${repo}.\nCheck it out as a sibling of wind, or set RIDGE_SIGNALING_REPO to its path.`;
-  if (!exists(join(repo, 'bindings')) || !exists(join(repo, 'fixtures', 'signaling'))) return `[sync-signaling] ${repo} is missing bindings/ or fixtures/signaling/.\nRegenerate them in ridge-signaling first (ts-rs export + fixtures).`;
+  if (!exists(join(repo, 'bindings')) || !exists(join(repo, 'fixtures', 'signaling')) || !exists(join(repo, 'src', 'terminal_v2.rs'))) return `[sync-signaling] ${repo} is missing bindings/, fixtures/, or src/terminal_v2.rs.\nRegenerate them in ridge-signaling first (ts-rs export + fixtures).`;
   return null;
 }
 
@@ -48,6 +59,7 @@ export async function main({ repo = srcRepo, exists = existsSync, io = console }
   if (error) { io.error(error); return false; }
   const sourceBindings = join(repo, 'bindings');
   const sourceFixtures = join(repo, 'fixtures', 'signaling');
+  const sourceTerminalFixtures = join(repo, 'fixtures', 'terminal-v2');
 
   // 1) generated/: clear then copy the fixed binding set (verbatim, keep ts-rs header).
   await rm(GENERATED, { recursive: true, force: true });
@@ -69,7 +81,19 @@ export async function main({ repo = srcRepo, exists = existsSync, io = console }
     await cp(join(sourceFixtures, name), join(FIXTURES, name));
   }
 
-  // 3) SOURCE_REV: record the source commit (single line, no newline noise).
+  // 3) Terminal v2 Rust wire module + golden bytes. ridge-term is compiled on
+  // both native and wasm targets, so this exact generated source is the codec
+  // used by the host and mobile kernel.
+  await cp(join(repo, 'src', 'terminal_v2.rs'), GENERATED_RUST);
+  await mkdir(TERMINAL_FIXTURES, { recursive: true });
+  const terminalFixtureNames = exists(sourceTerminalFixtures)
+    ? (await readdir(sourceTerminalFixtures)).filter((f) => f.endsWith('.hex')).sort()
+    : [];
+  for (const name of terminalFixtureNames) {
+    await cp(join(sourceTerminalFixtures, name), join(TERMINAL_FIXTURES, name));
+  }
+
+  // 4) SOURCE_REV: record the source commit (single line, no newline noise).
   const rev = execFileSync(gitTool(), ['rev-parse', 'HEAD'], {
     cwd: repo,
     encoding: 'utf8',
@@ -77,7 +101,7 @@ export async function main({ repo = srcRepo, exists = existsSync, io = console }
   await writeFile(join(DEST, 'SOURCE_REV'), rev, 'utf8');
 
   io.log(
-    `[sync-signaling] vendored ${BINDING_FILES.length} bindings + ${fixtureNames.length} fixtures\n` +
+    `[sync-signaling] vendored ${BINDING_FILES.length} bindings + ${fixtureNames.length + terminalFixtureNames.length} fixtures + terminal v2 Rust codec\n` +
       `  from ${repo}\n` +
       `  → ${DEST}\n` +
       `  SOURCE_REV = ${rev}`,

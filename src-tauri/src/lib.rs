@@ -550,6 +550,9 @@ pub fn run() {
             // B2（D-GM-11）cloud pane 裸字节流（host-local sink，非 controller 直调）
             commands::cloud_pane::subscribe_pane_raw,
             commands::cloud_pane::unsubscribe_pane_raw,
+            commands::cloud_pane::subscribe_pane_terminal_v2,
+            commands::cloud_pane::unsubscribe_pane_terminal_v2,
+            commands::cloud_pane::get_pane_terminal_snapshot_v2,
             commands::cloud_pane::resync_pane_raw,
             commands::cloud_pane::replay_pane_scrollback_raw,
             // 桌面 cloud HTTP 代理（绕过 WebView 跨域 CORS，见 cloud_http.rs）

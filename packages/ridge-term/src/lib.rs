@@ -39,10 +39,13 @@ use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
 
 pub mod input;
+pub mod remote_v2;
 pub mod render;
 pub mod search;
 pub mod selection;
 pub mod term;
+#[path = "remote_protocol_generated.rs"]
+pub mod terminal_v2;
 
 use crate::input::KeyEvent;
 use crate::search::SearchState;
@@ -105,6 +108,11 @@ pub struct JsTerminal {
     /// drains Grid's producer queue independently; this copy drives the
     /// renderer's pixel scroll path.
     render_scroll_ops: RefCell<Vec<crate::term::grid::ScrollOp>>,
+    /// Identity/revision fence for semantic remote frames. A pane switch
+    /// changes the activation id, making every queued frame from the former
+    /// pane a harmless no-op.
+    remote_activation_id: Option<u64>,
+    remote_revision: Option<u64>,
 }
 
 impl JsTerminal {
@@ -222,6 +230,8 @@ impl JsTerminal {
             search: SearchState::new(),
             last_tui_signal_at_ms: 0,
             render_scroll_ops: RefCell::new(Vec::new()),
+            remote_activation_id: None,
+            remote_revision: None,
         }
     }
 
@@ -353,6 +363,65 @@ impl JsTerminal {
             self.search.clear();
         }
         Ok(requires_render_settle)
+    }
+
+    /// Install/apply a Remote Terminal Protocol v2 frame. The full PaneRef,
+    /// activation id and contiguous revision are checked before any grid
+    /// mutation; a Snapshot replaces both screens and scrollback atomically.
+    #[wasm_bindgen(js_name = applyRemoteFrame)]
+    pub fn apply_remote_frame(
+        &mut self,
+        bytes: &[u8],
+        workspace_id: &str,
+        pane_id: &str,
+        activation_id: f64,
+    ) -> Result<bool, JsValue> {
+        let envelope = crate::terminal_v2::decode_frame(bytes)
+            .map_err(|error| JsValue::from_str(&format!("remote terminal decode: {error}")))?;
+        let expected_activation = activation_id as u64;
+        if envelope.pane.workspace_id != workspace_id
+            || envelope.pane.pane_id != pane_id
+            || envelope.activation_id != expected_activation
+        {
+            return Ok(false);
+        }
+        match envelope.body {
+            crate::terminal_v2::TerminalBody::Snapshot(snapshot) => {
+                self.inner.apply_remote_v2_snapshot(&snapshot);
+                self.remote_activation_id = Some(expected_activation);
+                self.remote_revision = Some(snapshot.revision);
+                self.selection.clear();
+                self.search.clear();
+                self.render_scroll_ops.borrow_mut().clear();
+                Ok(true)
+            }
+            crate::terminal_v2::TerminalBody::Delta(delta) => {
+                if self.remote_activation_id != Some(expected_activation)
+                    || self.remote_revision != Some(delta.base_revision)
+                    || delta.revision <= delta.base_revision
+                {
+                    return Ok(false);
+                }
+                let settle = delta.requires_render_settle;
+                self.inner.apply_remote_v2_delta(&delta);
+                self.remote_revision = Some(delta.revision);
+                self.capture_render_scroll_ops();
+                Ok(settle)
+            }
+            crate::terminal_v2::TerminalBody::HistoryPage(page) => {
+                if self.remote_activation_id != Some(expected_activation)
+                    || self.remote_revision != Some(page.revision)
+                {
+                    return Ok(false);
+                }
+                self.inner.prepend_remote_v2_history(&page.lines);
+                Ok(true)
+            }
+            crate::terminal_v2::TerminalBody::Error(error) => Err(JsValue::from_str(&format!(
+                "remote terminal {}: {}",
+                error.code, error.message
+            ))),
+        }
     }
 
     pub fn resize(&mut self, rows: usize, cols: usize) {

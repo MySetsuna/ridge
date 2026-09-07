@@ -53,12 +53,26 @@ describe('remote Agent attention monitor', () => {
     expect(release).toContain('paneFeedScheduler.clear(key);');
     expect(release).toContain('pendingRawFrames.drop(key);');
     expect(release).toContain('paneSwitchPerf.delete(key);');
-    expect(release).toContain('replayedPanes.delete(key);');
     expect(release).toContain('clearFeedResync(key);');
     expect(release).toContain('canvasRef?.clearPendingFeed(key);');
     expect(source).toContain('if (!remoteAppAlive || !feedResyncPending.has(key)) return;');
     expect(source).toContain('for (const pane of ownedPanes) releasePaneRuntime(pane);');
     expect(source).toContain('ws.pruneOutputs(new Set());');
     expect(source).toContain('void detachPaneKernels(ownedPanes);');
+  });
+
+  it('streams only the atomic active pane and drops late frames from the old pane', () => {
+    expect(source).toContain('(ws.activatePane ?? ws.subscribePane).call(ws, pane, {');
+    expect(source).toContain('const activationId = nextTerminalActivation(subscriptionKey);');
+    expect(source).toContain('activationId,');
+    expect(source).not.toContain('ws.subscribePane(pane, { active: false });');
+    expect(source).toContain('if (!active || key !== paneRefKey(active)) return;');
+    expect(source).toContain('ui.navigate(workspaceId, remembered);');
+  });
+
+  it('scopes lightweight navigation preferences to the connected host', () => {
+    expect(source).toContain('ws.cacheScope?.()');
+    expect(source).toContain('`rg-remote-active-ws:${storageScope}`');
+    expect(source).toContain('`rg-remote-pane-map:${storageScope}`');
   });
 });

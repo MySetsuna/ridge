@@ -343,6 +343,7 @@ pub enum PaneDeltaEnqueue {
 pub struct RemotePaneSub {
     pub id: u64,
     pub raw_tx: mpsc::Sender<RemotePtyEvent>,
+    pub semantic: bool,
     /// Metadata/control events use a separate lane so title/cwd/resize cannot
     /// be dropped behind a saturated raw PTY byte queue.
     pub metadata_tx: mpsc::Sender<RemotePtyEvent>,
@@ -775,6 +776,9 @@ pub struct AppState {
     /// 共用一条 live fan-out（广播到所有订阅了该 pane 的桥），refcount 记订阅者数——
     /// 只有降到 0 才真正注销，避免一个 controller 退订就把仍在看的其它 controller 断流。
     pub cloud_pane_raw_subs: Arc<Mutex<HashMap<(Uuid, Uuid), (u64, u32)>>>,
+    /// Semantic subscriptions are activation-scoped; two cloud controllers
+    /// viewing one pane must never share an activation envelope.
+    pub cloud_pane_terminal_subs: Arc<Mutex<HashMap<(Uuid, Uuid, u64), (u64, u32)>>>,
 }
 
 fn collect_tail_pieces(
@@ -939,6 +943,7 @@ impl AppState {
             cloud_remote_active: Arc::new(AtomicBool::new(false)),
             quitting: Arc::new(AtomicBool::new(false)),
             cloud_pane_raw_subs: Arc::new(Mutex::new(HashMap::new())),
+            cloud_pane_terminal_subs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1348,6 +1353,17 @@ impl AppState {
         (parser.modes(), parser.is_alt_screen())
     }
 
+    pub fn get_remote_terminal_snapshot(
+        &self,
+        ws: Uuid,
+        pane: Uuid,
+    ) -> Option<ridge_term::terminal_v2::TerminalSnapshot> {
+        let workspaces = self.workspaces.read();
+        let handle = workspaces.get(&ws)?.terminals.get(&pane)?;
+        let snapshot = handle.parser.lock().remote_v2_snapshot();
+        Some(snapshot)
+    }
+
     /// Retrieve the most recent PTY scrollback bytes for a pane, up to
     /// `max_bytes`. Used to seed a newly-created mobile `PaneParser` so its
     /// state mirrors the desktop parser before the first delta frame is sent.
@@ -1440,6 +1456,9 @@ impl AppState {
         }
         let shared = Arc::new(data.as_bytes().to_vec());
         for subscriber in &entry.remote_subs {
+            if subscriber.semantic {
+                continue;
+            }
             if subscriber
                 .raw_tx
                 .try_send(RemotePtyEvent::RawBytes {
@@ -1458,6 +1477,35 @@ impl AppState {
                 {
                     tracing::warn!(target: "ridge::remote", sub = subscriber.id, "raw byte channel full; dropping frame, will resync");
                 }
+            }
+        }
+    }
+
+    pub fn forward_remote_terminal_delta(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        frame: DeltaFrame,
+        is_alt: bool,
+    ) {
+        let registry = self.pty_pane_registry.read();
+        let Some(entry) = registry.get(&(workspace_id, pane_id)) else {
+            return;
+        };
+        for subscriber in entry.remote_subs.iter().filter(|sub| sub.semantic) {
+            if subscriber
+                .raw_tx
+                .try_send(RemotePtyEvent::SemanticDelta {
+                    workspace_id,
+                    pane_id,
+                    frame: frame.clone(),
+                    is_alt,
+                })
+                .is_err()
+            {
+                subscriber
+                    .desync
+                    .store(true, std::sync::atomic::Ordering::Release);
             }
         }
     }
@@ -2138,6 +2186,7 @@ mod pty_delta_channel_tests {
                 id: RemoteSubId::next(),
                 raw_tx,
                 metadata_tx,
+                semantic: false,
                 desync: Arc::new(AtomicBool::new(false)),
             },
         );

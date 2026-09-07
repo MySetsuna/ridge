@@ -24,6 +24,7 @@
     workspaces = [],
     activeWorkspaceId = $bindable(''),
     onWorkspacesChanged,
+    onNavigate,
   }: {
     ws?: RemoteLink;
     onRefresh?: () => void;
@@ -41,6 +42,7 @@
     workspaces?: WorkspaceInfo[];
     activeWorkspaceId?: string;
     onWorkspacesChanged?: () => void;
+    onNavigate?: (workspaceId: string, paneId: string | null) => void;
   } = $props();
 
   // Current locale for the language toggle button
@@ -80,6 +82,7 @@
     {ws}
     {backendName}
     {onWorkspacesChanged}
+    {onNavigate}
     {canManageWorkspaces}
     {canManagePanes}
   />

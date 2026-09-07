@@ -22,6 +22,8 @@
     "build:cli": "cargo build --release -p ridge-cli",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "lint": "pnpm check",
+    "typecheck": "pnpm check",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri",
     "tauri:build": "node scripts/tauri-build.mjs",
