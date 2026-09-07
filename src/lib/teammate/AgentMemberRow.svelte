@@ -58,7 +58,36 @@
     onRefresh,
   }: Props = $props();
 
+  interface DeliveryReceipt {
+    deliveryId?: string;
+    status?: string;
+    deliveryAdapter?: string;
+    terminalAccepted?: boolean;
+    agentAcknowledged?: boolean;
+  }
+
   let input = $state('');
+  let deliveryReceipt = $state<DeliveryReceipt | null>(null);
+
+  async function refreshDeliveryReceipt(deliveryId: string, attempts = 0): Promise<void> {
+    if (!workspaceId || !paneId || attempts >= 12) return;
+    try {
+      const receipt = await invoke<DeliveryReceipt>('get_agent_message_delivery_status', {
+        workspaceId,
+        paneId,
+        agentId,
+        generation: profile?.generation,
+        lease: profile?.lease,
+        deliveryId,
+      });
+      if (receipt) deliveryReceipt = receipt;
+      if (receipt?.agentAcknowledged) return;
+    } catch {
+      // The original durable receipt remains useful if a transient poll fails.
+      return;
+    }
+    setTimeout(() => void refreshDeliveryReceipt(deliveryId, attempts + 1), 1_000);
+  }
 
   const present = $derived(profile !== null);
   const paneId = $derived(profile?.paneId ?? '');
@@ -107,13 +136,12 @@
     }
   }
 
-  /** 给该成员派任务：写入其 pane stdin。
-   *  以 `\r`（CR = 回车键真实字节）结尾——`\n` 只会在 TUI 输入框里插一个换行、不触发提交。 */
+  /** Give the member a task through the durable teammate Hub only. */
   async function send() {
     const text = input.trim();
     if (!text || !paneId) return;
     try {
-      await invoke('send_agent_message', {
+      const receipt = await invoke<DeliveryReceipt>('send_agent_message', {
         workspaceId,
         paneId,
         agentId,
@@ -123,6 +151,8 @@
         from: 'desktop-ui',
         idempotency_key: crypto.randomUUID(),
       });
+      deliveryReceipt = receipt ?? { status: 'queued' };
+      if (receipt?.deliveryId) void refreshDeliveryReceipt(receipt.deliveryId);
       recordMemberTask(agentId, text);
       input = '';
     } catch (e) {
@@ -255,6 +285,19 @@
   {#if lastTask}
     <p class="mt-2 truncate rounded-md bg-[var(--rg-surface)]/55 px-2 py-1.5 text-[11px] leading-4 text-[var(--rg-fg-muted)]" title={lastTask.text}>
       <span class="font-medium text-[var(--rg-fg)]/80">当前任务</span> · {lastTask.text}
+    </p>
+  {/if}
+
+  {#if deliveryReceipt}
+    <p class="mt-2 rounded-md bg-sky-500/10 px-2 py-1.5 text-[11px] leading-4 text-sky-200" aria-live="polite">
+      已进入 Hub 队列{deliveryReceipt.deliveryId ? ` · ${deliveryReceipt.deliveryId.slice(0, 8)}` : ''}
+      {#if deliveryReceipt.agentAcknowledged}
+        · agent 已确认
+      {:else if deliveryReceipt.terminalAccepted}
+        · 终端适配器已接收
+      {:else}
+        · 等待 agent 确认
+      {/if}
     </p>
   {/if}
 

@@ -544,6 +544,44 @@ fn inject_identity_fields(
     }
 }
 
+#[tauri::command]
+pub fn get_agent_message_delivery_status(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    request: Value,
+) -> Result<Value, String> {
+    get_agent_message_delivery_status_in(&state, app, request)
+}
+
+pub(crate) fn get_agent_message_delivery_status_in(
+    state: &AppState,
+    app: tauri::AppHandle,
+    request: Value,
+) -> Result<Value, String> {
+    let delivery_id = request
+        .get("deliveryId")
+        .or_else(|| request.get("delivery_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "deliveryId must not be empty".to_string())?;
+    let mut request = request;
+    request["delivery_id"] = json!(delivery_id);
+    for (source, target) in [
+        ("workspaceId", "workspace_id"),
+        ("paneId", "target_pane_id"),
+        ("agentId", "agent_id"),
+    ] {
+        if request.get(target).is_none() {
+            if let Some(value) = request.get(source).cloned() {
+                request[target] = value;
+            }
+        }
+    }
+    crate::teammate::mcp::hub_delivery_status(state, app, request)
+}
+
 /// Every visible live teammate needs a service-owned delivery identity, even
 /// when the Kernel roster has not yet registered that auto-discovered process.
 /// This identity is deliberately separate from the stable roster/member id:

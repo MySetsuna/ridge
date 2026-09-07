@@ -17,6 +17,7 @@ import {
   reorderAgentGroups,
   shouldRefreshAgentHistory,
   toggleAgentGroupLeader,
+  workspaceTranscriptScope,
 } from './agentCommuneModel';
 
 describe('agent commune view model', () => {
@@ -186,6 +187,15 @@ describe('agent commune view model', () => {
     expect(shouldRefreshAgentHistory(0, 100)).toBe(true);
     expect(shouldRefreshAgentHistory(100, 100 + AGENT_HISTORY_REFRESH_INTERVAL_MS - 1)).toBe(false);
     expect(shouldRefreshAgentHistory(100, 100 + AGENT_HISTORY_REFRESH_INTERVAL_MS)).toBe(true);
+  });
+
+  it('uses one proven workspace root for transcript reads', () => {
+    expect(workspaceTranscriptScope('C:\\code\\ridge\\team.ridge', ['C:\\other']))
+      .toEqual(['C:/code/ridge']);
+    expect(workspaceTranscriptScope(null, ['C:\\code\\ridge', 'C:\\code\\ridge\\packages']))
+      .toEqual(['C:/code/ridge']);
+    expect(workspaceTranscriptScope(null, ['C:\\code\\ridge', 'D:\\other']))
+      .toEqual([]);
   });
 
   it('reorders groups immutably and keeps boundary taps no-op', () => {

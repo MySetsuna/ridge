@@ -13,6 +13,36 @@ export function shouldRefreshAgentHistory(lastLoadedAt: number, now = Date.now()
   return lastLoadedAt <= 0 || now - lastLoadedAt >= AGENT_HISTORY_REFRESH_INTERVAL_MS;
 }
 
+/**
+ * Select one actual workspace root for transcript reads.  A list of arbitrary
+ * pane CWDs is not a workspace boundary: a shell may have `cd`ed into another
+ * checkout.  Prefer the saved `.ridge` file's directory; for unsaved workspaces
+ * accept only a CWD which is demonstrably an ancestor of every known pane CWD.
+ * With no provable root, return no scope rather than widening the history scan.
+ */
+export function workspaceTranscriptScope(
+  workspaceFilePath: string | null | undefined,
+  candidateCwds: readonly string[],
+): string[] {
+  const normalized = (value: string): string => value.trim().replaceAll('\\', '/').replace(/\/+$/, '');
+  const file = workspaceFilePath ? normalized(workspaceFilePath) : '';
+  if (file) {
+    const slash = file.lastIndexOf('/');
+    if (slash > 0) return [file.slice(0, slash)];
+  }
+  const cwds = [...new Set(candidateCwds.map(normalized).filter(Boolean))];
+  for (const candidate of [...cwds].sort((a, b) => a.length - b.length)) {
+    const folded = candidate.toLocaleLowerCase();
+    if (cwds.every((cwd) => {
+      const value = cwd.toLocaleLowerCase();
+      return value === folded || value.startsWith(`${folded}/`);
+    })) {
+      return [candidate];
+    }
+  }
+  return [];
+}
+
 export interface AgentHistoryReplyLike {
   agent: string;
   sessionId: string;

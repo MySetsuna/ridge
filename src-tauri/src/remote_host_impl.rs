@@ -3382,6 +3382,11 @@ async fn dispatch_invoke_teammate(
             handle.clone(),
             args.clone(),
         )),
+        "get_agent_message_delivery_status" => val(crate::commands::teammate::get_agent_message_delivery_status_in(
+            state,
+            handle.clone(),
+            args.clone(),
+        )),
         "register_teammate_agent" => unit(
             crate::commands::pane::register_teammate_agent(
                 handle.state(),
@@ -3670,6 +3675,7 @@ async fn dispatch_allowlisted_invoke(
         "read_agent_recent_replies",
         "set_teammate_groups",
         "send_agent_message",
+        "get_agent_message_delivery_status",
         "register_teammate_agent",
         "release_teammate_agent",
     ];

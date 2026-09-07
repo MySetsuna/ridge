@@ -71,6 +71,7 @@
     agentIdentityAliases,
     normalizeAgentIdentity,
     shouldRefreshAgentHistory,
+    workspaceTranscriptScope,
     type AgentCardStatus,
   } from './agentCommuneModel';
   import {
@@ -150,18 +151,22 @@
   let refreshQueuedHeavy = false;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let historyRefreshTimer: ReturnType<typeof setTimeout> | undefined;
-  /** The history API is intentionally denied an empty scope. Prefer the live
-   * pane CWDs, then the roster's process CWD, all from this workspace only. */
+  /** Saved workspaces have an explicit transcript root.  An unsaved workspace
+   * may use a root only when its pane CWDs prove one; never union arbitrary
+   * pane directories into a host-wide history query. */
+  const filePath = $derived(
+    (workspaceId ? $workspaceSaveInfoStore[workspaceId]?.file_path : null) ?? null
+  );
   const historyProjectPaths = $derived.by(() => {
     if (!workspaceId) return [] as string[];
-    const paths = new Set<string>();
+    const paths: string[] = [];
     for (const [key, cwd] of Object.entries($paneCwdStore)) {
-      if (key.startsWith(`${workspaceId}:`) && cwd.trim()) paths.add(cwd.trim());
+      if (key.startsWith(`${workspaceId}:`) && cwd.trim()) paths.push(cwd.trim());
     }
     for (const profile of topology.roster) {
-      if (profile.cwd?.trim()) paths.add(profile.cwd.trim());
+      if (profile.cwd?.trim()) paths.push(profile.cwd.trim());
     }
-    return [...paths];
+    return workspaceTranscriptScope(filePath, paths);
   });
   const agentProfilesByIdentity = $derived.by(() => {
     const profiles = new Map<string, TeammateProfile>();
@@ -398,11 +403,6 @@
   let teamTab = $state<'members' | 'groups' | 'history'>('members');
   // 编组 store（单例，与 TeammateGroups 共用）：成员聚合列表据此标注每人组归属。
   const groupStore = teammateGroupStore();
-
-  // 当前工作区的 .ridge 文件路径 → 编组的稳定持久化键（未保存为 null → 编组仅会话级，D1）。
-  const filePath = $derived(
-    (workspaceId ? $workspaceSaveInfoStore[workspaceId]?.file_path : null) ?? null
-  );
 
   function nameOf(paneId: string): string {
     return allMembers.find((member) => member.profile.paneId === paneId)?.profile.name ?? paneId;

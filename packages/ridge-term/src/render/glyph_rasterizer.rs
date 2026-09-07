@@ -266,6 +266,16 @@ impl BrowserFontRasterizer {
             }
         }
 
+        // Canvas2D keeps partially transparent edge pixels for Block Elements.
+        // The desktop Swash path snaps that painted coverage before it enters the
+        // atlas, otherwise adjacent terminal cells reveal hairline seams on the
+        // Remote Web canvas. Keep browser font selection, metrics, and ordinary
+        // glyph antialiasing intact; this only gives geometric blocks the same
+        // hard coverage contract as the desktop renderer.
+        if is_grid_block_element(glyph_text) {
+            normalize_grid_block_coverage(&mut rgba);
+        }
+
         Ok(RasterizedGlyph {
             rgba,
             width: packed_width,

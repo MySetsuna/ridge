@@ -351,6 +351,45 @@ pub(crate) fn send_hub_message(
     serde_json::from_str(text).map_err(|error| format!("decode Agent Hub receipt: {error}"))
 }
 
+/// Read a durable Hub receipt for the desktop/Remote UI.  This calls the same
+/// public MCP tool used by agents; it never inspects or writes PTY input.
+pub(crate) fn hub_delivery_status(
+    state: &crate::state::AppState,
+    handle: tauri::AppHandle,
+    arguments: Value,
+) -> Result<Value, String> {
+    let token = state
+        .teammate_binding
+        .read()
+        .as_ref()
+        .map(|binding| binding.token.clone())
+        .unwrap_or_default();
+    let host = DesktopMcpHost {
+        ctx: TeammateCtx {
+            state: state.clone(),
+            token: Arc::new(token),
+            handle,
+        },
+    };
+    let response = ridge_mcp::server::call_tool_rpc(
+        "ridge_delivery_status",
+        arguments,
+        &host,
+        &desktop_hub_state(),
+    );
+    if let Some(error) = response.get("error") {
+        return Err(error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Agent Hub rejected delivery-status read")
+            .to_string());
+    }
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| "Agent Hub returned an invalid delivery-status response".to_string())?;
+    serde_json::from_str(text).map_err(|error| format!("decode Agent Hub delivery status: {error}"))
+}
+
 impl DesktopMcpHost {
     fn wid(&self) -> Uuid {
         *self.ctx.state.active_workspace.read()

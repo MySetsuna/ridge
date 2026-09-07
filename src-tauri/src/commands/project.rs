@@ -1235,9 +1235,11 @@ fn same_or_child_path(project: &str, filter: &str) -> bool {
         .replace('\\', "/")
         .trim_end_matches('/')
         .to_lowercase();
-    project == filter
-        || project.starts_with(&format!("{filter}/"))
-        || filter.starts_with(&format!("{project}/"))
+    // `filter` is the selected workspace root.  Accept its own transcript and
+    // descendants only.  The former symmetric check also accepted a workspace
+    // root when a session lived in one of its ancestors, which made a nested
+    // workspace load its parent's (and therefore another Commune's) history.
+    project == filter || project.starts_with(&format!("{filter}/"))
 }
 
 fn collect_jsonl_files(
@@ -1866,7 +1868,7 @@ mod tests {
     #[test]
     fn project_filter_accepts_children_not_siblings() {
         assert!(same_or_child_path(r"C:\code\wind\src", "c:/code/wind"));
-        assert!(same_or_child_path(r"C:\code\wind", "c:/code/wind/src"));
+        assert!(!same_or_child_path(r"C:\code\wind", "c:/code/wind/src"));
         assert!(!same_or_child_path(r"C:\code\windmill", "c:/code/wind"));
     }
 
