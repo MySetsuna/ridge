@@ -1222,7 +1222,14 @@ pub async fn domain_pty_output_attach(
                 "source": "ridge-kernel",
                 "pty_id": pty_id,
                 "lease_id": lease_id,
+                // Legacy transport-boundary protocol identifier. New clients
+                // should use RTP1 (`/v1/rtp1` WebSocket); bounded-seq-v1
+                // remains as an adapter for transitional HTTP consumers
+                // (e.g. shell KernelPtyReader until it migrates to RTP1).
+                // It is NOT authoritative for terminal semantics per
+                // SPEC-L2-PROTO-001 §3.9 P5.
                 "protocol": "bounded-seq-v1",
+                "rtp1_endpoint": "/v1/rtp1",
             })))
         }
         Err(error) => Ok(bad_request(error.to_string())),
@@ -2151,11 +2158,16 @@ mod tests {
 
     fn test_state() -> AppState {
         let (shutdown_tx, _shutdown_rx) = oneshot::channel();
+        let epoch = Uuid::new_v4().to_string();
+        let ptys = Arc::new(crate::pty::PtyRegistry::default());
+        ptys.set_runtime_epoch(epoch.clone());
         AppState {
             token: "test-token".to_string(),
             pid: 1,
             port: 0,
             started_at_unix: 0,
+            host_id: "test-host".to_string(),
+            runtime_epoch: epoch,
             shutdown_tx: Arc::new(std::sync::Mutex::new(Some(shutdown_tx))),
             shutting_down: Arc::new(AtomicBool::new(false)),
             workspaces: Arc::new(std::sync::Mutex::new(
@@ -2175,7 +2187,7 @@ mod tests {
             )),
             remote_hosts_path: std::env::temp_dir()
                 .join(format!("ridge-kernel-test-{}.json", Uuid::new_v4())),
-            ptys: Arc::new(crate::pty::PtyRegistry::default()),
+            ptys,
             output_leases: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             fs_scope: ridge_core::sandbox::RootScope::unrestricted(),
         }

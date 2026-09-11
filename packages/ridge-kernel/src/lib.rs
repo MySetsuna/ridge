@@ -6,7 +6,11 @@
 pub mod agent_profiles;
 pub mod client;
 mod domain;
+pub mod kernel_backed_handle;
 mod kernel_mcp;
 pub mod pty;
 pub mod registry;
+pub mod rtp1;
+pub mod rtp1_session;
+pub mod rtp1_ws;
 pub mod server;

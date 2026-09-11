@@ -743,11 +743,16 @@ mod tests {
 
     fn test_state() -> AppState {
         let (shutdown_tx, _shutdown_rx) = oneshot::channel();
+        let epoch = Uuid::new_v4().to_string();
+        let ptys = Arc::new(crate::pty::PtyRegistry::default());
+        ptys.set_runtime_epoch(epoch.clone());
         AppState {
             token: "test-token".into(),
             pid: 1,
             port: 0,
             started_at_unix: 0,
+            host_id: "test-host".into(),
+            runtime_epoch: epoch,
             shutdown_tx: Arc::new(std::sync::Mutex::new(Some(shutdown_tx))),
             shutting_down: Arc::new(AtomicBool::new(false)),
             workspaces: Arc::new(std::sync::Mutex::new(
@@ -764,7 +769,7 @@ mod tests {
                 ridge_core::remote::RemoteHostTopology::default(),
             )),
             remote_hosts_path: std::env::temp_dir().join("ridge-kernel-kernel-mcp-remote.json"),
-            ptys: Arc::new(crate::pty::PtyRegistry::default()),
+            ptys,
             output_leases: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             fs_scope: ridge_core::sandbox::RootScope::unrestricted(),
         }

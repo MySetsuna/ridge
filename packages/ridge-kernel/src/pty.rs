@@ -10,8 +10,29 @@ use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use ridge_term::term::terminal::Terminal;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{broadcast, mpsc, Notify};
 use uuid::Uuid;
+
+/// Terminal lifecycle (SPEC-L2-REMOTE-001 §3.1).
+///
+/// `Starting` → `Running` → `Exited` → `Reaped`; transitions are
+/// monotonic. `Reaped` means the registry entry has been removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalLifecycleState {
+    Starting,
+    Running,
+    Exited,
+    Reaped,
+}
+
+/// Per-PTY exit notification broadcast to RTP1 sessions / subscribers.
+/// `code` follows portable_pty's exit_status convention (None when killed
+/// without wait, Some(-1) on signal termination, 0 on clean exit).
+#[derive(Debug, Clone)]
+pub struct PtyExitNotification {
+    pub pty_id: Uuid,
+    pub code: Option<i32>,
+}
 
 const READ_BUF: usize = 8192;
 const DEFAULT_COLS: u16 = 80;
@@ -20,8 +41,10 @@ const SCROLLBACK_CAP: usize = 1024 * 1024;
 const RENDER_SCROLLBACK_ROWS: usize = 4096;
 // The lease is a bounded replay seam, not a second unbounded scrollback.
 // Keep this cap small enough for reconnects while preserving backpressure.
-const OUTPUT_REPLAY_CAP_BYTES: usize = 256 * 1024;
-const OUTPUT_REPLAY_CAP_FRAMES: usize = 256;
+#[doc(hidden)]
+pub const OUTPUT_REPLAY_CAP_BYTES: usize = 256 * 1024;
+#[doc(hidden)]
+pub const OUTPUT_REPLAY_CAP_FRAMES: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PtyOutputFrame {
@@ -82,13 +105,15 @@ struct OutputState {
 /// In-memory, bounded output protocol for PTYs created through the domain
 /// registry. The HTTP layer can later expose the same lease operations without
 /// changing PTY ownership or introducing another output queue.
-struct PtyOutputHub {
+#[doc(hidden)]
+pub struct PtyOutputHub {
     state: Mutex<OutputState>,
     notify: Notify,
 }
 
 impl PtyOutputHub {
-    fn new() -> Self {
+    #[doc(hidden)]
+    pub fn new() -> Self {
         Self {
             state: Mutex::new(OutputState {
                 lifecycle: OutputLifecycle::Open,
@@ -101,7 +126,16 @@ impl PtyOutputHub {
         }
     }
 
-    fn publish(&self, bytes: &[u8]) {
+    #[doc(hidden)]
+    pub fn attach_output_for_test(
+        self: &Arc<Self>,
+        after_seq: Option<u64>,
+    ) -> Result<PtyOutputLease, PtyOutputLeaseError> {
+        self.attach(after_seq)
+    }
+
+    #[doc(hidden)]
+    pub fn publish(&self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
@@ -331,10 +365,22 @@ pub struct PtyBridge {
 
 /// Kernel-side PTY lifecycle authority. Shells may retain an output receiver,
 /// but every write, resize, and destroy resolves through this registry.
-#[derive(Default)]
 pub struct PtyRegistry {
     ptys: Mutex<HashMap<Uuid, ManagedPty>>,
     next_index: AtomicUsize,
+    /// `runtime_epoch` minted once per kernel boot (SPEC-L2-PROTO-001 §3.4.3).
+    /// `None` for the legacy default-constructed registry used by older tests;
+    /// `set_runtime_epoch` MUST be called before serving attach requests.
+    runtime_epoch: parking_lot::Mutex<Option<String>>,
+    /// Per-PTY lifecycle states (SPEC-L2-REMOTE-001 §3.1) plus exit-code.
+    lifecycle: Arc<parking_lot::Mutex<HashMap<Uuid, LifecycleEntry>>>,
+    /// Broadcast sender per PTY used to dispatch `session_event{event:"exited"}`.
+    exit_subs: Arc<parking_lot::Mutex<HashMap<Uuid, broadcast::Sender<PtyExitNotification>>>>,
+}
+
+struct LifecycleEntry {
+    state: TerminalLifecycleState,
+    exit_code: Option<i32>,
 }
 
 struct ManagedPty {
@@ -344,6 +390,18 @@ struct ManagedPty {
     output: Option<Arc<PtyOutputHub>>,
     closing: std::sync::atomic::AtomicBool,
     info: PtyInfo,
+}
+
+impl Default for PtyRegistry {
+    fn default() -> Self {
+        Self {
+            ptys: Mutex::new(HashMap::new()),
+            next_index: AtomicUsize::new(0),
+            runtime_epoch: parking_lot::Mutex::new(None),
+            lifecycle: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            exit_subs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -422,12 +480,39 @@ impl PtyRegistry {
             RENDER_SCROLLBACK_ROWS,
         )));
         let output_hub = Arc::new(PtyOutputHub::new());
+        // Lifecycle: Starting → Running → Exited. The exit broadcast is wired
+        // to both the reader-task end (PTY EOF) and explicit `destroy`.
+        let (exit_tx, _exit_rx_initial) = broadcast::channel::<PtyExitNotification>(64);
+        self.lifecycle.lock().insert(
+            launch.id,
+            LifecycleEntry {
+                state: TerminalLifecycleState::Starting,
+                exit_code: None,
+            },
+        );
+        self.exit_subs.lock().insert(launch.id, exit_tx.clone());
         let sink = scrollback.clone();
         let screen = renderer.clone();
         let hub = output_hub.clone();
+        let lifecycle_for_reader = self.lifecycle.clone();
+        let exit_subs_for_reader = self.exit_subs.clone();
+        let id_for_reader = launch.id;
+        let bridge_for_reader = bridge.clone();
         tokio::spawn(async move {
             let mut output = output;
+            let mut first_byte_seen = false;
             while let Some(bytes) = output.recv().await {
+                if !first_byte_seen {
+                    first_byte_seen = true;
+                    {
+                        let mut guard = lifecycle_for_reader.lock();
+                        if let Some(entry) = guard.get_mut(&id_for_reader) {
+                            if entry.state == TerminalLifecycleState::Starting {
+                                entry.state = TerminalLifecycleState::Running;
+                            }
+                        }
+                    }
+                }
                 screen.lock().feed(&bytes);
                 let mut retained = sink.lock();
                 retained.extend_from_slice(&bytes);
@@ -438,6 +523,24 @@ impl PtyRegistry {
                 hub.publish(&bytes);
             }
             hub.close();
+            // PTY closed: derive exit code best-effort and broadcast.
+            let code = bridge_for_reader.try_exit_code();
+            {
+                let mut guard = lifecycle_for_reader.lock();
+                if let Some(entry) = guard.get_mut(&id_for_reader) {
+                    if entry.state != TerminalLifecycleState::Reaped {
+                        entry.state = TerminalLifecycleState::Exited;
+                        entry.exit_code = code;
+                    }
+                }
+            }
+            let sender_opt = exit_subs_for_reader.lock().get(&id_for_reader).cloned();
+            if let Some(sender) = sender_opt {
+                let _ = sender.send(PtyExitNotification {
+                    pty_id: id_for_reader,
+                    code,
+                });
+            }
         });
         let info = PtyInfo {
             id: launch.id,
@@ -584,6 +687,15 @@ impl PtyRegistry {
         if let Some(output) = removed.output {
             output.close();
         }
+        // SPEC-L2-REMOTE-001 §3.1: reaped is the terminal lifecycle endpoint.
+        {
+            let mut lifecycle = self.lifecycle.lock();
+            let entry = lifecycle.entry(id).or_insert(LifecycleEntry {
+                state: TerminalLifecycleState::Reaped,
+                exit_code: None,
+            });
+            entry.state = TerminalLifecycleState::Reaped;
+        }
         Ok(())
     }
 
@@ -593,6 +705,57 @@ impl PtyRegistry {
             if let Some(output) = &managed.output {
                 output.cancel_closing();
             }
+        }
+    }
+
+    // ── Lifecycle accessors (SPEC-L2-PROTO-001 §3.4.3 / SPEC-L2-REMOTE-001 §3.1) ──
+
+    /// Bind the kernel-boot `runtime_epoch` once. Subsequent calls panic to
+    /// prevent silent re-binding across kernel restarts in-process.
+    pub fn set_runtime_epoch(&self, epoch: String) {
+        let mut guard = self.runtime_epoch.lock();
+        if guard.is_some() {
+            panic!("runtime_epoch already bound for this registry");
+        }
+        *guard = Some(epoch);
+    }
+
+    /// Currently bound runtime_epoch; `None` when unset.
+    pub fn runtime_epoch(&self) -> Option<String> {
+        self.runtime_epoch.lock().clone()
+    }
+
+    /// Current lifecycle state for a PTY (`None` if unknown id).
+    pub fn lifecycle_state(&self, id: Uuid) -> Option<TerminalLifecycleState> {
+        self.lifecycle.lock().get(&id).map(|e| e.state)
+    }
+
+    /// Subscribe to the per-PTY exit broadcast. The first message received
+    /// after subscribe is the most recent exit (if any). Used by RTP1
+    /// sessions to dispatch `session_event{event:"exited"}` to attached
+    /// controllers.
+    pub fn subscribe_exit(
+        &self,
+        id: Uuid,
+    ) -> Option<broadcast::Receiver<PtyExitNotification>> {
+        self.exit_subs.lock().get(&id).map(|tx| tx.subscribe())
+    }
+
+    /// Forcibly broadcast an exit event for `id`. Used by explicit destroy
+    /// paths so RTP1 subscribers receive a deterministic `Exited` event
+    /// even if the reader task was already gone.
+    pub fn notify_exit(&self, id: Uuid, code: Option<i32>) {
+        {
+            let mut lifecycle = self.lifecycle.lock();
+            if let Some(entry) = lifecycle.get_mut(&id) {
+                if entry.state != TerminalLifecycleState::Reaped {
+                    entry.state = TerminalLifecycleState::Exited;
+                    entry.exit_code = code;
+                }
+            }
+        }
+        if let Some(sender) = self.exit_subs.lock().get(&id).cloned() {
+            let _ = sender.send(PtyExitNotification { pty_id: id, code });
         }
     }
 
@@ -725,6 +888,16 @@ pub(crate) fn test_output_lease() -> PtyOutputLease {
         .expect("test output lease")
 }
 
+#[doc(hidden)]
+pub fn detached_output_lease() -> PtyOutputLease {
+    // Used as a sentinel holder inside rtp1_ws::LeaseCtx; the real lease is
+    // owned by the spawned output-pump task, so dropping this sentinel here
+    // is safe (no PtyOutputHub is shared).
+    Arc::new(PtyOutputHub::new())
+        .attach(None)
+        .expect("detached output lease")
+}
+
 impl PtyBridge {
     pub fn spawn(
         shell: Option<&str>,
@@ -827,6 +1000,18 @@ impl PtyBridge {
 
     pub fn process_id(&self) -> Option<u32> {
         self.child.lock().process_id()
+    }
+
+    /// Best-effort exit code (None if child has not exited or status was
+    /// lost). portable_pty's `ExitStatus::exit_code()` returns the OS exit
+    /// code when available; signal-terminated children report 0 here.
+    pub fn try_exit_code(&self) -> Option<i32> {
+        let mut child = self.child.lock();
+        child
+            .try_wait()
+            .ok()
+            .flatten()
+            .map(|status| status.exit_code() as i32)
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {

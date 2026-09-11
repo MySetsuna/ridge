@@ -26,11 +26,14 @@ use crate::registry::{
     clear_registry, load_remote_hosts, load_roster, load_workspace_graph, remote_hosts_path,
     roster_path, workspace_graph_path, write_registry, KernelEndpoint, KernelInstanceGuard,
 };
+use crate::rtp1_ws::{drive as rtp1_drive, WsContext};
 use crate::{
     domain,
     kernel_mcp::KernelMcpHost,
     pty::{PtyOutputLease, PtyRegistry},
 };
+
+const RTP1_SERVER_VERSION: u32 = 1;
 
 /// HTTP projection of one bounded PTY output lease. The lease itself owns the
 /// cursor; the per-lease poll lock prevents two concurrent long-polls from
@@ -47,6 +50,10 @@ pub struct AppState {
     pub pid: u32,
     pub port: u16,
     pub started_at_unix: u64,
+    /// SPEC-L2-PROTO-001 §3.4.1 host_id minted at kernel boot.
+    pub host_id: String,
+    /// SPEC-L2-PROTO-001 §3.4.3 runtime_epoch (UUID v7) minted at kernel boot.
+    pub runtime_epoch: String,
     pub shutdown_tx: Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>>,
     pub shutting_down: Arc<AtomicBool>,
     /// Shell-neutral workspace topology for the kernel API. Shell migration is
@@ -106,6 +113,20 @@ fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
         .or_else(|| headers.get("x-ridge-token"))
         .and_then(|v| v.to_str().ok())
         == Some(token)
+}
+
+/// RTP1 WebSocket upgrade endpoint (SPEC-L2-PROTO-001 §3.9). Authentication
+/// is enforced via the same header token used by HTTP routes.
+async fn rtp1_ws_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> Result<axum::response::Response, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let ctx = WsContext::new(st.host_id.clone(), st.ptys.clone(), RTP1_SERVER_VERSION);
+    Ok(ws.on_upgrade(move |socket| rtp1_drive(socket, ctx)))
 }
 
 async fn health(State(st): State<AppState>) -> Json<HealthBody> {
@@ -201,6 +222,22 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
     let token = Uuid::new_v4().to_string();
     let pid = std::process::id();
     let started_at_unix = now_unix();
+    let runtime_epoch = Uuid::now_v7().to_string();
+    let host_id = std::env::var("RIDGE_HOST_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            // Stable per-machine identifier derived from hostname + boot
+            // epoch; rdg / desktop clients pair it with the kernel registry
+            // for rediscovery after a host restart.
+            format!(
+                "{}@{}",
+                std::env::var("COMPUTERNAME")
+                    .or_else(|_| std::env::var("HOSTNAME"))
+                    .unwrap_or_else(|_| "unknown".into()),
+                &runtime_epoch
+            )
+        });
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     let bind_addr: SocketAddr = format!("{host}:{requested_port}")
@@ -217,6 +254,8 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         pid,
         port,
         started_at_unix,
+        host_id: host_id.clone(),
+        runtime_epoch: runtime_epoch.clone(),
         shutdown_tx: Arc::new(std::sync::Mutex::new(Some(shutdown_tx))),
         shutting_down: Arc::new(AtomicBool::new(false)),
         workspaces: Arc::new(std::sync::Mutex::new(
@@ -247,7 +286,11 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
             ),
         )),
         remote_hosts_path: remote_hosts_path(),
-        ptys: Arc::new(PtyRegistry::default()),
+        ptys: {
+            let registry = Arc::new(PtyRegistry::default());
+            registry.set_runtime_epoch(runtime_epoch.clone());
+            registry
+        },
         output_leases: Arc::new(std::sync::Mutex::new(HashMap::new())),
         fs_scope: domain::fs_scope_from_env(),
     };
@@ -363,6 +406,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
             "/v1/domain/workspaces/:workspace_id/panes/:pane_id/locked-size",
             post(domain::domain_workspace_pane_locked_size),
         )
+        .route("/v1/rtp1", get(rtp1_ws_handler))
         .with_state(state)
         .merge(mcp);
 
