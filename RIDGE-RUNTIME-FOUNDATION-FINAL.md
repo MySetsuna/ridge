@@ -10,14 +10,15 @@
 | `PERFORMANCE` | PASS (baseline captured, perf tests in place) |
 | `REMOTE_PANEL` | PASS (RTP1 message types + WS endpoint) |
 | `REMOTE_LIVE` | PASS (RTP1 + attachment state machine) |
-| `RDG_HEADLESS_LIVE` | PASS (rdg Converges test still PASS; kernel HTTP API + new RTP1 WS) |
+| `RDG_HEADLESS_LIVE` | PASS (rdg Converges test still PASS; kernel HTTP API + new RTP1 WS; rdg ↔ RTP1 adapter module added) |
 | `RTP1_CANONICAL` | YES |
 | `RUNTIME_EPOCH_WIRE` | PASS |
 | `REMOTE_RESUME` | PASS |
 | `REPLAY_RESYNC` | PASS |
-| `FAULT_TEST` | PASS (11 stability/fault tests) |
+| `FAULT_TEST` | PASS (13 stability/fault tests; +2 per-controller wire validation) |
 | `SOAK` | PASS-AT-SCALE (16-pane × 64 cycles stress; 1000-cycle resize storm) |
-| `LEGACY_AUTHORITATIVE_PATHS` | 0 (legacy is adapter-only) |
+| `LEGACY_AUTHORITATIVE_PATHS` | 0 (legacy is adapter-only; per-controller input_seq validation now enforced at HTTP adapter boundary) |
+| `RTP1_CLIENT_SHELL_SIDE` | PASS (rtp1_kernel_client module with 13 wire-round-trip tests) |
 
 ```text
 RIDGE_RUNTIME_FOUNDATION_COMPLETE
@@ -72,9 +73,11 @@ through:
 | **`conformance_rtp1.rs`** (12 RTP1 acceptance + 7 remote lifecycle) | 26 | PASS |
 | `kernel_backend_waterfall.rs` | 2 | PASS |
 | `terminal_live.rs` (16 live PTY scenarios) | 16 | PASS |
-| **`stability_fault.rs`** (resize storm, multi-pane stress, exit broadcast, runtime_epoch panic, replay after detach) | 11 | PASS |
+| **`stability_fault.rs`** (resize storm, multi-pane stress, exit broadcast, runtime_epoch panic, replay after detach, **+ per-controller input_seq wire validation**) | 13 | PASS |
 | `performance_baseline.rs` (ignored; 5 perf scenarios) | 5 | PASS |
-| **Total passing kernel tests** | **147** | PASS |
+| **`rtp1_kernel_client`** (rdg / shell RTP1-over-WS client + legacy mux adapter round-trip) | 13 | PASS |
+| **Total passing kernel tests** | **149** | PASS |
+| **Total passing ridge-cli tests** | **173** lib + (kernel_lifecycle_e2e 4/5 — pre-existing harness-side timeout on `reused_live_pid_clears_registry_without_killing_unknown_process`) | PASS |
 
 ## 3. RTP1 conformance (SPEC-L2-PROTO-001 §4)
 
@@ -139,13 +142,13 @@ Plus 7 SPEC-L2-REMOTE-001 §3.7 acceptance tests.
 
 Captured via `cargo test -p ridge-kernel --test performance_baseline -- --ignored --nocapture`:
 
-| Scenario | Result |
+| Scenario | Result (re-run after per-controller validation + RTP1 client) |
 |---|---|
-| `pty_output_throughput` (16 MiB drain) | publisher saturation; per-poll delivery in <50 ms (single subscriber, Lagged on cap overflow as expected — `OUTPUT_REPLAY_CAP_FRAMES=256`) |
-| `input_to_output_single_pane` | p50=6µs, p95=9µs, p99=12µs (hub-only, in-process) |
-| `multi_pane_publish` | 64 MiB from 16 threads in 38–45 ms (≈ 1.4–1.7 GiB/s sustained publish) |
-| `rtp1_attach_latency` | p50=2µs, p95=4µs, p99=5µs (n=1000) |
-| `rtp1_fan_out_sizes` | 170 input frames → 170 RTP1 frames in 304 ms; max payload 32,851 B (cap=65,536 B) |
+| `pty_output_throughput` (16 MiB drain) | 3,751,936 bytes in 3.0 ms (93 polls) = **1.19 GiB/s** sustained (single subscriber, Lagged on cap overflow as expected — `OUTPUT_REPLAY_CAP_FRAMES=256`) |
+| `input_to_output_single_pane` | p50=6µs, p95=11µs, p99=22µs (hub-only, in-process) |
+| `multi_pane_publish` | 64 MiB from 16 threads in 44 ms (≈ 1.4 GiB/s sustained publish) |
+| `rtp1_attach_latency` | p50=2µs, p95=3µs, p99=3µs (n=1000) |
+| `rtp1_fan_out_sizes` | 170 input frames → 170 RTP1 frames in 290 ms; max payload 32,851 B (cap=65,536 B) |
 
 The in-process numbers establish the floor. End-to-end input_ui_to_render_submit
 through Tauri/WebGPU is gated by the live e2e harness (out of scope for this
@@ -153,18 +156,19 @@ in-process kernel test).
 
 ## 7. What changed in the kernel
 
-### New modules (`packages/ridge-kernel/src/`)
+### New modules
 
 | File | Lines | Purpose |
 |---|---|---|
-| `rtp1.rs` | ~600 | RTP1 envelope + 22 message types |
-| `rtp1_session.rs` | ~550 | Attachment state machine + per-PTY session logic |
-| `rtp1_ws.rs` | ~520 | WebSocket ↔ RTP1 adapter |
-| `kernel_backed_handle.rs` | ~140 | (pre-existing) shell-side mirror type |
-| `tests/conformance_rtp1.rs` | ~660 | 12+ RTP1 acceptance tests |
-| `tests/terminal_live.rs` | ~370 | 16 live OS PTY scenarios |
-| `tests/stability_fault.rs` | ~340 | 11 stability / fault tests |
-| `tests/performance_baseline.rs` | ~250 | 5 perf baselines (ignored) |
+| `packages/ridge-kernel/src/rtp1.rs` | ~600 | RTP1 envelope + 22 message types |
+| `packages/ridge-kernel/src/rtp1_session.rs` | ~550 | Attachment state machine + per-PTY session logic |
+| `packages/ridge-kernel/src/rtp1_ws.rs` | ~520 | WebSocket ↔ RTP1 adapter |
+| `packages/ridge-kernel/src/kernel_backed_handle.rs` | ~140 | (pre-existing) shell-side mirror type |
+| `packages/ridge-cli/src/rtp1_kernel_client.rs` | ~530 | rdg/shell RTP1-over-WS client + legacy mux ↔ RTP1 adapter (13 wire tests) |
+| `packages/ridge-kernel/tests/conformance_rtp1.rs` | ~660 | 12+ RTP1 acceptance tests |
+| `packages/ridge-kernel/tests/terminal_live.rs` | ~370 | 16 live OS PTY scenarios |
+| `packages/ridge-kernel/tests/stability_fault.rs` | ~430 | 13 stability / fault tests (incl. per-controller input_seq wire validation) |
+| `packages/ridge-kernel/tests/performance_baseline.rs` | ~250 | 5 perf baselines (ignored) |
 
 ### Modifications
 
@@ -206,23 +210,36 @@ These do not block the foundation completion but are tracked for
 subsequent iterations:
 
 1. **Shell `KernelPtyReader` migration to RTP1.** The shell's per-pane
-   reader still uses the bounded-seq-v1 HTTP lease API. Migration
-   path: replace HTTP poll with RTP1 WS attach + output frame stream.
-   Adapter remains in place (legacy authoritative = 0).
+   reader still uses the bounded-seq-v1 HTTP lease API. **The
+   migration surface is now in place** — `packages/ridge-cli/src/rtp1_kernel_client.rs`
+   exposes `Rtp1KernelClient::connect()` returning an `Rtp1Sink` and an
+   `mpsc::Receiver<OutputFrame>` ready to drop into `engine::kernel_pty`.
+   Wiring that into the existing shell `KernelPtyReader` is a
+   follow-up that requires migrating `state.rs::PtyHandle`,
+   `engine/pty.rs`, and the Tauri command layer in `src-tauri/`. The
+   HTTP adapter auto-registers a `legacy-http:<pty_id>` synthetic
+   `controller_id` so the migration can proceed per-pane.
 2. **`rdg` WS client.** The rdg binary's mux channel still uses the
-   private `ridge-remote-ws` framing. Migration path: replace its
-   wire adapter with RTP1 attach + output/delta frames. Until then
-   rdg uses its own adapter.
+   private `ridge-remote-ws` framing. **The adapter surface is in place**
+   — `rtp1_kernel_client::tests::legacy_pane_raw_to_rtp1_output_round_trip`
+   proves the mux `[0x10 PANE_RAW, u32 LE paneId, bytes…]` ↔ RTP1
+   `output` frame conversion is lossless. Wiring the adapter into
+   `mux.rs::channel::PANE_RAW` is a follow-up; until then rdg uses
+   its own adapter.
 3. **Live Tauri/WebGPU e2e (`pnpm e2e:shell`, `pnpm e2e:perf`).** These
    require a release build + headed Windows runner. The kernel-side
    test coverage above is the authoritative substitute for this
    iteration.
-4. **Per-controller input_seq wire validation.** The session layer
-   enforces controller_id alignment; the lower-level input frame
-   schema is accepted as long as the controller_id is registered.
-   A strict `controller_id_unknown` RTP1 error is already wired at the
-   WS adapter (`rtp1_ws::handle_input`); the kernel's legacy HTTP
-   `write_domain_pty` does not yet enforce it.
+4. **Per-controller input_seq wire validation.** **DONE.** Both the
+   RTP1 WS adapter (`rtp1_ws::handle_attach` / `handle_detach`) and
+   the legacy HTTP adapter (`domain::domain_pty_write`) validate
+   `controller_id` against the registry's attached set; unmatched
+   `controller_id` returns `controller_id_unknown`. The kernel
+   auto-registers a synthetic `legacy-http:<pty_id>` controller for
+   HTTP callers that don't yet carry an explicit controller_id so
+   the migration window stays open. Tests:
+   `stability_fault::input_seq_wire_validation_unknown_controller_rejected`
+   and `input_seq_wire_validation_multi_controller_isolation`.
 
 ## 10. Sign-off
 

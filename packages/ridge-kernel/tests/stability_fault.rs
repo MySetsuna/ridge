@@ -381,3 +381,86 @@ fn attach_error_code_canonical() {
         code: None,
     };
 }
+
+// ── Per-controller input_seq wire validation (SPEC-L2-PROTO-001 §3.4.2) ──
+
+#[test]
+fn input_seq_wire_validation_unknown_controller_rejected() {
+    let registry = Arc::new(PtyRegistry::default());
+    registry.set_runtime_epoch("epoch-input".into());
+    let pty = runtime().block_on(async {
+        registry
+            .spawn_command_for(PtyLaunch {
+                id: uuid::Uuid::new_v4(),
+                program: None,
+                args: &[],
+                cwd: None,
+                workspace_id: None,
+                role: "input",
+                launch_profile: None,
+                env: None,
+                initial_size: Some((80, 24)),
+            })
+            .expect("spawn")
+    });
+    // No attach has occurred: write with a controller_id not in the
+    // registry's attached set must be rejected with ControllerIdUnknown.
+    match registry.write_with_controller(pty, "ctrl-A", b"hi") {
+        Err(ridge_kernel::pty::PtyInputError::ControllerIdUnknown) => {}
+        other => panic!("expected ControllerIdUnknown, got {other:?}"),
+    }
+    // After attaching, the controller is admitted.
+    registry.attach_controller(pty, "ctrl-A".into());
+    registry
+        .write_with_controller(pty, "ctrl-A", b"hi")
+        .expect("attached controller admitted");
+    // A second controller is still rejected.
+    match registry.write_with_controller(pty, "ctrl-B", b"x") {
+        Err(ridge_kernel::pty::PtyInputError::ControllerIdUnknown) => {}
+        other => panic!("expected ControllerIdUnknown for ctrl-B, got {other:?}"),
+    }
+    // Detaching controller_id removes it.
+    registry.detach_controller(pty, "ctrl-A");
+    match registry.write_with_controller(pty, "ctrl-A", b"hi") {
+        Err(ridge_kernel::pty::PtyInputError::ControllerIdUnknown) => {}
+        other => panic!("expected ControllerIdUnknown after detach, got {other:?}"),
+    }
+}
+
+#[test]
+fn input_seq_wire_validation_multi_controller_isolation() {
+    let registry = Arc::new(PtyRegistry::default());
+    registry.set_runtime_epoch("epoch-multi-input".into());
+    let pty = runtime().block_on(async {
+        registry
+            .spawn_command_for(PtyLaunch {
+                id: uuid::Uuid::new_v4(),
+                program: None,
+                args: &[],
+                cwd: None,
+                workspace_id: None,
+                role: "multi",
+                launch_profile: None,
+                env: None,
+                initial_size: Some((80, 24)),
+            })
+            .expect("spawn")
+    });
+    registry.attach_controller(pty, "ctrl-A".into());
+    registry.attach_controller(pty, "ctrl-B".into());
+    registry
+        .write_with_controller(pty, "ctrl-A", b"x")
+        .expect("ctrl-A");
+    registry
+        .write_with_controller(pty, "ctrl-B", b"y")
+        .expect("ctrl-B");
+    // Removing one does not affect the other.
+    registry.detach_controller(pty, "ctrl-A");
+    match registry.write_with_controller(pty, "ctrl-A", b"x") {
+        Err(ridge_kernel::pty::PtyInputError::ControllerIdUnknown) => {}
+        other => panic!("ctrl-A must be rejected after detach, got {other:?}"),
+    }
+    registry
+        .write_with_controller(pty, "ctrl-B", b"y")
+        .expect("ctrl-B still admitted");
+}

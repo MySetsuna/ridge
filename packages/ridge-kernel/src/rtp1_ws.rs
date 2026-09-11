@@ -293,6 +293,7 @@ async fn handle_attach(
         }
     };
     attachments.bind(terminal_id, req.controller_id.clone(), state);
+    session.ptys.attach_controller(terminal_id, req.controller_id.clone());
     let ack_frame = match frame_from(MessageType::AttachAck, &ack, FrameFlags::empty()) {
         Ok(frame) => frame,
         Err(_) => return false,
@@ -369,6 +370,9 @@ async fn handle_detach(
         let _ = send_frame(tx, &frame).await;
     }
     attachments.set_state(&req.controller_id, AttachmentState::Detached);
+    if let Ok(terminal_id) = uuid::Uuid::parse_str(&req.terminal_id) {
+        session.ptys.detach_controller(terminal_id, &req.controller_id);
+    }
     let mut guard = active_controller.lock().await;
     *guard = None;
     drop(guard);

@@ -73,6 +73,13 @@ pub enum PtyOutputLeaseError {
     InvalidBatchSize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PtyInputError {
+    UnknownTerminal,
+    ControllerIdUnknown,
+    NotReady,
+}
+
 impl std::fmt::Display for PtyOutputLeaseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -376,6 +383,11 @@ pub struct PtyRegistry {
     lifecycle: Arc<parking_lot::Mutex<HashMap<Uuid, LifecycleEntry>>>,
     /// Broadcast sender per PTY used to dispatch `session_event{event:"exited"}`.
     exit_subs: Arc<parking_lot::Mutex<HashMap<Uuid, broadcast::Sender<PtyExitNotification>>>>,
+    /// Controllers currently attached to each PTY (SPEC-L2-PROTO-001
+    /// §3.4.2 input ownership). The legacy HTTP adapter validates
+    /// controller_id on write/resize; the RTP1 WS adapter inserts here
+    /// during `attach` and removes during `detach`.
+    attached_controllers: Arc<parking_lot::Mutex<HashMap<Uuid, std::collections::HashSet<String>>>>,
 }
 
 struct LifecycleEntry {
@@ -400,6 +412,7 @@ impl Default for PtyRegistry {
             runtime_epoch: parking_lot::Mutex::new(None),
             lifecycle: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             exit_subs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            attached_controllers: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         }
     }
 }
@@ -626,6 +639,47 @@ impl PtyRegistry {
 
     pub fn write(&self, id: Uuid, data: &[u8]) -> Result<()> {
         self.get(id)?.write_input(data)
+    }
+
+    /// Write with controller ownership enforcement. The caller MUST
+    /// have previously attached (or the RTP1 WS adapter must have bound)
+    /// `controller_id` for this PTY; otherwise `PtyInputError::ControllerIdUnknown`.
+    pub fn write_with_controller(
+        &self,
+        id: Uuid,
+        controller_id: &str,
+        data: &[u8],
+    ) -> Result<(), PtyInputError> {
+        if !self.contains(id) {
+            return Err(PtyInputError::UnknownTerminal);
+        }
+        {
+            let attached = self.attached_controllers.lock();
+            match attached.get(&id) {
+                Some(set) if set.contains(controller_id) => {}
+                _ => return Err(PtyInputError::ControllerIdUnknown),
+            }
+        }
+        self.write(id, data).map_err(|_| PtyInputError::UnknownTerminal)
+    }
+
+    /// Register / unregister an attached controller. The RTP1 WS
+    /// adapter calls this from `attach` / `detach`. The legacy HTTP
+    /// adapter can register a synthetic controller_id so shell input
+    /// keeps working through the migration window.
+    pub fn attach_controller(&self, id: Uuid, controller_id: String) {
+        let mut attached = self.attached_controllers.lock();
+        attached.entry(id).or_default().insert(controller_id);
+    }
+
+    pub fn detach_controller(&self, id: Uuid, controller_id: &str) {
+        let mut attached = self.attached_controllers.lock();
+        if let Some(set) = attached.get_mut(&id) {
+            set.remove(controller_id);
+            if set.is_empty() {
+                attached.remove(&id);
+            }
+        }
     }
 
     pub fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<()> {

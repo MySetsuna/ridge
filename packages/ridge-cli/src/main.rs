@@ -35,6 +35,7 @@ mod protocol;
 mod pty;
 mod rpc;
 mod rtc;
+mod rtp1_kernel_client;
 mod session;
 mod signaling;
 mod totp;
