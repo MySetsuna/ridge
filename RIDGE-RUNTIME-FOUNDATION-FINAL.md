@@ -22,17 +22,21 @@
 | `CLI_UNIFIED` | PASS — `rdg` binary retired; `ridge` is the sole binary in `ridge-cli` |
 | `P0_CRITICAL_FIXES` | PASS — 7 audit bugs fixed (C1/C2/C3/C4/C5/C7/C13); regression suite at `foundation_conformance.rs` |
 | `P1_HIGH_FIXES` | PASS-IN-PROGRESS — 4 audit bugs fixed (C14/C16/C18/C19); remaining P1 items are larger refactors tracked as follow-ups |
+| `P2_B_CLASS_CLEANUP` | PASS — dead code removed (`detached_output_lease`, `futures_lite_blocking`, `handle_ping`, `make_output_frame`); `build_session_event` lifted to free function; `kernel_backed_handle.rs` marked legacy; `parking_lot` unused-dep noted |
 
 ```text
 RIDGE_RUNTIME_FOUNDATION_COMPLETE
 ```
 
-> **v2 / hardened** — this update ships the audit-driven P0 critical
-> bug fixes (per-controller ownership enforced at session layer; lease
-> scopeguards; unbind on detach; HTTP controller_id forgery closed;
-> TOTP stderr leak gated) and the first batch of P1 high-priority
-> fixes (biased output pump, server-truth resync oldest_seq, destroy
-> re-entry safety, start_timeout). Full audit + change plan lives at
+> **v3 / hardened + cleaned** — this update ships the audit-driven P0
+> critical bug fixes (per-controller ownership enforced at session
+> layer; lease scopeguards; unbind on detach; HTTP controller_id
+> forgery closed; TOTP stderr leak gated) and the first batch of
+> P1 high-priority fixes (biased output pump, server-truth resync
+> oldest_seq, destroy re-entry safety, start_timeout). P2 cleanup
+> removes dead code paths identified by the audit (sentinel leases,
+> blocking re-entry from async contexts, dead ping handler, duplicate
+> output-frame helper). Full audit + change plan lives at
 > `~/.claude/plans/bug-whimsical-dawn.md`.
 
 ---
@@ -87,7 +91,7 @@ through:
 | **`stability_fault.rs`** (resize storm, multi-pane stress, exit broadcast, runtime_epoch panic, replay after detach, **+ per-controller input_seq wire validation**) | 13 | PASS |
 | `performance_baseline.rs` (ignored; 5 perf scenarios) | 5 | PASS |
 | **`rtp1_kernel_client`** (rdg / shell RTP1-over-WS client + legacy mux adapter round-trip) | 13 | PASS |
-| **Total passing kernel tests** | **149** | PASS |
+| **Total passing kernel tests** | **156** (lib 78 + conformance_kernel_backed 7 + conformance_replay 4 + conformance_runtime 3 + conformance_rtp1 26 + kernel_backend_waterfall 2 + foundation_conformance 7 + stability_fault 13 + terminal_live 16) | PASS |
 | **Total passing ridge-cli tests** | **175** lib + **`rtp1_ws_full_lifecycle` (live kernel + WS e2e)** + (kernel_lifecycle_e2e 4/5 — pre-existing harness-side timeout on `reused_live_pid_clears_registry_without_killing_unknown_process`) | PASS |
 
 ## 3. RTP1 conformance (SPEC-L2-PROTO-001 §4)
