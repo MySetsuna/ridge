@@ -16,6 +16,29 @@
 
 ---
 
+## 架构
+
+| | |
+|---|---|
+| **架构入口** | [docs/architecture/README.md](docs/architecture/README.md) |
+| **系统总览** | [docs/architecture/00-overview.md](docs/architecture/00-overview.md) |
+| **ridge-kernel** | [docs/architecture/10-kernel.md](docs/architecture/10-kernel.md) |
+| **RTP1 wire** | [docs/architecture/20-rtp1-wire.md](docs/architecture/20-rtp1-wire.md) |
+| **Remote lifecycle** | [docs/architecture/30-remote-lifecycle.md](docs/architecture/30-remote-lifecycle.md) |
+| **ridge CLI** | [docs/architecture/40-cli.md](docs/architecture/40-cli.md) |
+| **Desktop / Tauri** | [docs/architecture/50-desktop-tauri.md](docs/architecture/50-desktop-tauri.md) |
+| **Data flow** | [docs/architecture/60-data-flow.md](docs/architecture/60-data-flow.md) |
+| **Runtime epoch** | [docs/architecture/70-runtime-epoch.md](docs/architecture/70-runtime-epoch.md) |
+| **Security** | [docs/architecture/80-security.md](docs/architecture/80-security.md) |
+| **Performance** | [docs/architecture/90-performance.md](docs/architecture/90-performance.md) |
+| **Foundation 终报告** | [docs/architecture/RIDGE-RUNTIME-FOUNDATION-FINAL.md](docs/architecture/RIDGE-RUNTIME-FOUNDATION-FINAL.md) |
+
+RTP1 / Remote / Terminal / Performance 等 L2 spec 见
+[`docs/architecture/specs/`](docs/architecture/specs/)。历史验收文档见
+[`docs/architecture/notes/`](docs/architecture/notes/)。
+
+---
+
 <p align="center">
   <a href="https://github.com/Pooowu">
     <img src="https://github.com/Pooowu.png" width="72" height="72" alt="@Pooowu" />
