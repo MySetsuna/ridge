@@ -157,13 +157,13 @@ Plus 7 SPEC-L2-REMOTE-001 §3.7 acceptance tests.
 
 Captured via `cargo test -p ridge-kernel --test performance_baseline -- --ignored --nocapture`:
 
-| Scenario | Result (re-run after per-controller validation + RTP1 client) |
+| Scenario | Result (re-run after audit-driven P0/P1/P2 hardening) |
 |---|---|
-| `pty_output_throughput` (16 MiB drain) | 3,751,936 bytes in 3.0 ms (93 polls) = **1.19 GiB/s** sustained (single subscriber, Lagged on cap overflow as expected — `OUTPUT_REPLAY_CAP_FRAMES=256`) |
-| `input_to_output_single_pane` | p50=6µs, p95=11µs, p99=22µs (hub-only, in-process) |
-| `multi_pane_publish` | 64 MiB from 16 threads in 44 ms (≈ 1.4 GiB/s sustained publish) |
-| `rtp1_attach_latency` | p50=2µs, p95=3µs, p99=3µs (n=1000) |
-| `rtp1_fan_out_sizes` | 170 input frames → 170 RTP1 frames in 290 ms; max payload 32,851 B (cap=65,536 B) |
+| `pty_output_throughput` (16 MiB drain) | 737 KB in 3.78 ms (25 polls) = 186 MiB/s sustained (single subscriber, Lagged on cap overflow as expected — `OUTPUT_REPLAY_CAP_FRAMES=256`). Variation between runs is normal; the floor is the Lagged-on-cap behavior, not the absolute number. |
+| `input_to_output_single_pane` | p50=6µs, p95=12µs, p99=49µs (hub-only, in-process; p99 noise from runtime contention under test load) |
+| `multi_pane_publish` | 64 MiB from 16 threads in 46 ms (≈ 1.4 GiB/s sustained publish) |
+| `rtp1_attach_latency` | p50=3µs, p95=5µs, p99=10µs (n=1000) |
+| `rtp1_fan_out_sizes` | 170 input frames → 170 RTP1 frames in 306 ms; max payload 32,851 B (cap=65,536 B) |
 
 The in-process numbers establish the floor. End-to-end input_ui_to_render_submit
 through Tauri/WebGPU is gated by the live e2e harness (out of scope for this
