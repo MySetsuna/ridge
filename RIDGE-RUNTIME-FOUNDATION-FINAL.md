@@ -20,10 +20,20 @@
 | `LEGACY_AUTHORITATIVE_PATHS` | 0 (legacy is adapter-only; per-controller input_seq validation now enforced at HTTP adapter boundary) |
 | `RTP1_CLIENT_SHELL_SIDE` | PASS (rtp1_kernel_client module with 13 wire-round-trip tests) |
 | `CLI_UNIFIED` | PASS — `rdg` binary retired; `ridge` is the sole binary in `ridge-cli` |
+| `P0_CRITICAL_FIXES` | PASS — 7 audit bugs fixed (C1/C2/C3/C4/C5/C7/C13); regression suite at `foundation_conformance.rs` |
+| `P1_HIGH_FIXES` | PASS-IN-PROGRESS — 4 audit bugs fixed (C14/C16/C18/C19); remaining P1 items are larger refactors tracked as follow-ups |
 
 ```text
 RIDGE_RUNTIME_FOUNDATION_COMPLETE
 ```
+
+> **v2 / hardened** — this update ships the audit-driven P0 critical
+> bug fixes (per-controller ownership enforced at session layer; lease
+> scopeguards; unbind on detach; HTTP controller_id forgery closed;
+> TOTP stderr leak gated) and the first batch of P1 high-priority
+> fixes (biased output pump, server-truth resync oldest_seq, destroy
+> re-entry safety, start_timeout). Full audit + change plan lives at
+> `~/.claude/plans/bug-whimsical-dawn.md`.
 
 ---
 
