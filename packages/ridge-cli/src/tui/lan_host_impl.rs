@@ -1,13 +1,13 @@
-//! rdg 的 `RemoteHost` 实现 —— 为 headless CLI 的单工作区 `SharedWorkspace`
+//! ridge 的 `RemoteHost` 实现 —— 为 headless CLI 的单工作区 `SharedWorkspace`
 //! 实现共享 `ridge_remote::host` 的 `HostMeta` / `HostAuth` / `WorkspaceProvider`
-//! + `RemoteHost::serve_websocket`，让 rdg LAN 远控经共享 `server_app::run` 驱动，
+//! + `RemoteHost::serve_websocket`，让 ridge LAN 远控经共享 `server_app::run` 驱动，
 //! 消除私有 `ridge-lan-ws` 协议与内联 HTML（P5：协议统一为 `ridge-remote-ws`）。
 //!
 //! 参照桌面 `src-tauri/src/remote_host_impl.rs::DesktopHost` 的模式，但陷阱不同：
 //! - 鉴权用 `crate::totp::RemoteTotp`（非桌面 `RemoteAuth`），无节流/黑名单 ——
 //!   `verify_code = totp.verify`，`is_blacklisted`/`pre_verify_gate`/
 //!   `post_verify_record` 全走 trait 默认实现（宽松放行）；
-//! - 会话令牌由 rdg 自持一个 `ridge_remote::auth::SessionStore`（零 Tauri）；
+//! - 会话令牌由 ridge 自持一个 `ridge_remote::auth::SessionStore`（零 Tauri）；
 //! - `WorkspaceProvider` 面向单工作区：switch 只接受自身 id、create=在既有工作区再开
 //!   pane、close=拒绝（最后一个工作区不可关）。保存文件接口返回当前工作区的可重开句柄。
 
@@ -62,10 +62,10 @@ impl ActivePaneStream {
     }
 }
 
-/// rdg 没有桌面端 `.ridge` 持久化文件；为避免把“无保存文件”静默投影为空，
+/// ridge 没有桌面端 `.ridge` 持久化文件；为避免把“无保存文件”静默投影为空，
 /// 对外暴露一个不可伪造为本地路径的当前工作区句柄。客户端可把它原样传回
 /// `open_workspace_from_file`，该操作幂等地返回同一工作区 id。
-const RDG_WORKSPACE_URI_PREFIX: &str = "rdg://workspace/";
+const RDG_WORKSPACE_URI_PREFIX: &str = "ridge://workspace/";
 
 fn rdg_workspace_uri(ws_id: Uuid) -> String {
     format!("{RDG_WORKSPACE_URI_PREFIX}{ws_id}")
@@ -73,7 +73,7 @@ fn rdg_workspace_uri(ws_id: Uuid) -> String {
 
 fn current_workspace_file(ws_id: Uuid) -> Value {
     json!({
-        "name": "rdg (current workspace)",
+        "name": "ridge (current workspace)",
         "path": rdg_workspace_uri(ws_id),
         "mtime_secs": 0,
     })
@@ -124,27 +124,27 @@ fn create_pane_result(ws_id: Uuid, pane_id: Uuid) -> Value {
         "paneId": pane_id.to_string(),
         "id": pane_id.to_string(),
         "operation": "create-pane",
-        // rdg owns one workspace; create-workspace is an explicit pane
+        // ridge owns one workspace; create-workspace is an explicit pane
         // allocation rather than a second workspace hidden behind a no-op.
         "createdWorkspace": false,
     })
 }
 
-/// rdg LAN 远控宿主：包装单工作区 `SharedWorkspace` + TOTP + 会话令牌 + serve 配置，
+/// ridge LAN 远控宿主：包装单工作区 `SharedWorkspace` + TOTP + 会话令牌 + serve 配置，
 /// 供共享 `server_app` 用一份代码驱动。
 pub struct RdgHost {
     pub workspace: SharedWorkspace,
     pub totp: Arc<RemoteTotp>,
-    /// rdg 自持的会话令牌仓（零 Tauri）：`/verify` 成功后签发、`/ws?token=` 复用。
+    /// ridge 自持的会话令牌仓（零 Tauri）：`/verify` 成功后签发、`/ws?token=` 复用。
     pub sessions: SessionStore,
-    /// 单工作区的合成 id（rdg 无多工作区，仅用于满足 `/workspace/*` 契约返回体）。
+    /// 单工作区的合成 id（ridge 无多工作区，仅用于满足 `/workspace/*` 契约返回体）。
     pub ws_id: Uuid,
     pub port: u16,
     pub lan_ip: String,
     pub machine_name: String,
     pub serve_cfg: UaServeConfig,
     pub tls_enabled: bool,
-    /// rdg LAN host 无桌面式全局开关：服务运行期间恒为 true（fallback / remote_gate 复用）。
+    /// ridge LAN host 无桌面式全局开关：服务运行期间恒为 true（fallback / remote_gate 复用）。
     pub remote_enabled: Arc<AtomicBool>,
 }
 
@@ -173,7 +173,7 @@ impl HostAuth for RdgHost {
     fn verify_code(&self, code: &str) -> bool {
         self.totp.verify(code)
     }
-    // is_blacklisted / pre_verify_gate / post_verify_record：rdg 无节流/黑名单，
+    // is_blacklisted / pre_verify_gate / post_verify_record：ridge 无节流/黑名单，
     // 全部沿用 trait 的宽松默认实现。
     fn create_session_token(&self, device_id: &str, ip: &str) -> String {
         self.sessions.create_session_bound(device_id, ip)
@@ -197,7 +197,7 @@ impl WorkspaceProvider for RdgHost {
         json!({
             "workspaces": [{
                 "id": self.ws_id.to_string(),
-                "name": "rdg",
+                "name": "ridge",
                 "displaySeq": 1,
                 "active": true,
                 "panes": panes,
@@ -278,7 +278,7 @@ async fn run_ws(socket: WebSocket, workspace: SharedWorkspace, ws_id: Uuid) {
 
     // 握手：hello（协议已统一为 ridge-remote-ws）+ 初始 pane 列表。
     // panes 必须带 workspaceId：手机 MainApp / requestPaneSnapshot 丢弃无 workspaceId 的快照
-    // （REQ-RDG-REMOTE-CONNECT-01：否则 rdg LAN 永远空白壳）。
+    // （REQ-RDG-REMOTE-CONNECT-01：否则 ridge LAN 永远空白壳）。
     let hello = json!({
         "type": "hello",
         "version": 1,
@@ -402,13 +402,13 @@ fn list_workspaces_value(ws_id: Uuid) -> Value {
     json!([{
         "id": ws_id.to_string(),
         "index": 0,
-        "name": "rdg",
+        "name": "ridge",
         "displaySeq": 1,
         "active": true,
     }])
 }
 
-/// 桌面 WEB_REMOTE 经 LanWsAdapter 发 `invoke-request` / JSON-RPC；此前 rdg 静默忽略
+/// 桌面 WEB_REMOTE 经 LanWsAdapter 发 `invoke-request` / JSON-RPC；此前 ridge 静默忽略
 /// → 桌面浏览器空白壳。终端接通最小方法集（pane + 只读 workspace 呈现）。
 fn pane_resize_owner(value: &Value) -> &'static str {
     match value.get("owner").and_then(Value::as_str) {
@@ -582,7 +582,7 @@ fn dispatch_lan_invoke_for_connection(
             let panes = build_pane_list(workspace);
             Ok(json!({
                 "workspaceId": ws_id.to_string(),
-                "name": "rdg",
+                "name": "ridge",
                 "panes": panes,
                 "layout": pane_layout_from_workspace(workspace),
             }))
@@ -599,7 +599,7 @@ fn dispatch_lan_invoke_for_connection(
             }
             Ok(Value::Null)
         }
-        // 桌面 SPA boot 可选能力：rdg 无对应实现时回空/成功，勿 error 打断「已接通」。
+        // 桌面 SPA boot 可选能力：ridge 无对应实现时回空/成功，勿 error 打断「已接通」。
         "list_saved_workspaces" | "list_workspace_save_info" | "get_shell_history" => Ok(json!([])),
         "list_saved_workspace_files" => Ok(json!([current_workspace_file(ws_id)])),
         "open_workspace_from_file" => {
@@ -615,7 +615,7 @@ fn dispatch_lan_invoke_for_connection(
             if path.starts_with(RDG_WORKSPACE_URI_PREFIX) {
                 return Err(format!("workspace handle not found: {path}"));
             }
-            Err("rdg LAN host exposes no .ridge files; open the current workspace handle returned by list_saved_workspace_files".to_string())
+            Err("ridge LAN host exposes no .ridge files; open the current workspace handle returned by list_saved_workspace_files".to_string())
         }
         "get_theme_data" => Ok(json!({ "themes": [] })),
         "activate_pane_pty" | "set_pane_delta_mode" | "use_global_workspace" => Ok(Value::Null),
@@ -634,7 +634,7 @@ fn dispatch_lan_invoke_for_connection(
             let pane_id = create_rdg_pane(workspace, shell, cwd)?;
             Ok(create_pane_result(ws_id, pane_id))
         }
-        other => Err(format!("method not supported on rdg LAN host: {other}")),
+        other => Err(format!("method not supported on ridge LAN host: {other}")),
     }
 }
 
@@ -864,7 +864,7 @@ fn start_pane_subscription(
     }
 }
 
-/// rdg 旧版 Remote flat 帧异步回送；返回 `Some(text)` 的控制帧仍由调用方直接回写。
+/// ridge 旧版 Remote flat 帧异步回送；返回 `Some(text)` 的控制帧仍由调用方直接回写。
 /// 所有文件/Git/搜索操作均移入 blocking 池，避免阻塞 WebSocket 主循环。
 fn rdg_workspace_base_dir(workspace: &SharedWorkspace) -> PathBuf {
     workspace
@@ -1093,7 +1093,7 @@ fn handle_pane_message(
             json!({
                 "type": "close-pane-result",
                 "success": false,
-                "error": "unsupported on rdg"
+                "error": "unsupported on ridge"
             })
             .to_string(),
         ),
@@ -1177,7 +1177,7 @@ fn handle_workspace_message(v: &Value, workspace: &SharedWorkspace, ws_id: Uuid)
                 "type": "workspaces",
                 "workspaces": [{
                     "id": ws_id.to_string(),
-                    "name": "rdg",
+                    "name": "ridge",
                     "displaySeq": 1,
                     "active": true,
                 }]
@@ -1426,10 +1426,10 @@ mod tests {
             ws_id,
             &tx,
         )
-        .expect("rdg exposes its current workspace handle");
+        .expect("ridge exposes its current workspace handle");
         assert_eq!(files.as_array().map(Vec::len), Some(1));
         let path = files[0]["path"].as_str().expect("handle path");
-        assert_eq!(path, "rdg://workspace/44444444-4444-4444-4444-444444444444");
+        assert_eq!(path, "ridge://workspace/44444444-4444-4444-4444-444444444444");
 
         let reopened = dispatch_lan_invoke(
             "open_workspace_from_file",
@@ -1454,7 +1454,7 @@ mod tests {
             ws_id,
             &tx,
         )
-        .expect_err("rdg must not read arbitrary host paths");
+        .expect_err("ridge must not read arbitrary host paths");
         assert!(error.contains("list_saved_workspace_files"));
     }
 

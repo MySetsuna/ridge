@@ -545,14 +545,14 @@ mod tests {
 
     // ── Legacy ridge-remote-ws ↔ RTP1 adapter ────────────────────────
     //
-    // rdg's mux channel carries raw PTY bytes prefixed by `0x10 PANE_RAW`
+    // rdg's mux channel carried raw PTY bytes prefixed by `0x10 PANE_RAW`
     // + a fixed-width paneId. SPEC-L2-PROTO-001 §3.9 P5 requires the
     // adapter to be lossless: every byte paneId channel demuxes must
     // round-trip through RTP1 `output` frames.
 
     #[test]
     fn legacy_pane_raw_to_rtp1_output_round_trip() {
-        // rdg mux frame layout: `[0x10 PANE_RAW, u32 LE paneId, bytes…]`.
+        // legacy mux frame layout: `[0x10 PANE_RAW, u32 LE paneId, bytes…]`.
         // The adapter maps `paneId` ↔ `terminal_id` via the host's pane
         // registry (looked up outside this test); for the round-trip we
         // demonstrate that the byte payload survives the mux↔RTP1

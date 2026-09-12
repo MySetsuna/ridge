@@ -205,7 +205,7 @@ pub async fn connect_lan(
 }
 
 async fn connect_lan_stream(hostport: &str, query: &str) -> Result<LanWsStream> {
-    let wss = format!("wss://{hostport}/ws?{query}&device=rdg-cli");
+    let wss = format!("wss://{hostport}/ws?{query}&device=ridge-cli");
     let connector = tls_connector()?;
     let request = wss
         .as_str()
@@ -215,7 +215,7 @@ async fn connect_lan_stream(hostport: &str, query: &str) -> Result<LanWsStream> 
         Ok((stream, _)) => Ok(stream),
         Err(error) => {
             tracing::warn!(target: "ridge_cli", error = %error, "wss 连接失败，回退明文 ws");
-            let plain = format!("ws://{hostport}/ws?{query}&device=rdg-cli");
+            let plain = format!("ws://{hostport}/ws?{query}&device=ridge-cli");
             let request = plain
                 .as_str()
                 .into_client_request()

@@ -10,7 +10,7 @@
 | `PERFORMANCE` | PASS (baseline captured, perf tests in place) |
 | `REMOTE_PANEL` | PASS (RTP1 message types + WS endpoint) |
 | `REMOTE_LIVE` | PASS (RTP1 + attachment state machine) |
-| `RDG_HEADLESS_LIVE` | PASS (rdg Converges test still PASS; kernel HTTP API + new RTP1 WS; rdg ↔ RTP1 adapter module added) |
+| `RDG_HEADLESS_LIVE` | PASS (the `ridge` CLI binary replaces the retired `rdg`; kernel HTTP API + new RTP1 WS; ridge ↔ RTP1 adapter module added) |
 | `RTP1_CANONICAL` | YES |
 | `RUNTIME_EPOCH_WIRE` | PASS |
 | `REMOTE_RESUME` | PASS |
@@ -19,6 +19,7 @@
 | `SOAK` | PASS-AT-SCALE (16-pane × 64 cycles stress; 1000-cycle resize storm) |
 | `LEGACY_AUTHORITATIVE_PATHS` | 0 (legacy is adapter-only; per-controller input_seq validation now enforced at HTTP adapter boundary) |
 | `RTP1_CLIENT_SHELL_SIDE` | PASS (rtp1_kernel_client module with 13 wire-round-trip tests) |
+| `CLI_UNIFIED` | PASS — `rdg` binary retired; `ridge` is the sole binary in `ridge-cli` |
 
 ```text
 RIDGE_RUNTIME_FOUNDATION_COMPLETE
@@ -77,7 +78,7 @@ through:
 | `performance_baseline.rs` (ignored; 5 perf scenarios) | 5 | PASS |
 | **`rtp1_kernel_client`** (rdg / shell RTP1-over-WS client + legacy mux adapter round-trip) | 13 | PASS |
 | **Total passing kernel tests** | **149** | PASS |
-| **Total passing ridge-cli tests** | **173** lib + (kernel_lifecycle_e2e 4/5 — pre-existing harness-side timeout on `reused_live_pid_clears_registry_without_killing_unknown_process`) | PASS |
+| **Total passing ridge-cli tests** | **175** lib + **`rtp1_ws_full_lifecycle` (live kernel + WS e2e)** + (kernel_lifecycle_e2e 4/5 — pre-existing harness-side timeout on `reused_live_pid_clears_registry_without_killing_unknown_process`) | PASS |
 
 ## 3. RTP1 conformance (SPEC-L2-PROTO-001 §4)
 
@@ -209,28 +210,34 @@ in-process kernel test).
 These do not block the foundation completion but are tracked for
 subsequent iterations:
 
-1. **Shell `KernelPtyReader` migration to RTP1.** The shell's per-pane
-   reader still uses the bounded-seq-v1 HTTP lease API. **The
-   migration surface is now in place** — `packages/ridge-cli/src/rtp1_kernel_client.rs`
-   exposes `Rtp1KernelClient::connect()` returning an `Rtp1Sink` and an
-   `mpsc::Receiver<OutputFrame>` ready to drop into `engine::kernel_pty`.
-   Wiring that into the existing shell `KernelPtyReader` is a
-   follow-up that requires migrating `state.rs::PtyHandle`,
-   `engine/pty.rs`, and the Tauri command layer in `src-tauri/`. The
-   HTTP adapter auto-registers a `legacy-http:<pty_id>` synthetic
-   `controller_id` so the migration can proceed per-pane.
-2. **`rdg` WS client.** The rdg binary's mux channel still uses the
-   private `ridge-remote-ws` framing. **The adapter surface is in place**
-   — `rtp1_kernel_client::tests::legacy_pane_raw_to_rtp1_output_round_trip`
+1. **Shell `KernelPtyReader` migration to RTP1.** **DONE.** The
+   `RIDGE_RTP1_KERNEL=1` env flag now switches
+   `KernelHost::start_subscription` from the legacy HTTP lease API
+   to `Rtp1KernelClient::connect()` (RTP1 over WebSocket). The
+   `rtp1_ws_full_lifecycle` integration test (in
+   `packages/ridge-cli/tests/rtp1_kernel_e2e.rs`) exercises the
+   full path end-to-end against a live kernel binary:
+   `capability_advertise` → `attach_ack` → `input_ack` →
+   `resize_ack` → `ping/pong` → `detach_ack`. The HTTP adapter
+   remains as the legacy fallback (default off the new path).
+2. **`rdg` mux channel ↔ RTP1 adapter.** **DONE at surface.**
+   `rtp1_kernel_client::tests::legacy_pane_raw_to_rtp1_output_round_trip`
    proves the mux `[0x10 PANE_RAW, u32 LE paneId, bytes…]` ↔ RTP1
-   `output` frame conversion is lossless. Wiring the adapter into
-   `mux.rs::channel::PANE_RAW` is a follow-up; until then rdg uses
-   its own adapter.
-3. **Live Tauri/WebGPU e2e (`pnpm e2e:shell`, `pnpm e2e:perf`).** These
+   `output` frame conversion is lossless in both directions. Wiring
+   the adapter into `mux.rs::channel::PANE_RAW` is a follow-up; until
+   then ridge uses its own adapter.
+3. **CLI unification — `rdg` → `ridge`.** **DONE.** The `rdg` binary
+   has been retired. `ridge-cli/Cargo.toml` now builds a single
+   binary named `ridge`; `main.rs`'s clap `#[command(name = "ridge")]`
+   is the canonical entry point. The legacy `rdg` references in docs
+   and comments have been swept; `ridge-cli.service` and
+   `ridge-tmux.service` invoke `/usr/local/bin/ridge` directly. The
+   legacy `~/.config/ridge/rdg.log` path is now `ridge.log`.
+4. **Live Tauri/WebGPU e2e (`pnpm e2e:shell`, `pnpm e2e:perf`).** These
    require a release build + headed Windows runner. The kernel-side
    test coverage above is the authoritative substitute for this
    iteration.
-4. **Per-controller input_seq wire validation.** **DONE.** Both the
+5. **Per-controller input_seq wire validation.** **DONE.** Both the
    RTP1 WS adapter (`rtp1_ws::handle_attach` / `handle_detach`) and
    the legacy HTTP adapter (`domain::domain_pty_write`) validate
    `controller_id` against the registry's attached set; unmatched

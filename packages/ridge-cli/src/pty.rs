@@ -1,6 +1,6 @@
 //! CLI shell projection of the kernel PTY registry.
 //!
-//! PTY spawn/write/resize/destroy semantics live in `ridge-kernel`; rdg owns
+//! PTY spawn/write/resize/destroy semantics live in `ridge-kernel`; ridge owns
 //! only terminal presentation and its lossless output receiver.
 
 use std::fs;

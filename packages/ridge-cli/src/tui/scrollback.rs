@@ -1,6 +1,6 @@
 //! 每 pane 的**原始 PTY 输出环**（#21）——为远端订阅回放做缓冲。
 //!
-//! rdg LAN host 的 `subscribe-pane` 目前只挂上一个 broadcast 订阅，而 broadcast 只
+//! ridge LAN host 的 `subscribe-pane` 目前只挂上一个 broadcast 订阅，而 broadcast 只
 //! 携带**订阅之后**的字节；于是一个新连/重连的控制端在有新输出前只能看到**黑屏**。
 //! 本环记录最近的原始 PTY 字节，让 `subscribe-pane` 在挂接实时流前先回放历史。
 //!

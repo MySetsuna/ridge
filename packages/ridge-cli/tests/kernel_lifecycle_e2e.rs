@@ -36,7 +36,7 @@ fn run_rdg(binary: &Path, data_dir: &Path, args: &[&str]) -> std::process::Outpu
         &mut rdg_command(binary, data_dir, args),
         Duration::from_secs(15),
     )
-    .unwrap_or_else(|error| panic!("rdg {args:?}: {error}"))
+    .unwrap_or_else(|error| panic!("ridge {args:?}: {error}"))
 }
 
 fn ensure_rdg(binary: &Path, data_dir: &Path) -> std::process::ExitStatus {
@@ -44,13 +44,13 @@ fn ensure_rdg(binary: &Path, data_dir: &Path) -> std::process::ExitStatus {
         &mut rdg_command(binary, data_dir, &["kernel", "ensure"]),
         Duration::from_secs(15),
     )
-    .unwrap_or_else(|error| panic!("rdg kernel ensure: {error}"))
+    .unwrap_or_else(|error| panic!("ridge kernel ensure: {error}"))
 }
 
 fn spawn_rdg(binary: &Path, data_dir: &Path, args: &[&str]) -> Child {
     rdg_command(binary, data_dir, args)
         .spawn()
-        .unwrap_or_else(|error| panic!("spawn rdg {args:?}: {error}"))
+        .unwrap_or_else(|error| panic!("spawn ridge {args:?}: {error}"))
 }
 
 fn wait_for_endpoint(data_dir: &Path, timeout: Duration) -> KernelEndpoint {
@@ -131,7 +131,7 @@ fn mcp_tool(endpoint: &KernelEndpoint, id: u64, name: &str, arguments: Value) ->
 
 #[test]
 fn standalone_rdg_converges_to_one_kernel_and_serves_domain_and_mcp() {
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_rdg"));
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_ridge"));
     let data_dir = isolated_data_dir();
     fs::create_dir_all(&data_dir).unwrap();
     let _cleanup = KernelCleanup {
@@ -293,7 +293,7 @@ fn standalone_rdg_converges_to_one_kernel_and_serves_domain_and_mcp() {
 
 #[test]
 fn detached_kernel_survives_client_process_exit_and_second_attach() {
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_rdg"));
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_ridge"));
     let data_dir = isolated_data_dir();
     fs::create_dir_all(&data_dir).unwrap();
     let _cleanup = KernelCleanup {
@@ -302,13 +302,13 @@ fn detached_kernel_survives_client_process_exit_and_second_attach() {
     };
 
     // The shell/client is disposable: once the detached kernel is healthy,
-    // terminate the waiting rdg process and prove a fresh client can attach
+    // terminate the waiting ridge process and prove a fresh client can attach
     // to the same PID. This guards the Windows CREATE flags / Unix setsid
     // contract instead of only checking logical semaphore convergence.
     let mut client = spawn_rdg(&binary, &data_dir, &["kernel", "ensure"]);
     let endpoint = wait_for_endpoint(&data_dir, Duration::from_secs(8));
     if client.try_wait().unwrap().is_none() {
-        client.kill().expect("terminate disposable rdg client");
+        client.kill().expect("terminate disposable ridge client");
     }
     let _ = client.wait();
 
@@ -325,7 +325,7 @@ fn detached_kernel_survives_client_process_exit_and_second_attach() {
 
 #[test]
 fn reused_live_pid_clears_registry_without_killing_unknown_process() {
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_rdg"));
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_ridge"));
     let data_dir = isolated_data_dir();
     fs::create_dir_all(&data_dir).unwrap();
     let _cleanup = KernelCleanup {
@@ -356,7 +356,7 @@ fn reused_live_pid_clears_registry_without_killing_unknown_process() {
 
 #[test]
 fn live_unhealthy_kernel_keeps_registry_and_refuses_second_instance() {
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_rdg"));
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_ridge"));
     let data_dir = isolated_data_dir();
     fs::create_dir_all(&data_dir).unwrap();
     let _cleanup = KernelCleanup {
@@ -423,7 +423,7 @@ fn wait_for_kernel_marker(
 
 #[test]
 fn kernel_pty_survives_client_detach_and_replays_after_cursor() {
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_rdg"));
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_ridge"));
     let data_dir = isolated_data_dir();
     fs::create_dir_all(&data_dir).unwrap();
     let _cleanup = KernelCleanup {

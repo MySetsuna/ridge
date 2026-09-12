@@ -39,7 +39,7 @@ fn is_quit(ev: &KeyEvent) -> bool {
 
 /// 启动本地交互式 TUI（passthrough 本地 shell）。
 pub async fn run_local(shell: Option<String>, cwd: Option<String>) -> Result<()> {
-    eprintln!("rdg 交互式终端（本地 shell）。按 Ctrl+] 退出。");
+    eprintln!("ridge 交互式终端（本地 shell）。按 Ctrl+] 退出。");
     let (sess, rx) = LocalPtySession::spawn(shell.as_deref(), cwd.as_deref())?;
     run_session(sess, rx).await
 }
@@ -76,7 +76,7 @@ pub async fn run_lan_host_only(
     let totp_ui = totp.clone();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
-    eprintln!("rdg LAN Remote host (headless)");
+    eprintln!("ridge LAN Remote host (headless)");
     // 本机浏览器优先 127.0.0.1：系统/终端若设了 https_proxy（如 127.0.0.1:51081），
     // 访问 https://192.168.x.x:9527 会走代理隧道 → 超时，表现为「像没启动」。
     // no_proxy 通常只含 localhost/127.0.0.1，不含局域网 IP。
@@ -202,7 +202,7 @@ pub async fn run_local_pager(
     session_count: usize,
 ) -> Result<()> {
     let count = session_count.max(1).min(12);
-    eprintln!("rdg 交互式终端（{count} 会话）。Ctrl+Shift+方向键 切换 pane，Ctrl+] 退出。");
+    eprintln!("ridge 交互式终端（{count} 会话）。Ctrl+Shift+方向键 切换 pane，Ctrl+] 退出。");
 
     let mut mgr = workspace::WorkspaceManager::new(workspace::new_shared());
     // 首个 session
@@ -237,7 +237,7 @@ pub async fn run_local_pager(
 
 /// 启动 LAN 控制端 TUI（E4）：连桌面 host、订阅 pane、passthrough 进同一界面。
 pub async fn run_lan(host: String, code: Option<String>, token: Option<String>) -> Result<()> {
-    eprintln!("rdg 远程控制台（LAN）→ {host}。连接中…（按 Ctrl+] 退出）");
+    eprintln!("ridge 远程控制台（LAN）→ {host}。连接中…（按 Ctrl+] 退出）");
     let (sess, rx) = lan_session::connect_lan(&host, code, token).await?;
     run_session(sess, rx).await
 }
@@ -252,7 +252,7 @@ pub async fn run_lan_probe(
 ) -> Result<()> {
     use tokio::time::{sleep, timeout, Duration, Instant};
 
-    eprintln!("rdg LAN 自检 → {host}");
+    eprintln!("ridge LAN 自检 → {host}");
     let (sess, mut rx) = lan_session::connect_lan(&host, code, token).await?;
 
     // 等握手订阅到 pane（最多 5s）。

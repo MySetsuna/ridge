@@ -22,7 +22,7 @@ Ridge 的**无头远控 host**——把一台没有图形界面的 Linux / VPS �
 # 在仓库内构建（standalone crate，不依赖 Tauri/webview）
 cd packages/ridge-cli
 cargo build --release
-# 产物: target/release/rdg
+# 产物: target/release/ridge
 ```
 
 > 默认启用 `rtc` 特性（真实 WebRTC）。受限 CI 上若 `webrtc` 依赖树不可用，可用
@@ -34,7 +34,7 @@ cargo build --release
 ### 1. 配对（一次性）
 
 ```bash
-rdg remote --enable
+ridge remote --enable
 ```
 
 控制台会打印一个配对码，并引导你在已登录的浏览器打开 `https://{base}/activate` 输入。
@@ -43,12 +43,12 @@ rdg remote --enable
 ### 2. 守护运行
 
 ```bash
-rdg remote --daemon
+ridge remote --daemon
 # 可选：指定 shell / 工作目录
-rdg remote --daemon --shell /bin/zsh --cwd /srv/app
+ridge remote --daemon --shell /bin/zsh --cwd /srv/app
 ```
 
-也可一步到位：`rdg remote --enable --daemon`（配对成功后直接进入守护）。
+也可一步到位：`ridge remote --enable --daemon`（配对成功后直接进入守护）。
 
 ### 环境变量
 
@@ -60,9 +60,9 @@ rdg remote --daemon --shell /bin/zsh --cwd /srv/app
 见 `ridge-cli.service` 顶部注释。系统级摘要：
 
 ```bash
-sudo cp target/release/rdg /usr/local/bin/rdg
+sudo cp target/release/ridge /usr/local/bin/ridge
 sudo useradd --system --create-home --home-dir /var/lib/ridge --shell /usr/sbin/nologin ridge
-sudo -u ridge -H /usr/local/bin/rdg remote --enable     # 完成一次配对
+sudo -u ridge -H /usr/local/bin/ridge remote --enable     # 完成一次配对
 sudo cp ridge-cli.service /etc/systemd/system/ridge-cli.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now ridge-cli

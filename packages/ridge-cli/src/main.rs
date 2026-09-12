@@ -1,8 +1,8 @@
-//! rdg — Ridge 无头远控 host（面向无图形界面的 Linux/VPS）。可执行名 `rdg`。
+//! ridge — Ridge 命令行（统一 headless 入口）。
 //!
 //! 用法：
-//!   rdg login --browser     浏览器登录并绑定 device JWT
-//!   rdg remote              使用已绑定凭据运行守护并桥接 PTY
+//!   ridge login --browser     浏览器登录并绑定 device JWT
+//!   ridge remote              使用已绑定凭据运行守护并桥接 PTY
 //!
 //! 架构：设备码流(§4.4) → device JWT 持久化(§3) → 信令 WS(§5, role=host) →
 //!       WebRTC answerer(§0) → DataChannel 上叠 X25519+ChaCha20Poly1305(§7) →
@@ -15,6 +15,8 @@
 //! （`protocol.rs`）。出站 PTY 字节走 0x10 PANE_RAW（带 paneId），JSON-RPC 响应走
 //! 0x11，TOTP 结果走 0x12。cli 经 `$/hello` 只公告 terminal/pty + fs(search/tree)
 //! 能力，controller 据此优雅灰掉 IDE 面板（git/workspace/theme/invoke）。
+//!
+//! 旧 `rdg` 二进制已下线（commit ea0a3afa + 后续）；所有功能并入 `ridge`。
 
 mod batching;
 mod config;
@@ -53,7 +55,7 @@ use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "rdg",
+    name = "ridge",
     version,
     about = "Ridge headless remote host for Linux/VPS"
 )]
@@ -66,7 +68,7 @@ struct Cli {
 enum Command {
     /// 交互式 TUI（默认）：在终端里跑一个可交互会话。无子命令时即进入此模式。
     /// 本轮承载本地 shell（passthrough）；LAN/公网控制端将接入同一界面（见
-    /// docs/plans/rdg-interactive-tui-and-lan.md）。
+    /// docs/plans/ridge-interactive-tui-and-lan.md）。
     Tui(TuiArgs),
 
     /// 账号密码登录并直接激活本机：邮箱+密码登录 → （按需设用户名）→ 绑定设备，
@@ -75,7 +77,7 @@ enum Command {
     Login(LoginArgs),
 
     /// 用已激活的设备凭据（`~/.config/ridge/auth.json`）直接进入守护：连云端 relay、
-    /// 等 controller 接入并桥接 PTY。需先经 `rdg login` 激活（本命令不再交互登录）。
+    /// 等 controller 接入并桥接 PTY。需先经 `ridge login` 激活（本命令不再交互登录）。
     Remote(RemoteArgs),
 
     /// 作为**控制端**连接桌面 LAN host（E4）：WS + 自签 TLS，订阅 pane 后
@@ -91,11 +93,11 @@ enum Command {
     Host(HostArgs),
 
     /// 兼容别名：把本机 Ridge MCP 以 stdio 暴露给客户端。桌面 Ridge 请优先使用独立
-    /// `ridge-mcp` companion；`rdg mcp` 仅为既有无头脚本保留，端点发现实现相同。
+    /// `ridge-mcp` companion；`ridge mcp` 仅为既有无头脚本保留，端点发现实现相同。
     Mcp(McpArgs),
 
     /// 内核生命周期（REQ-RIDGE-KERNEL-HOST-01）：status / stop。
-    /// 深根模式下桌面退出后可用 `rdg kernel stop` 结束仍在跑的桌面宿主内核。
+    /// 深根模式下桌面退出后可用 `ridge kernel stop` 结束仍在跑的桌面宿主内核。
     Kernel(KernelArgs),
 }
 
@@ -115,9 +117,9 @@ enum KernelCommand {
     Ensure,
     /// 领域：agent profiles（经内核 SSOT）。
     Agents,
-    /// 领域：列目录 `rdg kernel fs-list <path>`。
+    /// 领域：列目录 `ridge kernel fs-list <path>`。
     FsList { path: String },
-    /// 领域：Git status `rdg kernel git-status <path>`。
+    /// 领域：Git status `ridge kernel git-status <path>`。
     GitStatus { path: String },
     /// 领域：Remote Host topology（经当前 ridge-kernel SSOT）。
     RemoteHosts,
@@ -167,7 +169,7 @@ struct LoginArgs {
     #[arg(long)]
     browser: bool,
 
-    /// 激活成功后直接进入守护（等价于随后再跑 `rdg remote --daemon`）。
+    /// 激活成功后直接进入守护（等价于随后再跑 `ridge remote --daemon`）。
     #[arg(long)]
     daemon: bool,
 
@@ -187,7 +189,7 @@ struct LoginArgs {
 #[derive(Args)]
 struct RemoteArgs {
     /// 后台守护运行（`remote` 本就以守护为唯一用途；保留此 flag 仅为与文档
-    /// `rdg remote --daemon` 用法一致，传不传都进守护）。
+    /// `ridge remote --daemon` 用法一致，传不传都进守护）。
     #[arg(long)]
     daemon: bool,
 
@@ -303,7 +305,7 @@ async fn run_dashboard() -> Result<()> {
         tui::dashboard::run().await
     } else {
         eprintln!(
-            "用法：rdg [tui|login|remote|connect|tmux]。无子命令时在交互终端进入仪表盘。\n详见 `rdg --help`。"
+            "用法：ridge [tui|login|remote|connect|tmux]。无子命令时在交互终端进入仪表盘。\n详见 `ridge --help`。"
         );
         Ok(())
     }
@@ -429,7 +431,7 @@ fn is_tui_mode(cli: &Cli) -> bool {
 ///
 /// - **headless**（daemon/login/tmux/probe/非 tty）：走 stderr，systemd 收进 journald。
 /// - **TUI**（dashboard/tui/connect）：进 alternate screen，stderr 会糊屏 → 改写日志文件
-///   `~/.config/ridge/rdg.log`（含后台 LAN host / serve / TLS 的日志）；文件不可用时退回 stderr。
+///   `~/.config/ridge/ridge.log`（含后台 LAN host / serve / TLS 的日志）；文件不可用时退回 stderr。
 fn init_tracing(tui: bool) {
     use tracing_subscriber::{fmt, EnvFilter};
     let filter =
@@ -460,7 +462,7 @@ fn init_tracing(tui: bool) {
         .init();
 }
 
-/// TUI 模式的 tracing 文件 writer（零额外依赖）：把日志追加写到 `rdg.log`。
+/// TUI 模式的 tracing 文件 writer（零额外依赖）：把日志追加写到 `ridge.log`。
 #[derive(Clone)]
 struct FileMakeWriter(std::sync::Arc<std::sync::Mutex<std::fs::File>>);
 

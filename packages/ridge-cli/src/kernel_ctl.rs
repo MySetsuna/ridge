@@ -37,7 +37,7 @@ pub fn is_kernel_process_alive(pid: u32) -> bool {
     is_process_alive(pid)
 }
 
-/// 是否有存活内核且不是本 rdg 进程（桌面/独立 kernel 在跑）。
+/// 是否有存活内核且不是本 ridge 进程（桌面/独立 kernel 在跑）。
 pub fn desktop_kernel_running() -> bool {
     match read_endpoint() {
         Some(ep) if ep.pid != std::process::id() && is_process_alive(ep.pid) => true,
@@ -60,9 +60,9 @@ pub fn status_line() -> String {
     }
 }
 
-/// rdg 启动：内核不在则拉起（与桌面 detect-or-spawn 同契约）。
+/// ridge 启动：内核不在则拉起（与桌面 detect-or-spawn 同契约）。
 pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
-    // `rdg host`, `rdg remote --daemon`, the desktop shell and the first pane
+    // `ridge host`, `ridge remote --daemon`, the desktop shell and the first pane
     // can all bootstrap at once. The kernel boot lock is cross-process;
     // use it as a short boot slot so only one caller can spawn while the
     // kernel has not published a healthy endpoint yet.
@@ -103,7 +103,7 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
             ));
         }
     }
-    let bin = std::env::current_exe().map_err(|error| format!("定位 rdg: {error}"))?;
+    let bin = std::env::current_exe().map_err(|error| format!("定位 ridge: {error}"))?;
     spawn_detached(&bin, &[ridge_kernel::client::KERNEL_HOST_ARG])?;
     drop(boot_guard);
     wait_for_running(Duration::from_secs(8)).ok_or_else(|| "ridge-kernel 未在时限内就绪".into())

@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 
 const PID_FILE: &str = "daemon.pid";
 
-/// PID 文件与 `auth.json` / `rdg.log` 同根。
+/// PID 文件与 `auth.json` / `ridge.log` 同根。
 ///
 /// 此前这里用 `BaseDirs::config_dir().join("ridge")`，而 `config::auth_path()` 用
 /// `ProjectDirs("ridge").config_dir()` —— Windows 上前者是 `%APPDATA%\ridge`、后者是
@@ -90,7 +90,7 @@ pub fn status() -> String {
 }
 
 /// Unix daemonize: fork + setsid。依赖系统 `kill` 命令（POSIX 必备）。
-/// 暂不真正 fork（保持在前台 `rdg` 进程内），仅记录 PID 供外部管理。
+/// 暂不真正 fork（保持在前台 `ridge` 进程内），仅记录 PID 供外部管理。
 #[cfg(unix)]
 pub fn start_daemon() -> Result<()> {
     if is_running() {
@@ -145,7 +145,7 @@ pub fn stop_daemon() -> Result<()> {
 pub fn stop_daemon() -> Result<()> {
     let pid = read_pid().context("未找到 PID 文件")?;
     // 守护跑在**本进程**的 tokio 上时 `start_daemon` 记的就是自己的 PID；taskkill 它
-    // 等于自杀（用户按「Stop daemon」整个 rdg 消失）。此路径只处理外部进程。
+    // 等于自杀（用户按「Stop daemon」整个 ridge 消失）。此路径只处理外部进程。
     if pid == std::process::id() {
         remove_pid();
         anyhow::bail!("守护运行在本进程内，请由调用方停止其任务而非结束进程");

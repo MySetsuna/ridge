@@ -160,7 +160,7 @@ mod tests {
 /// relay 的**终态**错误码（重连必然重蹈覆辙：凭据/账号/权限问题，须人工处理）。
 /// 收到即打印可读指引并终止 daemon，而不是无声退避重连——旧行为下 host 看似
 /// "在线"（进程还在）、controller 端却永远停在「正在连接远程桌面」，无从诊断
-/// （iter-61 用户实测 rdg 公网 remote 完全接不上的可疑面之一）。
+/// （iter-61 用户实测 ridge 公网 remote 完全接不上的可疑面之一）。
 const FATAL_SIGNAL_CODES: &[&str] = &[
     "USERNAME_MISMATCH",
     "DEVICE_TOKEN_MISMATCH",
@@ -172,11 +172,11 @@ const FATAL_SIGNAL_CODES: &[&str] = &[
 fn fatal_hint(code: &str) -> &'static str {
     match code {
         "USERNAME_MISMATCH" => {
-            "设备令牌所属账号与租户域名不符：请用该设备所属账号重新 `rdg login`。"
+            "设备令牌所属账号与租户域名不符：请用该设备所属账号重新 `ridge login`。"
         }
-        "DEVICE_TOKEN_MISMATCH" => "设备令牌与当前设备不匹配：请重新激活本机 `rdg login`。",
+        "DEVICE_TOKEN_MISMATCH" => "设备令牌与当前设备不匹配：请重新激活本机 `ridge login`。",
         "DEVICE_NOT_OWNED" => {
-            "该设备不属于当前账号：请在云端控制台确认设备归属，或重新 `rdg login`。"
+            "该设备不属于当前账号：请在云端控制台确认设备归属，或重新 `ridge login`。"
         }
         "DEVICE_PARKED" => "该设备已被停用：请在云端控制台恢复后重试。",
         _ => "请检查云端账号/设备状态后重试。",
@@ -190,7 +190,7 @@ pub async fn run(shell: Option<String>, cwd: Option<String>, root: Option<String
     publish_status("starting", "正在读取设备凭据");
     let auth = match config::load_auth()
         .context("failed to load credentials")?
-        .context("本机尚未激活云端设备：先跑 `rdg login`（或 `rdg login --browser`）绑定本机，再启动公网远控")
+        .context("本机尚未激活云端设备：先跑 `ridge login`（或 `ridge login --browser`）绑定本机，再启动公网远控")
     {
         Ok(auth) => auth,
         Err(error) => {
@@ -260,7 +260,7 @@ pub async fn run(shell: Option<String>, cwd: Option<String>, root: Option<String
                     "session loop error; reconnecting"
                 );
                 // 可见性（iter-62）：连不上中继时旧实现只 warn 进日志再静默退避，前台
-                // `rdg remote` 一片空白，用户只能从控制端的「远程主机当前不在线」反推。
+                // `ridge remote` 一片空白，用户只能从控制端的「远程主机当前不在线」反推。
                 // 把失败原因与下次重试间隔直接打到 stderr（TUI 模式下 stderr 已重定向到
                 // 日志文件，不会糊屏）。
                 eprintln!(

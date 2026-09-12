@@ -1,6 +1,6 @@
 //! 账号密码登录 + 自助激活（替代设备码浏览器回环）。
 //!
-//! `rdg login` 引导流程：
+//! `ridge login` 引导流程：
 //!   1. 读邮箱 + 密码（密码不回显），`POST /auth/login` 取 **user JWT**。
 //!   2. 若账号尚无用户名（试用用户也可设）→ 提示设置 → `POST /auth/set-username`。
 //!   3. 读设备名 → `POST /device/bind`（Bearer user）→ 直接下发 **device JWT** + 公网入口。
@@ -408,7 +408,7 @@ fn print_bound_banner(auth: &AuthFile, public_entry: &str, premium_active: bool)
             "  {DIM}提示：当前为免费/试用，主机可上线展示为「接入」，建立控制通道需订阅。{RESET}"
         );
     }
-    eprintln!("  下一步：运行 {BOLD}rdg remote --daemon{RESET} 开始守护并等待控制端接入。");
+    eprintln!("  下一步：运行 {BOLD}ridge remote --daemon{RESET} 开始守护并等待控制端接入。");
     eprintln!();
 }
 

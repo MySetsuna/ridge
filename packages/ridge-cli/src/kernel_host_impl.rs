@@ -32,12 +32,25 @@ use ridge_remote::serve::UaServeConfig;
 
 use crate::core_host;
 use crate::fs_reuse;
+use crate::rtp1_kernel_client::{Rtp1ClientState, Rtp1KernelClient};
+use ridge_kernel::rtp1_session::HostInfo;
 
 const WORKSPACE_URI_PREFIX: &str = "ridge://kernel-workspace/";
 /// Direct kernel hosts do not expose the desktop-only teammate controller.
 /// The LAN client reads this hint from the workspace snapshot before mounting
 /// background roster polling.
 const KERNEL_HOST_CAPABILITIES: &[&str] = &["pane", "fs", "search", "workspace"];
+
+/// RIDGE_RTP1_KERNEL=1 routes the per-pane subscribe loop through the
+/// RTP1-over-WebSocket kernel client (SPEC-L2-PROTO-001) instead of the
+/// bounded-seq-v1 HTTP lease API. Default off so existing shells keep
+/// working until they migrate.
+fn rtp1_kernel_enabled() -> bool {
+    matches!(
+        std::env::var("RIDGE_RTP1_KERNEL").ok().as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
 
 fn select_endpoint(initial: KernelEndpoint, refreshed: Option<KernelEndpoint>) -> KernelEndpoint {
     refreshed.unwrap_or(initial)
@@ -528,7 +541,11 @@ fn handle_text(
         }
         if id.is_none() {
             if matches!(method, "subscribe-pane" | "subscribe_pane_raw") {
-                start_subscription(&params, host, &snapshot, out_tx, subscriptions);
+                if rtp1_kernel_enabled() {
+                    start_subscription_rtp1(&params, host, &snapshot, out_tx, subscriptions);
+                } else {
+                    start_subscription(&params, host, &snapshot, out_tx, subscriptions);
+                }
             }
             return None;
         }
@@ -1025,6 +1042,155 @@ fn start_subscription(
         }
         let _ = ridge_kernel::client::detach_domain_pty_output(&endpoint, pane_id, lease);
     });
+}
+
+/// RTP1-over-WebSocket variant of [`start_subscription`]. Activated
+/// when `RIDGE_RTP1_KERNEL=1`. Drops the HTTP long-poll loop entirely
+/// (SPEC-L2-PROTO-001 §3.9 P5: RTP1 stays transport-neutral; the
+/// HTTP path remains as the legacy adapter fallback).
+fn start_subscription_rtp1(
+    args: &Value,
+    host: &Arc<KernelHost>,
+    snapshot: &KernelSnapshot,
+    out_tx: &mpsc::UnboundedSender<Message>,
+    subscriptions: &Arc<Mutex<std::collections::HashSet<(Uuid, Uuid)>>>,
+) {
+    let Some((workspace_id, pane_id)) = subscription_target(args, snapshot) else {
+        return;
+    };
+    let Ok(mut active) = subscriptions.lock() else {
+        return;
+    };
+    if !active.insert((workspace_id, pane_id)) {
+        return;
+    }
+    drop(active);
+
+    let endpoint = host.current_endpoint();
+    let tx = out_tx.clone();
+    let host_for_task = host.clone();
+    tokio::spawn(async move {
+        // Fetch the host_info / runtime_epoch via the standard status
+        // endpoint first. The kernel status body carries host_id +
+        // runtime_epoch (set in server.rs).
+        let info = match fetch_host_info(&endpoint).await {
+            Ok(info) => info,
+            Err(error) => {
+                tracing::warn!(target: "ridge_cli::rtp1_kernel",
+                    %error, "host_info fetch failed; falling back to HTTP");
+                return;
+            }
+        };
+        let client = Rtp1KernelClient::new(endpoint.clone(), info.host_id, info.runtime_epoch);
+        let (sink, mut output_rx) = match client
+            .connect(pane_id, workspace_id.to_string(), None)
+            .await
+        {
+            Ok(pair) => pair,
+            Err(error) => {
+                tracing::warn!(target: "ridge_cli::rtp1_kernel",
+                    %error, "RTP1 connect failed");
+                return;
+            }
+        };
+        let mut sink = sink;
+        let mut metadata_buffer = Vec::new();
+        let mut sent_initial_resync = false;
+        loop {
+            tokio::select! {
+                out = output_rx.recv() => {
+                    let Some(frame) = out else { break };
+                    let chunks: Vec<u8> = frame
+                        .frames
+                        .iter()
+                        .flat_map(|c| {
+                            ridge_kernel::rtp1::b64_decode(&c.data_b64).unwrap_or_default()
+                        })
+                        .collect();
+                    if !sent_initial_resync {
+                        // Initial resync carries the scrollback + title
+                        // bundle so legacy controllers see the same
+                        // first frame they expect from the HTTP path.
+                        let scrollback = match tokio::task::spawn_blocking({
+                            let endpoint = endpoint.clone();
+                            move || scrollback_domain_pty(&endpoint, pane_id, 262_144)
+                        }).await {
+                            Ok(Ok(bytes)) => bytes,
+                            _ => Vec::new(),
+                        };
+                        let resync = ridge_remote::pane::pane_resync_frame(
+                            pane_id,
+                            &scrollback,
+                            &ridge_term::term::modes::Modes::default(),
+                            false,
+                        );
+                        if tx.send(Message::Binary(resync)).is_err() {
+                            break;
+                        }
+                        sent_initial_resync = true;
+                    }
+                    if !chunks.is_empty()
+                        && !send_subscription_data(
+                            workspace_id,
+                            pane_id,
+                            &chunks,
+                            &mut metadata_buffer,
+                            &tx,
+                        )
+                    {
+                        break;
+                    }
+                }
+                state_check = async {
+                    client.state().await
+                } => {
+                    if matches!(
+                        state_check,
+                        Rtp1ClientState::Closing | Rtp1ClientState::Detached | Rtp1ClientState::Failed
+                    ) {
+                        break;
+                    }
+                }
+            }
+        }
+        let _ = sink.close().await;
+        let _ = host_for_task;
+    });
+}
+
+async fn fetch_host_info(
+    endpoint: &KernelEndpoint,
+) -> Result<HostInfo, String> {
+    // /v1/status is the only canonical source of (host_id,
+    // runtime_epoch); we go through the public HTTP client. The
+    // client is blocking (uses std::thread internally), so wrap in
+    // spawn_blocking.
+    let endpoint_clone = endpoint.clone();
+    let body = tokio::task::spawn_blocking(move || {
+        ridge_kernel::client::request_json(&endpoint_clone, "GET", "/v1/status", None)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    let host_id = body
+        .get("host_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "status missing host_id".to_string())?
+        .to_string();
+    let runtime_epoch = body
+        .get("runtime_epoch")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "status missing runtime_epoch".to_string())?
+        .to_string();
+    Ok(HostInfo {
+        host_id,
+        runtime_epoch,
+        max_realtime_frame: ridge_kernel::rtp1::MAX_REALTIME_FRAME,
+        max_snapshot_chunk: 256 * 1024,
+        replay_cap_bytes: 256 * 1024,
+        replay_cap_frames: 256,
+        features: vec!["rtp1.v1".into()],
+    })
 }
 
 fn send_subscription_data(

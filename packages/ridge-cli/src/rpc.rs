@@ -265,7 +265,7 @@ pub fn route_method(method: &str, params: &Value) -> Method {
                 .to_string(),
         },
         // 共享 Controller 的 TauriDataProvider 使用这些 canonical 方法名；它们都已在
-        // ridge-core REMOTE_ALLOWLIST + dispatch 中，rdg 仅补齐实际路由，不扩大权限面。
+        // ridge-core REMOTE_ALLOWLIST + dispatch 中，ridge 仅补齐实际路由，不扩大权限面。
         "get_file_tree" | "read_file" | "text_search" => Method::CoreInvoke {
             method: method.to_string(),
             params: params.clone(),

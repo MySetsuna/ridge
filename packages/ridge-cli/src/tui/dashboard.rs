@@ -43,7 +43,7 @@ enum MenuItem {
     StartDaemon,
     StopDaemon,
     Login,
-    /// 仅退出 rdg UI（内核若由桌面承载则继续）。
+    /// 仅退出 ridge UI（内核若由桌面承载则继续）。
     Quit,
     /// 彻底退出内核；桌面仍在时命令行 Y/N 确认。
     QuitKernel,
@@ -58,7 +58,7 @@ impl MenuItem {
             MenuItem::StartDaemon => "Start public Remote",
             MenuItem::StopDaemon => "Stop public Remote",
             MenuItem::Login => "Login / activate device",
-            MenuItem::Quit => "Quit rdg (keep kernel)",
+            MenuItem::Quit => "Quit ridge (keep kernel)",
             MenuItem::QuitKernel => "彻底退出内核",
         }
     }
@@ -128,7 +128,7 @@ pub struct App {
     session_count: usize,
     /// 进程内云守护任务句柄。`start_daemon()` 记的 PID 就是本 TUI 自己的 PID
     /// （守护跑在本进程的 tokio 上），所以「Stop daemon」**绝不能**去 taskkill 那个
-    /// PID —— 那会把整个 rdg 打死。改为 abort 这个任务。
+    /// PID —— 那会把整个 ridge 打死。改为 abort 这个任务。
     daemon_task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -212,7 +212,7 @@ pub async fn run() -> Result<()> {
 
         // 精确监视启动时 attach 的 PID；HTTP 短错不误退，PID 死亡立即联动退出。
         if !kernel_ctl::is_kernel_process_alive(kernel.pid) {
-            app.log("内核已退出，rdg 联动退出".into());
+            app.log("内核已退出，ridge 联动退出".into());
             break;
         }
 
@@ -320,8 +320,8 @@ fn quit_kernel_action(app: &mut App, terminal: &mut DashboardTerminal) -> Result
         }
     }
     match kernel_ctl::stop_kernel() {
-        Ok(()) => println!("内核已结束；rdg 退出"),
-        Err(error) => println!("{error}；rdg 退出"),
+        Ok(()) => println!("内核已结束；ridge 退出"),
+        Err(error) => println!("{error}；ridge 退出"),
     }
     restore_dashboard_terminal(terminal)?;
     app.quit = true;
@@ -403,7 +403,7 @@ fn show_qr_code(app: &mut App) {
         .auth
         .as_ref()
         .map(|auth| auth.device_name.as_str())
-        .unwrap_or("rdg");
+        .unwrap_or("ridge");
     let uri = app.totp.otpauth_uri(device_name);
     let qr = qr_display::render_qr(&uri);
     app.qr_text = format!(
@@ -621,7 +621,7 @@ mod tests {
         assert_eq!(MenuItem::StopLanRemote.label(), "Stop LAN Remote");
         assert_eq!(MenuItem::StartDaemon.label(), "Start public Remote");
         assert_eq!(MenuItem::StopDaemon.label(), "Stop public Remote");
-        assert_eq!(MenuItem::Quit.label(), "Quit rdg (keep kernel)");
+        assert_eq!(MenuItem::Quit.label(), "Quit ridge (keep kernel)");
         assert_eq!(MenuItem::QuitKernel.label(), "彻底退出内核");
     }
 }

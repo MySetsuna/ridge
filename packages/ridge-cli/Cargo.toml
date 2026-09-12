@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Ridge headless remote host for Linux/VPS — device pairing, E2EE WebRTC PTY bridge"
 license = "MIT"
-# 可执行名为 `rdg`（短名，便于在终端直接调用）。包名仍保留 `ridge-cli`
-# 以维持工作区成员路径 / `cargo build -p ridge-cli` 调用不变。
-default-run = "rdg"
+# Binary is `ridge` (canonical CLI for the unified Ridge architecture).
+# The legacy `ridge` shim was removed (see commit ea0a3afa + follow-ups).
+default-run = "ridge"
 
 # Standalone crate. This intentionally does NOT depend on the Tauri `ridge`
 # binary crate (which pulls webview/wasm/wgpu). It reuses the same battle-tested
@@ -24,7 +24,7 @@ default-run = "rdg"
 # us drop the wrapper are listed in the delivery report.
 
 [[bin]]
-name = "rdg"
+name = "ridge"
 path = "src/main.rs"
 
 [dependencies]
@@ -59,7 +59,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # Config paths (~/.config/ridge on Linux)
 directories = "5"
-# Hidden password entry for `rdg login` (no echo on the terminal). Small, no C deps.
+# Hidden password entry for `ridge login` (no echo on the terminal). Small, no C deps.
 rpassword = "7"
 # Sync primitives (same as src-tauri)
 parking_lot = "0.12"
@@ -112,14 +112,14 @@ webrtc = { version = "0.11", optional = true }
 # HTTP server framework for LAN remote web UI
 axum = { version = "0.7", features = ["ws"] }
 # Shared remote-control server infrastructure (TLS + HTTP/WS server lifecycle)。
-# `embed-ui`：rdg 以**单文件**分发（Release 资产 rdg-X.Y.Z-*），exe 旁没有
+# `embed-ui`：ridge 以**单文件**分发（Release 资产 ridge-X.Y.Z-*），exe 旁没有
 # Remote 静态目录缺失 → LAN 远控恒 REMOTE_UI_MISSING。开此 feature 把 `pnpm build:remote`
 # 产物编进二进制（磁盘优先，内嵌兜底），单文件即可开箱服务。
 ridge-remote = { path = "../ridge-remote", features = ["embed-ui"] }
 # §mode-reattach — same terminal kernel the desktop uses, for the headless LAN
-# host's live-modes tracking (ModeTracker). rdg does NOT render; it only needs
+# host's live-modes tracking (ModeTracker). ridge does NOT render; it only needs
 # the current DEC private modes so subscribe/resync frames reattach mouse/alt to
-# the controller's mirror kernel (fixes mobile TUI mouse control over rdg).
+# the controller's mirror kernel (fixes mobile TUI mouse control over ridge).
 # default-features=false skips the wasm-only webgpu stack — native vte core only.
 ridge-term = { path = "../ridge-term", default-features = false }
 
