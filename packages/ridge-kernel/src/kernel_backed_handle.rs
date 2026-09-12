@@ -1,11 +1,12 @@
-//! KernelBackedHandle: a thin wrapper that ties together PtyRegistry
-//! (PTY process authority) + PtyOutputLease (bounded output replay).
-//!
-//! Phase 2 first step: define the type shell-side code should hold once the
-//! PtyHandle dual-source migration lands. Today shell PtyHandle retains
-//! `master`/`writer`/`_child` directly; tomorrow it must hold only this
-//! handle + a kernel client handle. This module is the seam: it touches no
-//! src-tauri internals so we can unit-test it without Tauri.
+//! Legacy compatibility shim (audit D8): historically this wrapped
+//! PtyRegistry + PtyOutputLease for shell-side PtyHandle. After the
+//! RTP1 client (`packages/ridge-cli/src/rtp1_kernel_client.rs`) +
+//! session-layer attachment state machine shipped, the canonical
+//! shell-side mirror is the `Rtp1KernelClient` and the
+//! `AttachmentRegistry` — this file is kept only because
+//! `conformance_kernel_backed.rs` still depends on the public
+//! `ControllerId` / `KernelBackedHandle` types. New code should use
+//! `Rtp1KernelClient` + `Rtp1Sink` directly.
 
 use std::sync::Arc;
 use std::time::Duration;

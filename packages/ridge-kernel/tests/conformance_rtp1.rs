@@ -191,7 +191,7 @@ fn acceptance_session_event_exited_is_canonical() {
         pty_id: uuid::Uuid::nil(),
         code: Some(0),
     };
-    let event = Rtp1Session::build_session_event(&notification);
+    let event = ridge_kernel::rtp1_session::build_session_event(&notification);
     assert!(matches!(event.event, SessionEventKind::Exited));
     assert_eq!(event.code, Some(0));
 }
@@ -363,7 +363,7 @@ fn acceptance_terminated_event_is_broadcast() {
         .block_on(async { rx.recv().await })
         .expect("exit notification");
     assert_eq!(notification.code, Some(0));
-    let event = Rtp1Session::build_session_event(&notification);
+    let event = ridge_kernel::rtp1_session::build_session_event(&notification);
     assert!(matches!(event.event, SessionEventKind::Exited));
 }
 
@@ -455,7 +455,10 @@ fn acceptance_terminal_exited_does_not_implicit_close_session() {
         since_output_seq: 0,
         max_bytes: 1024,
     };
-    match session.handle_replay(&replay).expect("replay ok") {
+    match runtime()
+        .block_on(async { session.handle_replay(&replay).await })
+        .expect("replay ok")
+    {
         ReplayResult::Data(_) | ReplayResult::Lagged { .. } => {}
     }
 }
@@ -640,7 +643,9 @@ fn resync_after_lagged_reports_oldest_seq() {
         since_output_seq: 0,
         max_bytes: 1024,
     };
-    let result = session.handle_replay(&req).expect("replay");
+    let result = runtime()
+        .block_on(async { session.handle_replay(&req).await })
+        .expect("replay");
     match result {
         ReplayResult::Lagged { oldest_seq, head, .. } => {
             assert!(oldest_seq >= 1);

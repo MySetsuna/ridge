@@ -22,9 +22,9 @@ use crate::pty::{
     TerminalLifecycleState,
 };
 use crate::rtp1::{
-    self, frame_from, payload_from, AttachAck, AttachMode, AttachRequest, Capability, DetachAck,
-    DetachRequest, ErrorFrame, Frame, FrameFlags, InputAck, InputAckStatus, MessageType, PingFrame,
-    PongFrame, RawChunk, ReplayData, ReplayRequest, ResizeAck, ResizeOwner, ResizeRequest,
+    self, frame_from, AttachAck, AttachMode, AttachRequest, Capability, DetachAck,
+    DetachRequest, ErrorFrame, Frame, FrameFlags, InputAck, InputAckStatus, MessageType,
+    RawChunk, ReplayData, ReplayRequest, ResizeAck, ResizeOwner, ResizeRequest,
     ResyncRequest, SessionEvent, SessionEventKind, SnapshotChunk,
 };
 
@@ -263,7 +263,7 @@ impl Rtp1Session {
     /// Read up to `max_bytes` of replay data from oldest retained seq at or
     /// after `since_output_seq`. If `since_output_seq` is older than oldest,
     /// returns `Lagged`.
-    pub fn handle_replay(
+    pub async fn handle_replay(
         &self,
         request: &ReplayRequest,
     ) -> Result<ReplayResult, AttachError> {
@@ -273,7 +273,22 @@ impl Rtp1Session {
             .ptys
             .attach_output(terminal_id, Some(request.since_output_seq))
             .map_err(|error| AttachError::UnknownTerminal(error.to_string()))?;
-        let read = futures_lite_blocking(lease);
+        // P2-2 (audit B2 fix): `handle_replay` is now truly async and
+        // does NOT block the runtime. The pre-fix `futures_lite_blocking`
+        // helper called `tokio::Handle::block_on` from inside an async
+        // function, which is a documented anti-pattern on single-threaded
+        // schedulers (deadlock / panic).
+        let read = lease
+            .next(Duration::from_millis(50), 64)
+            .await;
+        // Drop the lease immediately; the read consumed whatever the
+        // hub returned. Holding it past this point would prevent a
+        // subsequent replay call from re-attaching a fresh cursor.
+        drop(lease);
+        let read = match read {
+            Ok(value) => value,
+            Err(_) => PtyOutputRead::Data(Vec::new()),
+        };
         let (frames, head) = match read {
             PtyOutputRead::Data(frames) => {
                 let head = frames.last().map(|f| f.seq).unwrap_or(request.since_output_seq);
@@ -332,27 +347,12 @@ impl Rtp1Session {
         })
     }
 
-    pub fn handle_ping(&self, ping: &PingFrame) -> PongFrame {
-        PingFrame { nonce: ping.nonce }
-    }
-
     pub fn terminal_lifecycle(&self, terminal_id: Uuid) -> Option<TerminalLifecycleState> {
         self.ptys.lifecycle_state(terminal_id)
     }
 
     pub fn subscribe_exit(&self, terminal_id: Uuid) -> Option<broadcast::Receiver<PtyExitNotification>> {
         self.ptys.subscribe_exit(terminal_id)
-    }
-
-    /// Build a `session_event{event:"exited"}` from a PtyExitNotification.
-    pub fn build_session_event(
-        notification: &PtyExitNotification,
-    ) -> SessionEvent {
-        SessionEvent {
-            terminal_id: notification.pty_id.to_string(),
-            event: SessionEventKind::Exited,
-            code: notification.code,
-        }
     }
 
     pub fn build_error(&self, terminal_id: Option<&str>, code: &str, message: &str) -> Frame {
@@ -406,13 +406,30 @@ impl Rtp1Session {
         // base64 adds 4/3 expansion; JSON envelope adds ~80 bytes plus
         // ~25 bytes per chunk. Stay well under MAX_REALTIME_FRAME.
         const RAW_CHUNK_BYTES: usize = 24 * 1024;
+        // P3 (audit D7 fix): inline `make_output_frame` via the
+        // canonical `frame_from` helper. The pre-fix free function
+        // duplicated `rtp1::frame_from` and forced every caller to
+        // import a second symbol.
+        let encode_batch = |chunks: Vec<RawChunk>| -> Frame {
+            let head = chunks
+                .first()
+                .map(|c| c.seq_offset)
+                .unwrap_or_default();
+            let payload = rtp1::OutputFrame {
+                terminal_id: terminal_id.to_string(),
+                output_seq: head,
+                frames: chunks,
+            };
+            frame_from(MessageType::Output, &payload, FrameFlags::empty())
+                .expect("output frame encode never fails")
+        };
         let mut out = Vec::new();
         let mut batch: Vec<RawChunk> = Vec::new();
         let mut batch_bytes: usize = 0;
         for frame in frames {
             let enc_len = rtp1::b64_encode(&frame.data).len();
             if !batch.is_empty() && batch_bytes + enc_len + 256 > rtp1::MAX_REALTIME_FRAME {
-                out.push(make_output_frame(terminal_id, std::mem::take(&mut batch)));
+                out.push(encode_batch(std::mem::take(&mut batch)));
                 batch_bytes = 0;
             }
             // If a single chunk alone exceeds the cap, drop it down so the
@@ -437,7 +454,7 @@ impl Rtp1Session {
                     let tail = frame.data[idx..end].to_vec();
                     let tail_enc = rtp1::b64_encode(&tail);
                     if batch_bytes + tail_enc.len() + 256 > rtp1::MAX_REALTIME_FRAME {
-                        out.push(make_output_frame(terminal_id, std::mem::take(&mut batch)));
+                        out.push(encode_batch(std::mem::take(&mut batch)));
                         batch_bytes = 0;
                     }
                     batch.push(RawChunk {
@@ -450,24 +467,22 @@ impl Rtp1Session {
             }
         }
         if !batch.is_empty() {
-            out.push(make_output_frame(terminal_id, batch));
+            out.push(encode_batch(batch));
         }
         out
     }
 }
 
-pub fn make_output_frame(terminal_id: &str, chunks: Vec<RawChunk>) -> Frame {
-    let head = chunks
-        .first()
-        .map(|c| c.seq_offset)
-        .unwrap_or_default();
-    let payload = crate::rtp1::OutputFrame {
-        terminal_id: terminal_id.to_string(),
-        output_seq: head,
-        frames: chunks,
-    };
-    frame_from(MessageType::Output, &payload, FrameFlags::empty())
-        .expect("output frame encode never fails")
+/// Build a `session_event{event:"exited"}` from a [`PtyExitNotification`].
+/// P3 (audit D3 fix): lifted out of `Rtp1Session` because it has no
+/// session state. Tests call `Rtp1Session::build_session_event`; this
+/// free function is the canonical replacement.
+pub fn build_session_event(notification: &PtyExitNotification) -> SessionEvent {
+    SessionEvent {
+        terminal_id: notification.pty_id.to_string(),
+        event: SessionEventKind::Exited,
+        code: notification.code,
+    }
 }
 
 /// Replay result the session can hand back to clients.
@@ -527,25 +542,6 @@ impl AttachError {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
-
-/// `PtyOutputLease::next` is async; for the RTP1 session we need a
-/// blocking form to read once during attach. We yield once via
-/// `tokio::task::block_in_place` is not appropriate in async contexts,
-/// so wrap the lease in a future-aware helper. For this minimal seam we
-/// expose the helper as a non-async function driven by a runtime handle.
-fn futures_lite_blocking(lease: PtyOutputLease) -> PtyOutputRead {
-    // We do not have a runtime handle here; use a synchronous wait.
-    let handle = tokio::runtime::Handle::try_current();
-    match handle {
-        Ok(handle) => handle.block_on(async move {
-            lease
-                .next(Duration::from_millis(50), 64)
-                .await
-                .unwrap_or(PtyOutputRead::Data(Vec::new()))
-        }),
-        Err(_) => PtyOutputRead::Data(Vec::new()),
-    }
-}
 
 /// Per-controller in-memory attachment registry (SPEC-L2-REMOTE-001 §3.4.5).
 #[derive(Default)]
@@ -837,7 +833,7 @@ mod tests {
             if !last {
                 assert!(frame.flags.contains(FrameFlags::CONTINUATION));
             }
-            let snap: SnapshotChunk = payload_from(frame).unwrap();
+            let snap: SnapshotChunk = rtp1::payload_from(frame).unwrap();
             reassembled.extend_from_slice(&rtp1::b64_decode(&snap.snapshot_bytes_b64).unwrap());
         }
         assert_eq!(reassembled, body);

@@ -233,7 +233,9 @@ fn replay_after_detach_returns_lagged_or_data_not_rebind() {
         since_output_seq: 0,
         max_bytes: 1024,
     };
-    let result = session.handle_replay(&replay).expect("replay");
+    let result = runtime()
+        .block_on(async { session.handle_replay(&replay).await })
+        .expect("replay");
     // After detach, the registry still serves replay; the result is
     // either Data (if any bytes are within the cap) or Lagged. Both
     // are valid; silent rebind would be a different terminal_id.

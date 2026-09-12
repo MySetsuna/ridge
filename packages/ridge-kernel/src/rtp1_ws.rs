@@ -12,7 +12,7 @@ use futures::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::pty::{
-    detached_output_lease, PtyExitNotification, PtyOutputLease, PtyOutputLeaseError,
+    PtyExitNotification, PtyOutputLease, PtyOutputLeaseError,
     PtyOutputRead, PtyRegistry,
 };
 use crate::rtp1::{
@@ -482,7 +482,7 @@ async fn handle_replay(
     session: &Arc<Rtp1Session>,
     req: ReplayRequest,
 ) -> bool {
-    match session.handle_replay(&req) {
+    match session.handle_replay(&req).await {
         Ok(ReplayResult::Data(data)) => {
             if let Ok(frame) = frame_from(MessageType::ReplayData, &data, FrameFlags::empty()) {
                 let _ = send_frame(tx, &frame).await;

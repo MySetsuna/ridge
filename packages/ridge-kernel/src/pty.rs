@@ -1002,16 +1002,6 @@ pub(crate) fn test_output_lease() -> PtyOutputLease {
         .expect("test output lease")
 }
 
-#[doc(hidden)]
-pub fn detached_output_lease() -> PtyOutputLease {
-    // Used as a sentinel holder inside rtp1_ws::LeaseCtx; the real lease is
-    // owned by the spawned output-pump task, so dropping this sentinel here
-    // is safe (no PtyOutputHub is shared).
-    Arc::new(PtyOutputHub::new())
-        .attach(None)
-        .expect("detached output lease")
-}
-
 impl PtyBridge {
     pub fn spawn(
         shell: Option<&str>,
