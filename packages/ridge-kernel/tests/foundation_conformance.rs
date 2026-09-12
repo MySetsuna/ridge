@@ -188,3 +188,28 @@ fn c2_attachment_registry_no_leak() {
         assert!(registry.lookup(&ctrl).is_none(), "leak at iteration {i}");
     }
 }
+
+// ── C16 (handle_resync oldest_seq) ─────────────────────────────────
+
+/// C16 — `handle_resync.oldest_output_seq` must echo the server's
+/// actual oldest retained seq, not the client's `since_output_seq`.
+/// Pre-fix: `request.since_output_seq.unwrap_or(0)` was returned,
+/// which lied to a resyncing client about where the hub's window
+/// actually starts.
+#[test]
+fn c16_handle_resync_returns_server_oldest_seq() {
+    use ridge_kernel::rtp1::ResyncRequest;
+    let (_registry, session, pty) = make_session();
+    // After spawn, output_bounds reports (1, 1) (oldest=1, next=1).
+    let req = ResyncRequest {
+        terminal_id: pty.to_string(),
+        mode: AttachMode::Raw,
+        since_output_seq: Some(999), // client-claimed cursor (lie)
+    };
+    let ack = session.handle_resync(&req).expect("resync");
+    // Server says oldest_output_seq = 1 (the real hub state), not 999.
+    assert_eq!(
+        ack.oldest_output_seq, 1,
+        "oldest_output_seq must be server-truth, not the client's since_output_seq"
+    );
+}

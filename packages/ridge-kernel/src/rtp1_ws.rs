@@ -548,7 +548,42 @@ async fn run_output_pump(
 ) {
     let lease = lease;
     loop {
+        // P1-1 (audit C14 fix): `biased;` makes the exit branch win
+        // ties with the read branch. Without it, when output_tx is
+        // full the `read` branch yields first on every iteration, so
+        // a slow consumer + a PTY that just exited causes the
+        // `session_event{exited}` to be queued behind dozens of
+        // `output` frames, blowing past the SPEC §3.5.4 2-second
+        // `session_event{exited}` budget. With `biased;` the exit
+        // notification is delivered promptly even under backpressure.
         tokio::select! {
+            biased;
+            exit = async {
+                match exit_recv.as_mut() {
+                    Some(rx) => match rx.recv().await {
+                        Ok(notification) => Some(notification),
+                        Err(_) => None,
+                    },
+                    None => std::future::pending::<Option<PtyExitNotification>>().await,
+                }
+            } => {
+                if let Some(notification) = exit {
+                    let event = SessionEvent {
+                        terminal_id: notification.pty_id.to_string(),
+                        event: crate::rtp1::SessionEventKind::Exited,
+                        code: notification.code,
+                    };
+                    if let Ok(frame) = frame_from(MessageType::SessionEvent, &event, FrameFlags::empty()) {
+                        if output_tx.send(frame).await.is_err() {
+                            return;
+                        }
+                    }
+                } else {
+                    // Channel closed (PTY removed from registry) — exit
+                    // the pump so the WS adapter can clean up.
+                    return;
+                }
+            }
             read = lease.next(Duration::from_millis(50), 64) => {
                 match read {
                     Ok(PtyOutputRead::Data(frames)) => {
@@ -576,28 +611,6 @@ async fn run_output_pump(
                     }
                     Err(PtyOutputLeaseError::TimedOut) => continue,
                     Err(_) => return,
-                }
-            }
-            exit = async {
-                match exit_recv.as_mut() {
-                    Some(rx) => match rx.recv().await {
-                        Ok(notification) => Some(notification),
-                        Err(_) => None,
-                    },
-                    None => std::future::pending::<Option<PtyExitNotification>>().await,
-                }
-            } => {
-                if let Some(notification) = exit {
-                    let event = SessionEvent {
-                        terminal_id: notification.pty_id.to_string(),
-                        event: crate::rtp1::SessionEventKind::Exited,
-                        code: notification.code,
-                    };
-                    if let Ok(frame) = frame_from(MessageType::SessionEvent, &event, FrameFlags::empty()) {
-                        if output_tx.send(frame).await.is_err() {
-                            return;
-                        }
-                    }
                 }
             }
         }

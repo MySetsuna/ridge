@@ -568,6 +568,7 @@ impl PtyRegistry {
             cols,
             rows,
         };
+        let info_program_for_timeout = info.program.clone();
         self.ptys.lock().insert(
             launch.id,
             ManagedPty {
@@ -579,6 +580,52 @@ impl PtyRegistry {
                 info,
             },
         );
+
+        // P1-6 (audit C19 fix): `start_timeout` watcher. SPEC §3.1
+        // requires `Starting → Running ≤ 5s; 超时按 Exited 处理`.
+        // Without this, a PTY that spawns but never produces its first
+        // byte (e.g. an Agent shell hung during init) leaves the
+        // registry entry in `Starting` forever, blocking first-frame
+        // resync and suppressing `session_event{exited}` because the
+        // reader task is still parked on `output.recv()`.
+        let timeout_lifecycle = self.lifecycle.clone();
+        let timeout_exit_subs = self.exit_subs.clone();
+        let timeout_id = launch.id;
+        let timeout_program = info_program_for_timeout;
+        let timeout_tx = exit_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let should_fire = {
+                let mut guard = timeout_lifecycle.lock();
+                if let Some(entry) = guard.get_mut(&timeout_id) {
+                    if entry.state == TerminalLifecycleState::Starting {
+                        entry.state = TerminalLifecycleState::Exited;
+                        entry.exit_code = None;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+            if should_fire {
+                let _ = timeout_tx.send(PtyExitNotification {
+                    pty_id: timeout_id,
+                    code: None,
+                });
+                tracing::warn!(
+                    target: "ridge_kernel::pty",
+                    pty_id = %timeout_id,
+                    program = ?timeout_program,
+                    "PTY start_timeout: never produced first byte within 5s"
+                );
+            }
+        });
+        // Hold a weak reference to keep the closure alive.
+        let _ = timeout_lifecycle;
+        let _ = timeout_exit_subs;
+
         Ok(launch.id)
     }
 
@@ -702,6 +749,19 @@ impl PtyRegistry {
     }
 
     pub fn destroy(&self, id: Uuid) -> Result<()> {
+        // P1-5 (audit C18 fix): re-entry safety. If a caller invokes
+        // `destroy` twice (e.g. an HTTP retry on `pane close` while
+        // the bridge kill is still in-flight), the second call must
+        // not skip `begin_destroy` (which closes the output hub with
+        // the proper `Closing` → `Closed` transition for downstream
+        // leases). Idempotent: returns `Ok(())` if the PTY is already
+        // gone (`Reaped`) or already closing.
+        let state = self.lifecycle_state(id);
+        match state {
+            Some(TerminalLifecycleState::Reaped) => return Ok(()),
+            None => return Err(anyhow::anyhow!("PTY not found: {id}")),
+            _ => {}
+        }
         let bridge = self.begin_destroy(id)?;
         if let Err(error) = bridge.destroy() {
             self.cancel_destroy(id);

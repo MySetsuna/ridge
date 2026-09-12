@@ -313,14 +313,21 @@ impl Rtp1Session {
     pub fn handle_resync(&self, request: &ResyncRequest) -> Result<ResyncAck, AttachError> {
         let terminal_id = Uuid::parse_str(&request.terminal_id)
             .map_err(|error| AttachError::InvalidField(format!("terminal_id: {error}")))?;
-        let (_oldest, next) = self
+        let (oldest, next) = self
             .ptys
             .output_bounds(terminal_id)
             .map_err(|error| AttachError::UnknownTerminal(error.to_string()))?;
+        // P1-3 (audit C16 fix): `oldest_output_seq` must echo the
+        // server's actual oldest retained seq, not the client's
+        // `since_output_seq.unwrap_or(0)`. Otherwise a client resyncing
+        // after a `Lagged` notification with `since_output_seq = 0`
+        // is told its resync cursor is `0` even though the hub may
+        // have already GC'd past it, and any subsequent `replay`
+        // request would target a window that no longer exists.
         Ok(ResyncAck {
             terminal_id: request.terminal_id.clone(),
             mode: request.mode,
-            oldest_output_seq: request.since_output_seq.unwrap_or(0),
+            oldest_output_seq: oldest,
             next_output_seq: next,
         })
     }
