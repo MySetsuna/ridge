@@ -967,10 +967,12 @@ pub async fn domain_pty_list(
 #[derive(Deserialize)]
 pub struct PtyWriteRequest {
     pub data_b64: String,
-    /// RTP1 controller_id (SPEC-L2-PROTO-001 §3.4.2 input ownership).
-    /// When absent, the legacy HTTP adapter path applies and the
-    /// kernel auto-registers a synthetic `controller_id` for the
-    /// shell's KernelPtyReader until it migrates to RTP1.
+    /// `controller_id` is **not** accepted from the legacy HTTP path
+    /// (audit C7). A previous version accepted arbitrary body
+    /// `controller_id`, letting any caller with the kernel token
+    /// register a forged id and shadow a legitimate controller's lane.
+    /// The legacy HTTP adapter always uses the synthetic
+    /// `legacy-http:<pty_id>` id; real controllers must move to RTP1.
     #[serde(default)]
     pub controller_id: Option<String>,
 }
@@ -988,17 +990,16 @@ pub async fn domain_pty_write(
         Ok(id) => id,
         Err(body) => return Ok(body),
     };
+    if request.controller_id.is_some() {
+        return Ok(bad_request(
+            "controller_id rejected on legacy HTTP adapter; migrate to RTP1 /v1/rtp1",
+        ));
+    }
     let data = match base64::engine::general_purpose::STANDARD.decode(request.data_b64) {
         Ok(data) => data,
         Err(_) => return Ok(bad_request("data_b64 must be valid base64")),
     };
-    let controller_id = request.controller_id.unwrap_or_else(|| {
-        // Legacy HTTP adapter path. The shell's KernelPtyReader does
-        // not yet speak RTP1, so we register a stable synthetic id and
-        // let it through. When the shell migrates to RTP1, this branch
-        // is unreachable.
-        format!("legacy-http:{}", pty_id)
-    });
+    let controller_id = format!("legacy-http:{}", pty_id);
     st.ptys.attach_controller(pty_id, controller_id.clone());
     match st.ptys.write_with_controller(pty_id, &controller_id, &data) {
         Ok(()) => Ok(Json(json!({ "ok": true }))),
@@ -1014,6 +1015,8 @@ pub async fn domain_pty_write(
 pub struct PtyResizeRequest {
     pub cols: u16,
     pub rows: u16,
+    /// `controller_id` is rejected on legacy HTTP — see
+    /// `PtyWriteRequest::controller_id`.
     #[serde(default)]
     pub controller_id: Option<String>,
 }
@@ -1031,9 +1034,12 @@ pub async fn domain_pty_resize(
         Ok(id) => id,
         Err(body) => return Ok(body),
     };
-    let controller_id = request.controller_id.unwrap_or_else(|| {
-        format!("legacy-http:{}", pty_id)
-    });
+    if request.controller_id.is_some() {
+        return Ok(bad_request(
+            "controller_id rejected on legacy HTTP adapter; migrate to RTP1 /v1/rtp1",
+        ));
+    }
+    let controller_id = format!("legacy-http:{}", pty_id);
     st.ptys.attach_controller(pty_id, controller_id.clone());
     match st.ptys.resize(pty_id, request.cols, request.rows) {
         Ok(()) => Ok(Json(json!({ "ok": true }))),

@@ -111,6 +111,10 @@ pub async fn drive(socket: WebSocket, ctx: WsContext) {
     let active_controller: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let output_pump_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> =
         Arc::new(Mutex::new(None));
+    // Tracks the most recent attach's terminal_id so the post-loop
+    // cleanup can release the kernel-side `attached_controllers`
+    // entry on un-clean WS close. None until the first attach.
+    let current_terminal_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     loop {
         tokio::select! {
@@ -135,6 +139,7 @@ pub async fn drive(socket: WebSocket, ctx: WsContext) {
                             &active_controller,
                             &output_pump_handle,
                             &output_tx,
+                            &current_terminal_id,
                             frame,
                         ).await {
                             break;
@@ -161,6 +166,18 @@ pub async fn drive(socket: WebSocket, ctx: WsContext) {
     let controller_id = active_controller.lock().await.take();
     if let Some(controller_id) = controller_id {
         attachments.unbind(&controller_id);
+        // P0-2 follow-up: also drop the per-PTY controller
+        // registration so a future re-attach from the same
+        // controller_id doesn't inherit a stale lane. Without this,
+        // a WS that closes without a clean `detach` (network drop,
+        // protocol-violation break) would leave the kernel-side
+        // `attached_controllers` set populated forever.
+        let terminal_id_str = current_terminal_id.lock().await.clone();
+        if let Some(terminal_id_str) = terminal_id_str {
+            if let Ok(terminal_id) = uuid::Uuid::parse_str(&terminal_id_str) {
+                session.ptys.detach_controller(terminal_id, &controller_id);
+            }
+        }
     }
 }
 
@@ -174,6 +191,7 @@ async fn handle_frame(
     active_controller: &Arc<Mutex<Option<String>>>,
     output_pump_handle: &Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     output_tx: &OutputTx,
+    current_terminal_id: &Arc<Mutex<Option<String>>>,
     frame: Frame,
 ) -> bool {
     match frame.r#type {
@@ -186,6 +204,7 @@ async fn handle_frame(
                     active_controller,
                     output_pump_handle,
                     output_tx.clone(),
+                    current_terminal_id,
                     req,
                 )
                 .await
@@ -269,6 +288,7 @@ async fn handle_attach(
     active_controller: &Arc<Mutex<Option<String>>>,
     output_pump_handle: &Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     output_tx: OutputTx,
+    current_terminal_id: &Arc<Mutex<Option<String>>>,
     req: AttachRequest,
 ) -> bool {
     let terminal_id = match uuid::Uuid::parse_str(&req.terminal_id) {
@@ -335,10 +355,8 @@ async fn handle_attach(
     }
 
     *active_controller.lock().await = Some(req.controller_id.clone());
-    // Keep the lease sentinel alive for the duration of this connection so
-    // the borrowed &PtyOutputLease in the spawned pump has nothing to do
-    // with a connection-scoped holder.
-    let _ = detached_output_lease();
+    // Track terminal_id for post-loop kernel-side cleanup (P0-2).
+    *current_terminal_id.lock().await = Some(req.terminal_id.clone());
     false
 }
 
@@ -373,6 +391,13 @@ async fn handle_detach(
     if let Ok(terminal_id) = uuid::Uuid::parse_str(&req.terminal_id) {
         session.ptys.detach_controller(terminal_id, &req.controller_id);
     }
+    // P0-2 (audit C2 fix): explicitly unbind the AttachmentRegistry
+    // entry so a subsequent attach from the same controller_id starts
+    // from a clean state. The pre-fix code only transitioned the
+    // record to `Detached` and relied on a post-loop fallback that
+    // ran only if `active_controller` was still set — which `handle_detach`
+    // itself cleared above — so per-cycle records leaked.
+    attachments.unbind(&req.controller_id);
     let mut guard = active_controller.lock().await;
     *guard = None;
     drop(guard);

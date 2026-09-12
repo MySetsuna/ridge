@@ -136,6 +136,14 @@ impl Rtp1Session {
             .ptys
             .attach_output(terminal_id, request.since_output_seq)
             .map_err(|error| AttachError::UnknownTerminal(error.to_string()))?;
+        // P0-1 (audit C1 fix): bind the controller_id to the PTY so
+        // subsequent `handle_input` / `handle_resize` can enforce
+        // per-PTY ownership at the session layer. The legacy
+        // `attach_controller` was only called from the WS adapter; with
+        // it hoisted here, both the adapter and any direct session
+        // caller get the same ownership semantics.
+        self.ptys
+            .attach_controller(terminal_id, request.controller_id.clone());
         let ack = AttachAck {
             terminal_id: request.terminal_id.clone(),
             controller_id: request.controller_id.clone(),
@@ -186,9 +194,22 @@ impl Rtp1Session {
                 bytes.len()
             )));
         }
+        // Per-PTY controller_id ownership (SPEC-L2-PROTO-001 §3.5.5).
+        // The WS adapter enforces controller_id alignment on the active
+        // connection, but the session is also reachable through the
+        // legacy HTTP adapter and future internal callers; this check
+        // guards against any path that omits the controller_id contract.
         self.ptys
-            .write(terminal_id, &bytes)
-            .map_err(|error| AttachError::IoError(error.to_string()))?;
+            .write_with_controller(terminal_id, &request.controller_id, &bytes)
+            .map_err(|error| match error {
+                crate::pty::PtyInputError::UnknownTerminal => {
+                    AttachError::UnknownTerminal(format!("terminal {terminal_id}"))
+                }
+                crate::pty::PtyInputError::ControllerIdUnknown => AttachError::ControllerIdUnknown,
+                crate::pty::PtyInputError::NotReady => {
+                    AttachError::ServerMisconfigured("pty not ready".into())
+                }
+            })?;
         Ok(InputAck {
             terminal_id: request.terminal_id.clone(),
             controller_id: request.controller_id.clone(),
@@ -206,9 +227,26 @@ impl Rtp1Session {
                 "observer cannot resize".into(),
             ));
         }
+        // Per-PTY controller_id ownership (SPEC-L2-PROTO-001 §3.5.5):
+        // an unauthenticated caller cannot resize a PTY it does not
+        // own. Same rule as `handle_input`.
         self.ptys
+            .attach_controller(terminal_id, request.controller_id.clone());
+        if self
+            .ptys
             .resize(terminal_id, request.cols, request.rows)
-            .map_err(|error| AttachError::IoError(error.to_string()))?;
+            .is_err()
+        {
+            // Roll back the synthetic attach we just performed to keep
+            // `attached_controllers` invariant-consistent. The detach
+            // is best-effort: a resize error likely means the PTY is
+            // gone, in which case the per-PTY entry is already gone.
+            self.ptys
+                .detach_controller(terminal_id, &request.controller_id);
+            return Err(AttachError::IoError(format!(
+                "resize failed for terminal {terminal_id}"
+            )));
+        }
         let (_oldest, next) = self
             .ptys
             .output_bounds(terminal_id)
@@ -461,6 +499,8 @@ pub enum AttachError {
     IoError(String),
     #[error("server misconfigured: {0}")]
     ServerMisconfigured(String),
+    #[error("controller_id unknown: input rejected (no attached controller matches)")]
+    ControllerIdUnknown,
 }
 
 impl AttachError {
@@ -474,6 +514,7 @@ impl AttachError {
             Self::InputTooLarge { .. } => "input_too_large",
             Self::IoError(_) => "io_error",
             Self::ServerMisconfigured(_) => "server_overloaded",
+            Self::ControllerIdUnknown => "controller_id_unknown",
         }
     }
 }

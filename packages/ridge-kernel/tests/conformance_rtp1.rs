@@ -213,6 +213,9 @@ fn acceptance_controller_id_is_the_only_input_identity() {
     let (_registry, session, pty) = make_session();
     let req = attach_req(pty, "host-a", "epoch-conformance", "ctrl-1");
     let (_ack, _lease, _state) = session.handle_attach(&req).expect("attach");
+    // P0-1 (audit C1 fix): the session now enforces per-PTY
+    // controller_id ownership at the session layer. An attach binds
+    // `ctrl-1`; writing as `ctrl-other` is rejected.
     let input = InputFrame {
         terminal_id: pty.to_string(),
         controller_id: "ctrl-other".into(),
@@ -220,10 +223,19 @@ fn acceptance_controller_id_is_the_only_input_identity() {
         data_b64: rtp1::b64_encode(b"hello"),
         data_len: 5,
     };
-    // The WS adapter enforces controller_id match, but the session itself
-    // accepts any controller_id paired with a live PTY. The contract is
-    // upheld at the adapter boundary (rtp1_ws::handle_input).
-    assert!(session.handle_input(&input).is_ok());
+    match session.handle_input(&input) {
+        Err(error) => assert_eq!(error.code(), "controller_id_unknown"),
+        Ok(_) => panic!("ctrl-other must be rejected on a PTY owned by ctrl-1"),
+    }
+    // But the bound controller succeeds.
+    let input_ok = InputFrame {
+        terminal_id: pty.to_string(),
+        controller_id: "ctrl-1".into(),
+        input_seq: 1,
+        data_b64: rtp1::b64_encode(b"hello"),
+        data_len: 5,
+    };
+    assert!(session.handle_input(&input_ok).is_ok());
 }
 
 /// §4.9 — snapshot chunks reassemble to full bytes.
@@ -375,12 +387,17 @@ fn acceptance_observer_resize_rejected() {
 /// §3.7.5 — input ownership across controllers.
 #[test]
 fn acceptance_input_ownership_isolated_per_controller() {
-    // The session itself permits input per controller; the WS adapter
-    // enforces controller_id alignment with the active attachment. Here
-    // we validate the lower-level contract: two InputFrames with different
-    // controller_ids are both routable to the underlying PTY.
+    // P0-1 (audit C1 fix): per-PTY controller_id ownership is enforced
+    // at the session layer (not just the WS adapter). Multi-controller
+    // attachment to the same PTY is supported; each controller's lane
+    // is registered on attach, and write must carry the matching id.
     let (_registry, session, pty) = make_session();
+    // Two controllers attach the same PTY.
     let r1 = runtime();
+    for ctrl in ["ctrl-A", "ctrl-B"] {
+        let req = attach_req(pty, "host-a", "epoch-conformance", ctrl);
+        let _ = r1.block_on(async { session.handle_attach(&req) }).expect("attach");
+    }
     for ctrl in ["ctrl-A", "ctrl-B"] {
         let input = InputFrame {
             terminal_id: pty.to_string(),
@@ -392,6 +409,16 @@ fn acceptance_input_ownership_isolated_per_controller() {
         let ack = r1.block_on(async { session.handle_input(&input) }).expect("input");
         assert_eq!(ack.controller_id, ctrl);
     }
+    // A controller that never attached is rejected.
+    let forged = InputFrame {
+        terminal_id: pty.to_string(),
+        controller_id: "ctrl-forged".into(),
+        input_seq: 1,
+        data_b64: rtp1::b64_encode(b"x"),
+        data_len: 1,
+    };
+    let err = r1.block_on(async { session.handle_input(&forged) }).unwrap_err();
+    assert_eq!(err.code(), "controller_id_unknown");
 }
 
 /// §3.7.7 — terminal exit does not force session close (no single-terminal

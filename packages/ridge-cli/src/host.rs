@@ -100,7 +100,21 @@ pub async fn run(requested_port: u16) -> Result<()> {
         host_kernel_pid(&host),
         tls_enabled
     );
-    eprintln!("TOTP: {}", totp.current_code());
+    // P0-12 (audit C13 fix): printing the raw 6-digit TOTP code to
+    // stderr leaks the active seed for the next 30 seconds to any
+    // session that captures stdout (CI logs, `script`, systemd
+    // journal). The TUI shows the code on the dashboard; CLI exposes
+    // it only when `--print-totp` is passed (or `RIDGE_PRINT_TOTP=1`).
+    if std::env::var("RIDGE_PRINT_TOTP").ok().as_deref() == Some("1")
+        || std::env::args().any(|a| a == "--print-totp")
+    {
+        eprintln!("TOTP: {}", totp.current_code());
+    } else {
+        tracing::info!(
+            "host ready; TOTP code visible in the TUI dashboard (not printed to stderr). \
+             Pass --print-totp or RIDGE_PRINT_TOTP=1 to print to stderr."
+        );
+    }
 
     let server = ridge_remote::server_app::run(host, listener, tls_config, shutdown_rx, true);
     tokio::pin!(server);

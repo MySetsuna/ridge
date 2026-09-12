@@ -974,7 +974,48 @@ fn start_subscription(
     drop(active);
     let endpoint = host.current_endpoint();
     let tx = out_tx.clone();
+    let subscriptions_for_task = subscriptions.clone();
     tokio::spawn(async move {
+        // P0-5 + P0-4 (audit C5 + C4 fix): lease + subscriptions
+        // slot are guarded by a Drop type so any early-return path
+        // (scrollback error / next-seq error / attach error / tx send
+        // failure / panicking inner future) still detaches the lease
+        // and releases the (ws, pane) subscription slot. The original
+        // implementation only detached on the normal-exit branch
+        // (`let _ = detach_domain_pty_output(...)` at line 1026), so a
+        // scrollback/attach failure would orphan both the kernel lease
+        // and the local subscription set.
+        struct SubscriptionGuard {
+            endpoint: KernelEndpoint,
+            pane_id: Uuid,
+            lease: Option<uuid::Uuid>,
+            subscriptions:
+                Arc<Mutex<std::collections::HashSet<(Uuid, Uuid)>>>,
+            workspace_id: Uuid,
+        }
+        impl Drop for SubscriptionGuard {
+            fn drop(&mut self) {
+                if let Some(lease) = self.lease.take() {
+                    let _ = ridge_kernel::client::detach_domain_pty_output(
+                        &self.endpoint,
+                        self.pane_id,
+                        lease,
+                    );
+                }
+                if let Ok(mut active) = self.subscriptions.lock() {
+                    active.remove(&(self.workspace_id, self.pane_id));
+                }
+            }
+        }
+
+        let mut guard = SubscriptionGuard {
+            endpoint: endpoint.clone(),
+            pane_id,
+            lease: None,
+            subscriptions: subscriptions_for_task.clone(),
+            workspace_id,
+        };
+
         let scrollback = tokio::task::spawn_blocking({
             let endpoint = endpoint.clone();
             move || scrollback_domain_pty(&endpoint, pane_id, 262_144)
@@ -1005,6 +1046,8 @@ fn start_subscription(
             Ok(Ok(lease)) => lease,
             _ => return,
         };
+        // Hand the lease to the guard so Drop will detach it.
+        guard.lease = Some(lease);
         let frame = ridge_remote::pane::pane_resync_frame(
             pane_id,
             &scrollback,
@@ -1069,6 +1112,7 @@ fn start_subscription_rtp1(
     let endpoint = host.current_endpoint();
     let tx = out_tx.clone();
     let host_for_task = host.clone();
+    let subscriptions_for_task = subscriptions.clone();
     tokio::spawn(async move {
         // Fetch the host_info / runtime_epoch via the standard status
         // endpoint first. The kernel status body carries host_id +
@@ -1082,7 +1126,7 @@ fn start_subscription_rtp1(
             }
         };
         let client = Rtp1KernelClient::new(endpoint.clone(), info.host_id, info.runtime_epoch);
-        let (sink, mut output_rx) = match client
+        let (mut sink, mut output_rx) = match client
             .connect(pane_id, workspace_id.to_string(), None)
             .await
         {
@@ -1090,12 +1134,48 @@ fn start_subscription_rtp1(
             Err(error) => {
                 tracing::warn!(target: "ridge_cli::rtp1_kernel",
                     %error, "RTP1 connect failed");
+                // Best-effort cleanup: release the subscription slot so
+                // a future re-subscribe on the same (ws, pane) is not
+                // silently dropped (audit C4).
+                if let Ok(mut active) = subscriptions_for_task.lock() {
+                    active.remove(&(workspace_id, pane_id));
+                }
                 return;
             }
         };
-        let mut sink = sink;
         let mut metadata_buffer = Vec::new();
-        let mut sent_initial_resync = false;
+
+        // P0-3 (audit C3 fix): the initial resync must be sent BEFORE
+        // waiting for the first output frame. The legacy HTTP path
+        // promises the controller a scrollback + modes bundle on
+        // subscribe; the RTP1 path used to defer that until the first
+        // byte arrived, so a PTY that produced 0 bytes (e.g. `sleep
+        // infinity`) never received the initial resync and the
+        // controller hung on an empty stream.
+        let scrollback = match tokio::task::spawn_blocking({
+            let endpoint = endpoint.clone();
+            move || scrollback_domain_pty(&endpoint, pane_id, 262_144)
+        })
+        .await
+        {
+            Ok(Ok(bytes)) => bytes,
+            _ => Vec::new(),
+        };
+        let resync = ridge_remote::pane::pane_resync_frame(
+            pane_id,
+            &scrollback,
+            &ridge_term::term::modes::Modes::default(),
+            false,
+        );
+        if tx.send(Message::Binary(resync)).is_err() {
+            // Controller closed before we could deliver the initial
+            // resync; release the slot and exit cleanly.
+            if let Ok(mut active) = subscriptions_for_task.lock() {
+                active.remove(&(workspace_id, pane_id));
+            }
+            return;
+        }
+
         loop {
             tokio::select! {
                 out = output_rx.recv() => {
@@ -1107,28 +1187,6 @@ fn start_subscription_rtp1(
                             ridge_kernel::rtp1::b64_decode(&c.data_b64).unwrap_or_default()
                         })
                         .collect();
-                    if !sent_initial_resync {
-                        // Initial resync carries the scrollback + title
-                        // bundle so legacy controllers see the same
-                        // first frame they expect from the HTTP path.
-                        let scrollback = match tokio::task::spawn_blocking({
-                            let endpoint = endpoint.clone();
-                            move || scrollback_domain_pty(&endpoint, pane_id, 262_144)
-                        }).await {
-                            Ok(Ok(bytes)) => bytes,
-                            _ => Vec::new(),
-                        };
-                        let resync = ridge_remote::pane::pane_resync_frame(
-                            pane_id,
-                            &scrollback,
-                            &ridge_term::term::modes::Modes::default(),
-                            false,
-                        );
-                        if tx.send(Message::Binary(resync)).is_err() {
-                            break;
-                        }
-                        sent_initial_resync = true;
-                    }
                     if !chunks.is_empty()
                         && !send_subscription_data(
                             workspace_id,
@@ -1153,7 +1211,19 @@ fn start_subscription_rtp1(
                 }
             }
         }
+        // Best-effort: tell the kernel we are gone. Even if the
+        // request fails (e.g. socket already closed) the kernel will
+        // eventually reap via the WS close detection.
+        if let Err(error) = sink.send_detach(pane_id, Some("subscription-closed".into())).await {
+            tracing::debug!(target: "ridge_cli::rtp1_kernel",
+                %error, "send_detach on close (best effort)");
+        }
         let _ = sink.close().await;
+        // Release the subscription slot so a future subscribe on the
+        // same (ws, pane) is not silently dropped.
+        if let Ok(mut active) = subscriptions_for_task.lock() {
+            active.remove(&(workspace_id, pane_id));
+        }
         let _ = host_for_task;
     });
 }
