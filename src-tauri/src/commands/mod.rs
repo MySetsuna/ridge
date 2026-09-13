@@ -16,3 +16,4 @@ pub mod terminal_font;
 pub mod theme;
 pub mod watch;
 pub mod workspace;
+pub mod terminal_shim;
