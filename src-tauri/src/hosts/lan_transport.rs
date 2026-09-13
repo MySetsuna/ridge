@@ -156,9 +156,16 @@ impl LanOutboundTransport {
     }
 
     fn remove_pending_rpc(&self, method: &str, params: &Value) {
+        // P1-14 (audit C26 fix): compare on a canonical-JSON key
+        // rather than `serde_json::Value::PartialEq`. The pre-fix
+        // equality is type-erased (`1` == `1.0`, `null` == `[]`), so
+        // two semantically-different RPC requests whose numbers or
+        // arrays serialize to the same shape could collide and the
+        // wrong frame would be evicted.
+        let key = canonical_rpc_key(params);
         let mut pending = self.pending_rpc.lock();
         if let Some(index) = pending.iter().position(|(queued_method, queued_params)| {
-            queued_method == method && queued_params == params
+            queued_method == method && canonical_rpc_key(queued_params) == key
         }) {
             let _ = pending.remove(index);
         }
@@ -169,6 +176,35 @@ impl LanOutboundTransport {
             LanConnPhase::Ready | LanConnPhase::Reconnecting => Ok(()),
             other => Err(format!("lan transport not ready: {other:?}")),
         }
+    }
+}
+
+/// P1-14 (audit C26 fix): produce a stable canonical JSON key for a
+/// `serde_json::Value`. Used as the dedup key for the pending RPC
+/// queue; `Value::PartialEq` is type-erased (`1` == `1.0`,
+/// `null` == `[]`), which caused the wrong frame to be evicted on
+/// shape-collisions. Canonical serde_json + sorted keys gives a
+/// stable, type-safe comparison.
+fn canonical_rpc_key(params: &Value) -> String {
+    serde_json::to_string(&canonicalize_for_key(params))
+        .unwrap_or_else(|_| params.to_string())
+}
+
+fn canonicalize_for_key(v: &Value) -> Value {
+    match v {
+        Value::Object(map) => {
+            let mut entries: Vec<(String, Value)> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), canonicalize_for_key(v)))
+                .collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(entries.into_iter().collect())
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonicalize_for_key).collect()),
+        // Numbers: emit integers as integers, floats as floats; do NOT
+        // collapse 1 ↔ 1.0 because the wire layer distinguishes them.
+        // Strings / bools / null are stable as-is.
+        other => other.clone(),
     }
 }
 
