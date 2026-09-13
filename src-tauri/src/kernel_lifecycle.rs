@@ -15,10 +15,6 @@ pub fn kernel_pid_path() -> PathBuf {
     ridge_kernel::registry::kernel_pid_path()
 }
 
-pub fn kernel_json_path() -> PathBuf {
-    ridge_kernel::registry::kernel_json_path()
-}
-
 pub fn read_endpoint() -> Option<KernelEndpoint> {
     ridge_kernel::registry::read_endpoint()
 }

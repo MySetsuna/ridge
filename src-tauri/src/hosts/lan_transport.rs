@@ -284,6 +284,7 @@ pub fn should_auto_reconnect(phase: LanConnPhase) -> bool {
     matches!(phase, LanConnPhase::Failed | LanConnPhase::Reconnecting)
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
