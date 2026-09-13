@@ -189,6 +189,41 @@ fn c2_attachment_registry_no_leak() {
     }
 }
 
+// ── C18 (destroy re-entry safety) ───────────────────────────────────
+
+/// C18 — re-entrant destroy on a Reaped PTY is idempotent. Pre-fix,
+/// a second `destroy` call skipped `begin_destroy` (which closes
+/// the output hub with the proper Closing → Closed transition that
+/// downstream leases check) and jumped straight to `close()`,
+/// causing leases to miss the transition.
+#[test]
+fn c18_destroy_re_entry_is_idempotent() {
+    let registry = PtyRegistry::default();
+    registry.set_runtime_epoch("epoch-c18".into());
+    let pty = rt().block_on(async {
+        registry
+            .spawn_command_for(PtyLaunch {
+                id: uuid::Uuid::new_v4(),
+                program: None,
+                args: &[],
+                cwd: None,
+                workspace_id: None,
+                role: "c18",
+                launch_profile: None,
+                env: None,
+                initial_size: Some((80, 24)),
+            })
+            .expect("spawn")
+    });
+    rt().block_on(async {
+        registry.destroy(pty).expect("first destroy");
+    });
+    // Second destroy on a Reaped PTY must be idempotent.
+    rt().block_on(async {
+        registry.destroy(pty).expect("second destroy is idempotent");
+    });
+}
+
 // ── C16 (handle_resync oldest_seq) ─────────────────────────────────
 
 /// C16 — `handle_resync.oldest_output_seq` must echo the server's

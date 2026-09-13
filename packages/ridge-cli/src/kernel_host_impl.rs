@@ -52,6 +52,26 @@ fn rtp1_kernel_enabled() -> bool {
     )
 }
 
+/// P2-B8: surface the active mode once at startup so operators can
+/// verify the kernel transport without strace'ing the kernel binary.
+/// Always prints; the legacy line indicates the bounded-seq-v1 path.
+pub fn log_kernel_transport_mode() {
+    if rtp1_kernel_enabled() {
+        tracing::info!(
+            target: "ridge_cli::rtp1_kernel",
+            "kernel transport: RTP1-over-WebSocket (RIDGE_RTP1_KERNEL=1); \
+             bounded-seq-v1 HTTP path retained as fallback adapter"
+        );
+        eprintln!("ridge-cli: kernel transport = RTP1-over-WebSocket");
+    } else {
+        tracing::info!(
+            target: "ridge_cli::kernel_host_impl",
+            "kernel transport: bounded-seq-v1 HTTP (legacy adapter); \
+             set RIDGE_RTP1_KERNEL=1 to opt into RTP1"
+        );
+    }
+}
+
 fn select_endpoint(initial: KernelEndpoint, refreshed: Option<KernelEndpoint>) -> KernelEndpoint {
     refreshed.unwrap_or(initial)
 }
@@ -460,6 +480,8 @@ fn kernel_layout_to_ui(value: Value, snapshot: &KernelSnapshot) -> Value {
 }
 
 async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
+    // P2-B8: surface the active kernel transport once per WS upgrade.
+    log_kernel_transport_mode();
     let (mut tx, mut rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
     let subscriptions = Arc::new(Mutex::new(std::collections::HashSet::<(Uuid, Uuid)>::new()));
