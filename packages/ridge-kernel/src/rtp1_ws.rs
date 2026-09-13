@@ -117,8 +117,22 @@ pub async fn drive(socket: WebSocket, ctx: WsContext) {
     let current_terminal_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     loop {
+        // P1-20 (audit C20 fix): the WS read loop uses `biased;` so
+        // `output_rx` is preferred over `rx.next()`. Without it, a
+        // chatty client (frequent pings / large subscription bursts)
+        // can starve the output side while inbound bytes keep
+        // arriving. SPEC §3.5.1 requires the reconnect flow to resume
+        // streaming promptly; the prior inbound-first ordering plus
+        // the symmetric output_tx backpressure hazard meant resume
+        // could stall.
         tokio::select! {
             biased;
+            out = output_rx.recv() => {
+                let Some(frame) = out else { continue };
+                if send_frame(&mut tx, &frame).await.is_err() {
+                    break;
+                }
+            }
             ws_msg = rx.next() => {
                 let Some(msg) = ws_msg else { break };
                 let Ok(msg) = msg else { break };
@@ -149,12 +163,6 @@ pub async fn drive(socket: WebSocket, ctx: WsContext) {
                     Message::Ping(payload) => { let _ = tx.send(Message::Pong(payload)).await; }
                     Message::Pong(_) => {}
                     _ => {}
-                }
-            }
-            out = output_rx.recv() => {
-                let Some(frame) = out else { continue };
-                if send_frame(&mut tx, &frame).await.is_err() {
-                    break;
                 }
             }
         }
