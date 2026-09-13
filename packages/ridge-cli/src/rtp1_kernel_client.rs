@@ -47,7 +47,7 @@ impl Rtp1ClientState {
             Self::Attached => "attached",
             Self::Reconnecting => "reconnecting",
             Self::Desynced => "desynced",
-            Self::Closing => "Closing",
+            Self::Closing => "closing",
             Self::Failed => "failed",
         }
     }
