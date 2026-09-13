@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use sha2::{Digest, Sha256};
+use super::terminal_input_seq::{
+    decide_input_sequence, validate_input_identity, InputSequenceDecision,
+};
 use super::terminal_shim::kernel_structured_env;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
@@ -1707,62 +1710,7 @@ async fn write_to_pty_async(
     write_to_resolved_pty(&state, wid, pane_id, data).await
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum InputSequenceDecision {
-    Duplicate,
-    Apply,
-}
 
-fn validate_input_identity(
-    input_source_id: Option<String>,
-    input_sequence: Option<u64>,
-) -> Result<Option<(String, u64)>, AppError> {
-    match (input_source_id, input_sequence) {
-        (None, None) => Ok(None),
-        (Some(source_id), Some(sequence))
-            if !source_id.is_empty()
-                && source_id.len() <= 64
-                && source_id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-                && sequence > 0 =>
-        {
-            Ok(Some((source_id, sequence)))
-        }
-        _ => Err(AppError::PtyError(
-            "inputSourceId/inputSequence must be a valid pair".into(),
-        )),
-    }
-}
-
-fn decide_input_sequence(
-    state: &crate::state::PtyInputSequenceState,
-    requested: u64,
-    digest: [u8; 32],
-) -> Result<InputSequenceDecision, AppError> {
-    if requested < state.last_sequence {
-        return Err(AppError::PtyError(format!(
-            "stale terminal input sequence: last {}, got {}",
-            state.last_sequence, requested
-        )));
-    }
-    if requested == state.last_sequence {
-        if state.last_digest == Some(digest) {
-            return Ok(InputSequenceDecision::Duplicate);
-        }
-        return Err(AppError::PtyError(
-            "terminal input sequence reused with different data".into(),
-        ));
-    }
-    if requested != state.last_sequence.saturating_add(1) {
-        return Err(AppError::PtyError(format!(
-            "terminal input sequence gap: expected {}, got {}",
-            state.last_sequence.saturating_add(1),
-            requested
-        )));
-    }
-    Ok(InputSequenceDecision::Apply)
-}
 
 async fn write_to_resolved_pty(
     state: &AppState,
