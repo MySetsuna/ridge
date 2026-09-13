@@ -151,9 +151,13 @@ impl ReconnectSupervisor {
             return Some(Duration::from_millis(delay_ms.unwrap()));
         }
 
-        // Host reachable: resubscribe
+        // Host reachable: resubscribe.
+        // P1-13 (audit C25 fix): do NOT bump stats.attempts here.
+        // `bump_attempt` (called when the host was unreachable) already
+        // incremented `stats.attempts` so this transition counts as
+        // ONE attempt. Pre-fix this line double-counted every
+        // unreachable → reachable transition.
         self.set_phase(host_id, SupervisorPhase::Resubscribing, None);
-        self.stats.attempts.fetch_add(1, Ordering::SeqCst);
         if cancelled.load(Ordering::SeqCst) {
             self.set_phase(host_id, SupervisorPhase::Cancelled, None);
             return None;
