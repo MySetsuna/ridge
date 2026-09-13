@@ -1070,6 +1070,16 @@ fn start_subscription(
         };
         // Hand the lease to the guard so Drop will detach it.
         guard.lease = Some(lease);
+        // P3-D9 (audit D9 surface layer): the bytes emitted to the
+        // rdg controller use `ridge_remote::pane::pane_frame` /
+        // `pane_resync_frame` — the same wire format that the legacy
+        // mux channel `PANE_RAW` produced. When the kernel is reached
+        // via RTP1 (`RIDGE_RTP1_KERNEL=1`), this is the
+        // mux-PANE_RAW adapter: it consumes RTP1 output frames and
+        // emits the legacy mux byte format so existing rdg
+        // controllers continue to work. New code should consume RTP1
+        // directly; this adapter remains only as a transport-boundary
+        // seam (SPEC-L2-PROTO-001 §3.9 P5).
         let frame = ridge_remote::pane::pane_resync_frame(
             pane_id,
             &scrollback,
