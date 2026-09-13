@@ -24,21 +24,22 @@
 | `P1_HIGH_FIXES` | PASS — 6 audit bugs fixed (C14/C16/C18/C19/C20/C25); C26 canonical-key dedup fixed (P1-14); remaining P1 items are larger Tauri-side refactors |
 | `P2_B_CLASS_CLEANUP` | PASS — dead code removed (`detached_output_lease`, `futures_lite_blocking`, `handle_ping`, `make_output_frame`); `build_session_event` lifted to free function; `kernel_backed_handle.rs` marked legacy; `parking_lot` unused-dep noted |
 | `BASELINE_REPORT` | PASS — `artifacts/perf/baseline-2026-09-13.md` with reproducible numbers |
+| `STRUCTURAL_REORG` | PASS — `terminal_shim` + `terminal_input_seq` extracted from `terminal.rs` (3231 → ~3048 LOC); D11b input_seq + D11a shim completed; C12 partial dead-code swept |
 
 ```text
 RIDGE_RUNTIME_FOUNDATION_COMPLETE
 ```
 
-> **v4 / hardened + cleaned + baselined** — this update ships the
-> audit-driven P0 critical bug fixes (per-controller ownership
-> enforced at session layer; lease scopeguards; unbind on detach;
-> HTTP controller_id forgery closed; TOTP stderr leak gated) plus the
-> full P1 high-priority batch (biased output pump, server-truth resync
-> oldest_seq, destroy re-entry safety, start_timeout, output-first
-> main loop, single-attempt counter, canonical-key dedup). P2
-> cleanup removes dead code. Baseline report captured for future
-> optimization PRs. Full audit + change plan lives at
-> `~/.claude/plans/bug-whimsical-dawn.md`.
+> **v5 / hardened + cleaned + baselined + restructured** — this update
+> ships the audit-driven P0 critical bug fixes (per-controller
+> ownership enforced at session layer; lease scopeguards; unbind on
+> detach; HTTP controller_id forgery closed; TOTP stderr leak gated)
+> plus the full P1 high-priority batch (biased output pump,
+> server-truth resync oldest_seq, destroy re-entry safety,
+> start_timeout, output-first main loop, single-attempt counter,
+> canonical-key dedup). P2 cleanup removes dead code. Baseline
+> report captured. Terminal.rs split into focused sub-modules. Full
+> audit + change plan lives at `~/.claude/plans/bug-whimsical-dawn.md`.
 
 ---
 
