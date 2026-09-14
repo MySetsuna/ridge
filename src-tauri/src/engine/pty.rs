@@ -1091,3 +1091,89 @@ pub fn spawn_pty_reader(
             reader.finish();
         });
 }
+
+    // ── v8-1 PtyBackend discriminator tests ─────────────────────────────
+
+    fn stub_handle_with(kernel: bool, remote: bool) -> PtyHandle {
+        pty_handle_stub(kernel, remote)
+    }
+
+    fn kernel_ref_stub() -> crate::engine::kernel_pty::KernelPtyRef {
+        crate::engine::kernel_pty::KernelPtyRef {
+            endpoint: ridge_kernel::client::running_endpoint().expect("kernel endpoint"),
+            id: uuid::Uuid::new_v4(),
+            after_seq: None,
+        }
+    }
+
+    fn local_stub() -> (Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>, Box<dyn Write + Send>) {
+        use portable_pty::native_pty_system;
+        let pair = native_pty_system()
+            .openpty(portable_pty::PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+            .expect("test pty pair");
+        let writer = pair.master.take_writer().expect("writer");
+        (Arc::new(Mutex::new(pair.master)), writer)
+    }
+
+    /// Build a Pty_handle_stub used only by the discriminator tests
+    /// (avoids pulling in spawn_pty_reader + a real PTY).
+    fn pty_handle_stub(kernel: bool, remote: bool) -> PtyHandle {
+        let (master, writer) = local_stub();
+        let mut handle = PtyHandle {
+            master,
+            writer: Arc::new(Mutex::new(writer)),
+            input_sink: PtyInputSink::new(
+                Arc::new(Mutex::new(Box::new(std::io::sink()))),
+                "test:pty_backend",
+            ),
+            _child: None,
+            native_ref: None,
+            native_cancel: None,
+            remote_ref: if remote {
+                Some(crate::hosts::RemoteRef {
+                    host_id: "test".into(),
+                    host_label: "test".into(),
+                    remote_pane_id: uuid::Uuid::new_v4().to_string(),
+                    kind: crate::hosts::HostKind::Rdg,
+                })
+            } else {
+                None
+            },
+            kernel_ref: if kernel { Some(kernel_ref_stub()) } else { None },
+            job: None,
+            child_pid: None,
+            resize_silence_deadline: Arc::new(AtomicI64::new(0)),
+            parser: Arc::new(Mutex::new(PaneParser::new(24, 80, 100))),
+            delta_mode: Arc::new(AtomicBool::new(false)),
+            workspace: Arc::new(Mutex::new(uuid::Uuid::new_v4())),
+        };
+        if remote {
+            handle.remote_ref = handle.remote_ref.clone();
+        }
+        handle
+    }
+
+    #[test]
+    fn pty_backend_discriminator_reports_kernel_when_kernel_ref_present() {
+        let h = stub_handle_with(true, false);
+        assert_eq!(h.backend(), PtyBackend::Kernel);
+        let _ = h.kernel_ref_or_panic();
+    }
+
+    #[test]
+    fn pty_backend_discriminator_reports_remote_when_remote_ref_present() {
+        let h = stub_handle_with(false, true);
+        assert_eq!(h.backend(), PtyBackend::Remote);
+    }
+
+    #[test]
+    fn pty_backend_discriminator_falls_back_to_local_when_neither_set() {
+        let h = stub_handle_with(false, false);
+        assert_eq!(h.backend(), PtyBackend::Local);
+    }
+
+    #[test]
+    fn pty_backend_kernel_takes_priority_over_remote() {
+        let h = stub_handle_with(true, true);
+        assert_eq!(h.backend(), PtyBackend::Kernel);
+    }
