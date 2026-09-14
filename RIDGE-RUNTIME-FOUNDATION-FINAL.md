@@ -102,7 +102,7 @@ through:
 | **`rtp1_kernel_client`** (rdg / shell RTP1-over-WS client + legacy mux adapter round-trip) | 13 | PASS |
 | **Total passing kernel tests** | **157** (lib 78 + conformance_kernel_backed 7 + conformance_replay 4 + conformance_runtime 3 + conformance_rtp1 26 + kernel_backend_waterfall 2 + foundation_conformance 8 + stability_fault 13 + terminal_live 16) | PASS |
 | **Total passing ridge-cli tests** | **175** lib + **`rtp1_ws_full_lifecycle` (live kernel + WS e2e)** + (kernel_lifecycle_e2e 4/5 — pre-existing harness-side timeout on `reused_live_pid_clears_registry_without_killing_unknown_process`) | PASS |
-| **ridge lib unit tests** | **267** (`cargo test -p ridge --lib`) | PASS |
+| **ridge lib unit tests** | **268** (`cargo test -p ridge --lib`) | PASS |
 
 ## 3. RTP1 conformance (SPEC-L2-PROTO-001 §4)
 
