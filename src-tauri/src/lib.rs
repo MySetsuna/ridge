@@ -26,8 +26,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::commands::{
-    clipboard_files, clipboard_image, fs_watch, git, pane, process, project, ridge_file, settings,
-    terminal, terminal_font, theme, watch, workspace,
+    clipboard_files, clipboard_image, fs_watch, git, kernel_install, pane, process, project,
+    ridge_file, settings, terminal, terminal_font, theme, watch, workspace,
 };
 use crate::db::ProjectStore;
 use crate::state::AppState;
@@ -411,7 +411,7 @@ pub fn run() {
             clipboard_files::write_clipboard_file_paths,
             clipboard_files::read_clipboard_sequence,
             terminal::resize_pane,
-            terminal::reattach_kernel_ptys,
+            kernel_install::reattach_kernel_ptys,
             terminal::clear_pane_terminal,
             terminal::set_pane_delta_mode,
             terminal::register_pane_delta_channel,
