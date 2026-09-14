@@ -124,6 +124,16 @@ mod tests {
         drop(sink);
     }
 
+    /// v8-3: PtyInputSink::controller_id() returns the id supplied at
+    /// construction. Used by the kernel-side lane enforcement path
+    /// (P0-1 audit) to attribute writes to the correct controller.
+    #[test]
+    fn pty_input_sink_controller_id_round_trips() {
+        let writer: Box<dyn Write + Send> = Box::new(ChannelWriter(mpsc::channel().0));
+        let sink = PtyInputSink::new(Arc::new(Mutex::new(writer)), "desktop:test-session");
+        assert_eq!(sink.controller_id(), "desktop:test-session");
+    }
+
     #[tokio::test]
     async fn pty_input_sink_reports_worker_write_failure() {
         let writer: Box<dyn Write + Send> = Box::new(FailingWriter);
