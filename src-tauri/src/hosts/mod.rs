@@ -10,6 +10,7 @@ pub mod history_commands;
 pub mod lan_transport;
 pub mod live_backpressure;
 pub mod outbound;
+pub mod rtp1_outbound;
 pub mod reconnect_supervisor;
 
 use parking_lot::{Mutex, RwLock};
