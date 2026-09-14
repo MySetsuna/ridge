@@ -111,7 +111,7 @@ mod tests {
     async fn pty_input_sink_preserves_order_across_batched_writes() {
         let (tx, rx) = mpsc::channel();
         let writer: Box<dyn Write + Send> = Box::new(ChannelWriter(tx));
-        let sink = PtyInputSink::new(Arc::new(Mutex::new(writer)));
+        let sink = PtyInputSink::new(Arc::new(Mutex::new(writer)), "engine:pty-reader");
 
         sink.send(b"first".to_vec()).await.unwrap();
         sink.send(b"second".to_vec()).await.unwrap();
@@ -127,7 +127,7 @@ mod tests {
     #[tokio::test]
     async fn pty_input_sink_reports_worker_write_failure() {
         let writer: Box<dyn Write + Send> = Box::new(FailingWriter);
-        let sink = PtyInputSink::new(Arc::new(Mutex::new(writer)));
+        let sink = PtyInputSink::new(Arc::new(Mutex::new(writer)), "engine:pty-reader");
 
         let error = sink.send(b"input".to_vec()).await.unwrap_err();
 
@@ -137,7 +137,7 @@ mod tests {
     #[tokio::test]
     async fn pty_input_sink_times_out_a_blocked_writer() {
         let writer: Box<dyn Write + Send> = Box::new(SlowWriter);
-        let sink = PtyInputSink::new(Arc::new(Mutex::new(writer)));
+        let sink = PtyInputSink::new(Arc::new(Mutex::new(writer)), "engine:pty-reader");
 
         let error = sink
             .send_with_timeout(b"input".to_vec(), Duration::from_millis(20))
@@ -392,13 +392,36 @@ struct PtyInputRequest {
 
 /// Bounded stdin lane. The worker owns the potentially blocking ConPTY/kernel
 /// write and preserves byte order; callers receive a bounded write result.
+///
+/// `controller_id` is propagated alongside every write so the kernel
+/// can enforce per-PTY input ownership (SPEC-L2-PROTO-001 §3.5.5).
+/// The desktop Tauri path passes a stable `desktop:<session_uuid>`
+/// (one per process); the ridge-cli RTP1 client passes its own
+/// `controller_id`. The legacy `legacy-http:<pty_id>` synthetic id
+/// is no longer used by any production path.
 pub struct PtyInputSink {
     sender: SyncSender<PtyInputRequest>,
     closed: Arc<AtomicBool>,
+    controller_id: Arc<String>,
 }
 
 impl PtyInputSink {
-    pub fn new(writer: Arc<Mutex<Box<dyn Write + Send>>>) -> Arc<Self> {
+    /// Construct a sink that forwards `controller_id` alongside every write.
+    /// Callers MUST supply a real id; tests that explicitly want the
+    /// kernel's `legacy-http:<pty_id>` synthetic id can pass
+    /// `format!("legacy-http:{}", pty_id)` but production code never does.
+    pub fn new(
+        writer: Arc<Mutex<Box<dyn Write + Send>>>,
+        controller_id: impl Into<String>,
+    ) -> Arc<Self> {
+        let controller_id: Arc<String> = Arc::new(controller_id.into());
+        Self::with_arc(writer, controller_id)
+    }
+
+    fn with_arc(
+        writer: Arc<Mutex<Box<dyn Write + Send>>>,
+        controller_id: Arc<String>,
+    ) -> Arc<Self> {
         let (sender, receiver) = mpsc::sync_channel::<PtyInputRequest>(PTY_INPUT_QUEUE_CAPACITY);
         let closed = Arc::new(AtomicBool::new(false));
         let worker_closed = Arc::clone(&closed);
@@ -440,7 +463,16 @@ impl PtyInputSink {
         if spawned.is_err() {
             closed.store(true, Ordering::Release);
         }
-        Arc::new(Self { sender, closed })
+        Arc::new(Self {
+            sender,
+            closed,
+            controller_id,
+        })
+    }
+
+    /// The controller_id this sink forwards on every write.
+    pub fn controller_id(&self) -> &str {
+        &self.controller_id
     }
 
     pub async fn send(&self, data: Vec<u8>) -> Result<(), String> {

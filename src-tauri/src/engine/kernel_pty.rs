@@ -115,6 +115,13 @@ pub struct KernelPtyWriter {
 
 impl Write for KernelPtyWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        // v8-3 controller_id propagation lives at the desktop PtyInputSink
+        // layer (see PtyInputSink::write_with_controller in pty.rs). The
+        // kernel-side per-PTY lane enforcement (P0-1) accepts the id via
+        // the body's controller_id field; PtyInputSink currently does
+        // not feed it into this Write call. The next round will switch
+        // PtyInputSink to a callback that calls write_domain_pty_with_controller
+        // directly so the per-PTY lane is attributed end-to-end.
         write_domain_pty(&self.reference.endpoint, self.reference.id, buf)
             .map(|_| buf.len())
             .map_err(io_error)

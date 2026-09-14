@@ -1228,7 +1228,7 @@ pub(crate) fn activate_pane_pty_state(
     let handle = PtyHandle {
         master: pending.master.clone(),
         writer: pending.writer.clone(),
-        input_sink: crate::engine::pty::PtyInputSink::new(pending.writer.clone()),
+        input_sink: crate::engine::pty::PtyInputSink::new(pending.writer.clone(), "desktop:pending"),
         _child: Some(child),
         native_ref: None,
         native_cancel: None,

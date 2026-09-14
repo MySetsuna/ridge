@@ -32,7 +32,7 @@ pub(crate) fn install_kernel_pty(
         .try_clone_reader()
         .map_err(|error| error.to_string())?;
     let writer = make_writer(reference.clone());
-    let input_sink = crate::engine::pty::PtyInputSink::new(writer.clone());
+    let input_sink = crate::engine::pty::PtyInputSink::new(writer.clone(), "desktop:default");
     let parser = Arc::new(Mutex::new(PaneParser::new(rows.max(1), cols.max(1), 2000)));
     let handle = PtyHandle {
         master,
