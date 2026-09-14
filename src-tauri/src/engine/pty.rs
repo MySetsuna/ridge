@@ -270,27 +270,31 @@ fn pane_cwd_matches(existing: Option<&Path>, normalized: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Ownership-aware PTY handle (B22 audit grouping).
+/// v9-5 PtyHandle ownership sub-structs (Phase A of true-enum refactor).
 ///
-/// Fields are conceptually grouped by which backing PTY they describe:
+/// The fields are conceptually grouped by which backing PTY they describe:
 /// * **Kernel-backed (canonical)**: `kernel_ref`, `input_sink`,
 ///   `workspace`, `resize_silence_deadline`, `parser`, `delta_mode`.
-///   New code should set only these.
 /// * **Legacy local PTY**: `master`, `writer`, `_child`, `native_ref`,
-///   `native_cancel`, `child_pid`. Kept for in-flight desktop
-///   migration paths; not used by the canonical kernel install.
-/// * **Cross-host remote**: `remote_ref`, `job`. Used for foreign
-///   (remote-controlled) panes whose bytes never touch local ConPTY.
+///   `native_cancel`, `child_pid`.
+/// * **Cross-host remote**: `remote_ref`, `job`.
 ///
 /// Canonical — used by `install_kernel_pty` + RTP1 WS path.
 pub struct PtyHandle {
+    /// Canonical: kernel-backed reference. `None` → local PTY; `Some`
+    /// → kernel PTY (the canonical path post-migration).
+    pub kernel_ref: Option<crate::engine::kernel_pty::KernelPtyRef>,
+    /// Canonical input lane. Both local + kernel paths use this writer.
+    pub input_sink: Arc<PtyInputSink>,
+    /// Windows job object for tree-level kill.
+    pub job: Option<crate::teammate::job_object::JobHandle>,
+    /// Cross-host: foreign (rdg-era) pane reference.
+    pub remote_ref: Option<crate::hosts::RemoteRef>,
     /// Local PTY master (legacy `portable_pty::native_pty_system` path).
     /// **Deprecated** for new code: kernel-backed is canonical.
     pub master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     /// Local PTY writer (legacy local path).
     pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    /// Canonical input lane. Both local + kernel paths use this writer.
-    pub input_sink: Arc<PtyInputSink>,
     /// Legacy: held for local PTY children only.
     pub _child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     /// Legacy: `(program_path, pty_slot)` for the native PTY before
@@ -299,13 +303,6 @@ pub struct PtyHandle {
     /// Legacy: cancel flag flipped by `kill_pty_process_tree` for
     /// the in-flight native reader.
     pub native_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    /// Cross-host: foreign (rdg-era) pane reference.
-    pub remote_ref: Option<crate::hosts::RemoteRef>,
-    /// Canonical: kernel-backed reference. `None` → local PTY; `Some`
-    /// → kernel PTY (the canonical path post-migration).
-    pub kernel_ref: Option<crate::engine::kernel_pty::KernelPtyRef>,
-    /// Windows job object for tree-level kill.
-    pub job: Option<crate::teammate::job_object::JobHandle>,
     /// Legacy: PID of the local ConPTY child (kernel ref doesn't have
     /// a `Child` since the kernel owns the process).
     pub child_pid: Option<u32>,
@@ -319,6 +316,37 @@ pub struct PtyHandle {
     /// Current workspace owning this handle. Cross-workspace dock updates
     /// the same Arc so the reader can emit and finish without restarting.
     pub workspace: Arc<Mutex<Uuid>>,
+}
+
+/// Subset of fields used by the legacy local-PTY path. v9-5 Phase A:
+/// public re-export so call sites that need a stable name can opt in.
+pub struct LocalPtyFields {
+    pub master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    pub _child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
+    pub native_ref: Option<(String, usize)>,
+    pub native_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub child_pid: Option<u32>,
+}
+
+/// Subset of fields used by the kernel-backed (canonical) path.
+pub struct KernelPtyFields {
+    pub kernel_ref: crate::engine::kernel_pty::KernelPtyRef,
+}
+
+/// Subset of fields used by the cross-host (remote / foreign) path.
+pub struct RemotePtyFields {
+    pub remote_ref: crate::hosts::RemoteRef,
+    pub job: Option<crate::teammate::job_object::JobHandle>,
+}
+
+/// Shared canonical fields used by all backends.
+pub struct CanonicalPtyFields {
+    pub input_sink: Arc<PtyInputSink>,
+    pub parser: Arc<Mutex<PaneParser>>,
+    pub delta_mode: Arc<AtomicBool>,
+    pub workspace: Arc<Mutex<Uuid>>,
+    pub resize_silence_deadline: Arc<AtomicI64>,
 }
 
 impl PtyHandle {
