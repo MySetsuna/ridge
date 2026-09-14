@@ -91,6 +91,7 @@ pub mod wire {
 
 /// 可注入的 mock 传输：记录 RPC，可回灌 pane raw。
 #[derive(Default)]
+// (was #[cfg(test)])
 pub struct MockOutboundTransport {
     pub rpc_log: Mutex<Vec<(String, Value)>>,
     #[allow(dead_code)]
@@ -487,7 +488,7 @@ impl OutboundRegistry {
     }
 }
 
-#[cfg(test)]
+// (was #[cfg(test)])
 mod tests {
     use super::*;
 

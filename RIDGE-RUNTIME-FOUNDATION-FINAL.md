@@ -22,6 +22,8 @@
 | `CLI_UNIFIED` | PASS — `rdg` binary retired; `ridge` is the sole binary in `ridge-cli` |
 | `P0_CRITICAL_FIXES` | PASS — 7 audit bugs fixed (C1/C2/C3/C4/C5/C7/C13); regression suite at `foundation_conformance.rs` |
 | `P1_HIGH_FIXES` | PASS — 6 audit bugs fixed (C14/C16/C18/C19/C20/C25); C26 canonical-key dedup fixed (P1-14); remaining P1 items are larger Tauri-side refactors |
+| `TYPES_HARDENING` | **PASS** — Pty_backend discriminator (v8-1) + per-sink `controller_id` (v8-3) + `PtyBackend {Kernel, Local, Remote}` enum + canonical accessors |
+| **LIVE_E2E** | **PASS partial** — `scripts/rtp1-kernel-e2e.mjs` end-to-end RTP1 WS harness against real kernel subprocess (v8-6); full CI workflow integration gated on release build + headed runner |
 | `P2_B_CLASS_CLEANUP` | PASS — dead code removed (`detached_output_lease`, `futures_lite_blocking`, `handle_ping`, `make_output_frame`); `build_session_event` lifted to free function; `kernel_backed_handle.rs` marked legacy; `parking_lot` unused-dep noted |
 | `BASELINE_REPORT` | PASS — `artifacts/perf/baseline-2026-09-13.md` with reproducible numbers |
 | `STRUCTURAL_REORG` | PASS — `terminal_shim` + `terminal_input_seq` + `kernel_install` extracted from `terminal.rs` (3231 → ~2712 LOC); D11a + D11b + D11c shim/input_seq/install_kernel completed; C12 partial dead-code swept |
