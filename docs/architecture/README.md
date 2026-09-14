@@ -32,12 +32,16 @@ docs/architecture/
 
 ## 文档地图
 
-按阅读顺序：
+按阅读顺序（图在 `images/` 下 GitHub 直接渲染）：
 
 1. **00-overview.md** — 第一次来必看。组件拓扑、模块边界、不变量。
+   ![overview](images/00-overview.svg)
 2. **10-kernel.md** — kernel 是 PTY / lifecycle / output_seq 的唯一权威。
 3. **20-rtp1-wire.md** — kernel ↔ remote 的 canonical wire。
+   ![rtp1-frame](images/20-rtp1-frame.svg)
 4. **30-remote-lifecycle.md** — attachment state machine + 重连 / 恢复剧本。
+   ![terminal-lifecycle](images/30-terminal-lifecycle.svg)
+   ![attachment-lifecycle](images/30-attachment-lifecycle.svg)
 5. **40-cli.md** — headless host（ridge / 旧 rdg）的内部架构。
 6. **50-desktop-tauri.md** — Tauri 桌面端 + WebGPU。
 7. **60-data-flow.md** — 跨模块端到端追踪。
