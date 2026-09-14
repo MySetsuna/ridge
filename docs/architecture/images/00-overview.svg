@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">
+  <style>
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1; rx: 6; }
+    .kernel { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; rx: 6; }
+    .rtp1 { fill: #fff8c5; stroke: #9a6700; stroke-width: 1; rx: 4; }
+    .desktop { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1; rx: 6; }
+    .remote { fill: #fbefff; stroke: #8250df; stroke-width: 1; rx: 6; }
+    .label { fill: #24292f; font-weight: 600; }
+    .sub { fill: #57606a; }
+    .arrow { stroke: #57606a; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead); }
+    .arrow-rtp1 { stroke: #9a6700; stroke-width: 2; fill: none; marker-end: url(#arrowhead-rtp1); }
+    .arrow-http { stroke: #0969da; stroke-width: 1.5; fill: none; stroke-dasharray: 4 3; marker-end: url(#arrowhead-http); }
+    .legend-box { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; rx: 6; }
+  </style>
+  <defs>
+    <marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#57606a"/>
+    </marker>
+    <marker id="arrowhead-rtp1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9a6700"/>
+    </marker>
+    <marker id="arrowhead-http" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0969da"/>
+    </marker>
+  </defs>
+
+  <text x="360" y="28" text-anchor="middle" class="label" font-size="14">Ridge 系统拓扑 v9</text>
+  <text x="360" y="46" text-anchor="middle" class="sub">RTP1-over-WebSocket 是 canonical，HTTP 是 legacy adapter</text>
+
+  <g transform="translate(220,80)">
+    <rect class="kernel" x="0" y="0" width="280" height="120" rx="8"/>
+    <text x="140" y="22" text-anchor="middle" class="label">ridge-kernel</text>
+    <text x="140" y="40" text-anchor="middle" class="sub">Runtime Authority</text>
+    <text x="140" y="62" text-anchor="middle" class="sub">· PtyRegistry (唯一)</text>
+    <text x="140" y="78" text-anchor="middle" class="sub">· PtyOutputHub (256 KiB/256 frames)</text>
+    <text x="140" y="94" text-anchor="middle" class="sub">· runtime_epoch (UUID v7)</text>
+    <text x="140" y="110" text-anchor="middle" class="sub">· /v1/rtp1 WS · /v1/domain/ptys HTTP</text>
+  </g>
+
+  <g transform="translate(20,260)">
+    <rect class="desktop" x="0" y="0" width="180" height="100" rx="8"/>
+    <text x="90" y="22" text-anchor="middle" class="label">Desktop</text>
+    <text x="90" y="40" text-anchor="middle" class="sub">Tauri (src-tauri/)</text>
+    <text x="90" y="62" text-anchor="middle" class="sub">· PtyHandle enum</text>
+    <text x="90" y="78" text-anchor="middle" class="sub">· KernelPtyWriter</text>
+    <text x="90" y="94" text-anchor="middle" class="sub">· WebGPU renderer</text>
+  </g>
+
+  <g transform="translate(280,260)">
+    <rect class="rtp1" x="0" y="0" width="180" height="100" rx="8"/>
+    <text x="90" y="22" text-anchor="middle" class="label">ridge-cli</text>
+    <text x="90" y="40" text-anchor="middle" class="sub">(legacy rdg)</text>
+    <text x="90" y="62" text-anchor="middle" class="sub">· Rtp1KernelClient</text>
+    <text x="90" y="78" text-anchor="middle" class="sub">· mux PANE_RAW adapter</text>
+    <text x="90" y="94" text-anchor="middle" class="sub">· RIDGE_RTP1_KERNEL=1</text>
+  </g>
+
+  <g transform="translate(540,260)">
+    <rect class="remote" x="0" y="0" width="180" height="100" rx="8"/>
+    <text x="90" y="22" text-anchor="middle" class="label">Remote</text>
+    <text x="90" y="40" text-anchor="middle" class="sub">Browser · mobile · CLI</text>
+    <text x="90" y="62" text-anchor="middle" class="sub">· /v1/rtp1 WS attach</text>
+    <text x="90" y="78" text-anchor="middle" class="sub">· controller_id per pane</text>
+    <text x="90" y="94" text-anchor="middle" class="sub">· since_output_seq resume</text>
+  </g>
+
+  <!-- arrows -->
+  <line class="arrow-rtp1" x1="110" y1="260" x2="280" y2="200" />
+  <line class="arrow-rtp1" x1="370" y1="260" x2="360" y2="200" />
+  <line class="arrow-rtp1" x1="450" y1="260" x2="430" y2="200" />
+  <line class="arrow-http" x1="110" y1="200" x2="160" y2="180" />
+  <line class="arrow-http" x1="370" y1="200" x2="380" y2="180" />
+  <line class="arrow-http" x1="540" y1="200" x2="500" y2="180" />
+
+  <!-- legend -->
+  <g transform="translate(20,380)">
+    <rect class="legend-box" x="0" y="0" width="680" height="30" rx="4"/>
+    <line class="arrow-rtp1" x1="14" y1="15" x2="50" y2="15" />
+    <text x="58" y="19" class="sub">RTP1 WS (canonical)</text>
+    <line class="arrow-http" x1="220" y1="15" x2="256" y2="15" />
+    <text x="264" y="19" class="sub">HTTP /v1/domain/ptys (legacy adapter)</text>
+    <line class="arrow" x1="500" y1="15" x2="536" y2="15" />
+    <text x="544" y="19" class="sub">其他调用</text>
+  </g>
+</svg>

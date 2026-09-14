@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 320" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">
+  <style>
+    .state { fill: #ddf4ff; stroke: #0969da; stroke-width: 2; }
+    .state-final { fill: #dafbe1; stroke: #1a7f37; stroke-width: 2; }
+    .state-error { fill: #ffebe9; stroke: #cf222e; stroke-width: 2; }
+    .label { fill: #24292f; font-weight: 600; font-size: 13; }
+    .sub { fill: #57606a; font-size: 11; }
+    .arrow { stroke: #57606a; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+    .arrow-error { stroke: #cf222e; stroke-width: 1.5; fill: none; marker-end: url(#arrow-error); }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#57606a"/>
+    </marker>
+    <marker id="arrow-error" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#cf222e"/>
+    </marker>
+  </defs>
+
+  <text x="360" y="26" text-anchor="middle" class="label" font-size="14">Terminal Lifecycle v9 (SPEC-L2-REMOTE-001 §3.1)</text>
+  <text x="360" y="46" text-anchor="middle" class="sub">kernel-owned; monotonic; session_event{exited} 必发；Reaped 后 attach 必拒</text>
+
+  <!-- Starting -->
+  <g transform="translate(40,90)">
+    <rect class="state" x="0" y="0" width="120" height="60" rx="6"/>
+    <text x="60" y="22" text-anchor="middle" class="label">Starting</text>
+    <text x="60" y="40" text-anchor="middle" class="sub">5s start_timeout</text>
+  </g>
+
+  <!-- Running -->
+  <g transform="translate(220,90)">
+    <rect class="state" x="0" y="0" width="120" height="60" rx="6"/>
+    <text x="60" y="22" text-anchor="middle" class="label">Running</text>
+    <text x="60" y="40" text-anchor="middle" class="sub">first byte</text>
+  </g>
+
+  <!-- Exited -->
+  <g transform="translate(400,90)">
+    <rect class="state-error" x="0" y="0" width="120" height="60" rx="6"/>
+    <text x="60" y="22" text-anchor="middle" class="label">Exited</text>
+    <text x="60" y="40" text-anchor="middle" class="sub">EOF / signaled</text>
+  </g>
+
+  <!-- Reaped -->
+  <g transform="translate(580,90)">
+    <rect class="state-final" x="0" y="0" width="120" height="60" rx="6"/>
+    <text x="60" y="22" text-anchor="middle" class="label">Reaped</text>
+    <text x="60" y="40" text-anchor="middle" class="sub">lease 全部 detach</text>
+  </g>
+
+  <!-- arrows -->
+  <line class="arrow" x1="160" y1="120" x2="220" y2="120" />
+  <text x="190" y="114" text-anchor="middle" class="sub">first byte</text>
+  <line class="arrow" x1="340" y1="120" x2="400" y2="120" />
+  <text x="370" y="114" text-anchor="middle" class="sub">EOF</text>
+  <line class="arrow" x1="520" y1="120" x2="580" y2="120" />
+  <text x="550" y="114" text-anchor="middle" class="sub">GC</text>
+
+  <!-- start_timeout -->
+  <path class="arrow-error" d="M100,150 C100,180 100,180 100,150" stroke-dasharray="3,2" />
+  <text x="105" y="170" class="sub">5s no byte → Exited (start_timeout)</text>
+
+  <!-- invariants -->
+  <g transform="translate(40,210)">
+    <rect fill="#ffffff" stroke="#d0d7de" x="0" y="0" width="640" height="92" rx="6"/>
+    <text x="14" y="18" class="label">不变量</text>
+    <text x="14" y="38" class="sub">· Exited 不可回退</text>
+    <text x="14" y="54" class="sub">· 转换 attach 必须发 session_event{exited}</text>
+    <text x="14" y="70" class="sub">· Reaped 后任何 attach 必返 error{code:"unknown_terminal"}</text>
+    <text x="14" y="86" class="sub">· v1 不支持 Idle；suspend/idle 留待后续 spec</text>
+  </g>
+</svg>

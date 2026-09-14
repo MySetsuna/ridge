@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 280" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">
+  <style>
+    .label { fill: #24292f; font-weight: 600; }
+    .sub { fill: #57606a; }
+    .byte { fill: #ddf4ff; stroke: #0969da; stroke-width: 1; }
+    .byte-ff { fill: #fff8c5; stroke: #9a6700; stroke-width: 1; }
+    .byte-payload { fill: #dafbe1; stroke: #1a7f37; stroke-width: 1; }
+    .label-text { fill: #24292f; font-family: ui-monospace, monospace; font-size: 11; }
+    .legend { fill: #57606a; }
+    .frame { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; rx: 4; }
+  </style>
+
+  <text x="360" y="26" text-anchor="middle" class="label" font-size="14">RTP1 Frame Envelope v1</text>
+  <text x="360" y="46" text-anchor="middle" class="sub">5-byte header + payload (max 64 KiB realtime / 256 KiB chunked)</text>
+
+  <g transform="translate(40,80)">
+    <rect class="byte" x="0"   y="0" width="32" height="32"/>
+    <rect class="byte" x="32"  y="0" width="32" height="32"/>
+    <rect class="byte" x="64"  y="0" width="32" height="32"/>
+    <rect class="byte" x="96"  y="0" width="32" height="32"/>
+    <rect class="byte" x="128" y="0" width="32" height="32"/>
+    <rect class="byte-payload" x="160" y="0" width="180" height="32"/>
+
+    <text x="16"  y="22" text-anchor="middle" class="label-text">'R'</text>
+    <text x="48"  y="22" text-anchor="middle" class="label-text">'T'</text>
+    <text x="80"  y="22" text-anchor="middle" class="label-text">'P'</text>
+    <text x="112" y="22" text-anchor="middle" class="label-text">'1'</text>
+    <text x="144" y="22" text-anchor="middle" class="label-text">flags</text>
+    <text x="180" y="22" class="label-text"> payload_len u32 LE</text>
+    <text x="320" y="22" class="label-text"> payload (≤ 64 KiB realtime / ≤ 256 KiB chunked)</text>
+
+    <text x="16"  y="50" text-anchor="middle" class="sub">4 B</text>
+    <text x="48"  y="50" text-anchor="middle" class="sub">magic</text>
+    <text x="144" y="50" text-anchor="middle" class="sub">1 B</text>
+    <text x="180" y="50" class="sub">4 B</text>
+    <text x="320" y="50" class="sub">≤ 64 KiB</text>
+  </g>
+
+  <g transform="translate(40,170)">
+    <rect class="frame" x="0" y="0" width="640" height="40" rx="4"/>
+    <text x="14" y="16" class="label">flags bits</text>
+    <text x="14" y="32" class="sub">bit0 = continuation (snapshot/replay only) · bit1 = end-of-stream · bit2-7 reserved (MUST 0)</text>
+  </g>
+
+  <g transform="translate(40,220)">
+    <rect class="frame" x="0" y="0" width="640" height="48" rx="4"/>
+    <text x="14" y="18" class="label">realtime frame</text>
+    <text x="14" y="34" class="sub">output / input / delta / title / cwd / error / ping / pong  — payload_len ≤ 64 KiB, continuation = 0</text>
+  </g>
+</svg>
