@@ -311,6 +311,44 @@ pub struct PtyHandle {
     pub workspace: Arc<Mutex<Uuid>>,
 }
 
+impl PtyHandle {
+    /// Backend discriminator (v8-1 / B22 follow-through). Returns
+    /// `Kernel` when `kernel_ref.is_some()`, then `Remote` when
+    /// `remote_ref.is_some()`, then `Local` (the legacy fallback).
+    /// A handle in a clean migration should always report `Kernel`.
+    pub fn backend(&self) -> PtyBackend {
+        if self.kernel_ref.is_some() {
+            PtyBackend::Kernel
+        } else if self.remote_ref.is_some() {
+            PtyBackend::Remote
+        } else {
+            PtyBackend::Local
+        }
+    }
+
+    /// Canonical accessor for the kernel PTY reference. Panics if the
+    /// handle is not kernel-backed — callers that need to switch on
+    /// backend should use [`PtyHandle::backend`] first.
+    pub fn kernel_ref_or_panic(&self) -> &crate::engine::kernel_pty::KernelPtyRef {
+        self.kernel_ref
+            .as_ref()
+            .expect("PtyHandle::kernel_ref_or_panic called on non-kernel handle")
+    }
+
+    /// Canonical accessors for the canonical fields. These are the
+    /// fields new code should use; the public fields remain for the
+    /// legacy migration paths.
+    pub fn delta_mode(&self) -> &Arc<AtomicBool> {
+        &self.delta_mode
+    }
+    pub fn workspace(&self) -> &Arc<Mutex<Uuid>> {
+        &self.workspace
+    }
+    pub fn parser(&self) -> &Arc<Mutex<PaneParser>> {
+        &self.parser
+    }
+}
+
 /// Subset of fields used by the legacy local-PTY path. New code should
 /// route through `kernel_ref` instead.
 #[allow(dead_code)]
@@ -321,6 +359,26 @@ pub(crate) struct LocalPtyOwnership {
     pub native_ref: Option<(String, usize)>,
     pub native_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub child_pid: Option<u32>,
+}
+
+/// Which backing PTY a [`PtyHandle`] currently owns.
+///
+/// `v8-1` (audit B22 follow-through): every PtyHandle belongs to
+/// exactly one of these backends. The compiler cannot enforce this
+/// today (all fields are `Option<T>` and live on a single struct)
+/// but every `install_*_pty` call site sets exactly one discriminator
+/// and never another. Use [`PtyHandle::backend`] + the matching
+/// accessor (e.g. [`PtyHandle::master_or_panic`]) instead of touching
+/// `master` / `kernel_ref` / `remote_ref` directly when adding new code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PtyBackend {
+    /// Canonical: kernel-backed PTY. This is the path new code must use.
+    Kernel,
+    /// Legacy: local ConPTY via `portable_pty::native_pty_system`.
+    /// Kept for in-flight desktop migration paths only.
+    Local,
+    /// Cross-host: pane is controlled by a foreign rdg controller.
+    Remote,
 }
 
 const PTY_INPUT_QUEUE_CAPACITY: usize = 256;
