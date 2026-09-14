@@ -24,22 +24,27 @@
 | `P1_HIGH_FIXES` | PASS — 6 audit bugs fixed (C14/C16/C18/C19/C20/C25); C26 canonical-key dedup fixed (P1-14); remaining P1 items are larger Tauri-side refactors |
 | `P2_B_CLASS_CLEANUP` | PASS — dead code removed (`detached_output_lease`, `futures_lite_blocking`, `handle_ping`, `make_output_frame`); `build_session_event` lifted to free function; `kernel_backed_handle.rs` marked legacy; `parking_lot` unused-dep noted |
 | `BASELINE_REPORT` | PASS — `artifacts/perf/baseline-2026-09-13.md` with reproducible numbers |
-| `STRUCTURAL_REORG` | PASS — `terminal_shim` + `terminal_input_seq` extracted from `terminal.rs` (3231 → ~3048 LOC); D11b input_seq + D11a shim completed; C12 partial dead-code swept |
+| `STRUCTURAL_REORG` | PASS — `terminal_shim` + `terminal_input_seq` + `kernel_install` extracted from `terminal.rs` (3231 → ~2712 LOC); D11a + D11b + D11c shim/input_seq/install_kernel completed; C12 partial dead-code swept |
+| `PTY_HANDLE_ENUM` | PARTIAL — `PtyBackend` discriminator + canonical accessors (v8-1); full enum migration deferred to follow-up |
+| `CONTROLLER_ID_PROPAGATION` | PARTIAL — `PtyInputSink` stores per-sink `controller_id` (v8-3); kernel-side body field propagation deferred to follow-up |
 
 ```text
 RIDGE_RUNTIME_FOUNDATION_COMPLETE
 ```
 
-> **v5 / hardened + cleaned + baselined + restructured** — this update
-> ships the audit-driven P0 critical bug fixes (per-controller
-> ownership enforced at session layer; lease scopeguards; unbind on
-> detach; HTTP controller_id forgery closed; TOTP stderr leak gated)
-> plus the full P1 high-priority batch (biased output pump,
-> server-truth resync oldest_seq, destroy re-entry safety,
-> start_timeout, output-first main loop, single-attempt counter,
-> canonical-key dedup). P2 cleanup removes dead code. Baseline
-> report captured. Terminal.rs split into focused sub-modules. Full
-> audit + change plan lives at `~/.claude/plans/bug-whimsical-dawn.md`.
+> **v8 / hardened + cleaned + baselined + restructured + typed** —
+> this update ships the audit-driven P0 critical bug fixes
+> (per-controller ownership enforced at session layer; lease
+> scopeguards; unbind on detach; HTTP controller_id forgery closed;
+> TOTP stderr leak gated) plus the full P1 high-priority batch
+> (biased output pump, server-truth resync oldest_seq, destroy
+> re-entry safety, start_timeout, output-first main loop,
+> single-attempt counter, canonical-key dedup). P2 cleanup removes
+> dead code. Baseline report captured. Terminal.rs split into
+> focused sub-modules (shim + input_seq + install_kernel). v8 adds
+> PtyBackend discriminator for type-system clarity and per-sink
+> controller_id for SPEC §3.5.5 input ownership. Full audit +
+> change plan lives at `~/.claude/plans/bug-whimsical-dawn.md`.
 
 ---
 
