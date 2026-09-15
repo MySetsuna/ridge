@@ -290,3 +290,69 @@ describe('D — touch/mouse mode contract in TerminalCanvas.svelte source', () =
     expect(source).toMatch(/decideTouchMouseGesture\('release'\)/);
   });
 });
+
+// §B (Goal #1): after `attached=true` but before the kernel surfaces a usable
+// IME anchor (no user input snapshot, no recent absolute CSI), forwarding
+// keystrokes writes into the PTY at a stale cursor cell. The guard must:
+//   1. queue user input into `pendingStdin` (bounded) until the anchor lands,
+//   2. disable the hidden textarea so native text composition can't fire,
+//   3. block virtual-key / paste / keyboard-shortcut paths,
+//   4. surface a low-impact status rail (no chrome theft from copy pill),
+//   5. flush the queued bytes the moment the manager publishes an anchor.
+describe('B — binding-uncertain input guard in TerminalCanvas.svelte source', () => {
+  it('declares a reactive bindingUncertain derived from anchor state', () => {
+    expect(source).toMatch(/let\s+anchorResolved\s*=\s*\$state\(false\)/);
+    expect(source).toMatch(/const\s+bindingUncertain\s*=\s*\$derived\(!attached\s*\|\|\s*!anchorResolved\)/);
+  });
+
+  it('disables the hidden textarea while binding is uncertain', () => {
+    expect(source).toMatch(/disabled=\{attached\s*&&\s*bindingUncertain\}/);
+  });
+
+  it('exposes a data-binding-uncertain attribute for diagnostics', () => {
+    expect(source).toMatch(/data-binding-uncertain=\{attached\s*&&\s*bindingUncertain\s*\?\s*'true'\s*:\s*'false'\}/);
+  });
+
+  it('queues onStdin into pendingStdin while bindingUncertain', () => {
+    // The local onStdin must queue (not forward) when bindingUncertain.
+    // The branch is the FIRST one inside the if (!attached || bindingUncertain)
+    // block — same code path that already handles the pre-attach gap.
+    const stdinFn = lineAfter('function onStdin(data: string): void', 0);
+    const stdinBody = lines.slice(stdinFn, stdinFn + 14).join('\n');
+    expect(stdinBody).toMatch(/if\s*\(\s*!attached\s*\|\|\s*bindingUncertain\s*\)/);
+    expect(stdinBody).toMatch(/pendingStdin\.push\(data\)/);
+    expect(stdinBody).toMatch(/pendingStdinBytes\s*\+=\s*bytes/);
+  });
+
+  it('blocks virtual-key and paste paths while binding is uncertain', () => {
+    // handleVirtualKey: bail on uncertainty
+    const vkeyFn = lineAfter('export function handleVirtualKey', 0);
+    const vkeyBody = lines.slice(vkeyFn, vkeyFn + 4).join('\n');
+    expect(vkeyBody).toMatch(/if\s*\(\s*!attached\s*\|\|\s*bindingUncertain\s*\)\s*return;/);
+    // sendPaste / pasteFromClipboard / handlePaste all gate on bindingUncertain
+    expect(source).toMatch(/function\s+sendPaste\(text:\s*string\)\s*\{[\s\S]*?if\s*\(\s*!attached\s*\|\|\s*bindingUncertain\s*\|\|\s*!text\s*\)\s*return;/);
+    expect(source).toMatch(/async\s+function\s+pasteFromClipboard\(\)\s*\{[\s\S]*?if\s*\(\s*!attached\s*\|\|\s*bindingUncertain\s*\)\s*return;/);
+    expect(source).toMatch(/function\s+handlePaste\(e:\s*ClipboardEvent\)\s*\{[\s\S]*?if\s*\(\s*!attached\s*\|\|\s*bindingUncertain\s*\)\s*return;/);
+  });
+
+  it('flips anchorResolved on every onImeAnchor emission', () => {
+    // The onImeAnchor subscription (PTY-echo advance) must update the guard.
+    const anchorEff = lines.findIndex((l) => l.includes('return manager.onImeAnchor(paneId,'));
+    expect(anchorEff).toBeGreaterThan(-1);
+    const slice = lines.slice(anchorEff, anchorEff + 8).join('\n');
+    expect(slice).toMatch(/if\s*\(anchor\)\s*anchorResolved\s*=\s*true/);
+  });
+
+  it('flushes pendingStdin the moment bindingUncertain clears', () => {
+    // Effect keyed on bindingUncertain + pendingStdin length.
+    expect(source).toMatch(/\$effect\(\(\)\s*=>\s*\{[\s\S]*?if\s*\(bindingUncertain\)\s*return;[\s\S]*?if\s*\(pendingStdin\.length\s*===\s*0\)\s*return;[\s\S]*?flushPendingStdin\(\);/);
+  });
+
+  it('renders a low-impact status rail while binding is uncertain', () => {
+    expect(source).toMatch(/\{\#if\s+attached\s*&&\s+bindingUncertain\}/);
+    expect(source).toMatch(/class="binding-rail"/);
+    expect(source).toMatch(/\{\$t\('mobile\.binding'\)\}/);
+    expect(source).toMatch(/\.binding-rail\{/);
+    expect(source).toMatch(/pointer-events:none/);
+  });
+});

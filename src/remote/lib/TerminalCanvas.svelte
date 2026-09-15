@@ -130,11 +130,14 @@
   function onStdin(data: string): void {
     const pane = ownPaneRef();
     if (!pane || !data) return;
-    if (!attached) {
+    if (!attached || bindingUncertain) {
       // Focus is established before the asynchronous unpark/attach completes
-      // so the first keystrokes after a pane switch are never lost. Keep only
-      // a bounded local tail; the normal per-pane RPC queue still owns retry
-      // and ordering once the kernel is live.
+      // so the first keystrokes after a pane switch are never lost. After
+      // attach, the same bounded buffer holds bytes captured during the
+      // §B binding-uncertain window — the kernel has no usable cursor cell
+      // yet, so forwarding would write into a stale position. Keep only a
+      // bounded local tail; the per-pane RPC queue still owns retry and
+      // ordering once the kernel anchor resolves.
       const bytes = new TextEncoder().encode(data).byteLength;
       if (pendingStdinBytes + bytes <= MAX_PENDING_STDIN_BYTES) {
         pendingStdin.push(data);
@@ -168,6 +171,24 @@
   const MAX_PENDING_STDIN_BYTES = 64 * 1024;
   const pendingStdin: string[] = [];
   let pendingStdinBytes = 0;
+
+  // §B binding-uncertain guard: after `attached=true` but before the kernel
+  // surfaces a usable IME anchor (no user input snapshot, no recent absolute
+  // CSI), forwarding keystrokes would write into the PTY at a stale cursor
+  // cell. Until the anchor resolves, every input-emitting path bails and the
+  // hidden textarea is disabled so native text composition can't fire. The
+  // guard auto-releases when `inputAnchorResolved` returns non-null and the
+  // accumulated `pendingStdin` is flushed at that boundary.
+  let anchorResolved = $state(false);
+  const bindingUncertain = $derived(!attached || !anchorResolved);
+  $effect(() => {
+    // Re-check on attach + whenever the kernel publishes a new anchor. The
+    // manager's `onImeAnchor` subscription (below) already fires on every
+    // anchor update — this effect only seeds the initial sample after attach
+    // and lets `attached` itself invalidate the derived value.
+    if (!attached) return;
+    anchorResolved = !!manager.inputAnchorResolved(paneId);
+  });
 
   function formatWebgpuInitError(error: unknown): string {
     const detail = error instanceof Error ? error.message : String(error);
@@ -331,6 +352,15 @@
       if (alive) onFirstPaint?.(paneId);
     });
   }
+
+  // §B: flush queued keystrokes the moment the kernel reports a real anchor
+  // (post-attach without anchor = binding still uncertain; once an anchor
+  // lands, the bytes captured during uncertainty are safe to forward).
+  $effect(() => {
+    if (bindingUncertain) return;
+    if (pendingStdin.length === 0) return;
+    flushPendingStdin();
+  });
 
   onMount(() => {
     // `autocorrect` is a non-standard (iOS Safari) attribute missing from
@@ -569,7 +599,9 @@
 
   // ── Virtual Keyboard (called from MainApp header) ──
   export function handleVirtualKey(key: string, ctrlKey: boolean, alt: boolean, shift: boolean) {
-    if (!attached) return;
+    // §B: refuse virtual keys while the IME anchor is unknown — there is no
+    // cursor cell to address and the bytes would land at a stale position.
+    if (!attached || bindingUncertain) return;
     // 句级缓冲：同物理键——Backspace 先耗缓冲，其余控制键先落笔再发。
     if (key === 'Backspace' && !ctrlKey && !alt && sbufActive() && sbuf.backspace()) {
       sbufPaint();
@@ -1097,7 +1129,9 @@
 
   /** Encode arbitrary text as a bracketed paste and forward it to the host. */
   function sendPaste(text: string) {
-    if (!attached || !text) return;
+    // §B: refuse paste while binding uncertain — bracketed paste bytes go to a
+    // real PTY cell, but we can't promise the right one without an anchor.
+    if (!attached || bindingUncertain || !text) return;
     if (!sbuf.empty) sbufFlush(); // 句级缓冲：粘贴前先落笔，保输入顺序。
     pendingWord = ''; // G11：粘贴=词界（粘贴内容不参与补全去重）。
     const bytes = kEncodePaste(text);
@@ -1106,7 +1140,7 @@
 
   /** Read the system clipboard and paste it (Ctrl/Cmd+V is the user gesture). */
   async function pasteFromClipboard() {
-    if (!attached) return;
+    if (!attached || bindingUncertain) return;
     const pane = ownPaneRef();
     if (pane && onPaneInputTask) {
       if (!sbuf.empty) sbufFlush();
@@ -1148,7 +1182,9 @@
   // Native paste fallback (right-click → paste, middle-click) on the focused
   // hidden textarea. Ctrl/Cmd+V is handled in handleKeydown instead.
   function handlePaste(e: ClipboardEvent) {
-    if (!attached) return;
+    // §B: textarea is already `disabled` while binding-uncertain, but a
+    // browser may still fire `paste` during the disable transition.
+    if (!attached || bindingUncertain) return;
     e.preventDefault();
     const text = e.clipboardData?.getData('text') ?? '';
     sendPaste(text);
@@ -1352,7 +1388,11 @@
   // focused IME sink from the manager's authoritative post-echo anchor.
   $effect(() => {
     if (!attached || !alive) return;
-    return manager.onImeAnchor(paneId, () => {
+    return manager.onImeAnchor(paneId, (anchor) => {
+      // §B: a fresh anchor is the signal that the binding has resolved.
+      // `anchor === null` means the kernel dropped the previous capture
+      // (rare; preserves the prior certain state to avoid a flip-flop).
+      if (anchor) anchorResolved = true;
       if (alive && document.activeElement === hiddenInput) {
         positionInputAtCursorOrCenter();
         requestKeyboardShift();
@@ -1378,7 +1418,9 @@
 <div
   class="container"
   class:agent-needs-attention={agentNeedsAttention}
+  class:binding-uncertain={attached && bindingUncertain}
   data-agent-state={agentState ?? ''}
+  data-binding-uncertain={attached && bindingUncertain ? 'true' : 'false'}
   data-renderer-backend={backendName}
   bind:this={containerEl}
   role="application"
@@ -1437,6 +1479,7 @@
     spellcheck="false"
     aria-hidden="true"
     tabindex="-1"
+    disabled={attached && bindingUncertain}
     onkeydown={handleKeydown}
     oninput={handleInput}
     oncompositionstart={handleCompositionStart}
@@ -1450,6 +1493,14 @@
     }}
     onblur={() => { /* IME sink blur must not hide the active pane renderer cursor. */ }}
   ></textarea>
+
+  <!-- §B: binding-uncertain rail — surfaces the "wait, no anchor yet" state
+       without blocking the renderer. Pure diagnostics; not interactive. -->
+  {#if attached && bindingUncertain}
+    <div class="binding-rail" role="status" aria-live="polite" data-binding-rail="true">
+      <span>{$t('mobile.binding')}</span>
+    </div>
+  {/if}
 
   <!-- §D Floating copy pill (R8) — shown while a text selection exists. Copy
        fires on touchend directly (with preventDefault) so the tap never falls
@@ -1486,4 +1537,9 @@
   .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--rg-fg-muted);font-size:14px;z-index:4}
   .copy-pill{position:absolute;top:8px;right:8px;z-index:6;display:flex;align-items:center;justify-content:center;height:32px;padding:0 16px;border:1px solid var(--rg-accent);border-radius:16px;background:color-mix(in srgb,var(--rg-accent) 22%,var(--rg-surface));color:var(--rg-fg);font-size:13px;font-weight:600;cursor:pointer;box-shadow:0 4px 14px -2px rgba(0,0,0,.5);-webkit-tap-highlight-color:transparent}
   .copy-pill:active{background:color-mix(in srgb,var(--rg-accent) 36%,var(--rg-surface))}
+  /* §B: lightweight rail confirming the input sink is currently disabled
+     while the kernel anchor resolves. Lives below the canvas chrome so it
+     never overlaps the copy pill or scrollback indicator. */
+  .binding-rail{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);z-index:5;padding:4px 10px;border-radius:999px;background:color-mix(in srgb,var(--rg-bg,#111827) 88%,transparent);color:var(--rg-fg-muted);font-size:11px;letter-spacing:.02em;backdrop-filter:blur(6px);pointer-events:none;opacity:.85}
+  .container.binding-uncertain .hidden-input{caret-color:transparent}
 </style>

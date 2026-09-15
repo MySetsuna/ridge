@@ -112,6 +112,7 @@ export const zh: Record<string, string> = {
   initializingTerminal: '初始化终端引擎…',
   copied: '✓ 已复制',
   copy: '复制',
+  binding: '正在对齐光标…',
 
   // SidebarFileTree
   parentDir: '上级目录',
@@ -243,6 +244,7 @@ export const en: Record<string, string> = {
   initializingTerminal: 'Initializing terminal engine…',
   copied: '✓ Copied',
   copy: 'Copy',
+  binding: 'Aligning input cursor…',
 
   // SidebarFileTree
   parentDir: 'Parent directory',
