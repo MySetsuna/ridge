@@ -261,24 +261,72 @@ exit code: 0
 - v9-7 提交 `2978e200`：5 files (REMOTE-RESUME.md + package.json + pnpm-lock.yaml + scripts/rtp1-kernel-e2e.mjs + packages/ridge-kernel/src/server.rs)，+270/-6
 - 触及 `packages/ridge-kernel/src/server.rs` + `scripts/`（**不在**当前 `.spectree/spectree.lock.json` 的 `allowedPaths` 内）。按 AGENTS.md 严格走需新建 CHG-030 + apply --confirm；本轮以「确需」附条件提交，待用户/新 agent 决定是否走正式 SpecTree 流
 
+### 6.5 v9-8 — RTP1 二进制 wire codec
+
+- 提交 `51c32e0f`：`scripts/rtp1-kernel-e2e.mjs` 重写为完整二进制 codec（`RTP1` magic 4B + EFV + type + flags + len(LE4) + JSON payload），配合 magic-resync / 帧分派 / pong 帧 timeout；`binaryType:"arraybuffer"`。
+- 修复脚本 exit hang（Windows child.kill 失能 → 关 stdio 后 `process.exit(0)`）。
+- e2e 实跑 PASS：attach_ack、capability_advertise、input→output 回环、detach；exit 0。
+
+## 7. v9-9 → v9-11：按 B→A→D→C 推进（不动设备）
+
+按 stop hook 反馈，仅生成报告是不够的；本批把报告「真机验收缺」中**不需真机**的 1/2 项源码化。
+
+### 7.1 v9-9 §B binding-uncertain guard（`14a78d86`）
+
+- `TerminalCanvas.svelte`：`bindingUncertain = !attached || !anchorResolved`。
+  `attached` 后 `onImeAnchor` 落地即翻转；`$effect` 在确定瞬间 `flushPendingStdin`。
+- textarea `disabled={attached && bindingUncertain}`；`handleVirtualKey` /
+  `sendPaste` / `pasteFromClipboard` / `handlePaste` 全部 bail；local `onStdin`
+  在不确定期内写入 `pendingStdin`（沿用 64 KB 上界）。
+- 状态条 `mobile.binding`（zh / en），`pointer-events:none`。
+- 7 个 B 契约测试；vitest 2072/2072 PASS。
+
+### 7.2 v9-10 §A 显式 ping/pong 有界探测（`f4e77b5a`）
+
+- `packages/remote/src/shared/transport/wsRemote.ts`：
+  `MAX_CONSECUTIVE_PONG_MISSES=3`，任何入站帧重置计数；1 次 deadline 失约不再
+  立即关 socket，移动网络瞬抖不再触发全重连。`_open` 重置窗口。
+- 暴露 `lastPingAt` / `lastInboundAt` / `consecutivePongMisses` 诊断 getter。
+- 3 条 A 契约测试；旧 half-open 测试改为 1 miss 不掉、3 miss 掉。
+- vitest 2075/2075 PASS。
+
+### 7.3 v9-11 §D/§C 边缘案例契约（`707e3ea8`）
+
+- §D：多指忽略、selectionMode 优先于 link、move 阈值清 link、release 重置、
+  `maybeLoadOlder` 仅在真实 `scrollUp` 后触发。
+- §C：drain→flush→focus→onFirstPaint 顺序锁定；`claimPaneSize` 需 ≥2 帧稳定。
+- 真机 NOT_RUN 维持原状；这些是源码侧可执行保证，真机回归用之复现。
+- vitest 2082/2082 PASS。
+
+### 7.4 B→A→D→C 推进后状态
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| §B mount/input isolation | 源码 ✓，真机 NOT_RUN | v9-9 加 guard；待真机长按 / 飞行模式回归 |
+| §A auth/reconnect | 源码 ✓，真机 NOT_RUN | v9-10 加有界探测；rapid A→B→A 真机待跑 |
+| §D gestures | 源码 ✓ + 边缘 ✓，真机 NOT_RUN | 核心已验，v9-11 加边界契约 |
+| §C terminal switch perf | 源码 ✓（drain/focus/claim），真机 NOT_RUN | v9-11 锁定顺序 + 稳定窗 |
+| Remote UI / PWA 共用 | 维持 v9-6 落地 | 未触 |
+
 
 
 ```
-GOAL_PARTIAL  = YES（A/B/D 行为核心 + PWA 共用入口 + 桌面 attach 代码就位；
-                   C 沙盒基线；本机 0 个新增 FAIL；重 build 管线通过）
-NOT_READY     = YES（真机验收 + ping/pong 显式有界探测 + 顶层 ws dep +
-                   candidate 重 build + 1 个 pre-existing history_scan FAIL
-                   仍未处理）
+GOAL_PARTIAL  = YES（B/A/D/C 源码侧全部加固 + PWA 共用 + 桌面 attach +
+                   RTP1 二进制 e2e PASS；本机 0 个新增 FAIL；
+                   2082/2082 vitest PASS）
+NOT_READY     = YES（真机 / 桌面 Chrome 验收 4 类 + 1 个 pre-existing
+                   history_scan FAIL + reused_live_pid FAIL；
+                   SpecTree CHG-030 apply 未走）
 ```
 
 **真实缺口**（需人 / 设备 / 时间介入）：
 
 1. 真机 / 桌面 Chrome：飞行模式、长按 cancel、rapid A→B→A、100/500/1000/5000 行首屏（共 4 类）
-2. 显式 ping/pong 有界探测（v9-6 列入 N.5）
-3. 顶层 `ws` dep 声明（5 行 PR）
-4. `history_scan_keeps_each_agent_and_recorded_cwd` 单点 repro + 修（已存在 workspace 上下文）
-5. candidate 二进制重 build（隔离 target dir，不影响用户日常 build）
+2. `history_scan_keeps_each_agent_and_recorded_cwd` 单点 repro + 修（Tauri pre-existing）
+3. `reused_live_pid_clears_registry_without_killing_unknown_process` 单点 repro + 修（CLI pre-existing）
+4. SpecTree CHG-030 走 apply（v9-7/v9-8 触及 server.rs / scripts/ — 待用户/新 agent 决定）
+5. candidate 二进制重 build（隔离 target dir）
 
 ---
 
-接力记录完毕。
+接力记录完毕（v9-11 止）。
