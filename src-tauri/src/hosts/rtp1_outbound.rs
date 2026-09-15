@@ -127,7 +127,8 @@ mod tests {
 /// the legacy `OutboundClient` state machine; the canonical output
 /// path is the kernel's `output` RTP1 frame read by the desktop Tauri
 /// app via its own `Rtp1KernelClient`.
-pub async fn bind_rtp1_outbound_and_list(
+#[allow(dead_code)] // reached via Tauri command; lint keeps the noise down.
+pub(crate) async fn bind_rtp1_outbound_and_list(
     state: &AppState,
     host_id: &str,
 ) -> Result<Vec<RemoteSessionInfo>, String> {

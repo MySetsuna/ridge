@@ -1384,6 +1384,31 @@ pub fn bind_mock_outbound_and_list(
     bind_outbound_and_list(&state.hosts, &host_id, mock)
 }
 
+/// Bind the canonical RTP1 transport for a host. Walks the kernel-owned
+/// `read_domain_remote_hosts` endpoint (the same path the rdg CLI uses)
+/// and registers the result with `HostRegistry::store_rtp1_transport`.
+/// The legacy `OutboundClient` wire is preserved for compatibility; the
+/// canonical output path is the kernel `output` RTP1 frame read by
+/// the desktop Tauri app's own `Rtp1KernelClient` from `/v1/rtp1`.
+#[tauri::command]
+pub async fn bind_rtp1_transport(
+    state: State<'_, AppState>,
+    host_id: String,
+) -> Result<Vec<HostSessionMeta>, String> {
+    crate::hosts::rtp1_outbound::bind_rtp1_outbound_and_list(state.inner(), &host_id)
+        .await
+        .map(|sessions| {
+            sessions
+                .into_iter()
+                .map(|s| HostSessionMeta {
+                    id: s.id,
+                    title: s.title,
+                    attached: false,
+                })
+                .collect()
+        })
+}
+
 /// Host disconnect: mark outbound disconnected + host status (subscriptions cleared).
 pub fn disconnect_host_outbound(hosts: &HostRegistry, host_id: &str) -> Result<(), String> {
     disconnect_host_outbound_with(hosts, host_id, |hosts, host_id| {
