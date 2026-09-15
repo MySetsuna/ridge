@@ -85,6 +85,15 @@ impl Rtp1KernelClient {
         *self.state.lock().await
     }
 
+    /// List the kernel-owned remote-host topology (sessions per host).
+    /// Used by `Rtp1OutboundClient::connect` to discover panes for a
+    /// host_id without going through the legacy `OutboundClient`.
+    pub fn list_sessions(&self) -> Result<Vec<ridge_core::remote::HostRecord>, String> {
+        let snapshot =
+            ridge_kernel::client::read_domain_remote_hosts(&self.endpoint)?;
+        Ok(snapshot.hosts)
+    }
+
     pub fn ws_url(&self) -> String {
         format!("ws://127.0.0.1:{}/v1/rtp1", self.endpoint.port)
     }

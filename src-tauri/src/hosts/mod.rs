@@ -321,6 +321,18 @@ impl HostRegistry {
         self.outbound.insert(client);
     }
 
+    /// Store a canonical RTP1 transport for a host. New rtp1 hosts
+    /// skip the legacy `OutboundClient` wire and let the desktop Tauri
+    /// app read `output` frames directly via `Rtp1KernelClient`. The
+    /// transport is held so future PRs can attach a real WS read loop
+    /// without changing this signature.
+    pub fn store_rtp1_transport(&self, transport: Arc<crate::hosts::rtp1_outbound::Rtp1OutboundTransport>) {
+        let host_id = transport.host_id().to_string();
+        let legacy = transport.into_legacy_transport();
+        let client = Arc::new(OutboundClient::new(host_id, legacy));
+        self.outbound.insert(client);
+    }
+
     pub fn outbound_client(&self, host_id: &str) -> Option<Arc<OutboundClient>> {
         self.outbound.get(host_id)
     }

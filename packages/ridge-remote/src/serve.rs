@@ -56,17 +56,22 @@ impl UaServeConfig {
     }
 
     /// 是否给该请求发桌面 SPA：先按 [`crate::ua::prefer_desktop_ui`] 判定（尊重
-    /// `?ui=` 覆盖），再校验桌面产物确实拿得到——**磁盘或内嵌**任一即可。
+    /// `?ui=desktop` 显式覆盖，UA / 窗口宽度 / 历史偏好一律不算），再校验桌面
+    /// 产物确实拿得到——**磁盘或内嵌**任一即可。
     ///
     /// 只看磁盘是 iter-62 的 bug：单文件 `rdg` 无外置桌面产物时，
-    /// 电脑浏览器会被发手机 SPA。内嵌产物（`embed-ui`）同样
-    /// 是「拿得到桌面 SPA」，必须计入。
+    /// 即使桌面浏览器被正确路由到桌面 SPA 也拿不到字节。内嵌产物
+    /// （`embed-ui`）同样是「拿得到桌面 SPA」，必须计入。
     pub fn wants_desktop_ui(&self, headers: &HeaderMap, ui_override: Option<&str>) -> bool {
         let ua = headers
             .get(axum::http::header::USER_AGENT)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        crate::ua::prefer_desktop_ui(ua, ui_override) && self.desktop_ui_available()
+        // 只接受白名单内的覆盖值；垃圾值（`?ui=foo`、`?ui=DESKTOP` 等）视为无覆盖，
+        // SSOT `prefer_desktop_ui` 已自带这道闸，这里二次收口确保任何调用入口（脚本、
+        // 反代改写、未来的别处直调）都走同一份解析。
+        let parsed = crate::ua::parse_ui_override(ui_override);
+        crate::ua::prefer_desktop_ui(ua, parsed) && self.desktop_ui_available()
     }
 
     /// 桌面 SPA 是否可服务（磁盘产物 > 内嵌产物）。
@@ -681,10 +686,11 @@ mod tests {
         assert!(crate::embed_ui::get_kind(UiKind::Desktop, "_app/version.json").is_some());
     }
 
-    /// iter-62 回归钉：桌面 UA 的分流不得只看磁盘产物。
+    /// 回归钉：默认全 UA 都走移动 SPA，只有 `?ui=desktop` 才桌面；桌面形态无磁盘
+    /// 产物时也得能走内嵌兜底（单文件 rdg 不依赖 exe 旁的 remote-dist）。
     #[cfg(feature = "embed-ui")]
     #[test]
-    fn desktop_ua_uses_embedded_desktop_when_no_disk_dir() {
+    fn default_is_mobile_and_explicit_desktop_uses_embedded_desktop() {
         let cfg = UaServeConfig {
             remote_dir: PathBuf::from("__no_such_remote_dist__"),
         };
@@ -693,16 +699,24 @@ mod tests {
             axum::http::header::USER_AGENT,
             axum::http::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"),
         );
-        assert!(cfg.wants_desktop_ui(&headers, None));
-        let target = cfg.ui_target(&headers, None);
+        // 桌面 UA + 无覆盖 → 仍必须是移动 SPA（默认 UI 修复的钉）。
+        assert_eq!(cfg.ui_target(&headers, None).kind, UiKind::Mobile);
+        assert!(!cfg.wants_desktop_ui(&headers, None));
+
+        // 显式 `?ui=desktop` → 桌面 SPA，无磁盘产物也要走内嵌兜底。
+        assert!(cfg.wants_desktop_ui(&headers, Some("desktop")));
+        let target = cfg.ui_target(&headers, Some("desktop"));
         assert_eq!(target.kind, UiKind::Desktop);
         assert!(target.dir.is_none(), "桌面形态无磁盘产物时不得回落手机目录");
 
+        // 手机 UA + `?ui=mobile` 显式 → 移动 SPA。
         let mut phone = HeaderMap::new();
         phone.insert(
             axum::http::header::USER_AGENT,
             axum::http::HeaderValue::from_static("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)"),
         );
-        assert_eq!(cfg.ui_target(&phone, None).kind, UiKind::Mobile);
+        assert_eq!(cfg.ui_target(&phone, Some("mobile")).kind, UiKind::Mobile);
+        // 垃圾值视为无覆盖 → 仍走默认移动 SPA，不能把桌面 SPA 误升。
+        assert_eq!(cfg.ui_target(&headers, Some("DESKTOP")).kind, UiKind::Mobile);
     }
 }

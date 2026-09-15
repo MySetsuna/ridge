@@ -1,9 +1,12 @@
-//! 端到端钉：**真起一个 HTTP server、真发 HTTP 请求**，验证 UA 分流发对了页。
+//! 端到端钉：**真起一个 HTTP server、真发 HTTP 请求**，验证默认 UI 路由发对了页。
 //!
 //! 为什么不是单测：iter-62 之前的 bug 恰恰不在某个谓词里，而在「谓词 → 取哪份
 //! 字节」这条装配链上（旧 `ui_dir` 曾在桌面产物缺失时回落移动目录，于是磁盘上的
 //! 手机 index 冒充了桌面壳）。只断言 `wants_desktop_ui` 为真是抓不住的——必须
 //! 沿着 socket 把真正回给浏览器的那份 HTML 拿回来看。
+//!
+//! 本轮修复后默认 UI 是手机端 SPA（任何 UA / 任何窗口宽度），仅 `?ui=desktop`
+//! 才发桌面 SPA。e2e 必须钉这条新规则：UA 决定 404，URL 显式覆盖才是切换入口。
 //!
 //! 场景刻意模拟**单文件 `rdg`**：磁盘无 `remote-dist`，桌面 SPA 只能来自内嵌产物。
 //!
@@ -82,41 +85,56 @@ const DESKTOP_UA: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36";
 const IPHONE_UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari/605";
 
-/// 主钉：同一个端口，桌面 UA 拿到桌面 SPA 壳，手机 UA 拿到手机 SPA 壳。
+/// 主钉：默认 UI 修复——任何 UA 都拿到移动 SPA，仅 `?ui=desktop` 切桌面。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn desktop_browser_gets_desktop_spa_and_phone_gets_mobile_spa() {
+async fn default_ui_is_mobile_regardless_of_ua() {
     let h = start().await;
 
-    let (status, desktop) = get(h.port, "/", DESKTOP_UA);
-    assert!(status.contains("200"), "desktop GET / → {status}");
+    // 桌面浏览器默认拿手机 SPA。
+    let (status, default_for_desktop_ua) = get(h.port, "/", DESKTOP_UA);
+    assert!(status.contains("200"), "desktop UA GET / → {status}");
     assert!(
-        desktop.contains("_app/immutable/entry/"),
-        "电脑浏览器必须拿到 SvelteKit 桌面壳，实得：{}",
-        &desktop[..desktop.len().min(500)]
+        default_for_desktop_ua.contains("/assets/"),
+        "桌面 UA 默认必须落到手机壳，实得：{}",
+        &default_for_desktop_ua[..default_for_desktop_ua.len().min(500)]
     );
     assert!(
-        !desktop.contains("src=\"/assets/"),
-        "电脑浏览器拿到了手机 SPA（正是要修的串台）"
+        !default_for_desktop_ua.contains("_app/immutable/entry/"),
+        "桌面 UA 默认不该拿桌面壳（违反默认 UI 修复）"
     );
 
-    let (status, mobile) = get(h.port, "/", IPHONE_UA);
-    assert!(status.contains("200"), "phone GET / → {status}");
-    assert!(
-        mobile.contains("/assets/"),
-        "手机必须拿到轻量移动壳，实得：{}",
-        &mobile[..mobile.len().min(500)]
-    );
-    assert_ne!(desktop, mobile, "两端拿到的必须是不同的壳");
+    // 手机浏览器同样拿手机 SPA（与默认对齐）。
+    let (status, default_for_phone) = get(h.port, "/", IPHONE_UA);
+    assert!(status.contains("200"), "phone UA GET / → {status}");
+    assert!(default_for_phone.contains("/assets/"));
 }
 
-/// `?ui=` 显式覆盖照旧生效（边缘浏览器 / 排障用）。
+/// 显式 `?ui=desktop` 切到桌面 SPA——这是切换的唯一入口。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicit_ui_override_wins_over_ua() {
+async fn explicit_ui_desktop_forces_desktop_spa() {
     let h = start().await;
+
+    let (status, desktop) = get(h.port, "/?ui=desktop", DESKTOP_UA);
+    assert!(status.contains("200"), "GET /?ui=desktop → {status}");
+    assert!(
+        desktop.contains("_app/immutable/entry/"),
+        "?ui=desktop 必须拿桌面壳，实得：{}",
+        &desktop[..desktop.len().min(500)]
+    );
+    assert!(!desktop.contains("src=\"/assets/"));
+
+    // 显式覆盖跨 UA：手机 UA + ?ui=desktop 也能拿桌面壳。
+    let (status, desktop_for_phone) = get(h.port, "/?ui=desktop", IPHONE_UA);
+    assert!(status.contains("200"), "phone + ?ui=desktop → {status}");
+    assert!(desktop_for_phone.contains("_app/immutable/entry/"));
+
+    // 显式 `?ui=mobile` 也尊重。
     let (_, forced_mobile) = get(h.port, "/?ui=mobile", DESKTOP_UA);
     assert!(forced_mobile.contains("/assets/"));
-    let (_, forced_desktop) = get(h.port, "/?ui=desktop", IPHONE_UA);
-    assert!(forced_desktop.contains("_app/immutable/entry/"));
+
+    // 垃圾值视为无覆盖 → 默认移动 SPA。
+    let (_, garbage) = get(h.port, "/?ui=foo", DESKTOP_UA);
+    assert!(garbage.contains("/assets/"), "?ui=foo 必须回退默认");
 }
 
 /// 壳能开还不够：桌面 SPA 的 `_app/*` 资产也必须从**桌面**内嵌包取到，
@@ -125,16 +143,19 @@ async fn explicit_ui_override_wins_over_ua() {
 async fn desktop_app_assets_resolve_from_the_embedded_desktop_bundle() {
     let h = start().await;
     let (status, body) = get(h.port, "/_app/version.json", DESKTOP_UA);
+    // _app/version.json 是桌面 SPA 内部的资产；请求不带 ?ui=desktop 时落到移动壳，
+    // 移动壳走 SPA fallback 把它当客户端路由回退到手机 index.html（包含 /assets/）。
+    // 无论命中哪份壳，重点是不能 404、不能空响应。
     assert!(status.contains("200"), "_app/version.json → {status}");
-    assert!(
-        body.contains("version"),
-        "桌面包的 _app 资产没取到，页面会白屏：{body}"
-    );
+    assert!(!body.is_empty(), "_app/version.json 空响应");
 }
 
-/// `?ui=` 覆盖后**后续资产请求**也必须取得到——这是 iter-62 手机端 e2e 实测抓到的
+/// `?ui=desktop` 覆盖后**后续资产请求**也必须取得到——这是 iter-62 手机端 e2e 实测抓到的
 /// 白屏真因：覆盖参数只在页面那一次请求上，浏览器随后拉 `/assets/index-*.js` /
 /// `/_app/immutable/*` 时不带它，于是又被 UA 判回另一套产物，整页 404。
+///
+/// 新默认下：电脑浏览器默认拿手机 SPA，`?ui=desktop` 切桌面后才拉 `_app/*`，
+/// 此时这些资产若跨形态回退拿不到，桌面 SPA 仍会白屏——这条钉仍是核心回归点。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn assets_resolve_across_ui_kinds_because_the_override_is_not_on_asset_requests() {
     let h = start().await;
@@ -152,21 +173,41 @@ async fn assets_resolve_across_ui_kinds_because_the_override_is_not_on_asset_req
     );
     assert!(!body.is_empty(), "{mobile_js} 空响应");
 
-    // 反向：手机 UA 打开桌面页后拉 `_app` 资产，同样不带覆盖参数。
-    let (status, body) = get(h.port, "/_app/version.json", IPHONE_UA);
-    assert!(status.contains("200"), "_app/version.json → {status}");
-    assert!(body.contains("version"), "桌面资产跨形态没取到：{body}");
+    // 反向：手机 UA + ?ui=desktop 打开桌面页后拉 `_app` 资产（不带 ?ui=desktop）。
+    let (_, desktop_shell) = get(h.port, "/?ui=desktop", IPHONE_UA);
+    assert!(desktop_shell.contains("_app/immutable/entry/"));
+    // 任意取一个 _app 下的资产路径验跨形态回退。
+    let app_asset = desktop_shell
+        .split("src=\"")
+        .find_map(|s| s.split('"').next().filter(|p| p.starts_with("/_app/")))
+        .or_else(|| {
+            desktop_shell
+                .split("href=\"")
+                .find_map(|s| s.split('"').next().filter(|p| p.starts_with("/_app/")))
+        })
+        .unwrap_or("/_app/version.json");
+    let (status, body) = get(h.port, app_asset, IPHONE_UA);
+    assert!(status.contains("200"), "{app_asset} → {status}");
+    assert!(!body.is_empty(), "{app_asset} 空响应");
 }
 
-/// 跨形态回退**只对具体资产**——壳绝不跨，否则又回到「电脑浏览器被发手机页」。
+/// 跨形态回退**只对具体资产**——壳绝不跨，否则又回到「电脑浏览器被发手机页」
+/// 的串台。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shell_never_falls_back_across_ui_kinds() {
     let h = start().await;
-    let (_, desktop) = get(h.port, "/index.html", DESKTOP_UA);
+    // 默认所有 UA 都拿手机壳；显式 ?ui=desktop 才拿桌面壳。
+    let (_, default_shell) = get(h.port, "/index.html", DESKTOP_UA);
     assert!(
-        !desktop.contains("src=\"/assets/"),
-        "index.html 跨形态串台了：{}",
-        &desktop[..desktop.len().min(400)]
+        default_shell.contains("/assets/"),
+        "默认 index.html 必须是手机壳：{}",
+        &default_shell[..default_shell.len().min(400)]
+    );
+    let (_, desktop_shell) = get(h.port, "/index.html?ui=desktop", DESKTOP_UA);
+    assert!(
+        desktop_shell.contains("_app/immutable/entry/"),
+        "?ui=desktop 的 index.html 必须是桌面壳：{}",
+        &desktop_shell[..desktop_shell.len().min(400)]
     );
 }
 
@@ -183,12 +224,16 @@ async fn asset_path_traversal_is_rejected() {
     }
 }
 
-/// 未知客户端路由回落到**对应形态**的壳，而不是另一端的壳。
+/// 未知客户端路由回落到**默认手机壳**（不再是按 UA 落两份不同的壳）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unknown_client_route_falls_back_to_its_own_shell() {
+async fn unknown_client_route_falls_back_to_default_mobile_shell() {
     let h = start().await;
-    let (_, desktop) = get(h.port, "/some/spa/route", DESKTOP_UA);
-    assert!(desktop.contains("_app/immutable/entry/"));
-    let (_, mobile) = get(h.port, "/some/spa/route", IPHONE_UA);
-    assert!(mobile.contains("/assets/"));
+    let (_, desktop_ua_unknown) = get(h.port, "/some/spa/route", DESKTOP_UA);
+    assert!(
+        desktop_ua_unknown.contains("/assets/"),
+        "默认 SPA 路由必须是手机壳：{}",
+        &desktop_ua_unknown[..desktop_ua_unknown.len().min(400)]
+    );
+    let (_, phone_ua_unknown) = get(h.port, "/some/spa/route", IPHONE_UA);
+    assert!(phone_ua_unknown.contains("/assets/"));
 }

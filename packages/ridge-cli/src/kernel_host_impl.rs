@@ -494,6 +494,10 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
                 "type":"hello",
                 "version":1,
                 "protocol":"ridge-remote-ws",
+                // SPA 端 wsRemote.ts 严格 `terminalProtocolVersion !== 2` 校验；
+                // 这里漏发一个字段就会让真实 Host 端到端被误判"协议过旧"。
+                // 与 `tui/lan_host_impl.rs::lan_session` 保持同一常量 (PROTOCOL_VERSION = 2)。
+                "terminalProtocolVersion": ridge_term::terminal_v2::PROTOCOL_VERSION,
                 "capabilities": KERNEL_HOST_CAPABILITIES,
             })
             .to_string(),

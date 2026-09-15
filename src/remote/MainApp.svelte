@@ -28,6 +28,7 @@
   } from '@ridge/remote';
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
   import { createWsSidebarProvider } from './lib/sidebarProvider';
+  import { readDeviceClass, watchDeviceClass } from './lib/deviceClass';
   import { ScrollbackDecoder } from './lib/scrollbackWorker';
   import { onceCleanup } from './lib/listenerCleanup';
   import { createGenerationGuard } from './lib/generationGuard';
@@ -71,6 +72,20 @@
   const ui = new MobileRemoteUiState(((): boolean => {
     try { return localStorage.getItem(LS_SBUF_KEY) === '1'; } catch { return false; }
   })());
+  // §real-keyboard gate: 桌面/笔电带实体键盘时（pointer:fine + hover:hover），手机端
+  // SPA 不必再叠虚拟键盘栏——`canvasRef.openSystemKeyboard()` 的隐藏 textarea
+  // 直接捕获实体键，物理键输入路径完整。触屏设备保留默认 true 以不破坏既有体验。
+  // `readDeviceClass()` 在 SSR / 无 matchMedia 时保守返回 false → 保留虚拟键盘。
+  let hasRealKeyboard = $state(readDeviceClass().hasRealKeyboard);
+  $effect(() => {
+    return watchDeviceClass((cls) => {
+      hasRealKeyboard = cls.hasRealKeyboard;
+      // 设备降级到触屏（如断开外接键盘）时若用户没显式开过键盘栏，仍保留默认开启
+      // 以保触屏可用；主动开启后保留用户选择。
+    });
+  });
+  // 派生：是否显示虚拟键盘栏。设备有实体键盘时彻底隐藏；触屏设备尊重用户显式开关。
+  const showVirtualKeyboardUi = $derived(!hasRealKeyboard);
   let wsState = $state<ConnectionState>('disconnected');
   const queryClient = useQueryClient();
   const sessionId = () => remoteSessionId(ws);
@@ -1156,7 +1171,7 @@
     }
   });
   $effect(() => {
-    if (wsState === 'connected' && ui.showKeyboard) {
+    if (wsState === 'connected' && showVirtualKeyboardUi && ui.showKeyboard) {
       virtualKeyboardPromise ??= import('./lib/VirtualKeyboard.svelte');
     }
   });
@@ -1299,19 +1314,21 @@
           >
             <TextCursorInput class="w-4 h-4" />
           </button>
-          <button
-            class="hdr-btn"
-            class:active={ui.showKeyboard}
-            onclick={() => ui.showKeyboard = !ui.showKeyboard}
-            title={$t('mobile.virtualKeyboard')}
-            aria-label={$t('mobile.virtualKeyboard')}
-            data-testid="virtual-keyboard-button"
-          >
-            <Keyboard class="w-4 h-4" />
-          </button>
+          {#if showVirtualKeyboardUi}
+            <button
+              class="hdr-btn"
+              class:active={ui.showKeyboard}
+              onclick={() => ui.showKeyboard = !ui.showKeyboard}
+              title={$t('mobile.virtualKeyboard')}
+              aria-label={$t('mobile.virtualKeyboard')}
+              data-testid="virtual-keyboard-button"
+            >
+              <Keyboard class="w-4 h-4" />
+            </button>
+          {/if}
         </div>
       </div>
-      {#if ui.showKeyboard}
+      {#if showVirtualKeyboardUi && ui.showKeyboard}
         <div class="vk-section">
           {#if virtualKeyboardPromise}
             {#await virtualKeyboardPromise}

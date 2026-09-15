@@ -1,105 +1,79 @@
-//! RTP1-over-WebSocket outbound client (v9-4 / v8-2 follow-through).
+//! RTP1-over-WebSocket outbound client (v9-4 real production wiring).
 //!
 //! `Rtp1OutboundTransport` is the canonical outbound transport for
-//! hosts that the kernel knows about (read_domain_remote_hosts). It
-//! satisfies the same `OutboundTransport` trait as the legacy
-//! `MockOutboundTransport` / `LanOutboundTransport` so the rest of the
-//! host pipeline (bind_outbound_and_list, pump_host_output,
-//! live_sinks) does not need to know whether a host is reached via
-//! the legacy rdg mux protocol or via RTP1-over-WebSocket.
-//!
-//! This module is self-contained: it owns its own minimal kernel-client
-//! abstraction (`MiniRtp1Client`) and does not depend on the full
-//! `ridge_cli` crate, so it stays a pure Tauri-side module.
-//!
-//! Design:
-//! * Each `Rtp1OutboundTransport` owns one `MiniRtp1Client` connection
-//!   to `/v1/rtp1`.
-//! * `hello_and_list` is replaced by reading the kernel-owned remote-host
-//!   topology (`GET /v1/domain/remote-hosts`).
-//! * `write_input` / `resize` are routed through a stub that resolves
-//!   the `remote_pane_id` → `pty_uuid` and sends the RTP1 frame.
-//! * `send_raw` / `drain_pane_raw` are no-ops for RTP1 (no mux
-//!   framing) — raw bytes live on the kernel's `output` frames.
+//! hosts that the local `ridge-kernel` exposes. It uses the
+//! kernel-owned `/v1/domain/remote-hosts` endpoint + the kernel's
+//! RTP1 WS at `/v1/rtp1` for live attach. The v9-4 placeholder is
+//! replaced with the real wiring: `bind_rtp1_outbound_and_list` walks
+//! the canonical path. The legacy `OutboundClient` (rdg-era mux) is
+//! kept running in parallel for backward compatibility with the
+//! existing rdg-mux rdg / rdg-server paths.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
-use serde_json::{json, Value};
+use serde_json::Value;
+use tauri::State;
 
-use crate::hosts::outbound::OutboundTransport;
+use crate::hosts::outbound::{MockOutboundTransport, OutboundTransport};
 use crate::hosts::RemoteSessionInfo;
+use crate::state::AppState;
 
-/// Minimal RTP1 client used by the outbound transport. Avoids a
-/// dependency on `ridge_cli` so the Tauri crate stays transport-only.
-struct MiniRtp1Client {
-    base_url: String,
-    token: String,
-    controller_id: uuid::Uuid,
-    /// Per-host remote_pane_id → pty_uuid resolved on first use.
-    pane_uuid: Mutex<HashMap<String, uuid::Uuid>>,
-}
-
-impl MiniRtp1Client {
-    fn new(base_url: String, token: String) -> Self {
-        Self {
-            base_url,
-            token,
-            controller_id: uuid::Uuid::new_v4(),
-            pane_uuid: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn get_json(&self, path: &str) -> Result<serde_json::Value, String> {
-        // Synchronous HTTP GET using std::net (avoids adding a Tauri
-        // async runtime dependency to the production lib). Real wiring
-        // routes through the tauri::async_runtime block_on at the
-        // call site so the lib stays runtime-agnostic.
-        Err(format!("MiniRtp1Client::get_json({}) is a stub; use the async host-pipeline at the call site", path))
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OutboundStateMirror {
-    Idle,
-    Listed,
-    Error,
-}
+use ridge_kernel::client::{read_domain_remote_hosts, running_endpoint};
 
 /// RTP1-backed outbound transport for kernel-known hosts.
+///
+/// Stores the host's session list (already filtered to host_id) so
+/// that `drain_pane_raw` and the legacy `OutboundClient` wiring can
+/// use it as the in-memory snapshot.
 pub struct Rtp1OutboundTransport {
-    host_id: String,
-    client: Arc<MiniRtp1Client>,
-    sessions: Mutex<Vec<RemoteSessionInfo>>,
-    state: Mutex<OutboundStateMirror>,
+    pub(crate) host_id: String,
+    pub(crate) sessions: parking_lot::Mutex<Vec<RemoteSessionInfo>>,
 }
 
 impl Rtp1OutboundTransport {
-    /// Connect via the kernel's `/v1/domain/remote-hosts` endpoint
-    /// and read the per-host sessions. This is a v9-4 placeholder:
-    /// the real wiring will route through `tauri::async_runtime` once
-    /// the desktop Tauri app starts the kernel subprocess; the stub
-    /// returns an empty list so the rest of the host pipeline can be
-    /// tested in isolation.
-    pub async fn connect(_state: &crate::state::AppState, host_id: &str) -> Result<Self, String> {
+    pub fn connect(state: &AppState, host_id: &str) -> Result<Self, String> {
+        let endpoint = running_endpoint()
+            .ok_or_else(|| "ridge-kernel domain endpoint unavailable".to_string())?;
+        let snapshot = read_domain_remote_hosts(&endpoint)
+            .map_err(|e| format!("read_domain_remote_hosts: {e}"))?;
+        let sessions: Vec<RemoteSessionInfo> = snapshot
+            .hosts
+            .iter()
+            .filter(|h| h.id == host_id)
+            .flat_map(|h| h.sessions.iter().cloned())
+            .map(|s| RemoteSessionInfo { id: s.id, title: s.title })
+            .collect();
         Ok(Self {
             host_id: host_id.to_string(),
-            client: Arc::new(MiniRtp1Client::new(
-                "http://127.0.0.1:0".into(),
-                String::new(),
-            )),
-            sessions: Mutex::new(Vec::new()),
-            state: Mutex::new(OutboundStateMirror::Listed),
+            sessions: parking_lot::Mutex::new(sessions),
         })
+    }
+
+    pub fn host_id(&self) -> &str {
+        &self.host_id
+    }
+
+    pub fn into_legacy_transport(self: Arc<Self>) -> Arc<dyn OutboundTransport> {
+        // The rtp1 transport exposes the same OutboundTransport
+        // surface as the legacy rdg-mux path so the host pipeline
+        // (bind_mock_outbound_and_list → pump_host_output) does not
+        // need to know which wire protocol is in use. Raw / drain are
+        // a no-op because real output bytes travel on RTP1 frames read
+        // by the desktop Tauri app's own Rtp1KernelClient; live
+        // transport for outbound mux is not needed.
+        self
+    }
+
+    pub fn install_rtp1(self: &Arc<Self>, state: &AppState) {
+        state.hosts.store_rtp1_transport(self.clone());
     }
 }
 
 impl OutboundTransport for Rtp1OutboundTransport {
-    fn send_json_rpc(&self, _method: &str, _params: Value) -> Result<Value, String> {
-        // The kernel is the canonical source of remote-host topology;
-        // outbound RPCs (legacy rdg era) are no-ops over RTP1.
-        Err("RTP1 path does not support raw JSON-RPC; use the typed methods".into())
+    fn send_json_rpc(&self, method: &str, _params: Value) -> Result<Value, String> {
+        Err(format!(
+            "RTP1 path does not support raw JSON-RPC `{method}`; use the typed methods (list_sessions, attach_to_pane, send_input, send_resize)"
+        ))
     }
 
     fn send_raw(&self, _frame: &[u8]) -> Result<(), String> {
@@ -109,6 +83,9 @@ impl OutboundTransport for Rtp1OutboundTransport {
     }
 
     fn drain_pane_raw(&self) -> Vec<(String, Vec<u8>)> {
+        // rtp1 hosts: output bytes are pulled directly via
+        // `Rtp1ClientHandle::read_output` by the desktop Tauri app.
+        // The legacy mock transport's drain is not used on this path.
         Vec::new()
     }
 
@@ -121,29 +98,70 @@ mod tests {
 
     #[test]
     fn rtp1_outbound_transport_send_json_rpc_is_no_op() {
+        // The transport must reject raw JSON-RPC because the RTP1 path
+        // uses typed methods (list_sessions, attach_to_pane,
+        // send_input, send_resize). Exercised in isolation: no kernel
+        // needed.
         let transport = Rtp1OutboundTransport {
-            host_id: "host".into(),
-            client: Arc::new(MiniRtp1Client::new("http://x".into(), "t".into())),
-            sessions: Mutex::new(Vec::new()),
-            state: Mutex::new(OutboundStateMirror::Idle),
+            host_id: "h".into(),
+            sessions: parking_lot::Mutex::new(Vec::new()),
         };
-        // send_json_rpc must reject: the RTP1 path does not speak raw
-        // JSON-RPC; callers must use the typed methods.
-        assert!(transport.send_json_rpc("$/hello", json!({})).is_err());
+        assert!(transport.send_json_rpc("$/hello", Value::Null).is_err());
         assert!(transport.send_raw(&[0x10, 0, b'p']).is_ok());
         assert!(transport.drain_pane_raw().is_empty());
     }
 
     #[test]
-    fn rtp1_outbound_sink_rejects_without_pane_uuid() {
+    fn rtp1_outbound_transport_host_id_accessor() {
         let transport = Rtp1OutboundTransport {
-            host_id: "host".into(),
-            client: Arc::new(MiniRtp1Client::new("http://x".into(), "t".into())),
-            sessions: Mutex::new(Vec::new()),
-            state: Mutex::new(OutboundStateMirror::Idle),
+            host_id: "test-host".into(),
+            sessions: parking_lot::Mutex::new(Vec::new()),
         };
-        // No live kernel ⇒ pane_uuid cache stays empty, so writes fail.
-        let result = transport.client.get_json("/v1/domain/remote-hosts");
-        assert!(result.is_err());
+        assert_eq!(transport.host_id(), "test-host");
     }
 }
+
+/// Wire the canonical RTP1 transport for `host_id` and persist the
+/// resulting session list via the standard HostRegistry path. The
+/// `MockOutboundTransport` is the empty placeholder that satisfies
+/// the legacy `OutboundClient` state machine; the canonical output
+/// path is the kernel's `output` RTP1 frame read by the desktop Tauri
+/// app via its own `Rtp1KernelClient`.
+pub async fn bind_rtp1_outbound_and_list(
+    state: &AppState,
+    host_id: &str,
+) -> Result<Vec<RemoteSessionInfo>, String> {
+    let transport =
+        std::sync::Arc::new(Rtp1OutboundTransport::connect(state, host_id)?);
+    let sessions = transport.sessions.lock().clone();
+    let host_id_owned = transport.host_id().to_string();
+    // Persist via the standard host path (legacy rdg-mux wire shape, but
+    // for an rtp1 host the actual output goes through kernel RTP1 frames
+    // read by the desktop Tauri app).
+    state
+        .hosts
+        .store_rtp1_transport(transport.clone());
+    crate::commands::workspace::sync_kernel_workspace_topologies(state);
+    let _ = host_id_owned;
+    Ok(sessions)
+}
+
+#[tauri::command]
+pub async fn rtp1_bind_outbound_and_list(
+    state: State<'_, AppState>,
+    host_id: String,
+) -> Result<Vec<RemoteSessionInfo>, String> {
+    bind_rtp1_outbound_and_list(state.inner(), &host_id).await
+}
+
+// We retain the legacy OutboundClient wire shape for backward compat
+// with the existing rdg-mux rdg / rdg-server flow. New rtp1 hosts
+// should call `bind_rtp1_outbound_and_list` instead.
+//
+// The placeholder `rtp1_attach` module that held a `Rtp1ClientHandle`
+// for live read / write through the transport was dropped: the
+// desktop Tauri app already uses its own `Rtp1KernelClient` to read
+// `output` frames directly via the kernel `/v1/rtp1` WS endpoint, so
+// the transport's role is currently `list_sessions` + session
+// persistence only. A future PR can attach a live read helper here
+// without changing this signature.
