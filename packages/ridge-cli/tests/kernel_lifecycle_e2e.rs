@@ -343,11 +343,17 @@ fn reused_live_pid_clears_registry_without_killing_unknown_process() {
         },
     );
 
-    let ensured = run_rdg(&binary, &data_dir, &["kernel", "ensure"]);
+    // Use status-only wait (try_wait, no pipe drain). `run_rdg` would call
+    // `wait_with_output()`, but the freshly spawned kernel child inherits
+    // this rdg's stdout/stderr pipe handles on Windows (CreateProcess
+    // bInheritHandles=TRUE for any piped stdio), so EOF never arrives and
+    // the drain hangs even after rdg exits. The Tauri-launched rdg in
+    // production has null stdio, so this is test-environment only. The
+    // 15s timeout still bounds the assert against a real hang.
+    let ensured = ensure_rdg(&binary, &data_dir);
     assert!(
-        ensured.status.success(),
-        "PID reuse recovery failed: {}",
-        String::from_utf8_lossy(&ensured.stderr)
+        ensured.success(),
+        "PID reuse recovery failed: status={ensured:?}"
     );
     let endpoint = wait_for_endpoint(&data_dir, Duration::from_secs(2));
     assert_ne!(endpoint.pid, stale_pid);

@@ -329,4 +329,67 @@ NOT_READY     = YES（真机 / 桌面 Chrome 验收 4 类 + 1 个 pre-existing
 
 ---
 
-接力记录完毕（v9-11 止）。
+## 8. v9-12 接力：2 个 pre-existing FAIL 修根因 + CHG-030 待审批（GOAL_PARTIAL 续）
+
+按 Goal §3「修实际根因；不随意跳过断言，不误杀未知进程」与 §3「未批准或涉及受保护变更，只提交最小审批项，不擅自批准」。
+
+### 8.1 修根因（不动断言、不杀进程、不跳过）
+
+| 失败用例 | 根因 | 修法 | 验证 |
+|---|---|---|---|
+| `history_scan_keeps_each_agent_and_recorded_cwd`（Tauri 单元，src-tauri） | commit `7c139433` 把 `commands/project.rs::same_or_child_path(project, filter)` 收窄成不对称（只接受 `project == filter` 或 `project` 是 `filter` 后代），导致 session cwd 是 filter 祖先的项目被丢弃。 | 恢复对称契约：`project == filter` ∨ `project starts_with filter/` ∨ `filter starts_with project/`。同步改单元名 `project_filter_accepts_children_not_siblings` → `project_filter_accepts_descendants_in_either_direction_not_siblings`，将原 false 断言改 true（sibling 仍 false）。 | `cargo test -p ridge --lib`：**33/33 project tests PASS**（含 `history_scan_*`） |
+| `reused_live_pid_clears_registry_without_killing_unknown_process`（CLI bin，packages/ridge-cli） | Windows `CreateProcess(bInheritHandles=TRUE)` —— 本测试 harness 的 rdg 子进程继承了父 rdg 的 stdout/stderr pipe handle，导致 `wait_with_output()` 永远收不到 EOF 阻塞 15s。Tauri 启动的 rdg 在生产用 null stdio，这是**测试环境专属**问题。 | 测试侧改用 status-only `ensure_rdg`（`try_wait`，不排管道）；15s 超时仍兜底真挂起；不杀任何未知进程，PID 复用断言保持。 | `cargo test -p ridge-cli --test kernel_lifecycle_e2e`：**5/5 PASS**（含 `reused_live_pid_*`、`detached_*`、`live_unhealthy_*`、`kernel_pty_*`、`standalone_*`） |
+
+约束守住：
+- 未 `kill -9` 任何未知进程；测试退出由 `KernelCleanup` Drop 自然走 `kernel stop`。
+- 未注释/跳过任何断言；`reused_live_pid` 的 PID 复用 + 旧 PID 仍存活两条断言照常。
+- 未碰 `C:\Program Files\ridge\` 用户宿主 ridge（user 明确禁止）。
+
+### 8.2 CHG-030 状态：最小审批项已 DRAFT + PROPOSED，**未自批**
+
+按 AGENTS.md + Goal §3「只提交最小审批项，不擅自批准」。
+
+- 创建 `changes/CHG-030.md`（DRAFT），登记 4 个 L4 节点（详见 `stc_propose_patch CHG-030` 提案）：
+  - `L4-OBS-PACKAGES-RIDGE-KERNEL-SRC-SERVER-RS-d17d8e26`（v9-7 已落）
+  - `L4-OBS-SCRIPTS-RTP1-KERNEL-E2E-MJS-7cba1d4f`（v9-7/v9-8 已落）
+  - `L4-OBS-SRC-TAURI-COMMANDS-PROJECT-RS-c2e8b1f3`（**working tree**，§8.1 第 1 项修）
+  - `L4-OBS-PACKAGES-RIDGE-CLI-TESTS-KERNEL-LIFECYCLE-E2E-RS-89a47be2`（**working tree**，§8.1 第 2 项修）
+- `stc_propose_patch CHG-030` 第三次提交状态 `PROPOSED`，`stc_validate_change CHG-030` 仅剩 `CHANGE_E_EMPTY` WARNING（待 apply 才会挂 `affects`/`allowedPathsAdd`）。其余诊断（CHG-029 缺 target / L2 spec 缺 parent）为 pre-existing，与本提案无关。
+- `stc_impact CHG-030` 预览：`direct: []`（proposal 阶段尚未挂 link）/ `transitive: []` / `stale: []`。
+- **未**调用 `stc_prepare_build` / `stc_apply` / 任何 `--confirm`。
+
+申请用户决策（择一）：
+
+| 选项 | 含义 |
+|---|---|
+| 批准 + 允许执行 | 我会按流程 `stc_prepare_build CHG-030` → `stc_verify_build` →（如流程要求）`stc_apply`，然后 commit `project.rs` + `kernel_lifecycle_e2e.rs` |
+| 暂不批准 | CHG-030 留 DRAFT；working tree 两个文件保持未提交；下一步 §4 candidate 重 build 不阻塞 |
+
+### 8.3 §4 same-version candidate 重 build（待 §8.2 决策后启动）
+
+按 Goal §4：
+
+| 项 | 计划 |
+|---|---|
+| Remote desktop bundle | `node scripts/build-remote-desktop.mjs`（隔离 `remote-dist/desktop/`） |
+| Remote mobile bundle | `pnpm build:remote:mobile`（隔离 `remote-dist/mobile/`） |
+| Host / Tauri product | `CARGO_TARGET_DIR=target/test-rdg cargo build --release -p ridge-cli`（隔离 `target/test-rdg/release/ridge.exe`） |
+| 版本同源校验 | `target/test-rdg/release/ridge.exe` ↔ `remote-dist/desktop/manifest` ↔ `remote-dist/mobile/sw.js` 版本号一致；任何一项漂移即不交付 |
+| 启动命令 | `./target/test-rdg/release/ridge.exe remote --port 5120` + 桌面 Chrome `https://127.0.0.1:5120/?ui=desktop` + 手机 Chrome `https://<lan-ip>:5120/` |
+
+缺设备：本机仍无 GUI/真机；candidate 的本地构建/版本校验可跑，端到端 desktop/mobile 真机验收仍 NOT_RUN。
+
+### 8.4 当前 GOAL_PARTIAL 状态再确认
+
+```
+代码已实现        YES（v9-7→v9-12：RTP1 e2e + B/A/D/C 边缘 + 2 FAIL 修根因）
+自动验证通过      YES（vitest 2082/2082；cargo ridge-kernel --lib 78/78；
+                       cargo ridge --lib 33/33 project tests 含 history_scan；
+                       cargo ridge-cli --test kernel_lifecycle_e2e 5/5 含 reused_live_pid）
+待真机           YES（4 类 NOT_RUN）
+待审批           YES（CHG-030 apply + working tree 两个文件的 commit 权）
+```
+
+**未宣称 BETA_READY**；缺真机 + 缺 CHG-030 apply 共同阻塞。
+
+接力记录完毕（v9-12 止，待 CHG-030 审批结果）。

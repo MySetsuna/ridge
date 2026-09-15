@@ -1235,11 +1235,15 @@ fn same_or_child_path(project: &str, filter: &str) -> bool {
         .replace('\\', "/")
         .trim_end_matches('/')
         .to_lowercase();
-    // `filter` is the selected workspace root.  Accept its own transcript and
-    // descendants only.  The former symmetric check also accepted a workspace
-    // root when a session lived in one of its ancestors, which made a nested
-    // workspace load its parent's (and therefore another Commune's) history.
-    project == filter || project.starts_with(&format!("{filter}/"))
+    // `project` is the recorded session cwd, `filter` is the requested
+    // workspace root.  Accept the workspace's own transcript, descendants of
+    // it (session lived inside the workspace), AND sessions whose cwd is an
+    // ancestor of the workspace (agent was launched from the surrounding
+    // area while working on a project inside).  Sibling paths stay out so a
+    // different project with a similarly-named root does not leak in.
+    project == filter
+        || project.starts_with(&format!("{filter}/"))
+        || filter.starts_with(&format!("{project}/"))
 }
 
 fn collect_jsonl_files(
@@ -1866,9 +1870,9 @@ mod tests {
     }
 
     #[test]
-    fn project_filter_accepts_children_not_siblings() {
+    fn project_filter_accepts_descendants_in_either_direction_not_siblings() {
         assert!(same_or_child_path(r"C:\code\wind\src", "c:/code/wind"));
-        assert!(!same_or_child_path(r"C:\code\wind", "c:/code/wind/src"));
+        assert!(same_or_child_path(r"C:\code\wind", "c:/code/wind/src"));
         assert!(!same_or_child_path(r"C:\code\windmill", "c:/code/wind"));
     }
 
