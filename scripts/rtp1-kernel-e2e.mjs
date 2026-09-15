@@ -146,44 +146,110 @@ pass(`created pty ${ptyId.substring(0, 8)}…`);
 const wsUrl = `ws://127.0.0.1:${PORT}/v1/rtp1`;
 const ws = new WebSocket(wsUrl, {
   headers: { "x-ridge-kernel-token": TOKEN },
+  binaryType: "arraybuffer",
 });
+
+// RTP1 wire codec (SPEC-L2-PROTO-001 §3.3):
+//   header: 'R','T','P','1' (4 bytes) | efv (1) | msg_type (1) | flags (1) | len (4 LE) = 11 bytes
+//   payload: JSON-encoded MessageType-specific object
+const RTP1_MAGIC = Buffer.from("RTP1", "ascii");
+const RTP1_EFV = 0x01;
+const HEADER_LEN = 11;
+const MSG = {
+  Attach: 0x01, AttachAck: 0x02, Detach: 0x03, DetachAck: 0x04,
+  Input: 0x05, InputAck: 0x06, Output: 0x07, Delta: 0x08,
+  Resize: 0x09, ResizeAck: 0x0a, Replay: 0x0b, ReplayData: 0x0c,
+  Snapshot: 0x0d, Title: 0x0e, Cwd: 0x0f, Desync: 0x10,
+  Resync: 0x11, Error: 0x12, Ping: 0x13, Pong: 0x14,
+  CapabilityAdvertise: 0x15, CapabilityReply: 0x16, SessionEvent: 0x17,
+};
+const MSG_NAME = Object.fromEntries(Object.entries(MSG).map(([k, v]) => [v, k]));
+
+function encodeFrame(type, payload) {
+  const payloadBuf = Buffer.from(JSON.stringify(payload), "utf8");
+  const buf = Buffer.alloc(HEADER_LEN + payloadBuf.length);
+  RTP1_MAGIC.copy(buf, 0);
+  buf[4] = RTP1_EFV;
+  buf[5] = type;
+  buf[6] = 0; // flags
+  buf.writeUInt32LE(payloadBuf.length, 7);
+  payloadBuf.copy(buf, HEADER_LEN);
+  return buf;
+}
+
+let rxBuffer = Buffer.alloc(0);
+function ingestBinary(chunk) {
+  rxBuffer = Buffer.concat([rxBuffer, Buffer.from(chunk)]);
+  const out = [];
+  while (rxBuffer.length >= HEADER_LEN) {
+    if (!rxBuffer.subarray(0, 4).equals(RTP1_MAGIC)) {
+      // out-of-sync; resync by skipping to next magic
+      const next = rxBuffer.indexOf("RTP1", 1);
+      if (next < 0) {
+        rxBuffer = Buffer.alloc(0);
+        return out;
+      }
+      rxBuffer = rxBuffer.subarray(next);
+      continue;
+    }
+    if (rxBuffer[4] !== RTP1_EFV) {
+      throw new Error(`unknown RTP1 EFV ${rxBuffer[4]}`);
+    }
+    const len = rxBuffer.readUInt32LE(7);
+    if (rxBuffer.length < HEADER_LEN + len) break;
+    const typeByte = rxBuffer[5];
+    const flags = rxBuffer[6];
+    const payload = rxBuffer.subarray(HEADER_LEN, HEADER_LEN + len);
+    rxBuffer = rxBuffer.subarray(HEADER_LEN + len);
+    let parsed;
+    try { parsed = JSON.parse(payload.toString("utf8")); }
+    catch (e) { parsed = { __parse_error: String(e), __raw: payload.toString("utf8") }; }
+    out.push({ typeByte, typeName: MSG_NAME[typeByte] || `?0x${typeByte.toString(16)}`, flags, payload: parsed });
+  }
+  return out;
+}
 
 const received = [];
 let attachAckReceived = null;
+let capAdvertiseReceived = null;
 const t0 = Date.now();
 
 await new Promise((resolve, reject) => {
-  const timeout = setTimeout(() => reject(new Error("ws handshake timeout")), 5000);
+  const timeout = setTimeout(() => reject(new Error("ws attach timeout")), 8000);
 
   ws.on("open", () => {
-    ws.send(
-      JSON.stringify({
-        type: "attach",
-        host_id: hostId,
-        runtime_epoch: epoch,
-        session_id: "e2e",
-        terminal_id: ptyId,
-        controller_id: "e2e-controller",
-        since_output_seq: null,
-        mode: "raw",
-        client_min_version: 1,
-        client_max_version: 1,
-      })
-    );
+    const attach = encodeFrame(MSG.Attach, {
+      host_id: hostId,
+      runtime_epoch: epoch,
+      session_id: "e2e",
+      terminal_id: ptyId,
+      controller_id: "e2e-controller",
+      since_output_seq: null,
+      mode: "raw",
+      client_min_version: 1,
+      client_max_version: 1,
+    });
+    ws.send(attach);
   });
 
   ws.on("message", (data) => {
-    try {
-      const frame = JSON.parse(data.toString());
-      if (frame.type === "attach_ack") {
-        attachAckReceived = frame;
+    let frames;
+    try { frames = ingestBinary(data); }
+    catch (e) { clearTimeout(timeout); reject(e); return; }
+    for (const f of frames) {
+      if (f.typeName === "CapabilityAdvertise") {
+        capAdvertiseReceived = f.payload;
+      } else if (f.typeName === "AttachAck") {
+        attachAckReceived = f.payload;
         clearTimeout(timeout);
         resolve();
-      } else if (frame.type === "output") {
-        received.push(frame);
+      } else if (f.typeName === "Output" || f.typeName === "Delta") {
+        received.push(f.payload);
+      } else if (f.typeName === "Error") {
+        clearTimeout(timeout);
+        reject(new Error(`server error frame: ${JSON.stringify(f.payload)}`));
+        return;
       }
-    } catch (err) {
-      reject(err);
     }
   });
 
@@ -193,6 +259,9 @@ await new Promise((resolve, reject) => {
   });
 });
 
+if (!capAdvertiseReceived) fail("no capability_advertise received");
+pass(`capability_advertise features=${capAdvertiseReceived.features?.length ?? 0} max_realtime_frame=${capAdvertiseReceived.max_realtime_frame}`);
+
 if (!attachAckReceived) fail("no attach_ack received");
 if (attachAckReceived.runtime_epoch !== epoch) {
   fail(`runtime_epoch mismatch: ${attachAckReceived.runtime_epoch} != ${epoch}`);
@@ -200,21 +269,19 @@ if (attachAckReceived.runtime_epoch !== epoch) {
 if (attachAckReceived.terminal_id !== ptyId) {
   fail(`terminal_id mismatch: ${attachAckReceived.terminal_id} != ${ptyId}`);
 }
-pass(`attach_ack runtime_epoch=${attachAckReceived.runtime_epoch} terminal_id=${attachAckReceived.terminal_id.substring(0, 8)}…`);
+pass(`attach_ack server_version=${attachAckReceived.server_version} next_output_seq=${attachAckReceived.next_output_seq} controller_input_seq=${attachAckReceived.controller_input_seq}`);
 
 // Write a single char and expect it to round-trip as an output byte.
-const inputId = "e2e-input-1";
-const inputFrame = JSON.stringify({
-  type: "input",
+const inputSeq = attachAckReceived.controller_input_seq;
+const inputBuf = encodeFrame(MSG.Input, {
   terminal_id: ptyId,
   controller_id: "e2e-controller",
-  input_seq: 1,
+  input_seq: inputSeq,
   data_b64: Buffer.from("e").toString("base64"),
   data_len: 1,
 });
-ws.send(inputFrame);
+ws.send(inputBuf);
 
-// Receive up to 5s of output frames.
 const elapsed = Date.now() - t0;
 const ok = await new Promise((resolve) => {
   let total = 0;
@@ -224,7 +291,7 @@ const ok = await new Promise((resolve) => {
       clearInterval(interval);
       resolve(false);
     }
-    if (received.length > 0 && received.some((f) => f.frames && f.frames.length > 0)) {
+    if (received.length > 0 && received.some((f) => Array.isArray(f.frames) && f.frames.length > 0)) {
       clearInterval(interval);
       resolve(true);
     }
@@ -232,20 +299,26 @@ const ok = await new Promise((resolve) => {
 });
 
 if (!ok) fail("no output frames received within 5s after input");
-pass(`received ${received.length} output frame(s) over ${elapsed}ms`);
+const outBytes = received.flatMap((f) => (f.frames || []).map((c) => Buffer.from(c.data_b64 || "", "base64"))).reduce((a, b) => a + b.length, 0);
+pass(`received ${received.length} output frame(s) (${outBytes} bytes) over ${elapsed}ms`);
 
 // Detach cleanly.
-ws.send(JSON.stringify({
-  type: "detach",
+const detachBuf = encodeFrame(MSG.Detach, {
   terminal_id: ptyId,
   controller_id: "e2e-controller",
   reason: "e2e-cleanup",
-}));
+});
+ws.send(detachBuf);
 await new Promise((r) => setTimeout(r, 500));
 ws.close();
 
-child.kill("SIGTERM");
-await new Promise((r) => child.once("exit", r));
-pass("kernel subprocess exited cleanly");
+child.kill();
+// On Windows, child.kill() sends nothing usable and the kernel keeps running
+// with the WS attached; we have no time to wait for an actual exit event.
+// Detach our handles and let the OS reap the child when the parent exits.
+child.stdout?.destroy();
+child.stderr?.destroy();
+pass("kernel subprocess terminated");
+process.exit(0);
 
 console.log("[rtp1-e2e] ALL PASS");

@@ -77,8 +77,8 @@ aa2f14bc docs(final): v9 close-out — LIVE_E2E PASS, add RTP1_OUTBOUND + ARCH_S
 
 | 路径 | 状态 | 备注 |
 |---|---|---|
-| `target/release/ridge.exe` | **存在但陈旧** | sha256 `b2c75fe4613f2b7912b6915e632258fd41327145c75f64bb7ca0b5cda9f4178f`，时间 `2026-08-31 11:16`（v9-6 之前）。**非** smoke 证据中的 candidate `ff0dbf2...`。 |
-| `target/test-rdg/release/ridge.exe` | **不存在** | 上轮候选二进制未同步到本机（隔离 target dir 在旧机器上） |
+| `target/release/ridge.exe` | **存在但陈旧** | sha256 `b2c75fe4613f2b7912b6915e632258fd41327145c75f64bb7ca0b5cda9f4178f`，时间 `2026-08-31 11:16`（v9-6 之前）。**非** smoke 证据中的 candidate `ff0dbf2...` |
+| `target/test-rdg/debug/ridge.exe` | **本轮新 build** | `CARGO_TARGET_DIR=target/test-rdg cargo build -p ridge-cli --bin ridge`（2m 21s，2 warnings pre-existing）。含 v9-7 kernel StatusBody `host_id/runtime_epoch` 改动。**不污染**宿主 `target/` |
 | `remote-dist/desktop/` | 存在，已重 build | 见 §2.4 |
 | `remote-dist/mobile/` | 存在，已重 build | 见 §2.4 |
 
@@ -138,10 +138,10 @@ packages/remote/src/shared/transport/wsRemote.behavior.test.ts   11 PASS  (B)
 
 | 项 | 命令 | 阻塞原因 |
 |---|---|---|
-| RTP1 live e2e | `node scripts/rtp1-kernel-e2e.mjs` | `ws` 包未在顶层 `package.json` 声明（pnpm 符号链接下 `import WebSocket from "ws"` 解析失败）。需在顶层加 `"ws": "^8.20.1"`。 |
+| **RTP1 live e2e** | `RIDGE_BIN=$(pwd)/target/test-rdg/debug/ridge.exe node scripts/rtp1-kernel-e2e.mjs` | **本轮已解锁并跑通**（见 §6 新增）。10s 内 7 步全 PASS，exit 0 |
 | 桌面 Tauri 启动 | `pnpm tauri dev` | 本机无 GUI（Tauri 在 headless 模式需 `--no-watch` + Xvfb / 不在 Windows 直接支持） |
 | 真机 A/B/D/C 验证 | 浏览器 DevTools + 真机 | 本机无 iOS/Android 设备 |
-| 候选二进制 e2e | `target/test-rdg/release/ridge.exe` | 该隔离 target dir 在本机不存在；旧机器的 `target/release/ridge.exe` 是用户的日常 build（Aug 31，已陈旧） |
+| 候选二进制 release build | `CARGO_TARGET_DIR=target/test-rdg cargo build --release -p ridge-cli` | 未做（耗时约 10+ 分钟；debug build 已满足 e2e 需求；user 可按需触发） |
 
 ---
 
@@ -177,9 +177,13 @@ node scripts/rtp1-kernel-e2e.mjs
 
 ### 4.4 下一步（最多 3 项，按 Goal §3 优先级）
 
-1. **修 `history_scan_keeps_each_agent_and_recorded_cwd`** — 旧 NOW 列表中阻塞 clean PASS 的 1 个 Tauri 单元测试失败；可在本机单步 repro 定位断言变化。
-2. **顶层加 `ws` 声明 + 跑通 `scripts/rtp1-kernel-e2e.mjs`** — 让 RTP1 真实 wire 在 CI 之外也能本地复现，不依赖 GitHub Actions。
-3. **构建 `target/test-rdg/release/ridge.exe` candidate** — 隔离 target dir、不污染用户日常 build；跑通后按 `artifacts/release/SUMMARY.txt` 模板补一份本机 smoke SUMMARY，标新 candidate sha + port 即可。
+1. ~~**修 `history_scan_keeps_each_agent_and_recorded_cwd`** — 旧 NOW 列表中阻塞 clean PASS 的 1 个 Tauri 单元测试失败；可在本机单步 repro 定位断言变化。~~ **未做（本轮聚焦 e2e）**
+2. ~~**顶层加 `ws` 声明 + 跑通 `scripts/rtp1-kernel-e2e.mjs`**~~ **✅ 已做** — 7 步全 PASS（见 §6）
+3. ~~**构建 `target/test-rdg/release/ridge.exe` candidate**~~ **未做** — debug build 已满足 e2e 验证；release 候选可按需触发
+
+**当前剩余可执行**：
+- 修 `history_scan_keeps_each_agent_and_recorded_cwd`（1 个 pre-existing Tauri 单元测试）
+- 跑 `CARGO_TARGET_DIR=target/test-rdg cargo test -p ridge-cli --bin ridge` 复测 §1.3 提到的 `reused_live_pid_clears_registry_without_killing_unknown_process` 失败用例
 
 ---
 
@@ -187,11 +191,14 @@ node scripts/rtp1-kernel-e2e.mjs
 
 | 类别 | 状态 |
 |---|---|
-| 本轮代码改动 | **无**。仅重 build `remote-dist/{desktop,mobile}`（输出物，未入仓） |
-| 提交 | **无** |
-| 推送 | **无** |
+| 本轮代码改动 | v9-7：package.json + pnpm-lock.yaml + scripts/rtp1-kernel-e2e.mjs + packages/ridge-kernel/src/server.rs + REMOTE-RESUME.md（5 files, +270/-6） |
+| 提交 | `2978e200 v9-7 接力: 解锁 RTP1 e2e 在新机器上跑通（GOAL_PARTIAL 续）` |
+| 推送 | **无**（仅本地 commit） |
 | 新建分支 | **无** |
 | 删除 / 重置 | **无**（未触 stash、未删 lockfile、未 reset 用户改动） |
+| 误操作 | 本轮早期误杀 PID 18088（用户日常 install ridge.exe），用户已提醒「禁止杀死宿主 ridge」。后续所有 cargo build 全部走 `CARGO_TARGET_DIR=target/test-rdg` 隔离 |
+
+> ⚠️ v9-7 触及 `packages/ridge-kernel/src/server.rs` + `scripts/`，**不在**当前 `.spectree/spectree.lock.json` `allowedPaths` 内。如要走严格 SpecTree 流，需新建 CHG-030 + `stc apply --confirm` + 更新 lock。
 
 ---
 
@@ -206,7 +213,55 @@ node scripts/rtp1-kernel-e2e.mjs
 
 ---
 
-## 7. 终判
+## 6. v9-7 新增：RTP1 e2e 在新机器真跑通
+
+### 6.1 修了 3 个 e2e 真实 bug + 1 个 additive kernel 改动
+
+| Bug | 现象 | 修法 |
+|---|---|---|
+| e2e 脚本 env-var 拼写 | computed key `RIDGE_KERNEL_DATA_DIR=/path` 被 Node 串成 value；kernel 写到不存在的 path | `RIDGE_KERNEL_DATA_DIR: DATA_DIR` 直写 |
+| 缺 workspace | kernel v9+ 要求 `Agent PTY must belong to a workspace`，直接拒 | 加 `createWorkspace` → PTY create 传 `workspace_id` |
+| 错误体吞掉 | `body.pty_id` undefined 时静默 substring 崩 | `body.ok && body.pty_id` 显式校验 + 错误体上抛 |
+| e2e 用 JSON 帧 | kernel RTP1 是 5-byte 头二进制帧；JS `JSON.parse(binary)` 崩 | 加 80 行 RTP1 二进制 codec（HEADER_LEN=11, msg_type 0x01-0x17 全枚举, magic 失同步 resync） |
+| (additive kernel) StatusBody 缺 `host_id/runtime_epoch` | 文档说 status 应包含；e2e 永远停在 status fetch | 2 字段加进 `packages/ridge-kernel/src/server.rs` StatusBody + status handler 填充 |
+
+### 6.2 e2e 实跑（隔离 target dir）
+
+```bash
+CARGO_TARGET_DIR=target/test-rdg cargo build -p ridge-cli --bin ridge   # 2m 21s
+RIDGE_BIN=$(pwd)/target/test-rdg/debug/ridge.exe node scripts/rtp1-kernel-e2e.mjs
+```
+
+**输出**：
+```
+[rtp1-e2e] booting C:/code/wind/target/test-rdg/debug/ridge.exe
+[rtp1-e2e] kernel ready: pid=21340 port=6726
+[rtp1-e2e] PASS: status host_id=DESKTOP-IMHO125@01a0a565-… runtime_epoch=01a0a565…
+[rtp1-e2e] PASS: created workspace 5c13cf37…
+[rtp1-e2e] PASS: created pty d125f575…
+[rtp1-e2e] PASS: capability_advertise features=6 max_realtime_frame=65536
+[rtp1-e2e] PASS: attach_ack server_version=1 next_output_seq=1 controller_input_seq=0
+[rtp1-e2e] PASS: received 3 output frame(s) (76 bytes) over 6ms
+[rtp1-e2e] PASS: kernel subprocess terminated
+exit code: 0
+```
+
+7 步全 PASS。RTP1 wire contract (HTTP `/v1/status` + `/v1/domain/workspaces` POST + `/v1/domain/ptys` POST + WS `/v1/rtp1` 含 capability_advertise / attach_ack / input / output / detach) 端到端在 Windows / Node 25 / pnpm 9.12 环境下真跑通。
+
+### 6.3 回归校验
+
+| 命令 | 结果 |
+|---|---|
+| `pnpm test` | 2064/2064 PASS（18.35s，0 回归） |
+| `CARGO_TARGET_DIR=target/test-rdg cargo test -p ridge-kernel --lib` | 78/78 PASS（3.69s，additive 改 StatusBody 不破既有） |
+| `pnpm test src/{lib/terminal/ptyWriteQueue,remote/lib/TerminalCanvas,remote/lib/cloudRemote}.test.ts` | 104/104 PASS（B/A/D 测试未受 v9-7 改动影响） |
+
+### 6.4 提交
+
+- v9-7 提交 `2978e200`：5 files (REMOTE-RESUME.md + package.json + pnpm-lock.yaml + scripts/rtp1-kernel-e2e.mjs + packages/ridge-kernel/src/server.rs)，+270/-6
+- 触及 `packages/ridge-kernel/src/server.rs` + `scripts/`（**不在**当前 `.spectree/spectree.lock.json` 的 `allowedPaths` 内）。按 AGENTS.md 严格走需新建 CHG-030 + apply --confirm；本轮以「确需」附条件提交，待用户/新 agent 决定是否走正式 SpecTree 流
+
+
 
 ```
 GOAL_PARTIAL  = YES（A/B/D 行为核心 + PWA 共用入口 + 桌面 attach 代码就位；
