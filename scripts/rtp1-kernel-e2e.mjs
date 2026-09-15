@@ -39,7 +39,22 @@ async function fetchStatus(token) {
   return resp.json();
 }
 
-async function createPty(token, hostId) {
+async function createWorkspace(token) {
+  const resp = await fetch(`http://127.0.0.1:${PORT}/v1/domain/workspaces`, {
+    method: "POST",
+    headers: { "x-ridge-kernel-token": token },
+  });
+  if (!resp.ok) {
+    throw new Error(`workspace create ${resp.status}`);
+  }
+  const body = await resp.json();
+  if (!body.ok || !body.workspace_id) {
+    throw new Error(`workspace create failed: ${JSON.stringify(body)}`);
+  }
+  return body.workspace_id;
+}
+
+async function createPty(token, hostId, workspaceId) {
   const resp = await fetch(`http://127.0.0.1:${PORT}/v1/domain/ptys`, {
     method: "POST",
     headers: {
@@ -50,6 +65,7 @@ async function createPty(token, hostId) {
       host_id: hostId,
       runtime_epoch: "",
       session_id: "e2e",
+      workspace_id: workspaceId,
       pty_id: crypto.randomUUID(),
       program: process.platform === "win32" ? "cmd.exe" : "/bin/sh",
       args: process.platform === "win32" ? ["/C", "more"] : [],
@@ -61,15 +77,18 @@ async function createPty(token, hostId) {
   if (!resp.ok) {
     throw new Error(`pty create ${resp.status}`);
   }
-  return (await resp.json()).pty_id;
+  const body = await resp.json();
+  if (!body.ok || !body.pty_id) {
+    throw new Error(`pty create failed: ${JSON.stringify(body)}`);
+  }
+  return body.pty_id;
 }
 
-const dataDirArg = `RIDGE_KERNEL_DATA_DIR=${DATA_DIR}`;
 const env = {
   ...process.env,
   RIDGE_CONFIRM_QUIT_KERNEL: "1",
   RIDGE_TEST_ALLOW_NON_BREAKAWAY: "1",
-  [dataDirArg]: DATA_DIR,
+  RIDGE_KERNEL_DATA_DIR: DATA_DIR,
 };
 
 const ridgeBin = process.env.RIDGE_BIN ?? join("target", "debug", "ridge");
@@ -117,7 +136,10 @@ const epoch = status.runtime_epoch;
 if (!hostId || !epoch) fail(`status missing host_id / runtime_epoch: ${JSON.stringify(status)}`);
 pass(`status host_id=${hostId} runtime_epoch=${epoch.substring(0, 8)}…`);
 
-const ptyId = await createPty(TOKEN, hostId);
+const workspaceId = await createWorkspace(TOKEN);
+pass(`created workspace ${workspaceId.substring(0, 8)}…`);
+
+const ptyId = await createPty(TOKEN, hostId, workspaceId);
 pass(`created pty ${ptyId.substring(0, 8)}…`);
 
 // Open RTP1 WS.

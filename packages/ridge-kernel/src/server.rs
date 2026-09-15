@@ -98,6 +98,13 @@ struct StatusBody {
     started_at_unix: u64,
     mcp: &'static str,
     domain: &'static [&'static str],
+    /// SPEC-L2-PROTO-001 §3.4.1 host_id minted at kernel boot. Exposed
+    /// for live RTP1 clients (e.g. `scripts/rtp1-kernel-e2e.mjs`) to
+    /// discover the kernel's identity without a separate handshake.
+    host_id: String,
+    /// SPEC-L2-PROTO-001 §3.4.3 runtime_epoch (UUID v7) minted at kernel
+    /// boot. Same purpose as `host_id`.
+    runtime_epoch: String,
 }
 
 fn now_unix() -> u64 {
@@ -166,6 +173,8 @@ async fn status(
         port: st.port,
         started_at_unix: st.started_at_unix,
         mcp: "/api/v1/mcp",
+        host_id: st.host_id.clone(),
+        runtime_epoch: st.runtime_epoch.clone(),
         domain: &[
             "fs.list",
             "agents.profiles",
