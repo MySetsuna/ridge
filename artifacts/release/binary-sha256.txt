@@ -1,0 +1,2 @@
+ff0dbf28838204fda582d4aa38df24b3f135b91b1cd31786a26fe73fb7f6e03b *target/release/ridge.exe
+2da6cb5e438356ecc1189882900a1b66204dcab3dfdce9eb11001f6b3f6b86ab *target/release/ridge-kernel.exe

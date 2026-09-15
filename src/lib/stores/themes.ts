@@ -66,7 +66,15 @@ export async function initThemeSystem(): Promise<void> {
   if (_resolved) return;
   try {
     const tf = await invoke<ThemeFile>('get_theme_data');
-    store.set(tf);
+    // 兜底：host（特别是 desktop-kernel 子集）返回 null 或缺 themes 字段时，
+    // 强制写入带空 themes 的合法 ThemeFile，避免后续 $themeData.themes 报
+    // "Cannot read properties of null (reading 'themes')" 把整条 boot IIFE
+    // 拖垮（参见 +page.svelte startWebRemoteBoot 注释）。
+    const safe: ThemeFile =
+      tf && Array.isArray(tf.themes)
+        ? tf
+        : { version: tf?.version ?? 1, themes: [] };
+    store.set(safe);
     _resolved = true;
   } catch (e) {
     // reduced-capability host（无头 cli host / 精简 cloud host）不实现 get_theme_data。

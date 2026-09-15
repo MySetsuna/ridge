@@ -1,0 +1,5 @@
+=== closeloop marker file status (2026-09-15) ===
+EXISTS  36 bytes 2026-09-15 16:30:50.438861100 +0800  /c/Windows/Temp/ridge_cl_marker.txt
+  content: RIDGE_CLOSELOOP_DEFAULT_MOBILE_CLEAN
+EXISTS  28 bytes 2026-09-15 16:36:14.889014000 +0800  /c/Windows/Temp/ridge_cl_reconnect.txt
+  content: RIDGE_CLOSELOOP_RECONNECT_OK

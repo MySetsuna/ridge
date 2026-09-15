@@ -1,0 +1,37 @@
+{
+  "100rows": {
+    "rows": 100,
+    "payloadBytes": 8116,
+    "wallMs": 0.6797999999998865,
+    "flushesTriggered": 0,
+    "kernelFeedCalls": 1
+  },
+  "500rows": {
+    "rows": 500,
+    "payloadBytes": 40583,
+    "wallMs": 0.16669999999999163,
+    "flushesTriggered": 0,
+    "kernelFeedCalls": 3
+  },
+  "1000rows": {
+    "rows": 1000,
+    "payloadBytes": 81166,
+    "wallMs": 0.16150000000016007,
+    "flushesTriggered": 0,
+    "kernelFeedCalls": 5
+  },
+  "5000rows": {
+    "rows": 5000,
+    "payloadBytes": 405833,
+    "wallMs": 2.215800000000172,
+    "flushesTriggered": 0,
+    "kernelFeedCalls": 25
+  },
+  "switchBack": {
+    "initialFeedCalls": 1,
+    "initialPrependCalls": 0,
+    "midPrependCalls": 0,
+    "afterUnparkFeedCalls": 2,
+    "afterUnparkPrependCalls": 0
+  }
+}

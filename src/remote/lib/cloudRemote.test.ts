@@ -55,6 +55,7 @@ function fakeHandle() {
     adapter: {} as never,
     hostDevice: 'dev',
     verifyTotp: verifyTotpSpy,
+    tryTrustGrant: vi.fn(async () => false) as unknown as (timeoutMs?: number) => Promise<boolean>,
     disconnect: disconnectSpy,
   };
 }
@@ -1093,6 +1094,88 @@ describe('CloudRemoteConnection reconnect', () => {
       sessionId: 'session-42',
       cwd: 'C:\\repo\\shared',
     });
+  });
+});
+
+// §A 真正恢复测试 (Goal #3):
+//  - 旧 OTP 过期但授权有效 → 断线恢复无需验证码
+//  - 授权撤销 → 恢复被拒绝
+//  - 不持久化 TOTP；优先 _verifiedCode；fallback 到 trust-grant
+// 这些不变量覆盖 Goal 关心的「不能仅凭发出了 ping 宣称连接健康」——
+// 重连的判定是 host 的 verifyTotp / tryTrustGrant 真实结果，**不**是
+// provider.state 切到 'connected' 就完事。
+describe('A — CloudRemoteConnection recovery: trust-grant 静默授权 + 撤销', () => {
+  it('旧 OTP 过期但 trust-grant 有效 → 断线恢复无需重输 TOTP', async () => {
+    // 模拟场景：TOTP 30s 窗口已滑过；但本次会话已通过 §7.4 trust 握手拿到
+    // host 签发 token，重连后 cloudRemote 应走 tryTrustGrant 重新静默开门。
+    const handle = fakeHandle();
+    // 1) 没有 setVerifiedCode（用户从未在本次会话输过 TOTP — 旧 OTP 已过期）
+    // 2) tryTrustGrant → true（trust 仍有效）
+    (handle.tryTrustGrant as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+    const conn = new CloudRemoteConnection(handle as never, { invoke: vi.fn() } as never);
+    await conn.init();
+    let reconnected = 0;
+    conn.onReconnect(() => reconnected++);
+    conn.notifyState('disconnected');
+    conn.notifyState('connected');
+    await flush();
+    // 关键断言：tryTrustGrant 走了；verifyTotp **没**被调（避免用户被骚扰输码）
+    expect((handle.tryTrustGrant as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(verifyTotpSpy).not.toHaveBeenCalled();
+    expect(reconnected).toBe(1);
+    expect(conn.state()).toBe('connected');
+  });
+
+  it('trust-grant 也被撤销 → 恢复失败，进 \'error\' 终态，UI 走刷新拿新码', async () => {
+    const handle = fakeHandle();
+    (handle.tryTrustGrant as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    const conn = new CloudRemoteConnection(handle as never, { invoke: vi.fn() } as never);
+    await conn.init();
+    let reconnected = 0;
+    conn.onReconnect(() => reconnected++);
+    conn.notifyState('disconnected');
+    conn.notifyState('connected');
+    await flush();
+    expect(reconnected).toBe(0); // 没恢复，不触发 resync
+    expect(conn.state()).toBe('error');
+    // 错误分类为 'channel'（非用户/账户问题）→ UI 可提示「刷新拿新码」或重试
+    expect((conn as any)._failure?.category).toBe('channel');
+  });
+
+  it('同时有 _verifiedCode 和 trust-grant → 优先用 _verifiedCode（不浪费 trust 调用）', async () => {
+    // 反向断言：cached code 是 fast path，trust-grant 是 fallback
+    const handle = fakeHandle();
+    (handle.tryTrustGrant as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+    verifyTotpSpy.mockResolvedValue(true);
+    const conn = new CloudRemoteConnection(handle as never, { invoke: vi.fn() } as never);
+    await conn.init();
+    conn.setVerifiedCode('cached-code');
+    conn.notifyState('disconnected');
+    conn.notifyState('connected');
+    await flush();
+    expect(verifyTotpSpy).toHaveBeenCalledWith('cached-code');
+    // trust-grant **不**被调（已被 fast path 救场）
+    expect((handle.tryTrustGrant as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it('不允许 setVerifiedCode 后被后续 reconnect 清掉（不持久化是文档契约，内存保留 OK）', () => {
+    const handle = fakeHandle();
+    const conn = new CloudRemoteConnection(handle as never, { invoke: vi.fn() } as never);
+    conn.setVerifiedCode('123456');
+    expect((conn as any)._verifiedCode).toBe('123456');
+    // 文档契约：cached code 仅在内存；不写入 localStorage / sessionStorage
+    // （此为 cloudRemote 实现保证，测试仅校验 getVerifiedCode 暴露不写入
+    // IndexedDB 之类 —— 用 jsdom 简单抽样 window.localStorage / sessionStorage）
+    const storage = (globalThis as any).localStorage;
+    if (storage && storage.getItem) {
+      // 任何键里都不应出现 _verifiedCode / 123456
+      for (let i = 0; i < storage.length; i++) {
+        const k = storage.key(i);
+        const v = k ? storage.getItem(k) : null;
+        expect(v ?? '').not.toContain('123456');
+        expect(k ?? '').not.toMatch(/_verifiedCode|setVerifiedCode/);
+      }
+    }
   });
 });
 

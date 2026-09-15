@@ -77,9 +77,10 @@ export default defineConfig({
         '**/*.{mp3,mp4,wav,ogg,webm}',
       ],
       manifest: {
-        // Stable `id` so the browser treats reinstalls as the same app (and
-        // doesn't create a duplicate install). Without it some browsers key the
-        // app by start_url, which is fragile.
+        // SSOT 共用 PWA 身份：本配置必须与 `static/manifest.webmanifest`（被
+        // desktop SvelteKit 复制到 dist）保持同 id / icons，否则浏览器把 ?ui=desktop
+        // 入口识别成第二个 PWA — 重复安装、错图标。修改两边任一处都请同步另一边。
+        // 稳定 id 使浏览器把二次安装识别为同一 app（避免 start_url 漂移导致重装）。
         id: '/',
         name: 'Ridge Remote',
         short_name: 'Ridge',
@@ -113,6 +114,11 @@ export default defineConfig({
         inlineWorkboxRuntime: true,
         // Offline SPA navigations fall back to the cached shell, EXCEPT for the
         // API / WS / cert / download routes which must always hit the network.
+        //   * `?ui=desktop` 永远走网络 → Rust 端 serve.rs 根据 ua.rs prefer_desktop_ui
+        //     返回桌面 SPA shell。若 SW 拦截离线命中，固定返回 mobile 壳 → 「缓存
+        //     固定返回错误 UI 壳」bug（Goal #2）。离线时 `?ui=desktop` 退化为「请连
+        //     网后使用桌面版」错误页（由浏览器默认 + index.html 的 nopin 标头），
+        //     不强塞 mobile 壳。
         navigateFallback: 'index.html',
         navigateFallbackDenylist: [
           /^\/ws/,
@@ -124,6 +130,9 @@ export default defineConfig({
           /^\/workspace/,
           /^\/ridge-ca/,
           /^\/assets\//,
+          // ?ui=desktop 必须直达网络，否则离线下 SW 命中 mobile 缓存 → 用户
+          // 进桌面失败却看见 mobile 壳（看起来「能进」实际错壳，更难诊断）。
+          /[?&]ui=desktop(?:&|$)/,
         ],
       },
       // No service worker during `pnpm dev:remote` — avoids stale-cache pain

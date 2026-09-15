@@ -2406,19 +2406,28 @@ mod pty_lifecycle_contract_tests {
 
     #[test]
     fn restart_reattach_replays_bounded_kernel_history_and_reports_orphans() {
-        let source = include_str!("terminal.rs");
-        let production = source
-            .split("mod pty_lifecycle_contract_tests")
-            .next()
-            .unwrap_or(source);
+        // Both contracts live in commands/kernel_install.rs::reattach_kernel_ptys_inner.
+        // The reattach must construct KernelPtyRef with after_seq: None so the kernel
+        // replays its bounded retained window (no parser state on the desktop side).
+        // Kernel PTYs that have no matching desktop pane must increment `orphaned`
+        // and surface via tracing::warn!, never silently discarded.
+        let reattach = include_str!("kernel_install.rs");
         assert!(
-            production.contains("after_seq: None"),
-            "restart reattach must replay the kernel retained window"
+            reattach.contains("after_seq: None"),
+            "reattach_kernel_ptys_inner must replay kernel retained window (after_seq: None)"
         );
         assert!(
-            production.contains("orphaned += 1"),
-            "unmatched kernel PTYs must be observable instead of silently discarded"
+            reattach.contains("orphaned += 1"),
+            "unmatched kernel PTYs must be observable (orphaned += 1)"
         );
+        assert!(
+            reatch_helper(reattach, "tracing::warn!") && reatch_helper(reattach, "orphaned,"),
+            "orphan count must be surfaced via tracing::warn!"
+        );
+    }
+
+    fn reatch_helper(source: &str, needle: &str) -> bool {
+        source.contains(needle)
     }
 
     #[test]

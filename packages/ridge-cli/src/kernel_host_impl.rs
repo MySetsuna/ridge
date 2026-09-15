@@ -767,6 +767,30 @@ fn dispatch(
             )?;
             Ok(json!({"success":true,"workspaceId":id}))
         }
+        // Web-Remote desktop (?ui=desktop) routes create_workspace through
+        // bridge.invoke() → RpcClient JSON-RPC dispatch. The kernel exposes
+        // POST /v1/domain/workspaces; we proxy here so the desktop UI can
+        // bootstrap a fresh workspace without a separate transport path.
+        "create_workspace" => {
+            let name = args.get("name").and_then(Value::as_str);
+            let body = name.map(|value| serde_json::json!({ "name": value }));
+            let result = request_json(
+                &host.current_endpoint(),
+                "POST",
+                "/v1/domain/workspaces",
+                body.as_ref(),
+            )?;
+            let workspace_id = result
+                .get("workspace_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            Ok(json!({
+                "success": true,
+                "workspaceId": workspace_id,
+                "createdWorkspace": true,
+            }))
+        }
         "search" | "search_files" => {
             let root = args
                 .get("root")
@@ -864,9 +888,12 @@ fn dispatch(
             json!([{"name":"kernel workspace","path":format!("{WORKSPACE_URI_PREFIX}{}",host.workspace_id(None)?) }]),
         ),
         "open_workspace_from_file" => Ok(Value::String(host.workspace_id(None)?.to_string())),
-        "use_global_workspace" | "activate_pane_pty" | "set_pane_delta_mode" | "get_theme_data" => {
+        "use_global_workspace" | "activate_pane_pty" | "set_pane_delta_mode" => {
             Ok(Value::Null)
         }
+        // kernel host 不维护主题文件（与 LAN host 一致降级返回空集），
+        // 避免 src/lib/stores/themes.ts 收到 null 时把整条 boot IIFE 拖垮。
+        "get_theme_data" => Ok(json!({ "version": 1, "themes": [] })),
         other => Err(format!("method not supported by kernel host: {other}")),
     }
 }

@@ -31,6 +31,12 @@ const TOUCH_LOCAL_LINES = 3;
 /**
  * Decide how a vertical swipe / wheel delta should be applied.
  * `deltaY > 0` = finger/content moving up (scroll down / next page).
+ *
+ * `selectionMode` is the explicit user-opt-in local-text-selection toggle.
+ * When the user has asked for local selection, neither the mouse-reporting
+ * nor the alt-screen branch may run — otherwise a swipe on the same gesture
+ * would simultaneously emit SGR mouse / ArrowUp bytes (mutual exclusion;
+ * see REMOTE-FOUR-ISSUES §D rule "本地复制与 TUI 鼠标不能同时发生").
  */
 export function decideTouchScroll(input: {
   deltaY: number;
@@ -38,9 +44,18 @@ export function decideTouchScroll(input: {
   isAltScreen: boolean;
   /** When true, treat deltaY as pixel-like (touch accum); false = already coarse. */
   pixelLike?: boolean;
+  /** Explicit local-text-selection mode (overrides terminal-driven mouse). */
+  selectionMode?: boolean;
 }): TouchScrollDecision | null {
   const { deltaY, isMouseReporting, isAltScreen } = input;
   if (deltaY === 0 || !Number.isFinite(deltaY)) return null;
+
+  // Local selection beats terminal-driven mouse / alt-scroll: the user has
+  // explicitly opted into a non-TUI interaction for this gesture.
+  if (input.selectionMode === true) {
+    const lines = deltaY > 0 ? TOUCH_LOCAL_LINES : -TOUCH_LOCAL_LINES;
+    return { kind: 'local_scroll', lines };
+  }
 
   if (isMouseReporting) {
     return { kind: 'mouse_wheel', btn: deltaY < 0 ? 64 : 65 };

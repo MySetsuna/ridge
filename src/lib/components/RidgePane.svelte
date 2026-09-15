@@ -62,6 +62,12 @@ let { paneId, workspaceId }: Props = $props();
 
 let container: HTMLElement;
 let alive = true;
+// §B 代际保护：每个 mount 实例分配独立对象身份 `mountInstance`；unmount→remount
+// 拿到新对象，旧 mountInstance 不再匹配 → ptyWriteQueue 立即清理旧 lane 与挂起
+// 字节（详见 src/lib/terminal/ptyWriteQueue.ts §B generation guard）。注意：
+// `alive` 标志不够——同一 paneId 多次 mount 都把 alive 翻成 true，闭包引用
+// 仍能区分但 boolean 不行，必须用对象身份。
+const mountInstance = { paneId };
 // `$state` so the focus + padding `$effect`s re-run when `attached` flips
 // from false → true inside the async onMount IIFE. Without reactivity the
 // effects only ran once (at mount with attached=false), leaving the new
@@ -1322,6 +1328,10 @@ function onPtyData(bytes: Uint8Array) {
 			// The write queue folds bytes while the previous IPC write is active.
 			coalesceWindowMs: PTY_INPUT_COALESCE_MS,
 			onError: (err) => reportRepeatedError('write_to_pty', err),
+			// §B 代际保护：把当前 mount 的对象身份 `mountInstance` 传给队列；
+			// 新实例进来时新 mountInstance（新对象身份），旧 lane 立即清理 + 挂起
+			// 字节丢弃。同一实例内多次 enqueue 共享同一 mountInstance → 合并。
+			mountToken: mountInstance,
 		});
 		if (!queued) reportRepeatedError('write_to_pty', new Error('PTY input queue full'));
 	});

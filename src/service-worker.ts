@@ -76,6 +76,10 @@ sw.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
   if (BYPASS.some((p) => url.pathname === p || url.pathname.startsWith(p + '/'))) return;
+  // `?ui=mobile` / 显式 `?ui=desktop` 必须直达网络：desktop SW 不应把 mobile
+  // 入口或对侧入口的导航请求当成普通 `?` 变体回吐桌面缓存——否则用户切到手机
+  // UI 时看到的是 desktop 壳，反之亦然。Rust 端 serve.rs 是 UI 派发 SSOT。
+  if (/(?:^|[?&])ui=(?:mobile|desktop)(?:&|$)/.test(url.search)) return;
 
   // Navigation requests (page reload / address-bar navigations): cache the
   // response on the first successful fetch so subsequent flaky refreshes

@@ -1,0 +1,49 @@
+warning: fields `cap` and `client_frames` are never read
+   --> packages\ridge-kernel\tests\remote_backpressure.rs:607:5
+    |
+606 | struct PipelineMetrics {
+    |        --------------- fields in this struct
+607 |     cap: usize,
+    |     ^^^
+...
+614 |     client_frames: u64,
+    |     ^^^^^^^^^^^^^
+    |
+    = note: `PipelineMetrics` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ridge-kernel` (test "remote_backpressure") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.50s
+     Running tests\remote_backpressure.rs (target\debug\deps\remote_backpressure-2b68e21baed4e704.exe)
+
+running 13 tests
+[backpressure C 20ms] published=4MiB fast_consumed=0MiB fast_frames=64 slow_consumed=0MiB slow_lagged=1 fast_lagged=1
+test perf_baseline_c_slow_20ms ... ok
+[tauri-event-tx sim] publisher_wall=21.528ms loop_wall=21.528ms published=4MiB
+test tauri_event_tx_simulation_does_not_stall_kernel_reader ... ok
+[backpressure D 100ms] published=4MiB fast_consumed=0MiB fast_frames=64 slow_consumed=0MiB slow_lagged=1 fast_lagged=1
+test perf_baseline_d_slow_100ms ... ok
+[backpressure A] published=4MiB fast_consumed=0MiB fast_frames=64 slow_consumed=0MiB slow_lagged=1 fast_lagged=1
+test perf_baseline_a_only_fast_consumer ... ok
+[backpressure B 1ms] published=4MiB fast_consumed=0MiB fast_frames=64 slow_consumed=0MiB slow_lagged=20 fast_lagged=1
+test perf_baseline_b_slow_1ms ... ok
+[lagged-recovery] total_bytes=274490 has_marker_b=true lagged_count=1 (recovery exercised=true)
+test lagged_recovery_terminal_state_correct ... ok
+[real-subprocess] pub_wall=1.0804369s consumed=0MiB rss_start=5820KiB rss_peak=73736KiB rss_end=69732KiB
+test kernel_real_subprocess_write_and_memory_watermark ... ok
+[prod OLD cap=256]   producer=524.54ms queue_drained=740.22ms client_applied=763.39ms sent=4194304 client=4194304 lagged=0
+[prod NEW cap=8192]  producer=2.72ms queue_drained=598.86ms client_applied=629.51ms sent=4194304 client=4194304 lagged=0
+test production_path_old_vs_new_same_input ... ok
+[fast+slow] fast_seen=1024 monotonic=true complete=true | slow_seen=1024 monotonic=true lagged=0
+test fast_slow_simultaneous_independent_state ... ok
+[pause-host-drawing cap=8192] producer_wall=10.5294ms max_per_send_us=92 sent=2MiB client_received=0MiB
+test pause_host_drawing_does_not_stall_kernel_reader ... ok
+[kernel-reader OLD CAP=256] publisher_wall=8.0275036s loop_wall=8.0031064s published=1MiB consumer_received=1MiB
+test kernel_reader_blocking_send_saturates ... ok
+[sustained 30s cap=8192] produced=3015005 frames=3015005 total=11777.36MB inter_arrival_us p50=3 p95=27 p99=82 max=19215 lagged_recoveries=7674 rss_start=176404KiB rss_peak=176404KiB rss_end=176404KiB
+test sustained_load_p95_p99_and_memory_watermark ... ok
+[kernel-reader NEW CAP=8192] publisher_wall=3.5197ms loop_wall=20.4641ms published=4MiB consumer_received=4MiB
+test kernel_reader_blocking_send_new_cap ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 51.67s
+

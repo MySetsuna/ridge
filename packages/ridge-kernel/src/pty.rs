@@ -39,6 +39,18 @@ const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
 const SCROLLBACK_CAP: usize = 1024 * 1024;
 const RENDER_SCROLLBACK_ROWS: usize = 4096;
+// `READER_MPSC_CAP` is the bounded seam between the std PTY reader thread and
+// the async fan-out task (PTY bytes → OutputHub lease fan-out). It MUST stay
+// bounded (silent unbounded buffering would OOM under a stuck fan-out) but
+// needs to be large enough to absorb realistic bursts (`cat large_file`,
+// `tree /`, `find /`) without back-pressuring the kernel PTY and stalling
+// the child shell. The OutputHub ring (256 KiB / 256 frames) is the canonical
+// replay seam for consumers; this channel only smooths in-flight delivery.
+// REMOTE-BACKPRESSURE-DIAGNOSIS: the previous 256 caused the std reader to
+// block under load because the OutputHub fan-out's per-batch work
+// (Terminal::feed + scrollback retain + hub.publish) can exceed 256 batched
+// deliveries of inter-read time.
+const READER_MPSC_CAP: usize = 8 * 1024;
 // The lease is a bounded replay seam, not a second unbounded scrollback.
 // Keep this cap small enough for reconnects while preserving backpressure.
 #[doc(hidden)]
@@ -1083,7 +1095,7 @@ impl PtyBridge {
             .master
             .take_writer()
             .context("failed to take PTY writer")?;
-        let (tx, rx) = mpsc::channel(256);
+        let (tx, rx) = mpsc::channel(READER_MPSC_CAP);
         spawn_reader_thread(reader, tx);
         Ok((
             Self {

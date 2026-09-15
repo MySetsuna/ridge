@@ -399,6 +399,17 @@
     // 句级缓冲：卸载前落笔，防切 pane 丢缓冲文本。
     if (attached && !sbuf.empty) sbufFlush();
     if (sbufTimer !== null) { clearTimeout(sbufTimer); sbufTimer = null; }
+    // §B: clear any pendingStdin captured by THIS instance. pendingStdin is
+    // component-local so the next instance owns its own buffer, but a late
+    // flushPendingStdin call from a race against attachTerminal could otherwise
+    // ship this instance's bytes through the (now stale) ownPaneRef().
+    pendingStdin.length = 0;
+    pendingStdinBytes = 0;
+    // §B: replace the manager dataHandler with a noop so any byte that races
+    // through the kernel between park() and the next mount cannot reach this
+    // unmounted component's onStdin closure. (manager.onData replaces by
+    // paneId; the next mount registers a fresh handler.)
+    try { manager.onData(paneId, () => {}); } catch { /* kernel not loaded */ }
     // Keep-alive: PARK (kernel survives, scrollback preserved), never detach.
     // Real teardown (manager.detach) happens in MainApp only when the host
     // actually closes the pane.
@@ -589,6 +600,8 @@
       isMouseReporting: isMouseReporting(),
       isAltScreen: isAltScreen(),
       pixelLike: true,
+      // §D: explicit local-selection beats terminal-driven mouse / alt-scroll.
+      selectionMode,
     });
     if (!decision) return;
     if (decision.kind === 'mouse_wheel') {
@@ -772,28 +785,28 @@
       openSoftKeyboard();
       return;
     }
-    // Otherwise: focus (raise the soft keyboard) + click-through in TUI apps.
-    if (touch) {
-      const cell = clientToCell(touch.clientX, touch.clientY);
-      if (cell && isMouseReporting()) {
-        const p = decideTouchMouseGesture('press');
-        const press = kEncodeMouse(cell.row, cell.col, p.button, p.action, false, false, false);
-        if (press.length > 0) onStdin(td.decode(press));
-        requestAnimationFrame(() => {
-          if (attached) {
-            const r = decideTouchMouseGesture('release');
-            const rel = kEncodeMouse(cell.row, cell.col, r.button, r.action, false, false, false);
-            if (rel.length > 0) onStdin(td.decode(rel));
-          }
-        });
-      }
-    }
+    // §D: a bare tap focuses + raises the soft keyboard. The mouse-mode click
+    // path is handled exclusively by handleTouchStart (press) + the
+    // touchMouseDragging branch above (release) — emitting a second press here
+    // would double-dispatch to TUI mouse-reporting apps (verified by
+    // REMOTE-FOUR-ISSUES §D "touch/pointer/兼容 mouse 事件不会双派发").
     openSoftKeyboard();
   }
 
   function handleTouchCancel() {
+    // §D: cancel paths must clear EVERY touch state. Previously only
+    // touchMouseDragging was reset, so a system-cancelled gesture (Android
+    // edge-swipe, notification shade) could leak selDragging / scrollAccum
+    // / linkCell into the next touchstart and emit a spurious mouse release
+    // against an unintended pane after a switch.
     touchLinkCell = null;
-    if (!touchMouseDragging || !attached) return;
+    touchScrollAccum = 0;
+    selDragging = false;
+    mouseSelecting = false;
+    if (!touchMouseDragging || !attached) {
+      touchMouseDragging = false;
+      return;
+    }
     const cell = clientToCell(touchLastX, touchLastY);
     if (cell) {
       const g = decideTouchMouseGesture('release');

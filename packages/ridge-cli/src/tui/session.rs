@@ -112,7 +112,9 @@ impl LocalPtySession {
             }
         };
         let stop = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = mpsc::channel(256);
+        // B: mpsc capacity bumped 256→8192 to absorb bursts without stalling
+        // the rdg polling thread (REMOTE-BACKPRESSURE-DIAGNOSIS).
+        let (tx, rx) = mpsc::channel(8 * 1024);
         spawn_output_pump(endpoint.clone(), pty_id, lease_id, stop.clone(), tx);
         Ok((
             Self {

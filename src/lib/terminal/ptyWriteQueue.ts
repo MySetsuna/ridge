@@ -19,6 +19,10 @@ interface PtyInputLane {
   queued: string;
   queuedBytes: number;
   flushTimer: ReturnType<typeof setTimeout> | null;
+  // §B generation guard：mountToken 变化时（旧 Svelte 实例 unmount → 新实例
+  // mount）撞车 → 旧 lane 提前清空，bytes 不跟到新 PTY。
+  generation: number;
+  mountToken: unknown;
 }
 
 const inputLanes = new Map<string, PtyInputLane>();
@@ -79,7 +83,15 @@ export function enqueuePtyWrite(
   return next;
 }
 
-/** Coalesce fast keyboard input while one desktop IPC write is in flight. */
+/** Coalesce fast keyboard input while one desktop IPC write is in flight.
+ *
+ * §B 代际保护：`mountToken` 是调用方提供的「当前 mount 代次」标识（不透明值
+ * 即可：通常是 Svelte 组件实例自身 / 一个 monotonically increasing 计数器）。
+ * 每次 enqueuePtyInput 会把 lane 里的 mountToken 跟入参对比，不同 → 旧 lane
+ * 立即清理，queued bytes 丢弃，drain 路径不再触发旧闭包。新的闭包 / 新实例
+ * 从干净 lane 开始。同一实例内连续 enqueue（mountToken 不变）共享 lane，合并
+ * coalesce 窗口。`write`/`onError` 闭包身份**不**作为信号——同一 onPtyData
+ * 每次 keystroke 都新建 arrow function，identity 比对会产生误判。 */
 export function enqueuePtyInput(
   key: string,
   data: string,
@@ -88,10 +100,27 @@ export function enqueuePtyInput(
     maxQueuedBytes?: number;
     onError?: (error: unknown) => void;
     coalesceWindowMs?: number;
+    /** 不透明 mount 代次标识；变化时旧 lane 立即清理。强烈建议传组件实例
+     *  或显式 mount 计数器。省略则退化为「只比 write 闭包身份」（不推荐）。 */
+    mountToken?: unknown;
   } = {},
 ): boolean {
   if (!data) return true;
   let lane = inputLanes.get(key);
+  if (lane) {
+    // §B generation guard：mountToken 变化 → unmount→remount race，丢弃旧 lane。
+    // 旧挂起输入**不得**跟随新 props 发给新终端（Goal #1）。
+    const incomingToken = options.mountToken;
+    const prevToken = lane.mountToken;
+    const tokensDiffer = (incomingToken === undefined && prevToken === undefined)
+      ? (lane.write !== write || lane.onError !== options.onError)
+      : incomingToken !== prevToken;
+    if (tokensDiffer) {
+      if (lane.flushTimer !== null) clearTimeout(lane.flushTimer);
+      inputLanes.delete(key);
+      lane = undefined;
+    }
+  }
   if (!lane) {
     lane = {
       active: false,
@@ -102,6 +131,8 @@ export function enqueuePtyInput(
       queued: '',
       queuedBytes: 0,
       flushTimer: null,
+      generation: 0,
+      mountToken: options.mountToken,
     };
     inputLanes.set(key, lane);
   }
@@ -116,6 +147,7 @@ export function enqueuePtyInput(
     if (windowMs > 0) {
       lane.flushTimer = setTimeout(() => {
         lane.flushTimer = null;
+        if (inputLanes.get(key) !== lane) return;
         startPtyInputDrain(key, lane!);
       }, windowMs);
     } else {
@@ -131,22 +163,35 @@ function startPtyInputDrain(
 ): void {
   if (lane.draining) return;
   lane.draining = true;
-  void drainPtyInput(key, lane, lane.write, lane.onError);
+  void drainPtyInput(key, lane);
 }
 
 async function drainPtyInput(
   key: string,
   lane: PtyInputLane,
-  write: (data: string) => Promise<unknown>,
-  onError?: (error: unknown) => void,
 ): Promise<void> {
+  // §B generation guard：drain 期间 lane 被换（unmount→remount 走 enqueuePtyInput
+  // 的 mountToken diff 分支删了旧 lane），立即退出 — 旧 bytes 已被清理，不需要
+  // 试图把已属于「过去」的队列灌到「新」的 PTY。同时也防止 enqueuePtyWrite
+  // 内部的 lanes.generation 检查与本 lane 失配。
+  //
+  // 每次迭代从 `lane` 上**现读** write/onError：同一实例 mountToken 不变
+  // → lane 不被换 → lane.write 仍是当前最新 enqueuePtyInput 的闭包 → 同实例
+  // 内多次 enqueue 的 write 闭包变更能正确传递（修复前 drain 在启动时
+  // 快照 write，导致后续 enqueue 的新闭包不会被调用，出现 'a','bc' 而不是
+  // 'abc' 的分裂 bug）。
   while (inputLanes.get(key) === lane && lane.queued.length > 0) {
     const data = lane.queued;
+    const write = lane.write;
+    const onError = lane.onError;
     lane.queued = '';
     lane.queuedBytes = 0;
     lane.activeBytes = inputEncoder.encode(data).byteLength;
     try {
-      await enqueuePtyWrite(key, () => write(data));
+      await enqueuePtyWrite(key, () => {
+        if (inputLanes.get(key) !== lane) return;
+        return write(data);
+      });
     } catch (error) {
       onError?.(error);
     } finally {

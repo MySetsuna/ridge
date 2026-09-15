@@ -51,6 +51,31 @@ describe('decideTouchScroll', () => {
       decideTouchScroll({ deltaY: 0, isMouseReporting: false, isAltScreen: true }),
     ).toBeNull();
   });
+
+  it('forces local scroll when selectionMode is on, overriding mouse reporting', () => {
+    // Mouse reporting on, alt-screen off → without selectionMode the
+    // branch would emit SGR wheel bytes. selectionMode must beat that.
+    expect(
+      decideTouchScroll({
+        deltaY: -40,
+        isMouseReporting: true,
+        isAltScreen: false,
+        selectionMode: true,
+      }),
+    ).toEqual({ kind: 'local_scroll', lines: -3 });
+  });
+
+  it('forces local scroll when selectionMode is on, overriding alt-screen arrows', () => {
+    expect(
+      decideTouchScroll({
+        deltaY: -90,
+        isMouseReporting: false,
+        isAltScreen: true,
+        pixelLike: true,
+        selectionMode: true,
+      }),
+    ).toEqual({ kind: 'local_scroll', lines: -3 });
+  });
 });
 
 describe('decideTouchMouseGesture', () => {

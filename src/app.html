@@ -5,6 +5,15 @@
   <meta charset="utf-8" />
   <link rel="icon" href="%sveltekit.assets%/favicon.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <!-- 共用 PWA 身份：mobile（PWA 安装态）和 desktop（?ui=desktop 显式入口）必须
+       引用同一份 manifest / id / icons，否则浏览器把两者识别为不同 app。SSOT：
+       /manifest.webmanifest（vite 把 static/ 复制到两个 dist；mobile VitePWA 配置
+       必须与本文件保持同 id=" / "、同 icons，否则 v2 安装会创建重复图标）。 -->
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#0d1117" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Ridge" />
+  <link rel="apple-touch-icon" href="%sveltekit.assets%/apple-touch-icon.png" />
   <title>Ridge</title>
   <!-- Svelte uses inline style attributes for live pane geometry; keep inline
        stylesheet blocks hash-only via style-src above. -->

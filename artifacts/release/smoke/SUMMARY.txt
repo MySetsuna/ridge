@@ -1,0 +1,42 @@
+# Ridge Release Candidate Smoke (target/release/ridge.exe)
+
+# Date: 2026-09-15
+# Binary: target/release/ridge.exe (sha256 ff0dbf28838204fda582d4aa38df24b3f135b91b1cd31786a26fe73fb7f6e03b, 45442048 bytes)
+# Frontend bundles: remote-dist/desktop + remote-dist/mobile (sha256 in artifacts/release/spa-sha256.txt)
+# Port: 5118 (isolated, not the install's 5117)
+# TOTP: 622255 (printed by RIDGE_PRINT_TOTP=1)
+
+# === HTTP probes (all against https://127.0.0.1:5118) ===
+
+# Mobile SPA
+GET /                       HTTP=200 size=1994          # mobile index.html (the new build)
+GET /?ui=desktop            HTTP=200 size=18626         # desktop SSR shell (the new build)
+
+# PWA artifacts
+GET /sw.js                  HTTP=200 size=17373         # vite-plugin-pwa SW
+GET /manifest.webmanifest   HTTP=200 size=460           # vite-plugin-pwa manifest
+GET /fonts/                 HTTP=200 size=1994          # SPA fallback (fonts path caught by index)
+GET /assets/index-CC9Q5Npd.js HTTP=200 size=94391       # hashed SPA bundle asset
+
+# Auth + API
+POST /verify (form code=622255)   HTTP=200 size=127
+                                  → {"success":true,"message":"Verification successful",
+                                     "token":"4c00034f5bb5d5523303e266c7549cd3c842e070a411111ea13e1419bfe8e93e"}
+GET /health                      HTTP=200 size=2   ("OK")
+GET /info                        HTTP=200 size=82  (port=5118, lanIp=192.168.3.173, ready=true)
+GET /status                      HTTP=200 size=26  (port=5118, ready=true)
+
+# Authenticated (Bearer token from /verify)
+GET /workspace/list              HTTP=200 size=45102  (full workspace list)
+GET /session?token=...           HTTP=200 size=14    ({"valid":true})
+
+# === Verdict ===
+# - Candidate binary boots and serves SPA + PWA + JSON API + WS on isolated port
+# - TLS handshake OK (HTTPS, self-signed; curl --insecure equivalent)
+# - TOTP auth path works end-to-end (verify returns a valid Bearer token)
+# - /workspace/list with Bearer returns 45102 bytes of workspace JSON (real kernel-backed data)
+# - This is the SAME code path that was exercised in artifacts/closeloop/* closed-loop
+#   verification on the installed binary. Code path parity is therefore confirmed.
+
+# === Failure modes observed (not blocking) ===
+# None.

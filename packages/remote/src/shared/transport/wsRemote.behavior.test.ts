@@ -397,4 +397,34 @@ describe('RemoteConnection public communication contract', () => {
 		expect(auth.conn.state()).toBe('error');
 		expect(auth.conn.lastFailure()).toMatchObject({ category: 'parked', message: 'device parked' });
 	});
+
+	// §B: pane switch (A → B → A) must not strand paneRefs/paneOutputs for
+	// panes the user has left. MainApp now calls ws.pruneOutputs with the
+	// live pane key after every (activate|subscribe)Pane; verify the LAN
+	// side does not throw on prune, the active pane stays alive, and a
+	// re-subscribed retired pane resumes correctly (proving prune did not
+	// corrupt internal indices — the actual cache eviction is private).
+	it('pruneOutputs keeps the active pane alive and lets retired panes re-subscribe', () => {
+		const { conn, ws } = connect();
+		const paneA: PaneRef = { workspaceId: 'workspace-a', paneId: 'pane-a' };
+		const paneB: PaneRef = { workspaceId: 'workspace-a', paneId: 'pane-b' };
+		conn.subscribePane(paneA, { active: false });
+		conn.subscribePane(paneB, { active: false });
+		conn.activatePane(paneA, { active: true });
+		expect(() =>
+			conn.pruneOutputs(new Set([`${paneA.workspaceId}:${paneA.paneId}`])),
+		).not.toThrow();
+		// Active pane A still has an active subscribe frame on the wire.
+		const activeBefore = ws.sent.filter((frame) => frame.type === 'subscribe-pane').length;
+		expect(activeBefore).toBeGreaterThan(0);
+		// Re-subscribing a retired pane must not be silently dropped and
+		// must produce a fresh subscribe-pane frame.
+		const sentBefore = ws.sent.length;
+		conn.subscribePane(paneB, { active: false });
+		expect(ws.sent.length).toBeGreaterThan(sentBefore);
+		expect(
+			ws.sent.slice(sentBefore).some((frame) => frame.type === 'subscribe-pane'),
+		).toBe(true);
+		conn.disconnect();
+	});
 });

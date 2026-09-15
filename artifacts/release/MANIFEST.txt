@@ -1,0 +1,65 @@
+# Ridge Release Build Manifest
+# Date: 2026-09-15
+# Source commit: worktree on main, after backpressure fix (pty.rs mpsc 256→8192, tui/session.rs mpsc 256→8192)
+
+# === Build host ===
+# Windows 11 Pro 10.0.26200, x86_64-pc-windows-msvc
+# rustc: toolchain in $HOME/.cargo (rust-toolchain.toml pinned)
+# node: 22.x (used by vite 6.4.2 SPA build)
+# pnpm: 9.x (used to orchestrate desktop + mobile + pwa verification)
+
+# === Build commands (in order) ===
+# 1) pnpm build:remote
+#      1a) pnpm build:remote:desktop
+#          node scripts/build-remote-desktop.mjs
+#          -> remote-dist/desktop/{index.html, _app/*, fonts, assets, mobile/}
+#      1b) pnpm build:remote:mobile
+#          vite build --config vite.remote.config.js
+#          pnpm verify:pwa
+#          -> remote-dist/mobile/{index.html, assets/*, sw.js, manifest.webmanifest, fonts/, icons}
+# 2) cargo build --release -p ridge-cli --bin ridge
+#      -> target/release/ridge.exe
+#      features: default = ["rtc"] (no other features toggled; no --all-features; no nightly)
+
+# === Frontend bundle source ===
+# Both SPA bundles are produced by vite from src/ (the SvelteKit app at the repo root).
+# Mobile entry: src/routes/+page.svelte routed via vite.remote.config.js
+# Desktop entry: scripts/build-remote-desktop.mjs uses vite SSR build to emit SSR + hydration shell
+# Verify:remote-pwa-build.mjs asserts manifestStandalone, scopeRoot, iconsPresent,
+#   serviceWorkerGenerated, safeAreaCssPresent, noInAppInstallHook, noDesktopFontRpc
+
+# === Backend binary ===
+# crates: ridge-cli (single binary), ridge-kernel (helper binary)
+# features: default = ["rtc"]
+# target: x86_64-pc-windows-msvc
+# build mode: --release
+
+# === Output paths ===
+# Frontend desktop: remote-dist/desktop/  (35MB _app + index.html + assets)
+# Frontend mobile : remote-dist/mobile/   (17MB assets + sw.js + manifest.webmanifest)
+# Backend CLI     : target/release/ridge.exe
+# Backend kernel  : target/release/ridge-kernel.exe
+
+# === SHA256 ===
+# ridge.exe       ff0dbf28838204fda582d4aa38df24b3f135b91b1cd31786a26fe73fb7f6e03b
+# ridge-kernel.exe 2da6cb5e438356ecc1189882900a1b66204dcab3dfdce9eb11001f6b3f6b86ab
+# 256 SPA files (assets + index.html + sw.js + manifest + fonts + icons)
+#   full list: artifacts/release/spa-sha256.txt
+
+# === PWA verification ===
+# node scripts/verify-remote-pwa-build.mjs -> PASSED
+# {"evidence":null,"indexViewportFitCover":true,"manifestStandalone":true,
+#  "manifestScopeRoot":true,"manifestIconsPresent":true,
+#  "serviceWorkerGenerated":true,"safeAreaCssPresent":true,
+#  "noInAppInstallHook":true,"noDesktopFontRpc":true}
+# precache 38 entries (17405.34 KiB)
+
+# === Known build-time warnings (non-blocking) ===
+# vite reporter: src/lib/transport/tauriShim/core.ts is dynamic + static imported across
+#   many modules. Non-blocking (functional); produces one combined chunk instead of
+#   splitting. Documented upstream, no action this release.
+
+# === Installed-binary comparison ===
+# Installed: C:\Program Files\ridge\ridge.exe sha256 67b6cc678d73afcb36a53594b474aed469bc0c7c6008ded328984db4af79c592
+# This release: ff0dbf28838204fda582d4aa38df24b3f135b91b1cd31786a26fe73fb7f6e03b
+# DIFFERENT — installed binary is older. New release is current source HEAD (with backpressure fix).

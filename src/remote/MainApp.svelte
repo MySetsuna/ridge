@@ -1142,6 +1142,14 @@
         active: true,
         activationId,
       });
+      // §B: prune listeners for panes we just left. The keep-alive kernel
+      // survives the park (no detach), but the host-side raw-byte fan-out
+      // must stop writing to a closed live stream — otherwise a noisy
+      // background pane can hold the controller's WebRTC buffer in use
+      // forever. Switching back later re-subscribes via (activate|subscribe)Pane.
+      if (typeof ws.pruneOutputs === 'function') {
+        ws.pruneOutputs(new Set([subscriptionKey]));
+      }
     });
   });
 
