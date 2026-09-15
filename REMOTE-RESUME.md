@@ -597,7 +597,7 @@ shell flag，本轮在既定范围内修。）
 仅含 CHG-031 工作产物与必要生成文件。
 
 ```
-commit:    875a791e   （本 commit；后续 §10.2 hash 字段在本提交内更新）
+commit:    875a791e   （CHG-031 主体 commit；本文档 hash 由 20734343 补）
 parent:    667d8389f1892b7862ba920a887bed59bce10e72
 diff:      changes/CHG-031.md                    (new, 99 行)
            changes/CHG-029.md                    (M, 2 行 affects 修正)
