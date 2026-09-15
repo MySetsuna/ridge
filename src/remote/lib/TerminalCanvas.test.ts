@@ -135,6 +135,43 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain('requestAnimationFrame(() => {');
     expect(source).toContain('onFirstPaint?.(paneId);');
   });
+
+  // §C: the post-switch contract must order drain → flush → focus →
+  // onFirstPaint so the perf probe measures a fully-resolved first frame,
+  // not one mid-flush. Drift here would make real-device perf numbers
+  // non-comparable across builds.
+  it('drains pending frames before reporting first paint', () => {
+    const attachBody = lines
+      .slice(lineAfter('async function attachTerminal'), lineAfter('async function attachTerminal') + 70)
+      .join('\n');
+    // Drain order: pendingFrames → pendingSemantic → flushPaneFeed → flushPendingStdin → focus → onFirstPaint
+    const drainIdx = attachBody.indexOf('const pendingFrames = onDrainPending?.(paneId) ?? [];');
+    const semanticIdx = attachBody.indexOf('const pendingSemantic = onDrainSemantic?.(paneId) ?? [];');
+    const flushIdx = attachBody.indexOf('manager.flushPaneFeed(paneId);');
+    const focusIdx = attachBody.indexOf('manager.setFocused(paneId, true);');
+    const paintIdx = attachBody.indexOf('onFirstPaint?.(paneId);');
+    expect(drainIdx).toBeGreaterThan(-1);
+    expect(semanticIdx).toBeGreaterThan(-1);
+    expect(flushIdx).toBeGreaterThan(-1);
+    expect(focusIdx).toBeGreaterThan(-1);
+    expect(paintIdx).toBeGreaterThan(-1);
+    expect(drainIdx).toBeLessThan(semanticIdx);
+    expect(semanticIdx).toBeLessThan(flushIdx);
+    expect(flushIdx).toBeLessThan(focusIdx);
+    expect(focusIdx).toBeLessThan(paintIdx);
+  });
+
+  // §C: claimPaneSize must observe a STABLE geometry (2 stable frames past
+  // a 3-frame warmup) so the host PTY is sized for what the user actually
+  // sees, not a transient mid-orientation value.
+  it('claimPaneSize requires stable geometry before sending the host claim', () => {
+    const claimBody = lines
+      .slice(lineAfter('async function claimSettledPaneSize'), lineAfter('async function claimSettledPaneSize') + 25)
+      .join('\n');
+    expect(claimBody).toMatch(/stableFrames\s*=\s*geometry\s*===\s*previousGeometry\s*\?\s*stableFrames\s*\+\s*1\s*:\s*0/);
+    expect(claimBody).toMatch(/if\s*\(frame\s*>=\s*3\s*&&\s*stableFrames\s*>=\s*2\)/);
+    expect(claimBody).toMatch(/manager\.claimPaneSize\(paneId\)/);
+  });
 });
 
 // §D (Goal #2): 默认模式 swipe 始终是滚动；显式选择/鼠标模式按预期分派；
@@ -288,6 +325,61 @@ describe('D — touch/mouse mode contract in TerminalCanvas.svelte source', () =
     expect(source).toMatch(/decideTouchMouseGesture\('press'\)/);
     expect(source).toMatch(/decideTouchMouseGesture\('drag'\)/);
     expect(source).toMatch(/decideTouchMouseGesture\('release'\)/);
+  });
+});
+
+// §D edge cases (Goal #2 follow-up): lock source invariants that the
+// real-device D test (真机 touch/pointer/mouse 事件不会双派发) depends on
+// but cannot fully exercise in jsdom. These are observable in production
+// (multi-touch gesture interruption, fast consecutive taps, link-cell vs.
+// selectionMode priority, older-history fetch gating) and must not regress
+// when the source is refactored.
+describe('D — touch gesture edge-case invariants in TerminalCanvas.svelte source', () => {
+  it('ignores multi-touch (2+ fingers) in start/move/end so a system pinch never poisons the gesture', () => {
+    const startBody = lines
+      .slice(lineAfter('function handleTouchStart'), lineAfter('function handleTouchStart') + 6)
+      .join('\n');
+    expect(startBody).toMatch(/if\s*\(\s*e\.touches\.length\s*!==\s*1\s*\)\s*return;/);
+    const moveBody = lines
+      .slice(lineAfter('function handleTouchMove'), lineAfter('function handleTouchMove') + 4)
+      .join('\n');
+    expect(moveBody).toMatch(/if\s*\(\s*!attached\s*\|\|\s*e\.touches\.length\s*!==\s*1\s*\)\s*return;/);
+  });
+
+  it('selectionMode wins over touchLinkCell: a tap in selection mode never opens a link', () => {
+    const startBody = lines
+      .slice(lineAfter('function handleTouchStart'), lineAfter('function handleTouchStart') + 22)
+      .join('\n');
+    // touchLinkCell assignment short-circuits on selectionMode (the
+    // `!selectionMode && ...` guard).
+    expect(startBody).toMatch(/touchLinkCell\s*=\s*!selectionMode\s*&&\s*startCell\s*&&\s*manager\.hasLinkAt/);
+  });
+
+  it('clears link reservation the moment the gesture drifts off-link (move past threshold)', () => {
+    const moveBody = lines
+      .slice(lineAfter('function handleTouchMove'), lineAfter('function handleTouchMove') + 10)
+      .join('\n');
+    expect(moveBody).toMatch(/touchLinkCell\s*=\s*null;/);
+  });
+
+  it('older-history fetch only fires AFTER an actual scroll-up, not on idle viewport', () => {
+    // The NEAR_TOP_ROWS threshold triggers `onPaneNearTop` from
+    // `maybeLoadOlder`, which is called from `touchWheel` and `handleWheel`
+    // AFTER `manager.scrollUp`. The fetch must not be re-armed on every
+    // frame; it must be tied to an actual scroll motion.
+    expect(source).toMatch(/function\s+maybeLoadOlder\(\)/);
+    expect(source).toMatch(/rowsAboveViewport\(\)\s*<=\s*NEAR_TOP_ROWS/);
+    expect(source).toMatch(/manager\.scrollUp\(paneId,\s*-decision\.lines\);\s*\n\s*maybeLoadOlder\(\);/);
+    expect(source).toMatch(/if\s*\(lines\s*<\s*0\)\s*\{\s*manager\.scrollUp\(paneId,\s*-lines\);\s*maybeLoadOlder\(\);\s*\}\s*else\s+manager\.scrollDown\(paneId,\s*lines\);/);
+  });
+
+  it('every touch-end branch resets touchMouseDragging so a fast consecutive tap cannot leak a phantom release', () => {
+    const endBody = lines
+      .slice(lineAfter('function handleTouchEnd'), lineAfter('function handleTouchEnd') + 80)
+      .join('\n');
+    // The touchMouseDragging branch must end with touchMouseDragging = false.
+    const releaseBlock = endBody.match(/if\s*\(touchMouseDragging\)\s*\{[\s\S]*?touchMouseDragging\s*=\s*false/);
+    expect(releaseBlock).not.toBeNull();
   });
 });
 
