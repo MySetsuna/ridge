@@ -1,40 +1,3079 @@
 {
   "version": 1,
-  "changeId": "CHG-028",
-  "specHash": "085ceb7f88cfc60ffea7068bfc9491c6459709e387c833b6620d8991d803a858",
+  "changeId": "CHG-031",
+  "specHash": "1dab3f779de8e9a2b10603f9fd51a965a5ad501692df5553499127d47bfaaa0e",
   "units": [
     {
-      "id": "L4-OBS-PACKAGE-JSON-7ae45ad1",
-      "level": "L4",
-      "nodeHash": "1097afe2de3fa5acaabca512957dc7edb5e08d0c78c401b1fd773753245f3540",
+      "id": "L2-PERF-001",
+      "level": "L2",
+      "nodeHash": "82d4b6a904a2fdcc938140aad3707545d83af88d0c06a60a1f7d08f723b783d3",
+      "codeTargets": [],
+      "testTargets": [],
+      "status": "APPROVED"
+    },
+    {
+      "id": "L2-PROTO-001",
+      "level": "L2",
+      "nodeHash": "d20240a5cb1de1c58431f11d9ad505e0a030c4cbe7b6c757a94f7ebce0ff6432",
+      "codeTargets": [],
+      "testTargets": [],
+      "status": "APPROVED"
+    },
+    {
+      "id": "L2-REMOTE-001",
+      "level": "L2",
+      "nodeHash": "3091c7bdbb66741f737740b11d74f2a8b3b11de37d6e5b1087531c0e410917eb",
+      "codeTargets": [],
+      "testTargets": [],
+      "status": "APPROVED"
+    },
+    {
+      "id": "L2-TERM-001",
+      "level": "L2",
+      "nodeHash": "c4410e1b84c3214fbc39323556db5515cef50dfd3269270cf939f4dd2415a3d3",
+      "codeTargets": [],
+      "testTargets": [],
+      "status": "APPROVED"
+    },
+    {
+      "id": "L3-OBS-PACKAGES-REMOTE-a8a00612",
+      "level": "L3",
+      "nodeHash": "f231b5fc0dfe46f59682677ac663ccc0f765fe2243bfc7788e7a391a9af8ecf7",
       "codeTargets": [
-        "package.json",
-        "Cargo.lock"
+        "packages/remote/package.json",
+        "packages/remote/tsconfig.json"
       ],
       "testTargets": [],
       "status": "LOCKED"
     },
     {
-      "id": "L4-OBS-SRC-TAURI-CARGO-TOML-fe4c6a80",
-      "level": "L4",
-      "nodeHash": "2a900f4fe29de7920b6e36a2b5cc665876cd24088aa47a51bdfd96a5114f51ff",
+      "id": "L3-OBS-SRC-25a66342",
+      "level": "L3",
+      "nodeHash": "0204253c55775bcb49155a276a7a02feb676cf93589911de7e610f292b71ad82",
       "codeTargets": [
-        "src-tauri/Cargo.toml"
+        "src/app.css",
+        "src/app.html",
+        "src/hooks.server.ts",
+        "src/service-worker.ts"
+      ],
+      "testTargets": [],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-PACKAGES-REMOTE-PACKAGE-JSON-dfdc6c85",
+      "level": "L4",
+      "nodeHash": "42760a2297b58398217801d5367e6575e2d5c59d505a06fb7a48386059954093",
+      "codeTargets": [
+        "packages/remote/package.json"
       ],
       "testTargets": [
-        "src-tauri/tests/win_manifest_boot.rs"
+        "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts",
+        "packages/remote/src/shared/cloud/apiClient.refresh.test.ts",
+        "packages/remote/src/shared/cloud/apiClient.test.ts",
+        "packages/remote/src/shared/cloud/auth.test.ts",
+        "packages/remote/src/shared/cloud/cloudHostBridge.test.ts",
+        "packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts",
+        "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
+        "packages/remote/src/shared/cloud/controllerIdentity.test.ts",
+        "packages/remote/src/shared/cloud/controllerInstanceId.test.ts",
+        "packages/remote/src/shared/cloud/deviceTrust.test.ts",
+        "packages/remote/src/shared/cloud/e2ee.test.ts",
+        "packages/remote/src/shared/cloud/faultInjection.test.ts",
+        "packages/remote/src/shared/cloud/keyBinding.test.ts",
+        "packages/remote/src/shared/cloud/priorityFrameQueue.test.ts",
+        "packages/remote/src/shared/cloud/remoteAllowlist.test.ts",
+        "packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts",
+        "packages/remote/src/shared/cloud/signaling/conformance.test.ts",
+        "packages/remote/src/shared/cloud/signaling/drift.test.ts",
+        "packages/remote/src/shared/cloud/weakNetLab.test.ts",
+        "packages/remote/src/shared/cloud/workspaceScope.test.ts",
+        "packages/remote/src/shared/hosts/foreignPaneStatus.test.ts",
+        "packages/remote/src/shared/hosts/liveBackpressure.test.ts",
+        "packages/remote/src/shared/hosts/livePumpPolicy.test.ts",
+        "packages/remote/src/shared/hosts/outboundLifecycle.test.ts",
+        "packages/remote/src/shared/hosts/outboundReconnect.test.ts",
+        "packages/remote/src/shared/reconnectPolicy.test.ts",
+        "packages/remote/src/shared/teammate/hitlAuditRemote.test.ts",
+        "packages/remote/src/shared/terminal/clipboardImage.test.ts",
+        "packages/remote/src/shared/terminal/dropPaste.test.ts",
+        "packages/remote/src/shared/terminal/fontDataService.test.ts",
+        "packages/remote/src/shared/terminal/fontStack.test.ts",
+        "packages/remote/src/shared/terminal/hostRemountPolicy.test.ts",
+        "packages/remote/src/shared/terminal/imeAnchor.test.ts",
+        "packages/remote/src/shared/terminal/imeDelta.test.ts",
+        "packages/remote/src/shared/terminal/initialPaneFit.test.ts",
+        "packages/remote/src/shared/terminal/linkAffordance.test.ts",
+        "packages/remote/src/shared/terminal/linkOpenHost.test.ts",
+        "packages/remote/src/shared/terminal/linkSpans.test.ts",
+        "packages/remote/src/shared/terminal/manager.attach.test.ts",
+        "packages/remote/src/shared/terminal/manager.test.ts",
+        "packages/remote/src/shared/terminal/mobileCopy.test.ts",
+        "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts",
+        "packages/remote/src/shared/terminal/mouseForwardPolicy.test.ts",
+        "packages/remote/src/shared/terminal/paneDockResolve.test.ts",
+        "packages/remote/src/shared/terminal/paneGeometry.test.ts",
+        "packages/remote/src/shared/terminal/paneInputGate.test.ts",
+        "packages/remote/src/shared/terminal/paneOrigin.test.ts",
+        "packages/remote/src/shared/terminal/paneShell.test.ts",
+        "packages/remote/src/shared/terminal/ptyBridge.test.ts",
+        "packages/remote/src/shared/terminal/sentenceBuffer.test.ts",
+        "packages/remote/src/shared/terminal/shellInputSnapshot.test.ts",
+        "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts",
+        "packages/remote/src/shared/terminal/terminalFocus.test.ts",
+        "packages/remote/src/shared/terminal/terminalMemoryPolicy.test.ts",
+        "packages/remote/src/shared/terminal/themeBridge.test.ts",
+        "packages/remote/src/shared/terminal/tuiGate.test.ts",
+        "packages/remote/src/shared/transport/capabilityContract.test.ts",
+        "packages/remote/src/shared/transport/cloudChunk.test.ts",
+        "packages/remote/src/shared/transport/cloudMux.test.ts",
+        "packages/remote/src/shared/transport/cloudWebrtcAdapter.test.ts",
+        "packages/remote/src/shared/transport/conformance.test.ts",
+        "packages/remote/src/shared/transport/lanWsAdapter.test.ts",
+        "packages/remote/src/shared/transport/matrixParity.test.ts",
+        "packages/remote/src/shared/transport/paneRpcScheduler.test.ts",
+        "packages/remote/src/shared/transport/protocolAdmission.test.ts",
+        "packages/remote/src/shared/transport/protocolAdmissionProduct.test.ts",
+        "packages/remote/src/shared/transport/random.test.ts",
+        "packages/remote/src/shared/transport/remoteInvokeAdmit.test.ts",
+        "packages/remote/src/shared/transport/remotePerfTrace.test.ts",
+        "packages/remote/src/shared/transport/rpcClient.test.ts",
+        "packages/remote/src/shared/transport/unknownText.test.ts",
+        "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+        "packages/remote/src/shared/transport/wsRemotePending.test.ts",
+        "packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts",
+        "packages/remote/src/shared/transport/wsRemoteUrl.test.ts"
       ],
       "status": "LOCKED"
     },
     {
-      "id": "L4-OBS-SRC-TAURI-TAURI-CONF-JSON-fa09f1da",
+      "id": "L4-OBS-PACKAGES-REMOTE-TSCONFIG-JSON-6d3aa0c4",
       "level": "L4",
-      "nodeHash": "12f0bb94315e4bae3912bef12f0511d7d9a954003e4f40b05043b9ae3c958b8c",
+      "nodeHash": "3471b845bc1877d9249567199d452291e91c329b3fb0e7c1b5d3c12fe0db2d8a",
       "codeTargets": [
-        "src-tauri/tauri.conf.json"
+        "packages/remote/tsconfig.json"
       ],
       "testTargets": [
-        "src-tauri/tests/win_manifest_boot.rs"
+        "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts",
+        "packages/remote/src/shared/cloud/apiClient.refresh.test.ts",
+        "packages/remote/src/shared/cloud/apiClient.test.ts",
+        "packages/remote/src/shared/cloud/auth.test.ts",
+        "packages/remote/src/shared/cloud/cloudHostBridge.test.ts",
+        "packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts",
+        "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
+        "packages/remote/src/shared/cloud/controllerIdentity.test.ts",
+        "packages/remote/src/shared/cloud/controllerInstanceId.test.ts",
+        "packages/remote/src/shared/cloud/deviceTrust.test.ts",
+        "packages/remote/src/shared/cloud/e2ee.test.ts",
+        "packages/remote/src/shared/cloud/faultInjection.test.ts",
+        "packages/remote/src/shared/cloud/keyBinding.test.ts",
+        "packages/remote/src/shared/cloud/priorityFrameQueue.test.ts",
+        "packages/remote/src/shared/cloud/remoteAllowlist.test.ts",
+        "packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts",
+        "packages/remote/src/shared/cloud/signaling/conformance.test.ts",
+        "packages/remote/src/shared/cloud/signaling/drift.test.ts",
+        "packages/remote/src/shared/cloud/weakNetLab.test.ts",
+        "packages/remote/src/shared/cloud/workspaceScope.test.ts",
+        "packages/remote/src/shared/hosts/foreignPaneStatus.test.ts",
+        "packages/remote/src/shared/hosts/liveBackpressure.test.ts",
+        "packages/remote/src/shared/hosts/livePumpPolicy.test.ts",
+        "packages/remote/src/shared/hosts/outboundLifecycle.test.ts",
+        "packages/remote/src/shared/hosts/outboundReconnect.test.ts",
+        "packages/remote/src/shared/reconnectPolicy.test.ts",
+        "packages/remote/src/shared/teammate/hitlAuditRemote.test.ts",
+        "packages/remote/src/shared/terminal/clipboardImage.test.ts",
+        "packages/remote/src/shared/terminal/dropPaste.test.ts",
+        "packages/remote/src/shared/terminal/fontDataService.test.ts",
+        "packages/remote/src/shared/terminal/fontStack.test.ts",
+        "packages/remote/src/shared/terminal/hostRemountPolicy.test.ts",
+        "packages/remote/src/shared/terminal/imeAnchor.test.ts",
+        "packages/remote/src/shared/terminal/imeDelta.test.ts",
+        "packages/remote/src/shared/terminal/initialPaneFit.test.ts",
+        "packages/remote/src/shared/terminal/linkAffordance.test.ts",
+        "packages/remote/src/shared/terminal/linkOpenHost.test.ts",
+        "packages/remote/src/shared/terminal/linkSpans.test.ts",
+        "packages/remote/src/shared/terminal/manager.attach.test.ts",
+        "packages/remote/src/shared/terminal/manager.test.ts",
+        "packages/remote/src/shared/terminal/mobileCopy.test.ts",
+        "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts",
+        "packages/remote/src/shared/terminal/mouseForwardPolicy.test.ts",
+        "packages/remote/src/shared/terminal/paneDockResolve.test.ts",
+        "packages/remote/src/shared/terminal/paneGeometry.test.ts",
+        "packages/remote/src/shared/terminal/paneInputGate.test.ts",
+        "packages/remote/src/shared/terminal/paneOrigin.test.ts",
+        "packages/remote/src/shared/terminal/paneShell.test.ts",
+        "packages/remote/src/shared/terminal/ptyBridge.test.ts",
+        "packages/remote/src/shared/terminal/sentenceBuffer.test.ts",
+        "packages/remote/src/shared/terminal/shellInputSnapshot.test.ts",
+        "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts",
+        "packages/remote/src/shared/terminal/terminalFocus.test.ts",
+        "packages/remote/src/shared/terminal/terminalMemoryPolicy.test.ts",
+        "packages/remote/src/shared/terminal/themeBridge.test.ts",
+        "packages/remote/src/shared/terminal/tuiGate.test.ts",
+        "packages/remote/src/shared/transport/capabilityContract.test.ts",
+        "packages/remote/src/shared/transport/cloudChunk.test.ts",
+        "packages/remote/src/shared/transport/cloudMux.test.ts",
+        "packages/remote/src/shared/transport/cloudWebrtcAdapter.test.ts",
+        "packages/remote/src/shared/transport/conformance.test.ts",
+        "packages/remote/src/shared/transport/lanWsAdapter.test.ts",
+        "packages/remote/src/shared/transport/matrixParity.test.ts",
+        "packages/remote/src/shared/transport/paneRpcScheduler.test.ts",
+        "packages/remote/src/shared/transport/protocolAdmission.test.ts",
+        "packages/remote/src/shared/transport/protocolAdmissionProduct.test.ts",
+        "packages/remote/src/shared/transport/random.test.ts",
+        "packages/remote/src/shared/transport/remoteInvokeAdmit.test.ts",
+        "packages/remote/src/shared/transport/remotePerfTrace.test.ts",
+        "packages/remote/src/shared/transport/rpcClient.test.ts",
+        "packages/remote/src/shared/transport/unknownText.test.ts",
+        "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+        "packages/remote/src/shared/transport/wsRemotePending.test.ts",
+        "packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts",
+        "packages/remote/src/shared/transport/wsRemoteUrl.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-SRC-APP-CSS-e269447b",
+      "level": "L4",
+      "nodeHash": "13572d56f7860c4b62a11e83108c5b4d92449d2e6af621ae50af0275ab137838",
+      "codeTargets": [
+        "src/app.css"
+      ],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts",
+        "packages/remote/src/shared/cloud/apiClient.refresh.test.ts",
+        "packages/remote/src/shared/cloud/apiClient.test.ts",
+        "packages/remote/src/shared/cloud/auth.test.ts",
+        "packages/remote/src/shared/cloud/cloudHostBridge.test.ts",
+        "packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts",
+        "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
+        "packages/remote/src/shared/cloud/controllerIdentity.test.ts",
+        "packages/remote/src/shared/cloud/controllerInstanceId.test.ts",
+        "packages/remote/src/shared/cloud/deviceTrust.test.ts",
+        "packages/remote/src/shared/cloud/e2ee.test.ts",
+        "packages/remote/src/shared/cloud/faultInjection.test.ts",
+        "packages/remote/src/shared/cloud/keyBinding.test.ts",
+        "packages/remote/src/shared/cloud/priorityFrameQueue.test.ts",
+        "packages/remote/src/shared/cloud/remoteAllowlist.test.ts",
+        "packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts",
+        "packages/remote/src/shared/cloud/signaling/conformance.test.ts",
+        "packages/remote/src/shared/cloud/signaling/drift.test.ts",
+        "packages/remote/src/shared/cloud/weakNetLab.test.ts",
+        "packages/remote/src/shared/cloud/workspaceScope.test.ts",
+        "packages/remote/src/shared/hosts/foreignPaneStatus.test.ts",
+        "packages/remote/src/shared/hosts/liveBackpressure.test.ts",
+        "packages/remote/src/shared/hosts/livePumpPolicy.test.ts",
+        "packages/remote/src/shared/hosts/outboundLifecycle.test.ts",
+        "packages/remote/src/shared/hosts/outboundReconnect.test.ts",
+        "packages/remote/src/shared/reconnectPolicy.test.ts",
+        "packages/remote/src/shared/teammate/hitlAuditRemote.test.ts",
+        "packages/remote/src/shared/terminal/clipboardImage.test.ts",
+        "packages/remote/src/shared/terminal/dropPaste.test.ts",
+        "packages/remote/src/shared/terminal/fontDataService.test.ts",
+        "packages/remote/src/shared/terminal/fontStack.test.ts",
+        "packages/remote/src/shared/terminal/hostRemountPolicy.test.ts",
+        "packages/remote/src/shared/terminal/imeAnchor.test.ts",
+        "packages/remote/src/shared/terminal/imeDelta.test.ts",
+        "packages/remote/src/shared/terminal/initialPaneFit.test.ts",
+        "packages/remote/src/shared/terminal/linkAffordance.test.ts",
+        "packages/remote/src/shared/terminal/linkOpenHost.test.ts",
+        "packages/remote/src/shared/terminal/linkSpans.test.ts",
+        "packages/remote/src/shared/terminal/manager.attach.test.ts",
+        "packages/remote/src/shared/terminal/manager.test.ts",
+        "packages/remote/src/shared/terminal/mobileCopy.test.ts",
+        "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts",
+        "packages/remote/src/shared/terminal/mouseForwardPolicy.test.ts",
+        "packages/remote/src/shared/terminal/paneDockResolve.test.ts",
+        "packages/remote/src/shared/terminal/paneGeometry.test.ts",
+        "packages/remote/src/shared/terminal/paneInputGate.test.ts",
+        "packages/remote/src/shared/terminal/paneOrigin.test.ts",
+        "packages/remote/src/shared/terminal/paneShell.test.ts",
+        "packages/remote/src/shared/terminal/ptyBridge.test.ts",
+        "packages/remote/src/shared/terminal/sentenceBuffer.test.ts",
+        "packages/remote/src/shared/terminal/shellInputSnapshot.test.ts",
+        "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts",
+        "packages/remote/src/shared/terminal/terminalFocus.test.ts",
+        "packages/remote/src/shared/terminal/terminalMemoryPolicy.test.ts",
+        "packages/remote/src/shared/terminal/themeBridge.test.ts",
+        "packages/remote/src/shared/terminal/tuiGate.test.ts",
+        "packages/remote/src/shared/transport/capabilityContract.test.ts",
+        "packages/remote/src/shared/transport/cloudChunk.test.ts",
+        "packages/remote/src/shared/transport/cloudMux.test.ts",
+        "packages/remote/src/shared/transport/cloudWebrtcAdapter.test.ts",
+        "packages/remote/src/shared/transport/conformance.test.ts",
+        "packages/remote/src/shared/transport/lanWsAdapter.test.ts",
+        "packages/remote/src/shared/transport/matrixParity.test.ts",
+        "packages/remote/src/shared/transport/paneRpcScheduler.test.ts",
+        "packages/remote/src/shared/transport/protocolAdmission.test.ts",
+        "packages/remote/src/shared/transport/protocolAdmissionProduct.test.ts",
+        "packages/remote/src/shared/transport/random.test.ts",
+        "packages/remote/src/shared/transport/remoteInvokeAdmit.test.ts",
+        "packages/remote/src/shared/transport/remotePerfTrace.test.ts",
+        "packages/remote/src/shared/transport/rpcClient.test.ts",
+        "packages/remote/src/shared/transport/unknownText.test.ts",
+        "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+        "packages/remote/src/shared/transport/wsRemotePending.test.ts",
+        "packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts",
+        "packages/remote/src/shared/transport/wsRemoteUrl.test.ts",
+        "scripts/app-csp.test.mjs",
+        "src-tauri/tests/win_manifest_boot.rs",
+        "src/lib/actions/hostSessionDrag.test.ts",
+        "src/lib/actions/overlayScroll.test.ts",
+        "src/lib/actions/paneDockDrag.test.ts",
+        "src/lib/components/customTheme.test.ts",
+        "src/lib/components/explorerPaste.test.ts",
+        "src/lib/components/GitGraph.test.ts",
+        "src/lib/components/inputBufferTracker.test.ts",
+        "src/lib/components/interactionContracts.test.ts",
+        "src/lib/components/SettingsPanel.test.ts",
+        "src/lib/components/SidebarLazyMount.test.ts",
+        "src/lib/components/SplitContainer.test.ts",
+        "src/lib/hosts/compositionHarness.test.ts",
+        "src/lib/hosts/foreignHistorySession.test.ts",
+        "src/lib/hosts/hostConnectFlow.test.ts",
+        "src/lib/hosts/hostControlSurface.test.ts",
+        "src/lib/hosts/hostForest.test.ts",
+        "src/lib/hosts/hostSessionIsolation.test.ts",
+        "src/lib/hosts/remotePaneBindings.test.ts",
+        "src/lib/lsp/lspClient.test.ts",
+        "src/lib/monaco/ridgeTheme.test.ts",
+        "src/lib/pure-logic-coverage.test.ts",
+        "src/lib/remote/cloud/cloudControllerBoot.integration.test.ts",
+        "src/lib/remote/cloud/cloudControllerBoot.test.ts",
+        "src/lib/remote/cloud/cloudHostStore.test.ts",
+        "src/lib/remote/cloud/cloudHostTopologyLink.test.ts",
+        "src/lib/remote/cloud/sharedWorkspaceProjection.behavior.test.ts",
+        "src/lib/remote/cloud/sharedWorkspaceProjection.test.ts",
+        "src/lib/remote/remoteBootMode.test.ts",
+        "src/lib/remote/totpIdentitySync.test.ts",
+        "src/lib/stores/clipboardResolve.test.ts",
+        "src/lib/stores/contextMenu.test.ts",
+        "src/lib/stores/dockRegionPicker.test.ts",
+        "src/lib/stores/editorWindow.test.ts",
+        "src/lib/stores/explorerLayout.test.ts",
+        "src/lib/stores/fileEditor.test.ts",
+        "src/lib/stores/fileExplorer.test.ts",
+        "src/lib/stores/fileWatcherSync.test.ts",
+        "src/lib/stores/fsEvents.test.ts",
+        "src/lib/stores/gitGuardStats.test.ts",
+        "src/lib/stores/hostReconnect.test.ts",
+        "src/lib/stores/hostReconnectProduct.test.ts",
+        "src/lib/stores/hosts.connect.test.ts",
+        "src/lib/stores/hosts.refresh.test.ts",
+        "src/lib/stores/hostsMutation.test.ts",
+        "src/lib/stores/hostsOutbound.test.ts",
+        "src/lib/stores/hostsOutboundProduct.test.ts",
+        "src/lib/stores/hostsPublic.test.ts",
+        "src/lib/stores/imagePreviewVersion.test.ts",
+        "src/lib/stores/paneGitStatus.test.ts",
+        "src/lib/stores/paneTree.coverage.test.ts",
+        "src/lib/stores/paneTree.test.ts",
+        "src/lib/stores/processGuardPolicy.test.ts",
+        "src/lib/stores/project.test.ts",
+        "src/lib/stores/remoteStatus.test.ts",
+        "src/lib/stores/scmCache.test.ts",
+        "src/lib/stores/searchState.test.ts",
+        "src/lib/stores/settings.test.ts",
+        "src/lib/stores/terminalHistory.test.ts",
+        "src/lib/stores/termSettings.test.ts",
+        "src/lib/stores/themes.slug.test.ts",
+        "src/lib/stores/themes.test.ts",
+        "src/lib/teammate/agentCommuneModel.test.ts",
+        "src/lib/teammate/agentPaneHighlightSync.test.ts",
+        "src/lib/teammate/hitlAuditFilter.test.ts",
+        "src/lib/teammate/hitlAuditPanel.test.ts",
+        "src/lib/teammate/layoutEvent.test.ts",
+        "src/lib/teammate/memberTasks.test.ts",
+        "src/lib/teammate/orchControlPlane.test.ts",
+        "src/lib/teammate/teammateGroups.test.ts",
+        "src/lib/teammate/teammateModel.test.ts",
+        "src/lib/teammate/workspaceMemory.test.ts",
+        "src/lib/terminal/desktopPaneResize.test.ts",
+        "src/lib/terminal/hostPorts.test.ts",
+        "src/lib/terminal/paneSizeSync.test.ts",
+        "src/lib/terminal/ptyRuntimeSnapshot.test.ts",
+        "src/lib/terminal/ptyWriteQueue.test.ts",
+        "src/lib/terminal/refreshEntrypoints.test.ts",
+        "src/lib/terminal/rendererBackend.test.ts",
+        "src/lib/transport/tauri.test.ts",
+        "src/lib/transport/tauriShim/bridge.test.ts",
+        "src/lib/transport/tauriShim/compatibility.test.ts",
+        "src/lib/transport/tauriShim/opener.test.ts",
+        "src/lib/transport/tauriShim/window.test.ts",
+        "src/lib/transport/ws.test.ts",
+        "src/lib/utils/anchorRect.test.ts",
+        "src/lib/utils/ansi.test.ts",
+        "src/lib/utils/linkResolver.test.ts",
+        "src/lib/utils/linkTrust.test.ts",
+        "src/lib/utils/markdown.test.ts",
+        "src/lib/utils/path.test.ts",
+        "src/lib/utils/pathToken.test.ts",
+        "src/lib/utils/pLimit.test.ts",
+        "src/lib/utils/repeatedError.test.ts",
+        "src/lib/utils/resizeThrottle.test.ts",
+        "src/lib/utils/withTimeout.test.ts",
+        "src/remote/BottomTabBar.test.ts",
+        "src/remote/lib/clipboard.test.ts",
+        "src/remote/lib/cloudRemote.test.ts",
+        "src/remote/lib/generationGuard.test.ts",
+        "src/remote/lib/keyboardOffset.test.ts",
+        "src/remote/lib/listenerCleanup.test.ts",
+        "src/remote/lib/paneFeedScheduler.test.ts",
+        "src/remote/lib/paneLifecycle.test.ts",
+        "src/remote/lib/paneSwitchBuffer.test.ts",
+        "src/remote/lib/remoteGitActions.test.ts",
+        "src/remote/lib/RemoteGitPanel.test.ts",
+        "src/remote/lib/remoteQueries.test.ts",
+        "src/remote/lib/RemoteSidebar.test.ts",
+        "src/remote/lib/scrollbackWorker.test.ts",
+        "src/remote/lib/sidebarProvider.test.ts",
+        "src/remote/lib/SidebarTeamRoster.test.ts",
+        "src/remote/lib/teamRosterScope.test.ts",
+        "src/remote/lib/TerminalCanvas.test.ts",
+        "src/remote/lib/theme.test.ts",
+        "src/remote/lib/treeState.test.ts",
+        "src/remote/lib/WorkspaceTree.test.ts",
+        "src/remote/main.test.ts",
+        "src/remote/MainApp.test.ts",
+        "src/remote/pwaInstallScope.test.ts",
+        "src/remote/queryPolicy.test.ts",
+        "src/remote/runtimeMessagingScope.test.ts",
+        "src/service-worker.test.ts",
+        "src/shared/sidebar/gitRequestLifecycle.test.ts",
+        "src/shared/sidebar/sidebarRequestLifecycle.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-SRC-APP-HTML-c279397c",
+      "level": "L4",
+      "nodeHash": "adcc6ce82ab9d6437e5d533c0ba9469f1b170e7e7cc27021d229fb1154d9c057",
+      "codeTargets": [
+        "src/app.html"
+      ],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts",
+        "packages/remote/src/shared/cloud/apiClient.refresh.test.ts",
+        "packages/remote/src/shared/cloud/apiClient.test.ts",
+        "packages/remote/src/shared/cloud/auth.test.ts",
+        "packages/remote/src/shared/cloud/cloudHostBridge.test.ts",
+        "packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts",
+        "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
+        "packages/remote/src/shared/cloud/controllerIdentity.test.ts",
+        "packages/remote/src/shared/cloud/controllerInstanceId.test.ts",
+        "packages/remote/src/shared/cloud/deviceTrust.test.ts",
+        "packages/remote/src/shared/cloud/e2ee.test.ts",
+        "packages/remote/src/shared/cloud/faultInjection.test.ts",
+        "packages/remote/src/shared/cloud/keyBinding.test.ts",
+        "packages/remote/src/shared/cloud/priorityFrameQueue.test.ts",
+        "packages/remote/src/shared/cloud/remoteAllowlist.test.ts",
+        "packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts",
+        "packages/remote/src/shared/cloud/signaling/conformance.test.ts",
+        "packages/remote/src/shared/cloud/signaling/drift.test.ts",
+        "packages/remote/src/shared/cloud/weakNetLab.test.ts",
+        "packages/remote/src/shared/cloud/workspaceScope.test.ts",
+        "packages/remote/src/shared/hosts/foreignPaneStatus.test.ts",
+        "packages/remote/src/shared/hosts/liveBackpressure.test.ts",
+        "packages/remote/src/shared/hosts/livePumpPolicy.test.ts",
+        "packages/remote/src/shared/hosts/outboundLifecycle.test.ts",
+        "packages/remote/src/shared/hosts/outboundReconnect.test.ts",
+        "packages/remote/src/shared/reconnectPolicy.test.ts",
+        "packages/remote/src/shared/teammate/hitlAuditRemote.test.ts",
+        "packages/remote/src/shared/terminal/clipboardImage.test.ts",
+        "packages/remote/src/shared/terminal/dropPaste.test.ts",
+        "packages/remote/src/shared/terminal/fontDataService.test.ts",
+        "packages/remote/src/shared/terminal/fontStack.test.ts",
+        "packages/remote/src/shared/terminal/hostRemountPolicy.test.ts",
+        "packages/remote/src/shared/terminal/imeAnchor.test.ts",
+        "packages/remote/src/shared/terminal/imeDelta.test.ts",
+        "packages/remote/src/shared/terminal/initialPaneFit.test.ts",
+        "packages/remote/src/shared/terminal/linkAffordance.test.ts",
+        "packages/remote/src/shared/terminal/linkOpenHost.test.ts",
+        "packages/remote/src/shared/terminal/linkSpans.test.ts",
+        "packages/remote/src/shared/terminal/manager.attach.test.ts",
+        "packages/remote/src/shared/terminal/manager.test.ts",
+        "packages/remote/src/shared/terminal/mobileCopy.test.ts",
+        "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts",
+        "packages/remote/src/shared/terminal/mouseForwardPolicy.test.ts",
+        "packages/remote/src/shared/terminal/paneDockResolve.test.ts",
+        "packages/remote/src/shared/terminal/paneGeometry.test.ts",
+        "packages/remote/src/shared/terminal/paneInputGate.test.ts",
+        "packages/remote/src/shared/terminal/paneOrigin.test.ts",
+        "packages/remote/src/shared/terminal/paneShell.test.ts",
+        "packages/remote/src/shared/terminal/ptyBridge.test.ts",
+        "packages/remote/src/shared/terminal/sentenceBuffer.test.ts",
+        "packages/remote/src/shared/terminal/shellInputSnapshot.test.ts",
+        "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts",
+        "packages/remote/src/shared/terminal/terminalFocus.test.ts",
+        "packages/remote/src/shared/terminal/terminalMemoryPolicy.test.ts",
+        "packages/remote/src/shared/terminal/themeBridge.test.ts",
+        "packages/remote/src/shared/terminal/tuiGate.test.ts",
+        "packages/remote/src/shared/transport/capabilityContract.test.ts",
+        "packages/remote/src/shared/transport/cloudChunk.test.ts",
+        "packages/remote/src/shared/transport/cloudMux.test.ts",
+        "packages/remote/src/shared/transport/cloudWebrtcAdapter.test.ts",
+        "packages/remote/src/shared/transport/conformance.test.ts",
+        "packages/remote/src/shared/transport/lanWsAdapter.test.ts",
+        "packages/remote/src/shared/transport/matrixParity.test.ts",
+        "packages/remote/src/shared/transport/paneRpcScheduler.test.ts",
+        "packages/remote/src/shared/transport/protocolAdmission.test.ts",
+        "packages/remote/src/shared/transport/protocolAdmissionProduct.test.ts",
+        "packages/remote/src/shared/transport/random.test.ts",
+        "packages/remote/src/shared/transport/remoteInvokeAdmit.test.ts",
+        "packages/remote/src/shared/transport/remotePerfTrace.test.ts",
+        "packages/remote/src/shared/transport/rpcClient.test.ts",
+        "packages/remote/src/shared/transport/unknownText.test.ts",
+        "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+        "packages/remote/src/shared/transport/wsRemotePending.test.ts",
+        "packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts",
+        "packages/remote/src/shared/transport/wsRemoteUrl.test.ts",
+        "scripts/app-csp.test.mjs",
+        "src-tauri/tests/win_manifest_boot.rs",
+        "src/lib/actions/hostSessionDrag.test.ts",
+        "src/lib/actions/overlayScroll.test.ts",
+        "src/lib/actions/paneDockDrag.test.ts",
+        "src/lib/components/customTheme.test.ts",
+        "src/lib/components/explorerPaste.test.ts",
+        "src/lib/components/GitGraph.test.ts",
+        "src/lib/components/inputBufferTracker.test.ts",
+        "src/lib/components/interactionContracts.test.ts",
+        "src/lib/components/SettingsPanel.test.ts",
+        "src/lib/components/SidebarLazyMount.test.ts",
+        "src/lib/components/SplitContainer.test.ts",
+        "src/lib/hosts/compositionHarness.test.ts",
+        "src/lib/hosts/foreignHistorySession.test.ts",
+        "src/lib/hosts/hostConnectFlow.test.ts",
+        "src/lib/hosts/hostControlSurface.test.ts",
+        "src/lib/hosts/hostForest.test.ts",
+        "src/lib/hosts/hostSessionIsolation.test.ts",
+        "src/lib/hosts/remotePaneBindings.test.ts",
+        "src/lib/lsp/lspClient.test.ts",
+        "src/lib/monaco/ridgeTheme.test.ts",
+        "src/lib/pure-logic-coverage.test.ts",
+        "src/lib/remote/cloud/cloudControllerBoot.integration.test.ts",
+        "src/lib/remote/cloud/cloudControllerBoot.test.ts",
+        "src/lib/remote/cloud/cloudHostStore.test.ts",
+        "src/lib/remote/cloud/cloudHostTopologyLink.test.ts",
+        "src/lib/remote/cloud/sharedWorkspaceProjection.behavior.test.ts",
+        "src/lib/remote/cloud/sharedWorkspaceProjection.test.ts",
+        "src/lib/remote/remoteBootMode.test.ts",
+        "src/lib/remote/totpIdentitySync.test.ts",
+        "src/lib/stores/clipboardResolve.test.ts",
+        "src/lib/stores/contextMenu.test.ts",
+        "src/lib/stores/dockRegionPicker.test.ts",
+        "src/lib/stores/editorWindow.test.ts",
+        "src/lib/stores/explorerLayout.test.ts",
+        "src/lib/stores/fileEditor.test.ts",
+        "src/lib/stores/fileExplorer.test.ts",
+        "src/lib/stores/fileWatcherSync.test.ts",
+        "src/lib/stores/fsEvents.test.ts",
+        "src/lib/stores/gitGuardStats.test.ts",
+        "src/lib/stores/hostReconnect.test.ts",
+        "src/lib/stores/hostReconnectProduct.test.ts",
+        "src/lib/stores/hosts.connect.test.ts",
+        "src/lib/stores/hosts.refresh.test.ts",
+        "src/lib/stores/hostsMutation.test.ts",
+        "src/lib/stores/hostsOutbound.test.ts",
+        "src/lib/stores/hostsOutboundProduct.test.ts",
+        "src/lib/stores/hostsPublic.test.ts",
+        "src/lib/stores/imagePreviewVersion.test.ts",
+        "src/lib/stores/paneGitStatus.test.ts",
+        "src/lib/stores/paneTree.coverage.test.ts",
+        "src/lib/stores/paneTree.test.ts",
+        "src/lib/stores/processGuardPolicy.test.ts",
+        "src/lib/stores/project.test.ts",
+        "src/lib/stores/remoteStatus.test.ts",
+        "src/lib/stores/scmCache.test.ts",
+        "src/lib/stores/searchState.test.ts",
+        "src/lib/stores/settings.test.ts",
+        "src/lib/stores/terminalHistory.test.ts",
+        "src/lib/stores/termSettings.test.ts",
+        "src/lib/stores/themes.slug.test.ts",
+        "src/lib/stores/themes.test.ts",
+        "src/lib/teammate/agentCommuneModel.test.ts",
+        "src/lib/teammate/agentPaneHighlightSync.test.ts",
+        "src/lib/teammate/hitlAuditFilter.test.ts",
+        "src/lib/teammate/hitlAuditPanel.test.ts",
+        "src/lib/teammate/layoutEvent.test.ts",
+        "src/lib/teammate/memberTasks.test.ts",
+        "src/lib/teammate/orchControlPlane.test.ts",
+        "src/lib/teammate/teammateGroups.test.ts",
+        "src/lib/teammate/teammateModel.test.ts",
+        "src/lib/teammate/workspaceMemory.test.ts",
+        "src/lib/terminal/desktopPaneResize.test.ts",
+        "src/lib/terminal/hostPorts.test.ts",
+        "src/lib/terminal/paneSizeSync.test.ts",
+        "src/lib/terminal/ptyRuntimeSnapshot.test.ts",
+        "src/lib/terminal/ptyWriteQueue.test.ts",
+        "src/lib/terminal/refreshEntrypoints.test.ts",
+        "src/lib/terminal/rendererBackend.test.ts",
+        "src/lib/transport/tauri.test.ts",
+        "src/lib/transport/tauriShim/bridge.test.ts",
+        "src/lib/transport/tauriShim/compatibility.test.ts",
+        "src/lib/transport/tauriShim/opener.test.ts",
+        "src/lib/transport/tauriShim/window.test.ts",
+        "src/lib/transport/ws.test.ts",
+        "src/lib/utils/anchorRect.test.ts",
+        "src/lib/utils/ansi.test.ts",
+        "src/lib/utils/linkResolver.test.ts",
+        "src/lib/utils/linkTrust.test.ts",
+        "src/lib/utils/markdown.test.ts",
+        "src/lib/utils/path.test.ts",
+        "src/lib/utils/pathToken.test.ts",
+        "src/lib/utils/pLimit.test.ts",
+        "src/lib/utils/repeatedError.test.ts",
+        "src/lib/utils/resizeThrottle.test.ts",
+        "src/lib/utils/withTimeout.test.ts",
+        "src/remote/BottomTabBar.test.ts",
+        "src/remote/lib/clipboard.test.ts",
+        "src/remote/lib/cloudRemote.test.ts",
+        "src/remote/lib/generationGuard.test.ts",
+        "src/remote/lib/keyboardOffset.test.ts",
+        "src/remote/lib/listenerCleanup.test.ts",
+        "src/remote/lib/paneFeedScheduler.test.ts",
+        "src/remote/lib/paneLifecycle.test.ts",
+        "src/remote/lib/paneSwitchBuffer.test.ts",
+        "src/remote/lib/remoteGitActions.test.ts",
+        "src/remote/lib/RemoteGitPanel.test.ts",
+        "src/remote/lib/remoteQueries.test.ts",
+        "src/remote/lib/RemoteSidebar.test.ts",
+        "src/remote/lib/scrollbackWorker.test.ts",
+        "src/remote/lib/sidebarProvider.test.ts",
+        "src/remote/lib/SidebarTeamRoster.test.ts",
+        "src/remote/lib/teamRosterScope.test.ts",
+        "src/remote/lib/TerminalCanvas.test.ts",
+        "src/remote/lib/theme.test.ts",
+        "src/remote/lib/treeState.test.ts",
+        "src/remote/lib/WorkspaceTree.test.ts",
+        "src/remote/main.test.ts",
+        "src/remote/MainApp.test.ts",
+        "src/remote/pwaInstallScope.test.ts",
+        "src/remote/queryPolicy.test.ts",
+        "src/remote/runtimeMessagingScope.test.ts",
+        "src/service-worker.test.ts",
+        "src/shared/sidebar/gitRequestLifecycle.test.ts",
+        "src/shared/sidebar/sidebarRequestLifecycle.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-SRC-HOOKS-SERVER-TS-b5aa13ce",
+      "level": "L4",
+      "nodeHash": "3c5f5a3743e917c39229bdcff54a1d317da3a2eaeaca99ee8f90557f8c3105de",
+      "codeTargets": [
+        "src/hooks.server.ts"
+      ],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts",
+        "packages/remote/src/shared/cloud/apiClient.refresh.test.ts",
+        "packages/remote/src/shared/cloud/apiClient.test.ts",
+        "packages/remote/src/shared/cloud/auth.test.ts",
+        "packages/remote/src/shared/cloud/cloudHostBridge.test.ts",
+        "packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts",
+        "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
+        "packages/remote/src/shared/cloud/controllerIdentity.test.ts",
+        "packages/remote/src/shared/cloud/controllerInstanceId.test.ts",
+        "packages/remote/src/shared/cloud/deviceTrust.test.ts",
+        "packages/remote/src/shared/cloud/e2ee.test.ts",
+        "packages/remote/src/shared/cloud/faultInjection.test.ts",
+        "packages/remote/src/shared/cloud/keyBinding.test.ts",
+        "packages/remote/src/shared/cloud/priorityFrameQueue.test.ts",
+        "packages/remote/src/shared/cloud/remoteAllowlist.test.ts",
+        "packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts",
+        "packages/remote/src/shared/cloud/signaling/conformance.test.ts",
+        "packages/remote/src/shared/cloud/signaling/drift.test.ts",
+        "packages/remote/src/shared/cloud/weakNetLab.test.ts",
+        "packages/remote/src/shared/cloud/workspaceScope.test.ts",
+        "packages/remote/src/shared/hosts/foreignPaneStatus.test.ts",
+        "packages/remote/src/shared/hosts/liveBackpressure.test.ts",
+        "packages/remote/src/shared/hosts/livePumpPolicy.test.ts",
+        "packages/remote/src/shared/hosts/outboundLifecycle.test.ts",
+        "packages/remote/src/shared/hosts/outboundReconnect.test.ts",
+        "packages/remote/src/shared/reconnectPolicy.test.ts",
+        "packages/remote/src/shared/teammate/hitlAuditRemote.test.ts",
+        "packages/remote/src/shared/terminal/clipboardImage.test.ts",
+        "packages/remote/src/shared/terminal/dropPaste.test.ts",
+        "packages/remote/src/shared/terminal/fontDataService.test.ts",
+        "packages/remote/src/shared/terminal/fontStack.test.ts",
+        "packages/remote/src/shared/terminal/hostRemountPolicy.test.ts",
+        "packages/remote/src/shared/terminal/imeAnchor.test.ts",
+        "packages/remote/src/shared/terminal/imeDelta.test.ts",
+        "packages/remote/src/shared/terminal/initialPaneFit.test.ts",
+        "packages/remote/src/shared/terminal/linkAffordance.test.ts",
+        "packages/remote/src/shared/terminal/linkOpenHost.test.ts",
+        "packages/remote/src/shared/terminal/linkSpans.test.ts",
+        "packages/remote/src/shared/terminal/manager.attach.test.ts",
+        "packages/remote/src/shared/terminal/manager.test.ts",
+        "packages/remote/src/shared/terminal/mobileCopy.test.ts",
+        "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts",
+        "packages/remote/src/shared/terminal/mouseForwardPolicy.test.ts",
+        "packages/remote/src/shared/terminal/paneDockResolve.test.ts",
+        "packages/remote/src/shared/terminal/paneGeometry.test.ts",
+        "packages/remote/src/shared/terminal/paneInputGate.test.ts",
+        "packages/remote/src/shared/terminal/paneOrigin.test.ts",
+        "packages/remote/src/shared/terminal/paneShell.test.ts",
+        "packages/remote/src/shared/terminal/ptyBridge.test.ts",
+        "packages/remote/src/shared/terminal/sentenceBuffer.test.ts",
+        "packages/remote/src/shared/terminal/shellInputSnapshot.test.ts",
+        "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts",
+        "packages/remote/src/shared/terminal/terminalFocus.test.ts",
+        "packages/remote/src/shared/terminal/terminalMemoryPolicy.test.ts",
+        "packages/remote/src/shared/terminal/themeBridge.test.ts",
+        "packages/remote/src/shared/terminal/tuiGate.test.ts",
+        "packages/remote/src/shared/transport/capabilityContract.test.ts",
+        "packages/remote/src/shared/transport/cloudChunk.test.ts",
+        "packages/remote/src/shared/transport/cloudMux.test.ts",
+        "packages/remote/src/shared/transport/cloudWebrtcAdapter.test.ts",
+        "packages/remote/src/shared/transport/conformance.test.ts",
+        "packages/remote/src/shared/transport/lanWsAdapter.test.ts",
+        "packages/remote/src/shared/transport/matrixParity.test.ts",
+        "packages/remote/src/shared/transport/paneRpcScheduler.test.ts",
+        "packages/remote/src/shared/transport/protocolAdmission.test.ts",
+        "packages/remote/src/shared/transport/protocolAdmissionProduct.test.ts",
+        "packages/remote/src/shared/transport/random.test.ts",
+        "packages/remote/src/shared/transport/remoteInvokeAdmit.test.ts",
+        "packages/remote/src/shared/transport/remotePerfTrace.test.ts",
+        "packages/remote/src/shared/transport/rpcClient.test.ts",
+        "packages/remote/src/shared/transport/unknownText.test.ts",
+        "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+        "packages/remote/src/shared/transport/wsRemotePending.test.ts",
+        "packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts",
+        "packages/remote/src/shared/transport/wsRemoteUrl.test.ts",
+        "src-tauri/tests/win_manifest_boot.rs",
+        "src/lib/actions/hostSessionDrag.test.ts",
+        "src/lib/actions/overlayScroll.test.ts",
+        "src/lib/actions/paneDockDrag.test.ts",
+        "src/lib/components/customTheme.test.ts",
+        "src/lib/components/explorerPaste.test.ts",
+        "src/lib/components/GitGraph.test.ts",
+        "src/lib/components/inputBufferTracker.test.ts",
+        "src/lib/components/interactionContracts.test.ts",
+        "src/lib/components/SettingsPanel.test.ts",
+        "src/lib/components/SidebarLazyMount.test.ts",
+        "src/lib/components/SplitContainer.test.ts",
+        "src/lib/hosts/compositionHarness.test.ts",
+        "src/lib/hosts/foreignHistorySession.test.ts",
+        "src/lib/hosts/hostConnectFlow.test.ts",
+        "src/lib/hosts/hostControlSurface.test.ts",
+        "src/lib/hosts/hostForest.test.ts",
+        "src/lib/hosts/hostSessionIsolation.test.ts",
+        "src/lib/hosts/remotePaneBindings.test.ts",
+        "src/lib/lsp/lspClient.test.ts",
+        "src/lib/monaco/ridgeTheme.test.ts",
+        "src/lib/pure-logic-coverage.test.ts",
+        "src/lib/remote/cloud/cloudControllerBoot.integration.test.ts",
+        "src/lib/remote/cloud/cloudControllerBoot.test.ts",
+        "src/lib/remote/cloud/cloudHostStore.test.ts",
+        "src/lib/remote/cloud/cloudHostTopologyLink.test.ts",
+        "src/lib/remote/cloud/sharedWorkspaceProjection.behavior.test.ts",
+        "src/lib/remote/cloud/sharedWorkspaceProjection.test.ts",
+        "src/lib/remote/remoteBootMode.test.ts",
+        "src/lib/remote/totpIdentitySync.test.ts",
+        "src/lib/stores/clipboardResolve.test.ts",
+        "src/lib/stores/contextMenu.test.ts",
+        "src/lib/stores/dockRegionPicker.test.ts",
+        "src/lib/stores/editorWindow.test.ts",
+        "src/lib/stores/explorerLayout.test.ts",
+        "src/lib/stores/fileEditor.test.ts",
+        "src/lib/stores/fileExplorer.test.ts",
+        "src/lib/stores/fileWatcherSync.test.ts",
+        "src/lib/stores/fsEvents.test.ts",
+        "src/lib/stores/gitGuardStats.test.ts",
+        "src/lib/stores/hostReconnect.test.ts",
+        "src/lib/stores/hostReconnectProduct.test.ts",
+        "src/lib/stores/hosts.connect.test.ts",
+        "src/lib/stores/hosts.refresh.test.ts",
+        "src/lib/stores/hostsMutation.test.ts",
+        "src/lib/stores/hostsOutbound.test.ts",
+        "src/lib/stores/hostsOutboundProduct.test.ts",
+        "src/lib/stores/hostsPublic.test.ts",
+        "src/lib/stores/imagePreviewVersion.test.ts",
+        "src/lib/stores/paneGitStatus.test.ts",
+        "src/lib/stores/paneTree.coverage.test.ts",
+        "src/lib/stores/paneTree.test.ts",
+        "src/lib/stores/processGuardPolicy.test.ts",
+        "src/lib/stores/project.test.ts",
+        "src/lib/stores/remoteStatus.test.ts",
+        "src/lib/stores/scmCache.test.ts",
+        "src/lib/stores/searchState.test.ts",
+        "src/lib/stores/settings.test.ts",
+        "src/lib/stores/terminalHistory.test.ts",
+        "src/lib/stores/termSettings.test.ts",
+        "src/lib/stores/themes.slug.test.ts",
+        "src/lib/stores/themes.test.ts",
+        "src/lib/teammate/agentCommuneModel.test.ts",
+        "src/lib/teammate/agentPaneHighlightSync.test.ts",
+        "src/lib/teammate/hitlAuditFilter.test.ts",
+        "src/lib/teammate/hitlAuditPanel.test.ts",
+        "src/lib/teammate/layoutEvent.test.ts",
+        "src/lib/teammate/memberTasks.test.ts",
+        "src/lib/teammate/orchControlPlane.test.ts",
+        "src/lib/teammate/teammateGroups.test.ts",
+        "src/lib/teammate/teammateModel.test.ts",
+        "src/lib/teammate/workspaceMemory.test.ts",
+        "src/lib/terminal/desktopPaneResize.test.ts",
+        "src/lib/terminal/hostPorts.test.ts",
+        "src/lib/terminal/paneSizeSync.test.ts",
+        "src/lib/terminal/ptyRuntimeSnapshot.test.ts",
+        "src/lib/terminal/ptyWriteQueue.test.ts",
+        "src/lib/terminal/refreshEntrypoints.test.ts",
+        "src/lib/terminal/rendererBackend.test.ts",
+        "src/lib/transport/tauri.test.ts",
+        "src/lib/transport/tauriShim/bridge.test.ts",
+        "src/lib/transport/tauriShim/compatibility.test.ts",
+        "src/lib/transport/tauriShim/opener.test.ts",
+        "src/lib/transport/tauriShim/window.test.ts",
+        "src/lib/transport/ws.test.ts",
+        "src/lib/utils/anchorRect.test.ts",
+        "src/lib/utils/ansi.test.ts",
+        "src/lib/utils/linkResolver.test.ts",
+        "src/lib/utils/linkTrust.test.ts",
+        "src/lib/utils/markdown.test.ts",
+        "src/lib/utils/path.test.ts",
+        "src/lib/utils/pathToken.test.ts",
+        "src/lib/utils/pLimit.test.ts",
+        "src/lib/utils/repeatedError.test.ts",
+        "src/lib/utils/resizeThrottle.test.ts",
+        "src/lib/utils/withTimeout.test.ts",
+        "src/remote/BottomTabBar.test.ts",
+        "src/remote/lib/clipboard.test.ts",
+        "src/remote/lib/cloudRemote.test.ts",
+        "src/remote/lib/generationGuard.test.ts",
+        "src/remote/lib/keyboardOffset.test.ts",
+        "src/remote/lib/listenerCleanup.test.ts",
+        "src/remote/lib/paneFeedScheduler.test.ts",
+        "src/remote/lib/paneLifecycle.test.ts",
+        "src/remote/lib/paneSwitchBuffer.test.ts",
+        "src/remote/lib/remoteGitActions.test.ts",
+        "src/remote/lib/RemoteGitPanel.test.ts",
+        "src/remote/lib/remoteQueries.test.ts",
+        "src/remote/lib/RemoteSidebar.test.ts",
+        "src/remote/lib/scrollbackWorker.test.ts",
+        "src/remote/lib/sidebarProvider.test.ts",
+        "src/remote/lib/SidebarTeamRoster.test.ts",
+        "src/remote/lib/teamRosterScope.test.ts",
+        "src/remote/lib/TerminalCanvas.test.ts",
+        "src/remote/lib/theme.test.ts",
+        "src/remote/lib/treeState.test.ts",
+        "src/remote/lib/WorkspaceTree.test.ts",
+        "src/remote/main.test.ts",
+        "src/remote/MainApp.test.ts",
+        "src/remote/pwaInstallScope.test.ts",
+        "src/remote/queryPolicy.test.ts",
+        "src/remote/runtimeMessagingScope.test.ts",
+        "src/service-worker.test.ts",
+        "src/shared/sidebar/gitRequestLifecycle.test.ts",
+        "src/shared/sidebar/sidebarRequestLifecycle.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-SRC-SERVICE-WORKER-TS-0aba05b7",
+      "level": "L4",
+      "nodeHash": "bfd64c2eb87ff6820652a885254d828ed42fc11a1e5e06a2bfe387e5246db04f",
+      "codeTargets": [
+        "src/service-worker.ts"
+      ],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts",
+        "packages/remote/src/shared/cloud/apiClient.refresh.test.ts",
+        "packages/remote/src/shared/cloud/apiClient.test.ts",
+        "packages/remote/src/shared/cloud/auth.test.ts",
+        "packages/remote/src/shared/cloud/cloudHostBridge.test.ts",
+        "packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts",
+        "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
+        "packages/remote/src/shared/cloud/controllerIdentity.test.ts",
+        "packages/remote/src/shared/cloud/controllerInstanceId.test.ts",
+        "packages/remote/src/shared/cloud/deviceTrust.test.ts",
+        "packages/remote/src/shared/cloud/e2ee.test.ts",
+        "packages/remote/src/shared/cloud/faultInjection.test.ts",
+        "packages/remote/src/shared/cloud/keyBinding.test.ts",
+        "packages/remote/src/shared/cloud/priorityFrameQueue.test.ts",
+        "packages/remote/src/shared/cloud/remoteAllowlist.test.ts",
+        "packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts",
+        "packages/remote/src/shared/cloud/signaling/conformance.test.ts",
+        "packages/remote/src/shared/cloud/signaling/drift.test.ts",
+        "packages/remote/src/shared/cloud/weakNetLab.test.ts",
+        "packages/remote/src/shared/cloud/workspaceScope.test.ts",
+        "packages/remote/src/shared/hosts/foreignPaneStatus.test.ts",
+        "packages/remote/src/shared/hosts/liveBackpressure.test.ts",
+        "packages/remote/src/shared/hosts/livePumpPolicy.test.ts",
+        "packages/remote/src/shared/hosts/outboundLifecycle.test.ts",
+        "packages/remote/src/shared/hosts/outboundReconnect.test.ts",
+        "packages/remote/src/shared/reconnectPolicy.test.ts",
+        "packages/remote/src/shared/teammate/hitlAuditRemote.test.ts",
+        "packages/remote/src/shared/terminal/clipboardImage.test.ts",
+        "packages/remote/src/shared/terminal/dropPaste.test.ts",
+        "packages/remote/src/shared/terminal/fontDataService.test.ts",
+        "packages/remote/src/shared/terminal/fontStack.test.ts",
+        "packages/remote/src/shared/terminal/hostRemountPolicy.test.ts",
+        "packages/remote/src/shared/terminal/imeAnchor.test.ts",
+        "packages/remote/src/shared/terminal/imeDelta.test.ts",
+        "packages/remote/src/shared/terminal/initialPaneFit.test.ts",
+        "packages/remote/src/shared/terminal/linkAffordance.test.ts",
+        "packages/remote/src/shared/terminal/linkOpenHost.test.ts",
+        "packages/remote/src/shared/terminal/linkSpans.test.ts",
+        "packages/remote/src/shared/terminal/manager.attach.test.ts",
+        "packages/remote/src/shared/terminal/manager.test.ts",
+        "packages/remote/src/shared/terminal/mobileCopy.test.ts",
+        "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts",
+        "packages/remote/src/shared/terminal/mouseForwardPolicy.test.ts",
+        "packages/remote/src/shared/terminal/paneDockResolve.test.ts",
+        "packages/remote/src/shared/terminal/paneGeometry.test.ts",
+        "packages/remote/src/shared/terminal/paneInputGate.test.ts",
+        "packages/remote/src/shared/terminal/paneOrigin.test.ts",
+        "packages/remote/src/shared/terminal/paneShell.test.ts",
+        "packages/remote/src/shared/terminal/ptyBridge.test.ts",
+        "packages/remote/src/shared/terminal/sentenceBuffer.test.ts",
+        "packages/remote/src/shared/terminal/shellInputSnapshot.test.ts",
+        "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts",
+        "packages/remote/src/shared/terminal/terminalFocus.test.ts",
+        "packages/remote/src/shared/terminal/terminalMemoryPolicy.test.ts",
+        "packages/remote/src/shared/terminal/themeBridge.test.ts",
+        "packages/remote/src/shared/terminal/tuiGate.test.ts",
+        "packages/remote/src/shared/transport/capabilityContract.test.ts",
+        "packages/remote/src/shared/transport/cloudChunk.test.ts",
+        "packages/remote/src/shared/transport/cloudMux.test.ts",
+        "packages/remote/src/shared/transport/cloudWebrtcAdapter.test.ts",
+        "packages/remote/src/shared/transport/conformance.test.ts",
+        "packages/remote/src/shared/transport/lanWsAdapter.test.ts",
+        "packages/remote/src/shared/transport/matrixParity.test.ts",
+        "packages/remote/src/shared/transport/paneRpcScheduler.test.ts",
+        "packages/remote/src/shared/transport/protocolAdmission.test.ts",
+        "packages/remote/src/shared/transport/protocolAdmissionProduct.test.ts",
+        "packages/remote/src/shared/transport/random.test.ts",
+        "packages/remote/src/shared/transport/remoteInvokeAdmit.test.ts",
+        "packages/remote/src/shared/transport/remotePerfTrace.test.ts",
+        "packages/remote/src/shared/transport/rpcClient.test.ts",
+        "packages/remote/src/shared/transport/unknownText.test.ts",
+        "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+        "packages/remote/src/shared/transport/wsRemotePending.test.ts",
+        "packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts",
+        "packages/remote/src/shared/transport/wsRemoteUrl.test.ts",
+        "src-tauri/tests/win_manifest_boot.rs",
+        "src/lib/actions/hostSessionDrag.test.ts",
+        "src/lib/actions/overlayScroll.test.ts",
+        "src/lib/actions/paneDockDrag.test.ts",
+        "src/lib/components/customTheme.test.ts",
+        "src/lib/components/explorerPaste.test.ts",
+        "src/lib/components/GitGraph.test.ts",
+        "src/lib/components/inputBufferTracker.test.ts",
+        "src/lib/components/interactionContracts.test.ts",
+        "src/lib/components/SettingsPanel.test.ts",
+        "src/lib/components/SidebarLazyMount.test.ts",
+        "src/lib/components/SplitContainer.test.ts",
+        "src/lib/hosts/compositionHarness.test.ts",
+        "src/lib/hosts/foreignHistorySession.test.ts",
+        "src/lib/hosts/hostConnectFlow.test.ts",
+        "src/lib/hosts/hostControlSurface.test.ts",
+        "src/lib/hosts/hostForest.test.ts",
+        "src/lib/hosts/hostSessionIsolation.test.ts",
+        "src/lib/hosts/remotePaneBindings.test.ts",
+        "src/lib/lsp/lspClient.test.ts",
+        "src/lib/monaco/ridgeTheme.test.ts",
+        "src/lib/pure-logic-coverage.test.ts",
+        "src/lib/remote/cloud/cloudControllerBoot.integration.test.ts",
+        "src/lib/remote/cloud/cloudControllerBoot.test.ts",
+        "src/lib/remote/cloud/cloudHostStore.test.ts",
+        "src/lib/remote/cloud/cloudHostTopologyLink.test.ts",
+        "src/lib/remote/cloud/sharedWorkspaceProjection.behavior.test.ts",
+        "src/lib/remote/cloud/sharedWorkspaceProjection.test.ts",
+        "src/lib/remote/remoteBootMode.test.ts",
+        "src/lib/remote/totpIdentitySync.test.ts",
+        "src/lib/stores/clipboardResolve.test.ts",
+        "src/lib/stores/contextMenu.test.ts",
+        "src/lib/stores/dockRegionPicker.test.ts",
+        "src/lib/stores/editorWindow.test.ts",
+        "src/lib/stores/explorerLayout.test.ts",
+        "src/lib/stores/fileEditor.test.ts",
+        "src/lib/stores/fileExplorer.test.ts",
+        "src/lib/stores/fileWatcherSync.test.ts",
+        "src/lib/stores/fsEvents.test.ts",
+        "src/lib/stores/gitGuardStats.test.ts",
+        "src/lib/stores/hostReconnect.test.ts",
+        "src/lib/stores/hostReconnectProduct.test.ts",
+        "src/lib/stores/hosts.connect.test.ts",
+        "src/lib/stores/hosts.refresh.test.ts",
+        "src/lib/stores/hostsMutation.test.ts",
+        "src/lib/stores/hostsOutbound.test.ts",
+        "src/lib/stores/hostsOutboundProduct.test.ts",
+        "src/lib/stores/hostsPublic.test.ts",
+        "src/lib/stores/imagePreviewVersion.test.ts",
+        "src/lib/stores/paneGitStatus.test.ts",
+        "src/lib/stores/paneTree.coverage.test.ts",
+        "src/lib/stores/paneTree.test.ts",
+        "src/lib/stores/processGuardPolicy.test.ts",
+        "src/lib/stores/project.test.ts",
+        "src/lib/stores/remoteStatus.test.ts",
+        "src/lib/stores/scmCache.test.ts",
+        "src/lib/stores/searchState.test.ts",
+        "src/lib/stores/settings.test.ts",
+        "src/lib/stores/terminalHistory.test.ts",
+        "src/lib/stores/termSettings.test.ts",
+        "src/lib/stores/themes.slug.test.ts",
+        "src/lib/stores/themes.test.ts",
+        "src/lib/teammate/agentCommuneModel.test.ts",
+        "src/lib/teammate/agentPaneHighlightSync.test.ts",
+        "src/lib/teammate/hitlAuditFilter.test.ts",
+        "src/lib/teammate/hitlAuditPanel.test.ts",
+        "src/lib/teammate/layoutEvent.test.ts",
+        "src/lib/teammate/memberTasks.test.ts",
+        "src/lib/teammate/orchControlPlane.test.ts",
+        "src/lib/teammate/teammateGroups.test.ts",
+        "src/lib/teammate/teammateModel.test.ts",
+        "src/lib/teammate/workspaceMemory.test.ts",
+        "src/lib/terminal/desktopPaneResize.test.ts",
+        "src/lib/terminal/hostPorts.test.ts",
+        "src/lib/terminal/paneSizeSync.test.ts",
+        "src/lib/terminal/ptyRuntimeSnapshot.test.ts",
+        "src/lib/terminal/ptyWriteQueue.test.ts",
+        "src/lib/terminal/refreshEntrypoints.test.ts",
+        "src/lib/terminal/rendererBackend.test.ts",
+        "src/lib/transport/tauri.test.ts",
+        "src/lib/transport/tauriShim/bridge.test.ts",
+        "src/lib/transport/tauriShim/compatibility.test.ts",
+        "src/lib/transport/tauriShim/opener.test.ts",
+        "src/lib/transport/tauriShim/window.test.ts",
+        "src/lib/transport/ws.test.ts",
+        "src/lib/utils/anchorRect.test.ts",
+        "src/lib/utils/ansi.test.ts",
+        "src/lib/utils/linkResolver.test.ts",
+        "src/lib/utils/linkTrust.test.ts",
+        "src/lib/utils/markdown.test.ts",
+        "src/lib/utils/path.test.ts",
+        "src/lib/utils/pathToken.test.ts",
+        "src/lib/utils/pLimit.test.ts",
+        "src/lib/utils/repeatedError.test.ts",
+        "src/lib/utils/resizeThrottle.test.ts",
+        "src/lib/utils/withTimeout.test.ts",
+        "src/remote/BottomTabBar.test.ts",
+        "src/remote/lib/clipboard.test.ts",
+        "src/remote/lib/cloudRemote.test.ts",
+        "src/remote/lib/generationGuard.test.ts",
+        "src/remote/lib/keyboardOffset.test.ts",
+        "src/remote/lib/listenerCleanup.test.ts",
+        "src/remote/lib/paneFeedScheduler.test.ts",
+        "src/remote/lib/paneLifecycle.test.ts",
+        "src/remote/lib/paneSwitchBuffer.test.ts",
+        "src/remote/lib/remoteGitActions.test.ts",
+        "src/remote/lib/RemoteGitPanel.test.ts",
+        "src/remote/lib/remoteQueries.test.ts",
+        "src/remote/lib/RemoteSidebar.test.ts",
+        "src/remote/lib/scrollbackWorker.test.ts",
+        "src/remote/lib/sidebarProvider.test.ts",
+        "src/remote/lib/SidebarTeamRoster.test.ts",
+        "src/remote/lib/teamRosterScope.test.ts",
+        "src/remote/lib/TerminalCanvas.test.ts",
+        "src/remote/lib/theme.test.ts",
+        "src/remote/lib/treeState.test.ts",
+        "src/remote/lib/WorkspaceTree.test.ts",
+        "src/remote/main.test.ts",
+        "src/remote/MainApp.test.ts",
+        "src/remote/pwaInstallScope.test.ts",
+        "src/remote/queryPolicy.test.ts",
+        "src/remote/runtimeMessagingScope.test.ts",
+        "src/service-worker.test.ts",
+        "src/shared/sidebar/gitRequestLifecycle.test.ts",
+        "src/shared/sidebar/sidebarRequestLifecycle.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-APICLIENT-REFRESH-TEST-TS-ae2beee9",
+      "level": "TEST",
+      "nodeHash": "04908f6937c9b41c420563bfb529e4a42964584e3df97d1ad9f83eda8001ed0d",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/apiClient.refresh.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-APICLIENT-TEST-TS-54ddea70",
+      "level": "TEST",
+      "nodeHash": "83d199c2938d7b09ab19629499ebd7eb6d3885aa8127bedf170de544b4059d76",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/apiClient.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-AUTH-TEST-TS-8907fcc2",
+      "level": "TEST",
+      "nodeHash": "31186d9b7f57852df3e3552da6e751b06d53f70b4c099dfaa722fa2bc3028fd0",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/auth.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CLOUDE2EHARNESS-TEST-TS-369a5af1",
+      "level": "TEST",
+      "nodeHash": "809965b895223f1686115d437e5447003f55c0acea3d9dc272a091f17cc05e6f",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CLOUDHOSTBRIDGE-TEST-TS-731be498",
+      "level": "TEST",
+      "nodeHash": "55dc96264b315fa620ebba01d62178f387a66b72f4a85c337fee67365e0c1a20",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/cloudHostBridge.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CLOUDHOSTPANESOURCE-TEST-TS-5698aba6",
+      "level": "TEST",
+      "nodeHash": "2219fd245eb1d8166b221ba9f63aa17e86c511f0113b0a4bfa68a9161a326eb6",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CONTROLLERCLOUDPROVIDER-TEST-TS-fa839b23",
+      "level": "TEST",
+      "nodeHash": "437ad7825f59120487205490059f9d8bde827cc58f5334fc6f8269d947071178",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CONTROLLERIDENTITY-TEST-TS-dd543ad2",
+      "level": "TEST",
+      "nodeHash": "9d68a4f33017a0ed6c1069ca91ecc8273106f34ab7bacbc7aec6c66a46931395",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/controllerIdentity.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CONTROLLERINSTANCEID-TEST-TS-471305fa",
+      "level": "TEST",
+      "nodeHash": "e3833b75369db1a195b129abefc4809c81ef78ea1a9d16d245b598b7be06d871",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/controllerInstanceId.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-DEVICETRUST-TEST-TS-356a0744",
+      "level": "TEST",
+      "nodeHash": "d5cb26e03ede4c1e0ac3fe469562ec8044ae56c0dbcdb2e639af54bcc15b4494",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/deviceTrust.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-E2EE-TEST-TS-81cb1212",
+      "level": "TEST",
+      "nodeHash": "8f50f97eef39bf68cc6387c88bb1576d12df17b664c36cfc02976fbff4726672",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/e2ee.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-FAULTINJECTION-TEST-TS-7005e479",
+      "level": "TEST",
+      "nodeHash": "70085864d56bf05d736b0ba2cf5565b1834b3b5bdc681c39869b2938b588b513",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/faultInjection.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-KEYBINDING-TEST-TS-3c0d052f",
+      "level": "TEST",
+      "nodeHash": "57e4a4f819ba9177060d21be5df365a60b510fa07203af3da36a9e544b9e8e8f",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/keyBinding.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-PRIORITYFRAMEQUEUE-TEST-TS-8e7fa935",
+      "level": "TEST",
+      "nodeHash": "6d9c0a7c52be73f835284746d13333f378a9d7c25bc3ccac581d50b61a086ab6",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/priorityFrameQueue.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-REMOTEALLOWLIST-TEST-TS-ad14903f",
+      "level": "TEST",
+      "nodeHash": "43678000ed3a28ea56e901dc1e1b5558c214f5219cf1c238db4446bfece8a0f2",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/remoteAllowlist.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-RIDGECLOUDPROVIDER-TEST-TS-149b31d2",
+      "level": "TEST",
+      "nodeHash": "2e382468b634bf977a07562912f9f225c6013b5f7fd94e7d9922d3f772a313cf",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-SIGNALING-CONFORMANCE-TEST-TS-50aa4f26",
+      "level": "TEST",
+      "nodeHash": "160fde9c2a192ff0e0123ebaf2e3facedd8f7f24b109821574e0098b614a23bc",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/signaling/conformance.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-SIGNALING-DRIFT-TEST-TS-52f30651",
+      "level": "TEST",
+      "nodeHash": "a21c68afcd15da7d73c5278079dfe1bedf660f45ece060a507e761cd9e7016f9",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/signaling/drift.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-WEAKNETLAB-TEST-TS-e7298069",
+      "level": "TEST",
+      "nodeHash": "805918d2926d2681dc401eea66f80d113f81c429f8fb119e1e0eb1c6134ff7c7",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/weakNetLab.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-WORKSPACESCOPE-TEST-TS-184beaf5",
+      "level": "TEST",
+      "nodeHash": "baec3f555c5620e54955d84127bcece12d05b0c142dbb19f7d135594d01f406e",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/workspaceScope.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-HOSTS-FOREIGNPANESTATUS-TEST-TS-9fbe3344",
+      "level": "TEST",
+      "nodeHash": "f163e33a579722be8e942b0d546b851711e51f5ee1e3acc6feae09e9dffe13a6",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/hosts/foreignPaneStatus.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-HOSTS-LIVEBACKPRESSURE-TEST-TS-cfea6cb6",
+      "level": "TEST",
+      "nodeHash": "9cf63d9f1303850d38b4169474da792c87d89df00c7c69fa0c7b15f1e01ec522",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/hosts/liveBackpressure.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-HOSTS-LIVEPUMPPOLICY-TEST-TS-1ed634a5",
+      "level": "TEST",
+      "nodeHash": "351296d7a573682b107d2df3a0369900da923e9e8ddf2528658aab2ef740e6b4",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/hosts/livePumpPolicy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-HOSTS-OUTBOUNDLIFECYCLE-TEST-TS-9e8e8887",
+      "level": "TEST",
+      "nodeHash": "730bedddae0fc40fb84458e918b1ee31553af3a15ecf35fa702ec47206549b07",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/hosts/outboundLifecycle.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-HOSTS-OUTBOUNDRECONNECT-TEST-TS-1dd36e13",
+      "level": "TEST",
+      "nodeHash": "8c9401ca2f5ab56b6736e2756be6f5541376c01f0fe7cecf09f2eb4c3db638c9",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/hosts/outboundReconnect.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-RECONNECTPOLICY-TEST-TS-3622e40f",
+      "level": "TEST",
+      "nodeHash": "af4ff4b46441d315ba35de3cf9506385a54db38d8f494ec8544a76844c321e73",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/reconnectPolicy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TEAMMATE-HITLAUDITREMOTE-TEST-TS-27ed6157",
+      "level": "TEST",
+      "nodeHash": "4b9d7327e4e0e83e8b6a1c1e7b011889cb3433ba976c534d8e77447438d7605f",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/teammate/hitlAuditRemote.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-CLIPBOARDIMAGE-TEST-TS-53411e31",
+      "level": "TEST",
+      "nodeHash": "0280d415df614461dd4768ba8e589f9be9bd3ed01d26c1ef88df253510977538",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/clipboardImage.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-DROPPASTE-TEST-TS-510e73ab",
+      "level": "TEST",
+      "nodeHash": "21c4ff1bf37ef9d28faa9c7fe68ed794fe10debdfe79bc2d0ec38ff47eafdb10",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/dropPaste.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-FONTDATASERVICE-TEST-TS-a11e69bb",
+      "level": "TEST",
+      "nodeHash": "7f7a81d0b1cd16c6d61f98b993635f7e6cc81391f311b3470a66c8b8d528f83e",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/fontDataService.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-FONTSTACK-TEST-TS-65f97da6",
+      "level": "TEST",
+      "nodeHash": "377386780982d14b9aab67d2224231fb1c63bc75c9558489b1b99b6d7b4802d0",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/fontStack.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-HOSTREMOUNTPOLICY-TEST-TS-117c2a90",
+      "level": "TEST",
+      "nodeHash": "c040fb50e2f21e43c0e677615585bc3a9df03b01026bbead00ecc0fef895bb0e",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/hostRemountPolicy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-IMEANCHOR-TEST-TS-105d9abf",
+      "level": "TEST",
+      "nodeHash": "3c8a08f4932bf8bdecdd58d38fbde4186389cec2465dc7adcf0d82977db231ac",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/imeAnchor.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-IMEDELTA-TEST-TS-67f86c2c",
+      "level": "TEST",
+      "nodeHash": "062c6394a7aaba4c929040f94ff865de6fb9a8f8f825b19857c4303bad7d7fee",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/imeDelta.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-INITIALPANEFIT-TEST-TS-fe5c49cf",
+      "level": "TEST",
+      "nodeHash": "815204105087f4c95b272f3ac5ab01e7486d7ec90a902a9dc9d0469bcd9773d0",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/initialPaneFit.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKAFFORDANCE-TEST-TS-d1be43bc",
+      "level": "TEST",
+      "nodeHash": "43945b7ee00df5e5d67b580cec9030b7296398ea192d369dc142d0fda3c1e9dd",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/linkAffordance.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKOPENHOST-TEST-TS-19b69752",
+      "level": "TEST",
+      "nodeHash": "19b0c61467eac874e4ca5f729192f35b79c0d7302543af8ddb36233e97809aea",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/linkOpenHost.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKSPANS-TEST-TS-8d7f240f",
+      "level": "TEST",
+      "nodeHash": "a3f1a3ea6302761d6a2a40d0b85115afc994cdb73925e2f795e4549bb5386225",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/linkSpans.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MANAGER-ATTACH-TEST-TS-35aae100",
+      "level": "TEST",
+      "nodeHash": "a364ce056834f7716c240e18976657c66d7365551d1e37983b0098d2360b12c4",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/manager.attach.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MANAGER-TEST-TS-290fe11f",
+      "level": "TEST",
+      "nodeHash": "6f4cb830255b081a0fd593212c3950d7c0be3fd0220275d5a794ba4306a672f1",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/manager.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MOBILECOPY-TEST-TS-4906f450",
+      "level": "TEST",
+      "nodeHash": "2e1d6c41e8ac5915a32982ba9325344e1b4b014cd8a34794da56d0f54baf16be",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/mobileCopy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MOBILETOUCHSCROLL-TEST-TS-ddb6edb0",
+      "level": "TEST",
+      "nodeHash": "750cf5e7e16cdd2b515024e069351721a4411b7f2bc014414f80c94fc443886d",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MOUSEFORWARDPOLICY-TEST-TS-ddc8b0dc",
+      "level": "TEST",
+      "nodeHash": "ad4b5312c1125f36cc5083145abdfea616d45d78d6a91f5e4648900b145de279",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/mouseForwardPolicy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANEDOCKRESOLVE-TEST-TS-4fdcb558",
+      "level": "TEST",
+      "nodeHash": "9f31fc5458dfae7813a97e08d962522c88c9ecba759a45ecd57299cf16c1949e",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/paneDockResolve.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANEGEOMETRY-TEST-TS-ad29e3d7",
+      "level": "TEST",
+      "nodeHash": "b2928d71c525300be95ed4786965afccd7567ec171df309c2f867195659aecbf",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/paneGeometry.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANEINPUTGATE-TEST-TS-06a1530b",
+      "level": "TEST",
+      "nodeHash": "a024c32dfafa315680a55489489194c99e251c9355bc9aec46d7c68efe6ee79d",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/paneInputGate.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANEORIGIN-TEST-TS-6d99d562",
+      "level": "TEST",
+      "nodeHash": "e7cdc73d3273c740bb0aaf386858e64f23910c96dddb26344932576c9c550e80",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/paneOrigin.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANESHELL-TEST-TS-e9209065",
+      "level": "TEST",
+      "nodeHash": "2d2f4afc861d0ef1a6f1ca240241f5fdca5fe03c094a5152ba4b2846b9cee2a8",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/paneShell.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PTYBRIDGE-TEST-TS-3f30eb8e",
+      "level": "TEST",
+      "nodeHash": "93960c5d77444d4db6649c4328a75bc28cd6938382ff2f3e273745d5e17b4c86",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/ptyBridge.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-SENTENCEBUFFER-TEST-TS-4bcd3337",
+      "level": "TEST",
+      "nodeHash": "a19a8625ea634b5f9e283a78958d9ba4c419bc24a32bab8dbb273bfecc675491",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/sentenceBuffer.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-SHELLINPUTSNAPSHOT-TEST-TS-9e6558fc",
+      "level": "TEST",
+      "nodeHash": "043a740c0e8c26e7e784f7e128778a7f6693bb414a3bb60bec281f3b49709949",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/shellInputSnapshot.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-TERMINALFEEDPOLICY-TEST-TS-a929e750",
+      "level": "TEST",
+      "nodeHash": "ccef66d8333fcf982cf0a812ceb590d94841a642c546725f04c45be9d8e4dbd2",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-TERMINALFOCUS-TEST-TS-ff98409c",
+      "level": "TEST",
+      "nodeHash": "ca87414f13147358063cff93b4acc0e06d6424b94b2c995e9a668d9720e86a4a",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/terminalFocus.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-TERMINALMEMORYPOLICY-TEST-TS-19d7b4ce",
+      "level": "TEST",
+      "nodeHash": "6246f8c0609b0acb8f0f8e619c5e0b3c37655ea0658233f965ed63b4952aef6d",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/terminalMemoryPolicy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-THEMEBRIDGE-TEST-TS-4fb837c0",
+      "level": "TEST",
+      "nodeHash": "b384e418090a3391a1005c6f33c33bc29fc2618faeaead987934edf0fd53a6fd",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/themeBridge.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-TUIGATE-TEST-TS-146c1508",
+      "level": "TEST",
+      "nodeHash": "f4c7bca0e0673f30fa3d7fb1f62ba87a836c33ac81a8e43da567214eb32ddbdd",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/tuiGate.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-CAPABILITYCONTRACT-TEST-TS-b0bfbedf",
+      "level": "TEST",
+      "nodeHash": "319613afc889c25eb18eb4c69cc706a5509dca9da017af409b9d501cbe1d6239",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/capabilityContract.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-CLOUDCHUNK-TEST-TS-cd20cdb9",
+      "level": "TEST",
+      "nodeHash": "1eddcb2af68a167e9dafb9e320a6f770d7be0ecff255087a077304f137119733",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/cloudChunk.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-CLOUDMUX-TEST-TS-2d7e0111",
+      "level": "TEST",
+      "nodeHash": "e82a3cf9764fbdfe9310919aafc4109ba7efaa085e920403076fb6656fbee4c4",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/cloudMux.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-CLOUDWEBRTCADAPTER-TEST-TS-8470c932",
+      "level": "TEST",
+      "nodeHash": "0094c5d66cdd0908a807c31b97f28eb9e094b0e3591b9c02d9fe47dc893f13af",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/cloudWebrtcAdapter.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-CONFORMANCE-TEST-TS-6908b6ac",
+      "level": "TEST",
+      "nodeHash": "109d0935f923ff50ccffa178fb1cd7f6e6b5b217c654bb4856ad702c0b868bea",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/conformance.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-LANWSADAPTER-TEST-TS-a2b9af4c",
+      "level": "TEST",
+      "nodeHash": "5b347ba623c31dc15c86ba7f053db42d288b6b667903aa20df1196a064310a83",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/lanWsAdapter.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-MATRIXPARITY-TEST-TS-d457ef87",
+      "level": "TEST",
+      "nodeHash": "6711e99f9d4552db87151f55512c53b063dedbd351fd31b9d9dac7bfa574aa40",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/matrixParity.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-PANERPCSCHEDULER-TEST-TS-ad772920",
+      "level": "TEST",
+      "nodeHash": "21812a12516afa9b2c5c128d4721606a11b4f8d7f17d3c5fa544ceb7c619afad",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/paneRpcScheduler.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-PROTOCOLADMISSION-TEST-TS-535b3e0d",
+      "level": "TEST",
+      "nodeHash": "036226dafc4a4ae1db0a6e9bf396b30cf142393d7a59a0170abc2e50e92a78fe",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/protocolAdmission.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-PROTOCOLADMISSIONPRODUCT-TEST-TS-1940534e",
+      "level": "TEST",
+      "nodeHash": "f4405f977184c0c156491c52a02659f76ac5b6112b1c89efb2db780fcccdec93",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/protocolAdmissionProduct.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-RANDOM-TEST-TS-d885afcc",
+      "level": "TEST",
+      "nodeHash": "25abc59e1176b151d2cdc519a2ccb9e61b4a7c2664af9a11f768699c2acd822f",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/random.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-REMOTEINVOKEADMIT-TEST-TS-d1037371",
+      "level": "TEST",
+      "nodeHash": "5137b2cc7201c557a742eee61edecb5743c2f2b5bf69cd4ea67761ebe18caeda",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/remoteInvokeAdmit.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-REMOTEPERFTRACE-TEST-TS-a6430a11",
+      "level": "TEST",
+      "nodeHash": "13ceaf349113f45825bca471b7ef8d10f193c3d7bf87d53a81dbe59f7defebe5",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/remotePerfTrace.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-RPCCLIENT-TEST-TS-605f379d",
+      "level": "TEST",
+      "nodeHash": "27e3338706e1f6796aed5dc70b043bcc744e638b5b245ba0df9d06c02c496236",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/rpcClient.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-UNKNOWNTEXT-TEST-TS-ffdcdbcf",
+      "level": "TEST",
+      "nodeHash": "b9800627eac22f10a92dd5aa87a4a51a65d09021675d239e7962babf487eed90",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/unknownText.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-WSREMOTE-BEHAVIOR-TEST-TS-8b7a590c",
+      "level": "TEST",
+      "nodeHash": "6e8ec96cbba7906d25f115c44d852a10fe0153be8191035d201f97422a9de8f2",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/wsRemote.behavior.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-WSREMOTEPENDING-TEST-TS-ee9c7d29",
+      "level": "TEST",
+      "nodeHash": "4e1143603536bf85229bf6eecfdaff6c91e166cea9a8f472ca2b41c67649a94d",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/wsRemotePending.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-WSREMOTERPCSCHEDULER-TEST-TS-04be1fed",
+      "level": "TEST",
+      "nodeHash": "ed2e08133ab2b4396d3d28f4b81bb5206a8f3cae98ce90fe8d65fba77802c650",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-WSREMOTEURL-TEST-TS-a219c8e6",
+      "level": "TEST",
+      "nodeHash": "3690cfb2b1680b73f7abe5e3f46b7dd11c9232dc522d9aed8338930862e9f486",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/transport/wsRemoteUrl.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-APP-CSP-TEST-MJS-8c76d58b",
+      "level": "TEST",
+      "nodeHash": "129ea88dd96641bebc44d70611f30fa7371c84ba746e15c909dacb5af5211229",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/app-csp.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-ACTIONS-HOSTSESSIONDRAG-TEST-TS-fe959003",
+      "level": "TEST",
+      "nodeHash": "118c053c41d841f9abdff1f7869ace6ab7c8c643490a6313e453ccfa41934d7f",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/actions/hostSessionDrag.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-ACTIONS-OVERLAYSCROLL-TEST-TS-9878339d",
+      "level": "TEST",
+      "nodeHash": "7f2d23c87c327c4cfd9c41afed76b2c6d1fe3b119cb622d5bfaaffd3aac21543",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/actions/overlayScroll.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-ACTIONS-PANEDOCKDRAG-TEST-TS-3c0ebf73",
+      "level": "TEST",
+      "nodeHash": "805393bd4788c09ca6a98d76d357b10d7b15bf4484887c4d4a588315d1329a5e",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/actions/paneDockDrag.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-CUSTOMTHEME-TEST-TS-0b73284d",
+      "level": "TEST",
+      "nodeHash": "08624b4cab96bbf0083c4f04d912734d5b3f76fffa7c5e40956d2fe0bb9fcf4d",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/customTheme.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-EXPLORERPASTE-TEST-TS-e29ef2f9",
+      "level": "TEST",
+      "nodeHash": "5ea41e7f3e18f821a298d65192f969462393f5cdefe1c0ce9c9c4341a3eb1bb3",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/explorerPaste.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-GITGRAPH-TEST-TS-69aabbd2",
+      "level": "TEST",
+      "nodeHash": "24c146c48701eb490a19a4a453c420c02130d1b44180eebc6a0d10110ac74181",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/GitGraph.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-INPUTBUFFERTRACKER-TEST-TS-a37220a2",
+      "level": "TEST",
+      "nodeHash": "6234a7dd8afaab35192d1eacffc714de479d824214aaccb1b44bf9591622a4b5",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/inputBufferTracker.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-INTERACTIONCONTRACTS-TEST-TS-6ff9d90a",
+      "level": "TEST",
+      "nodeHash": "480d10359a813b5e09e15eb4a1c16dcc1dca4baf215e8512ab2669bbcfe1cc18",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/interactionContracts.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-SETTINGSPANEL-TEST-TS-a77c4772",
+      "level": "TEST",
+      "nodeHash": "44d7c911b3a0d2afd5ef497196f80be05b2f80f0faa429befd5f7446a7431688",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/SettingsPanel.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-SIDEBARLAZYMOUNT-TEST-TS-a0bebf5d",
+      "level": "TEST",
+      "nodeHash": "ff8b36c2a8ab13c866dd32d16a839cd72ff6c8054c2f161e0042b00d14a10b02",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/SidebarLazyMount.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-SPLITCONTAINER-TEST-TS-1932765d",
+      "level": "TEST",
+      "nodeHash": "bbb3008356ef3dfcf089b6a1b5a662175edbdd150501510cfceeef59ce0bed1b",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/SplitContainer.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-HOSTS-COMPOSITIONHARNESS-TEST-TS-911c519a",
+      "level": "TEST",
+      "nodeHash": "19356f88223a139ad86b893c6251dbde6769d60fe95c14bf5dacd20574b7cae4",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/hosts/compositionHarness.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-HOSTS-FOREIGNHISTORYSESSION-TEST-TS-0de097ce",
+      "level": "TEST",
+      "nodeHash": "ec41636db2bacee5f79c456a11697bde549c53cf63e6e2dcf598a6dd9b751297",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/hosts/foreignHistorySession.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-HOSTS-HOSTCONNECTFLOW-TEST-TS-a765764d",
+      "level": "TEST",
+      "nodeHash": "02ec44fcdccbd0fb15c6cb21d2fb6ead3415f99cda1dae24006fd4ea1461d487",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/hosts/hostConnectFlow.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-HOSTS-HOSTCONTROLSURFACE-TEST-TS-3e384126",
+      "level": "TEST",
+      "nodeHash": "d29fe80ac6f25376c6afa3dcb49d080fdcd5b8b0cd553fa5f39a0ac12551a646",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/hosts/hostControlSurface.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-HOSTS-HOSTFOREST-TEST-TS-b3e38a29",
+      "level": "TEST",
+      "nodeHash": "dbb643ac3f7d30a6d2456ff5c6f8d794bcfc91eb5c4d9b1c39965711c9793c72",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/hosts/hostForest.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-HOSTS-HOSTSESSIONISOLATION-TEST-TS-a2500470",
+      "level": "TEST",
+      "nodeHash": "1dab629c4b6d0f88b7749625e2ccc074bfbe6f318d53503e1eaa3200c46a25fb",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/hosts/hostSessionIsolation.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-HOSTS-REMOTEPANEBINDINGS-TEST-TS-2377e089",
+      "level": "TEST",
+      "nodeHash": "569763b560b12d1343769648b714becb0f455a0193aaf10d2e678709d5070309",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/hosts/remotePaneBindings.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-LSP-LSPCLIENT-TEST-TS-bab87361",
+      "level": "TEST",
+      "nodeHash": "b1cafe04534c12b21c45aad0807a284de92a88cb0185c2687efd195048dda045",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/lsp/lspClient.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-MONACO-RIDGETHEME-TEST-TS-3b597c0b",
+      "level": "TEST",
+      "nodeHash": "c59190a2c57614deda0e0ba0c0555f7cb2468555b61a587cebc6393b29bbf0fd",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/monaco/ridgeTheme.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-PURE-LOGIC-COVERAGE-TEST-TS-f70127cd",
+      "level": "TEST",
+      "nodeHash": "17330984a384d4b643e4428a5f4837fb9924deaf69e05df2c78cda4300fafbd1",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/pure-logic-coverage.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDCONTROLLERBOOT-INTEGRATION-TEST-TS-d930e02e",
+      "level": "TEST",
+      "nodeHash": "fe42a4903af09ee8366f139c982df04310cd64a6e5864a54a2651f94f45b9add",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/remote/cloud/cloudControllerBoot.integration.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDCONTROLLERBOOT-TEST-TS-7f1c661a",
+      "level": "TEST",
+      "nodeHash": "0875f6cec1b85cf187902b8eee56baa28efdc39692b7bb44bc26136e5386a4f0",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/remote/cloud/cloudControllerBoot.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDHOSTSTORE-TEST-TS-a2df9830",
+      "level": "TEST",
+      "nodeHash": "cb0401dfd949f6eadbfdd54719f36dc0e0ff51dc4cc277bafc1425e84cecf8e4",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/remote/cloud/cloudHostStore.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDHOSTTOPOLOGYLINK-TEST-TS-7c92f09e",
+      "level": "TEST",
+      "nodeHash": "fbdc7d9367308fccd7b8db74b4de88dcaa9d3dd034e5f9ba65ba11b44359e494",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/remote/cloud/cloudHostTopologyLink.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-REMOTE-CLOUD-SHAREDWORKSPACEPROJECTION-BEHAVIOR-TEST-TS-69e303c4",
+      "level": "TEST",
+      "nodeHash": "17e7257572f9c493840e1c837d0c3ccd60b2759f74393baac4e415f773ad5090",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/remote/cloud/sharedWorkspaceProjection.behavior.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-REMOTE-CLOUD-SHAREDWORKSPACEPROJECTION-TEST-TS-0dde9c6f",
+      "level": "TEST",
+      "nodeHash": "bb55c7cbfa89032d2f97dd7e84aa9c1ba31585ab22378a509589abddb1885419",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/remote/cloud/sharedWorkspaceProjection.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-REMOTE-REMOTEBOOTMODE-TEST-TS-0c3742d1",
+      "level": "TEST",
+      "nodeHash": "962781babc9377ee7bab33b0353ec6cde258e41be57011104c058d4274a26e87",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/remote/remoteBootMode.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-REMOTE-TOTPIDENTITYSYNC-TEST-TS-a0141da8",
+      "level": "TEST",
+      "nodeHash": "cd17a35bb7ad37a1068f02b86fc9fc827155defa6d82eb6f3f3a52e1508d5ea0",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/remote/totpIdentitySync.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-CLIPBOARDRESOLVE-TEST-TS-d8cab7c6",
+      "level": "TEST",
+      "nodeHash": "6ad825691ed2a61fa0408dcbb139353231c0fb96ffe3c325f796260e9c71ee4d",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/clipboardResolve.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-CONTEXTMENU-TEST-TS-c5d624d2",
+      "level": "TEST",
+      "nodeHash": "2c463bf8ab3fb44fda04a98479985bd221ba06f4c2de84143b997d2bbf5901b1",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/contextMenu.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-DOCKREGIONPICKER-TEST-TS-b7ce6df6",
+      "level": "TEST",
+      "nodeHash": "c7d93fed9f94508f574775251799a33abaa32d0ca906a7f6d8a0649f732f712d",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/dockRegionPicker.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-EDITORWINDOW-TEST-TS-965f4022",
+      "level": "TEST",
+      "nodeHash": "115ae09594eedefe7634e3d4b3388e19b69c75dffe5f0d6b3d3942ff465409d8",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/editorWindow.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-EXPLORERLAYOUT-TEST-TS-489203e2",
+      "level": "TEST",
+      "nodeHash": "19ffe5a478bb78d813bece57e085ec73490a364d1934d9cda9943512dac30026",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/explorerLayout.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-FILEEDITOR-TEST-TS-396c0017",
+      "level": "TEST",
+      "nodeHash": "d6bbf730516db8d1efd6b0e6446ab8b8f305d6767b8da9460b4d1ded456fa049",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/fileEditor.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-FILEEXPLORER-TEST-TS-8df44237",
+      "level": "TEST",
+      "nodeHash": "c381bc485eacc65ba9854ce81ec1fc3c564b9c70c2d2f00904aa8e08d5d405c4",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/fileExplorer.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-FILEWATCHERSYNC-TEST-TS-9e135a5d",
+      "level": "TEST",
+      "nodeHash": "58b7bd2131733ecb678c041d6b21a95490518da37dd4ba167edba81b8dc73a77",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/fileWatcherSync.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-FSEVENTS-TEST-TS-f628ded6",
+      "level": "TEST",
+      "nodeHash": "325c53eef9222608ac0205e7e5bc3b9be83dbbe88467e9359afb62a6bef991e7",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/fsEvents.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-GITGUARDSTATS-TEST-TS-680ef77e",
+      "level": "TEST",
+      "nodeHash": "4335e3e3d233dac56b2788373b8d66170b34718aabca7c8028a8df9b2076a9bf",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/gitGuardStats.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-HOSTRECONNECT-TEST-TS-e82e61be",
+      "level": "TEST",
+      "nodeHash": "92bec99a41cf0bc689a33366cae82c4b1f39c9cb1449f489d60236e3c66c4109",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/hostReconnect.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-HOSTRECONNECTPRODUCT-TEST-TS-9598a61c",
+      "level": "TEST",
+      "nodeHash": "7dff87bc59c4213c81a466566c651a3e1466911a67852d84b49031760897a2ee",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/hostReconnectProduct.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-HOSTS-CONNECT-TEST-TS-3c065b9c",
+      "level": "TEST",
+      "nodeHash": "75c6204be94aec91f7e4504f671b68dfd90f3ec14ad0398e33b3b41e3f1d6802",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/hosts.connect.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-HOSTS-REFRESH-TEST-TS-57fb3707",
+      "level": "TEST",
+      "nodeHash": "63ddf16818ffca6dd303df8498d96da143c3bf93eb4eee4397e0b84cbe6b0918",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/hosts.refresh.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-HOSTSMUTATION-TEST-TS-ef74d67d",
+      "level": "TEST",
+      "nodeHash": "b97937aea87b20bcf9e0ce89206de2141cc77bccd3564bcc85dfd8decd8bc761",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/hostsMutation.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-HOSTSOUTBOUND-TEST-TS-afc6c610",
+      "level": "TEST",
+      "nodeHash": "7f1db77cad8e8959ceb814166cc63b683136da3776a816f8cb61dbdbc291baa1",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/hostsOutbound.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-HOSTSOUTBOUNDPRODUCT-TEST-TS-c9cf71df",
+      "level": "TEST",
+      "nodeHash": "e8359af1649a46a4527d1dca1bebdce945e19c45dd7ba5fc324cec8406cfd6ae",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/hostsOutboundProduct.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-HOSTSPUBLIC-TEST-TS-b49d4adf",
+      "level": "TEST",
+      "nodeHash": "06918caec54be398922f5dcb8a5598220b10eeea9169b1a578ae32821f1250ae",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/hostsPublic.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-IMAGEPREVIEWVERSION-TEST-TS-c18c0477",
+      "level": "TEST",
+      "nodeHash": "bb0a187c89c108e7b209de864b3e263950d9acb5b53dfb1326fe3ab95de8207f",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/imagePreviewVersion.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-PANEGITSTATUS-TEST-TS-73bc40e2",
+      "level": "TEST",
+      "nodeHash": "6077f07db8c74e7429451e4e045c1032c7ff5f2c6f88885605e61cd817f3881f",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/paneGitStatus.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-PANETREE-COVERAGE-TEST-TS-747ca055",
+      "level": "TEST",
+      "nodeHash": "0cee17dd5d986c7d23c9f9f2a979fbf000574753bcb60a2e267f45bc272c983e",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/paneTree.coverage.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-PANETREE-TEST-TS-8fb828ce",
+      "level": "TEST",
+      "nodeHash": "1f5b4138aafdbe46d83ed70b4feec6fcce41fbcb5b5c341defecbf04c633ea3f",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/paneTree.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-PROCESSGUARDPOLICY-TEST-TS-a94798ee",
+      "level": "TEST",
+      "nodeHash": "0c7876a03ccb3e9c65566a26eaab1c2e975355b6239cf3daa20e34ba90c2f976",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/processGuardPolicy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-PROJECT-TEST-TS-b97586fc",
+      "level": "TEST",
+      "nodeHash": "a9e88984917720c7a2bc717e38b07c361bd36229d7907757495a8023386b1031",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/project.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-REMOTESTATUS-TEST-TS-a66e6e00",
+      "level": "TEST",
+      "nodeHash": "86deed0b8267f636506cc766746140094591ac9e31e9ecca2b7e7c5a5268274b",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/remoteStatus.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-SCMCACHE-TEST-TS-69c519de",
+      "level": "TEST",
+      "nodeHash": "2902224f9f7170dc717493143c6263c73c38001c4d88b771df9f4ce5bae9d9c1",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/scmCache.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-SEARCHSTATE-TEST-TS-7c629e13",
+      "level": "TEST",
+      "nodeHash": "3b64f60f318e50c554a14390cba5d448619ca814a4a4ca12e13fbb28fb585873",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/searchState.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-SETTINGS-TEST-TS-ebb9f869",
+      "level": "TEST",
+      "nodeHash": "c44cdaadbbe434b39fd290e2828f4130ad86818d935ac39632989558f5c765be",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/settings.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-TERMINALHISTORY-TEST-TS-49edc8b5",
+      "level": "TEST",
+      "nodeHash": "bd94b03d8732d532da0cdb13ec78d1377bd3b394b88e4a1496f42ee0c479173e",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/terminalHistory.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-TERMSETTINGS-TEST-TS-222ac7cd",
+      "level": "TEST",
+      "nodeHash": "18c59c6a9b18204198f920574400a8821da5387bdd18deb3941aac17900dbc2b",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/termSettings.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-THEMES-SLUG-TEST-TS-146943ed",
+      "level": "TEST",
+      "nodeHash": "ebc091d2e1b506e0bc4fb226e7a8d47288f7bcaaa20ab98fb6da356e7da66ac0",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/themes.slug.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-STORES-THEMES-TEST-TS-8b9fb08d",
+      "level": "TEST",
+      "nodeHash": "d4ad413ffc9440cf08f5ad7a813f12371938f53a7f027467578432c881326ba1",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/stores/themes.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TEAMMATE-AGENTCOMMUNEMODEL-TEST-TS-313d1942",
+      "level": "TEST",
+      "nodeHash": "f24446487660065024fb96a9060b4d92b5492ef25dbf3ebc2baa14076dc9e656",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/teammate/agentCommuneModel.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TEAMMATE-AGENTPANEHIGHLIGHTSYNC-TEST-TS-68715b97",
+      "level": "TEST",
+      "nodeHash": "8c34a284d0bdd4237d375bf7f0ad57b2dc7fe13ea03a49620bc8d76a94e26187",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/teammate/agentPaneHighlightSync.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TEAMMATE-HITLAUDITFILTER-TEST-TS-1bebca23",
+      "level": "TEST",
+      "nodeHash": "f0438722d848a05570b67433a97407b9e4cd05bf8dd8fdde02e9f215a39b9321",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/teammate/hitlAuditFilter.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TEAMMATE-HITLAUDITPANEL-TEST-TS-44e3a8b8",
+      "level": "TEST",
+      "nodeHash": "e453cb7833f2d477a4805a85c7e682994c0ae0160dfbc70f8569a66f9f8160c1",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/teammate/hitlAuditPanel.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TEAMMATE-LAYOUTEVENT-TEST-TS-b130fa00",
+      "level": "TEST",
+      "nodeHash": "443d59fcf59b866bd674f89fb29d9bae3afbabbe9a32336ecaa23362e5605986",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/teammate/layoutEvent.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TEAMMATE-MEMBERTASKS-TEST-TS-0d803223",
+      "level": "TEST",
+      "nodeHash": "7e8d7e873831cf9e66a4056d7529076c9a607fcc2abff80462e3f2cfe6889404",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/teammate/memberTasks.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TEAMMATE-ORCHCONTROLPLANE-TEST-TS-71f485a7",
+      "level": "TEST",
+      "nodeHash": "144f881982193a3c78868e7730e804ec8a797b5d06b5d8e02a13c61d6a02ff28",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/teammate/orchControlPlane.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TEAMMATE-TEAMMATEGROUPS-TEST-TS-e7ea1fa2",
+      "level": "TEST",
+      "nodeHash": "0dd431f5810a097c51a55d1d903ef82eb278c66b2d013ea540038dad0734abd2",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/teammate/teammateGroups.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TEAMMATE-TEAMMATEMODEL-TEST-TS-99fea951",
+      "level": "TEST",
+      "nodeHash": "d5264fe1c008e594e13d496ff03aa96adda0f2063c2fc8d1b3348f9621c28e49",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/teammate/teammateModel.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TEAMMATE-WORKSPACEMEMORY-TEST-TS-ac0bbd3e",
+      "level": "TEST",
+      "nodeHash": "294f242a56904e66461e4a26a477b444baefdd60c106b2056a6272db993b612b",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/teammate/workspaceMemory.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TERMINAL-DESKTOPPANERESIZE-TEST-TS-38627314",
+      "level": "TEST",
+      "nodeHash": "b4431d6eceae07aea254011f74d6480978eb93b728efa03ca110d9e91e937a38",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/terminal/desktopPaneResize.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TERMINAL-HOSTPORTS-TEST-TS-bed9ff49",
+      "level": "TEST",
+      "nodeHash": "58ff7a693f18ec9ea281418e23b76879d819843de929e112ea44f0d6220cae75",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/terminal/hostPorts.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TERMINAL-PANESIZESYNC-TEST-TS-8a1e46ba",
+      "level": "TEST",
+      "nodeHash": "3cf81f04664cb1bcd44f9df84667d33314cff3b0e3265ab003c1509f70317d13",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/terminal/paneSizeSync.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TERMINAL-PTYRUNTIMESNAPSHOT-TEST-TS-a223e946",
+      "level": "TEST",
+      "nodeHash": "8f65c13b285ffce271a6816fa0f5dfb20e5c3fbc6b0687018d3662423b2cb1f6",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/terminal/ptyRuntimeSnapshot.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TERMINAL-PTYWRITEQUEUE-TEST-TS-b49b9e91",
+      "level": "TEST",
+      "nodeHash": "e8de58266b91ef3366f8a181a8efebb4072682c32dc2533198fc9b641d3d2b5c",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/terminal/ptyWriteQueue.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TERMINAL-REFRESHENTRYPOINTS-TEST-TS-dcf05e4d",
+      "level": "TEST",
+      "nodeHash": "2c0b25913510af726bab9c1dfb503f593ee9a09c605cf6e05a1c97836d82d1c2",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/terminal/refreshEntrypoints.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TERMINAL-RENDERERBACKEND-TEST-TS-3fecf7c5",
+      "level": "TEST",
+      "nodeHash": "9b0715bad05d83367de9fc2f0990b2c594f64930751bb3c8118f6b9eeab9baba",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/terminal/rendererBackend.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TRANSPORT-TAURI-TEST-TS-c25dafa7",
+      "level": "TEST",
+      "nodeHash": "12453b4bb11df6fdc24d9add42ea7d595148bfe75131e195236161e4ad058bc9",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/transport/tauri.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TRANSPORT-TAURISHIM-BRIDGE-TEST-TS-77e048ec",
+      "level": "TEST",
+      "nodeHash": "7faeaae15f70278baf7264bd73277d4d4ab90004b28df7e16f88e7a5c32060f3",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/transport/tauriShim/bridge.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TRANSPORT-TAURISHIM-COMPATIBILITY-TEST-TS-ca9e9ee4",
+      "level": "TEST",
+      "nodeHash": "3d97349df47d9b7e4199da60424e68a6375b325590e23beae93366091fe21629",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/transport/tauriShim/compatibility.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TRANSPORT-TAURISHIM-OPENER-TEST-TS-4fc60727",
+      "level": "TEST",
+      "nodeHash": "9881b9f4d99e67ed00544115fbc1a4ff6a2b4b7578fc62a8d8fe55d09012dce6",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/transport/tauriShim/opener.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TRANSPORT-TAURISHIM-WINDOW-TEST-TS-d57bdd41",
+      "level": "TEST",
+      "nodeHash": "4a9c38a11e9a43735edb0c8b02f697a745e505871a42e429806969c7c1b21f43",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/transport/tauriShim/window.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TRANSPORT-WS-TEST-TS-fa7eff79",
+      "level": "TEST",
+      "nodeHash": "d05f77d7f0444e6f7d02eea4bce1a78f9b15f97dad3fa44fd950f78ee3e6a1b1",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/transport/ws.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-UTILS-ANCHORRECT-TEST-TS-105aff0a",
+      "level": "TEST",
+      "nodeHash": "5533d0a509c28b3878ab2ba1f019c2baef7f77139efac58ea0ed71144279b719",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/utils/anchorRect.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-UTILS-ANSI-TEST-TS-a521e4e0",
+      "level": "TEST",
+      "nodeHash": "4725a164bb5e86dd26eaf0e4a379eb027581bd033b403630c3944e0f9d69fdc4",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/utils/ansi.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-UTILS-LINKRESOLVER-TEST-TS-a1aef792",
+      "level": "TEST",
+      "nodeHash": "bd88f8a9a3e101c864b312850c6ac854ae41a6d9738eb1434290aa5893dfcc4f",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/utils/linkResolver.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-UTILS-LINKTRUST-TEST-TS-a7833726",
+      "level": "TEST",
+      "nodeHash": "1b17d9512ecd958a0438c0fd7b4789242dc37bd86bb4bd649a077a9945ed75d8",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/utils/linkTrust.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-UTILS-MARKDOWN-TEST-TS-a9cb2814",
+      "level": "TEST",
+      "nodeHash": "c05ae4da8b7521c3eb4b7650304a737561941808e0343b38ae86f145aa4246da",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/utils/markdown.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-UTILS-PATH-TEST-TS-82e03b6a",
+      "level": "TEST",
+      "nodeHash": "8f70b0772d7d48849e406c8d0265af66e242b42cee573df988978da57211b9b8",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/utils/path.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-UTILS-PATHTOKEN-TEST-TS-b83f28c9",
+      "level": "TEST",
+      "nodeHash": "f7f757eb5d2d798857f66b7b1888ddccc413a2aa9ef8c1156852391d59aafc63",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/utils/pathToken.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-UTILS-PLIMIT-TEST-TS-47b9ca9a",
+      "level": "TEST",
+      "nodeHash": "a681c8fd91f2efeaa98185576834471409a264c5681ffdd0576de6bbf1528ea4",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/utils/pLimit.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-UTILS-REPEATEDERROR-TEST-TS-16483412",
+      "level": "TEST",
+      "nodeHash": "06eed4a4949c9431c84597e5f9ef509e070c4371154f72f5789268eacf9ba299",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/utils/repeatedError.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-UTILS-RESIZETHROTTLE-TEST-TS-34afb027",
+      "level": "TEST",
+      "nodeHash": "968c636e4a7bc8a9f40e46d536f80cadd605ab846af1a7696f0cac5672e25b58",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/utils/resizeThrottle.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-UTILS-WITHTIMEOUT-TEST-TS-02d14903",
+      "level": "TEST",
+      "nodeHash": "eeecd0ff495ba1017655a886fe93f6177c764bd3da594dc7e5f81f307d7b0ca8",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/utils/withTimeout.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-BOTTOMTABBAR-TEST-TS-fad01c6a",
+      "level": "TEST",
+      "nodeHash": "eb2ae2a7fa3bebfa204062bf932dac36a9f92ffa9d5e5a6062dfce96fbf6f7e5",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/BottomTabBar.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-CLIPBOARD-TEST-TS-acf18327",
+      "level": "TEST",
+      "nodeHash": "a897bfb17608d9e402233c60254afc42be71562966f7238b95560d6d6d495d50",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/clipboard.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-CLOUDREMOTE-TEST-TS-8f8cb6d4",
+      "level": "TEST",
+      "nodeHash": "8f33e2d0bef043da7631615ea6e92b3b3d5a4e76e21b7ea2a1ff6b3a491f5321",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/cloudRemote.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-GENERATIONGUARD-TEST-TS-954c7584",
+      "level": "TEST",
+      "nodeHash": "c293e7d8219f14f97da0cc897934272674a42449d2ac3359777b4ca53227fea9",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/generationGuard.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-KEYBOARDOFFSET-TEST-TS-aa391cba",
+      "level": "TEST",
+      "nodeHash": "415a874fe44e8a453400b54bdc6850f363e37874b729250116fe72872c84eb30",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/keyboardOffset.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-LISTENERCLEANUP-TEST-TS-b750577c",
+      "level": "TEST",
+      "nodeHash": "ab776b6fe82e9765f51ac36476d55e8fae6ca33662311b7ec856f1ad5d7a5e5c",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/listenerCleanup.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-PANEFEEDSCHEDULER-TEST-TS-6040ce95",
+      "level": "TEST",
+      "nodeHash": "5205de16ac952d5de1017aca28691ebb5e57ed2a0478b9ae45d1e68b14c5203c",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/paneFeedScheduler.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-PANELIFECYCLE-TEST-TS-b323d4f0",
+      "level": "TEST",
+      "nodeHash": "1329c0e119d2d7accf3ed65d54049743246861d162cf03fd238373309fe7622c",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/paneLifecycle.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-PANESWITCHBUFFER-TEST-TS-8eee2043",
+      "level": "TEST",
+      "nodeHash": "d289fffe1861008638060eeb22f2624e88731608597db65d709246ffd2e569ac",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/paneSwitchBuffer.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-REMOTEGITACTIONS-TEST-TS-e28d50f2",
+      "level": "TEST",
+      "nodeHash": "9fca5561312519a8eb8dd29dffa355755783c1d5bea93c149befbfd48e88081e",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/remoteGitActions.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-REMOTEGITPANEL-TEST-TS-40e79e76",
+      "level": "TEST",
+      "nodeHash": "238baf633b86283f2cb0da7170a280d7a5c485f0fa0d7a20083e42ad2c0d8ff6",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/RemoteGitPanel.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-REMOTEQUERIES-TEST-TS-42897c52",
+      "level": "TEST",
+      "nodeHash": "7d571df679873b413c98627a3444fe63c888c1977d2569f3299134efd7d151ee",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/remoteQueries.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-REMOTESIDEBAR-TEST-TS-743bbf5b",
+      "level": "TEST",
+      "nodeHash": "5671711d7d055edeb3b4299a5dd42a9d6eef5af5600f3a9a153d751aa7f15d1d",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/RemoteSidebar.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-SCROLLBACKWORKER-TEST-TS-a458774b",
+      "level": "TEST",
+      "nodeHash": "ea650846b28645c33de1c768d5058fec5143e0d2b7ee037b0365401e04f6dbe4",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/scrollbackWorker.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-SIDEBARPROVIDER-TEST-TS-3032da1a",
+      "level": "TEST",
+      "nodeHash": "2761f154fd84f6b2b880fc132120ff74a61a5ad8982ea1a32dc71d8bdf9d1a37",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/sidebarProvider.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-SIDEBARTEAMROSTER-TEST-TS-65740552",
+      "level": "TEST",
+      "nodeHash": "baf7ebb219e855d6efc7f2e92190020c37ab8680090aa72febdf1bf763f59f93",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/SidebarTeamRoster.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-TEAMROSTERSCOPE-TEST-TS-a407e9aa",
+      "level": "TEST",
+      "nodeHash": "f0fc48161225d604adf8870cd948b19a827a5eaf14dbce1b70cd7deaa6877741",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/teamRosterScope.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-TERMINALCANVAS-TEST-TS-e83a9e51",
+      "level": "TEST",
+      "nodeHash": "95e6663d5350a6b9830bcd3d6dd44963bafe5c3929940b6caa7d73dbfeba74ac",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/TerminalCanvas.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-THEME-TEST-TS-74f6feb0",
+      "level": "TEST",
+      "nodeHash": "69056526b0a7707759481a60e79fc76992b8ff421de4d4698382d97ac6560785",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/theme.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-TREESTATE-TEST-TS-bcbf35f8",
+      "level": "TEST",
+      "nodeHash": "c1943006a93287140ad806cf71796f34a88fb548cb08e2a200263dfad0f42fde",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/treeState.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-WORKSPACETREE-TEST-TS-9753d5fd",
+      "level": "TEST",
+      "nodeHash": "086189279e05e90a497d27c04cffd59a16be1a862ccf863dc7540a06e44e42e2",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/WorkspaceTree.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-MAIN-TEST-TS-d14db7b1",
+      "level": "TEST",
+      "nodeHash": "2e8a5f9263c0b2ca24fd346fa20d75c15eade52c28e3c75689e09109c8b4ce88",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/main.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-MAINAPP-TEST-TS-5cd570fc",
+      "level": "TEST",
+      "nodeHash": "be946fae2530cb7eb153df3d45b5dacdaa040b35ddac5f5a5de3c67fcf9a2fda",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/MainApp.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-PWAINSTALLSCOPE-TEST-TS-e8d7abb5",
+      "level": "TEST",
+      "nodeHash": "b77633470d7a2b56be0e9b8be161db486a60ea078f79035d25408c2e78124109",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/pwaInstallScope.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-QUERYPOLICY-TEST-TS-a5d8de80",
+      "level": "TEST",
+      "nodeHash": "bde7e001df89003f4f6de890f5bfc113451c99874f2ecce1c9ff2b2fe34a78b3",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/queryPolicy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-RUNTIMEMESSAGINGSCOPE-TEST-TS-e4055737",
+      "level": "TEST",
+      "nodeHash": "d247d1f73a1c16a9a6b5429b26cf54da57e1f5ecc44e1c45d08376984183eb9c",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/runtimeMessagingScope.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-SERVICE-WORKER-TEST-TS-715224d5",
+      "level": "TEST",
+      "nodeHash": "f8b3e59d547f739c19e4cdbcbd18bbb454283ee392d1c6368b401f22e2bea127",
+      "codeTargets": [],
+      "testTargets": [
+        "src/service-worker.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-SHARED-SIDEBAR-GITREQUESTLIFECYCLE-TEST-TS-6975b120",
+      "level": "TEST",
+      "nodeHash": "25ef9f5924625280ddb63044874c6dbadea834360e5809b17908962a262c33ba",
+      "codeTargets": [],
+      "testTargets": [
+        "src/shared/sidebar/gitRequestLifecycle.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-SHARED-SIDEBAR-SIDEBARREQUESTLIFECYCLE-TEST-TS-1c627569",
+      "level": "TEST",
+      "nodeHash": "fad180e99a88700462cd1ff9f1146fc4ec259c0dfefccf7ae7049ab04cb34789",
+      "codeTargets": [],
+      "testTargets": [
+        "src/shared/sidebar/sidebarRequestLifecycle.test.ts"
       ],
       "status": "LOCKED"
     },
@@ -50,25 +3089,230 @@
     }
   ],
   "allowedPaths": [
-    "Cargo.lock",
-    "package.json",
-    "src-tauri/Cargo.toml",
-    "src-tauri/tauri.conf.json",
-    "src-tauri/tests/win_manifest_boot.rs"
+    "packages/remote/package.json",
+    "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts",
+    "packages/remote/src/shared/cloud/apiClient.refresh.test.ts",
+    "packages/remote/src/shared/cloud/apiClient.test.ts",
+    "packages/remote/src/shared/cloud/auth.test.ts",
+    "packages/remote/src/shared/cloud/cloudHostBridge.test.ts",
+    "packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts",
+    "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
+    "packages/remote/src/shared/cloud/controllerIdentity.test.ts",
+    "packages/remote/src/shared/cloud/controllerInstanceId.test.ts",
+    "packages/remote/src/shared/cloud/deviceTrust.test.ts",
+    "packages/remote/src/shared/cloud/e2ee.test.ts",
+    "packages/remote/src/shared/cloud/faultInjection.test.ts",
+    "packages/remote/src/shared/cloud/keyBinding.test.ts",
+    "packages/remote/src/shared/cloud/priorityFrameQueue.test.ts",
+    "packages/remote/src/shared/cloud/remoteAllowlist.test.ts",
+    "packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts",
+    "packages/remote/src/shared/cloud/signaling/conformance.test.ts",
+    "packages/remote/src/shared/cloud/signaling/drift.test.ts",
+    "packages/remote/src/shared/cloud/weakNetLab.test.ts",
+    "packages/remote/src/shared/cloud/workspaceScope.test.ts",
+    "packages/remote/src/shared/hosts/foreignPaneStatus.test.ts",
+    "packages/remote/src/shared/hosts/liveBackpressure.test.ts",
+    "packages/remote/src/shared/hosts/livePumpPolicy.test.ts",
+    "packages/remote/src/shared/hosts/outboundLifecycle.test.ts",
+    "packages/remote/src/shared/hosts/outboundReconnect.test.ts",
+    "packages/remote/src/shared/reconnectPolicy.test.ts",
+    "packages/remote/src/shared/teammate/hitlAuditRemote.test.ts",
+    "packages/remote/src/shared/terminal/clipboardImage.test.ts",
+    "packages/remote/src/shared/terminal/dropPaste.test.ts",
+    "packages/remote/src/shared/terminal/fontDataService.test.ts",
+    "packages/remote/src/shared/terminal/fontStack.test.ts",
+    "packages/remote/src/shared/terminal/hostRemountPolicy.test.ts",
+    "packages/remote/src/shared/terminal/imeAnchor.test.ts",
+    "packages/remote/src/shared/terminal/imeDelta.test.ts",
+    "packages/remote/src/shared/terminal/initialPaneFit.test.ts",
+    "packages/remote/src/shared/terminal/linkAffordance.test.ts",
+    "packages/remote/src/shared/terminal/linkOpenHost.test.ts",
+    "packages/remote/src/shared/terminal/linkSpans.test.ts",
+    "packages/remote/src/shared/terminal/manager.attach.test.ts",
+    "packages/remote/src/shared/terminal/manager.test.ts",
+    "packages/remote/src/shared/terminal/mobileCopy.test.ts",
+    "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts",
+    "packages/remote/src/shared/terminal/mouseForwardPolicy.test.ts",
+    "packages/remote/src/shared/terminal/paneDockResolve.test.ts",
+    "packages/remote/src/shared/terminal/paneGeometry.test.ts",
+    "packages/remote/src/shared/terminal/paneInputGate.test.ts",
+    "packages/remote/src/shared/terminal/paneOrigin.test.ts",
+    "packages/remote/src/shared/terminal/paneShell.test.ts",
+    "packages/remote/src/shared/terminal/ptyBridge.test.ts",
+    "packages/remote/src/shared/terminal/sentenceBuffer.test.ts",
+    "packages/remote/src/shared/terminal/shellInputSnapshot.test.ts",
+    "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts",
+    "packages/remote/src/shared/terminal/terminalFocus.test.ts",
+    "packages/remote/src/shared/terminal/terminalMemoryPolicy.test.ts",
+    "packages/remote/src/shared/terminal/themeBridge.test.ts",
+    "packages/remote/src/shared/terminal/tuiGate.test.ts",
+    "packages/remote/src/shared/transport/capabilityContract.test.ts",
+    "packages/remote/src/shared/transport/cloudChunk.test.ts",
+    "packages/remote/src/shared/transport/cloudMux.test.ts",
+    "packages/remote/src/shared/transport/cloudWebrtcAdapter.test.ts",
+    "packages/remote/src/shared/transport/conformance.test.ts",
+    "packages/remote/src/shared/transport/lanWsAdapter.test.ts",
+    "packages/remote/src/shared/transport/matrixParity.test.ts",
+    "packages/remote/src/shared/transport/paneRpcScheduler.test.ts",
+    "packages/remote/src/shared/transport/protocolAdmission.test.ts",
+    "packages/remote/src/shared/transport/protocolAdmissionProduct.test.ts",
+    "packages/remote/src/shared/transport/random.test.ts",
+    "packages/remote/src/shared/transport/remoteInvokeAdmit.test.ts",
+    "packages/remote/src/shared/transport/remotePerfTrace.test.ts",
+    "packages/remote/src/shared/transport/rpcClient.test.ts",
+    "packages/remote/src/shared/transport/unknownText.test.ts",
+    "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+    "packages/remote/src/shared/transport/wsRemotePending.test.ts",
+    "packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts",
+    "packages/remote/src/shared/transport/wsRemoteUrl.test.ts",
+    "packages/remote/tsconfig.json",
+    "scripts/app-csp.test.mjs",
+    "src-tauri/tests/win_manifest_boot.rs",
+    "src/app.css",
+    "src/app.html",
+    "src/hooks.server.ts",
+    "src/lib/actions/hostSessionDrag.test.ts",
+    "src/lib/actions/overlayScroll.test.ts",
+    "src/lib/actions/paneDockDrag.test.ts",
+    "src/lib/components/GitGraph.test.ts",
+    "src/lib/components/SettingsPanel.test.ts",
+    "src/lib/components/SidebarLazyMount.test.ts",
+    "src/lib/components/SplitContainer.test.ts",
+    "src/lib/components/customTheme.test.ts",
+    "src/lib/components/explorerPaste.test.ts",
+    "src/lib/components/inputBufferTracker.test.ts",
+    "src/lib/components/interactionContracts.test.ts",
+    "src/lib/hosts/compositionHarness.test.ts",
+    "src/lib/hosts/foreignHistorySession.test.ts",
+    "src/lib/hosts/hostConnectFlow.test.ts",
+    "src/lib/hosts/hostControlSurface.test.ts",
+    "src/lib/hosts/hostForest.test.ts",
+    "src/lib/hosts/hostSessionIsolation.test.ts",
+    "src/lib/hosts/remotePaneBindings.test.ts",
+    "src/lib/lsp/lspClient.test.ts",
+    "src/lib/monaco/ridgeTheme.test.ts",
+    "src/lib/pure-logic-coverage.test.ts",
+    "src/lib/remote/cloud/cloudControllerBoot.integration.test.ts",
+    "src/lib/remote/cloud/cloudControllerBoot.test.ts",
+    "src/lib/remote/cloud/cloudHostStore.test.ts",
+    "src/lib/remote/cloud/cloudHostTopologyLink.test.ts",
+    "src/lib/remote/cloud/sharedWorkspaceProjection.behavior.test.ts",
+    "src/lib/remote/cloud/sharedWorkspaceProjection.test.ts",
+    "src/lib/remote/remoteBootMode.test.ts",
+    "src/lib/remote/totpIdentitySync.test.ts",
+    "src/lib/stores/clipboardResolve.test.ts",
+    "src/lib/stores/contextMenu.test.ts",
+    "src/lib/stores/dockRegionPicker.test.ts",
+    "src/lib/stores/editorWindow.test.ts",
+    "src/lib/stores/explorerLayout.test.ts",
+    "src/lib/stores/fileEditor.test.ts",
+    "src/lib/stores/fileExplorer.test.ts",
+    "src/lib/stores/fileWatcherSync.test.ts",
+    "src/lib/stores/fsEvents.test.ts",
+    "src/lib/stores/gitGuardStats.test.ts",
+    "src/lib/stores/hostReconnect.test.ts",
+    "src/lib/stores/hostReconnectProduct.test.ts",
+    "src/lib/stores/hosts.connect.test.ts",
+    "src/lib/stores/hosts.refresh.test.ts",
+    "src/lib/stores/hostsMutation.test.ts",
+    "src/lib/stores/hostsOutbound.test.ts",
+    "src/lib/stores/hostsOutboundProduct.test.ts",
+    "src/lib/stores/hostsPublic.test.ts",
+    "src/lib/stores/imagePreviewVersion.test.ts",
+    "src/lib/stores/paneGitStatus.test.ts",
+    "src/lib/stores/paneTree.coverage.test.ts",
+    "src/lib/stores/paneTree.test.ts",
+    "src/lib/stores/processGuardPolicy.test.ts",
+    "src/lib/stores/project.test.ts",
+    "src/lib/stores/remoteStatus.test.ts",
+    "src/lib/stores/scmCache.test.ts",
+    "src/lib/stores/searchState.test.ts",
+    "src/lib/stores/settings.test.ts",
+    "src/lib/stores/termSettings.test.ts",
+    "src/lib/stores/terminalHistory.test.ts",
+    "src/lib/stores/themes.slug.test.ts",
+    "src/lib/stores/themes.test.ts",
+    "src/lib/teammate/agentCommuneModel.test.ts",
+    "src/lib/teammate/agentPaneHighlightSync.test.ts",
+    "src/lib/teammate/hitlAuditFilter.test.ts",
+    "src/lib/teammate/hitlAuditPanel.test.ts",
+    "src/lib/teammate/layoutEvent.test.ts",
+    "src/lib/teammate/memberTasks.test.ts",
+    "src/lib/teammate/orchControlPlane.test.ts",
+    "src/lib/teammate/teammateGroups.test.ts",
+    "src/lib/teammate/teammateModel.test.ts",
+    "src/lib/teammate/workspaceMemory.test.ts",
+    "src/lib/terminal/desktopPaneResize.test.ts",
+    "src/lib/terminal/hostPorts.test.ts",
+    "src/lib/terminal/paneSizeSync.test.ts",
+    "src/lib/terminal/ptyRuntimeSnapshot.test.ts",
+    "src/lib/terminal/ptyWriteQueue.test.ts",
+    "src/lib/terminal/refreshEntrypoints.test.ts",
+    "src/lib/terminal/rendererBackend.test.ts",
+    "src/lib/transport/tauri.test.ts",
+    "src/lib/transport/tauriShim/bridge.test.ts",
+    "src/lib/transport/tauriShim/compatibility.test.ts",
+    "src/lib/transport/tauriShim/opener.test.ts",
+    "src/lib/transport/tauriShim/window.test.ts",
+    "src/lib/transport/ws.test.ts",
+    "src/lib/utils/anchorRect.test.ts",
+    "src/lib/utils/ansi.test.ts",
+    "src/lib/utils/linkResolver.test.ts",
+    "src/lib/utils/linkTrust.test.ts",
+    "src/lib/utils/markdown.test.ts",
+    "src/lib/utils/pLimit.test.ts",
+    "src/lib/utils/path.test.ts",
+    "src/lib/utils/pathToken.test.ts",
+    "src/lib/utils/repeatedError.test.ts",
+    "src/lib/utils/resizeThrottle.test.ts",
+    "src/lib/utils/withTimeout.test.ts",
+    "src/remote/BottomTabBar.test.ts",
+    "src/remote/MainApp.test.ts",
+    "src/remote/lib/RemoteGitPanel.test.ts",
+    "src/remote/lib/RemoteSidebar.test.ts",
+    "src/remote/lib/SidebarTeamRoster.test.ts",
+    "src/remote/lib/TerminalCanvas.test.ts",
+    "src/remote/lib/WorkspaceTree.test.ts",
+    "src/remote/lib/clipboard.test.ts",
+    "src/remote/lib/cloudRemote.test.ts",
+    "src/remote/lib/generationGuard.test.ts",
+    "src/remote/lib/keyboardOffset.test.ts",
+    "src/remote/lib/listenerCleanup.test.ts",
+    "src/remote/lib/paneFeedScheduler.test.ts",
+    "src/remote/lib/paneLifecycle.test.ts",
+    "src/remote/lib/paneSwitchBuffer.test.ts",
+    "src/remote/lib/remoteGitActions.test.ts",
+    "src/remote/lib/remoteQueries.test.ts",
+    "src/remote/lib/scrollbackWorker.test.ts",
+    "src/remote/lib/sidebarProvider.test.ts",
+    "src/remote/lib/teamRosterScope.test.ts",
+    "src/remote/lib/theme.test.ts",
+    "src/remote/lib/treeState.test.ts",
+    "src/remote/main.test.ts",
+    "src/remote/pwaInstallScope.test.ts",
+    "src/remote/queryPolicy.test.ts",
+    "src/remote/runtimeMessagingScope.test.ts",
+    "src/service-worker.test.ts",
+    "src/service-worker.ts",
+    "src/shared/sidebar/gitRequestLifecycle.test.ts",
+    "src/shared/sidebar/sidebarRequestLifecycle.test.ts"
   ],
   "testCommand": [
     "npm",
     "test"
   ],
   "baseline": {
+    ".claude/scheduled_tasks.lock": "1e8979033d2cee72b98c3919e999af5236da0e931e24315973f04f21e925a463",
     ".claude/settings.json": "5d4c3b994b0295dc1f891a1dfa96e95dc100f5e05537f4e5475a2fefccba7a7c",
     ".claude/workflows/rdg-remote-cont.js": "be668d1d6eaa75663d0d4144dba1f7662b3a74a84896a85cde65e761dcc9e4fa",
     ".claude/workflows/rdg-remote-unify.js": "6396f44f3a9e3c2aa01612e6693e0be43e80082be29d321499f2f628cea68dfe",
     ".env": "d4ef68e4a9a1d5b79094d3ff7bfa01acca753b5a05623401272a53ff2e47c457",
+    ".env.local": "e83d29a0395623eec9df9451bb4f2dd5eb6bd720123261cc6ac40ce0377f214b",
     ".gitattributes": "7856b9924aef4bf6efb1caf15176a2a25683d42fc3d6bf3c4c79a84fcc222fd4",
     ".github/workflows/deploy-pages.yml": "68c4c2a838c45ec4927f108a20e46db9cd79543049566530307d5fe556c1d8cb",
     ".github/workflows/publish-remote.yml": "68aa2f6f3a2d57c14d39e657e10c06717e0e2de6f6b4d1b845e706108ca395f0",
     ".github/workflows/release.yml": "810ff615280cb4e0aa5c6da4dcaba2cef019075c22f144b1e8fb451d846b804a",
+    ".github/workflows/rtp1-kernel-e2e.yml": "2f4a7a2047a8fc0450a3fd2067435c8dfc8d953a345acaa2f7e92d9f81afbc69",
     ".gitignore": "0706764fa9814162c371bd8fc1733bf9757f2d57c08c191fadd1f41dc7ccb817",
     ".mcp.json": "9094342c1182357eebb9e98dedaa94efc96fffdecd2b31e92b84ecba09c9ea01",
     ".npmrc": "03d8c2004616576994a079ab45a218ffe758d646b7197907edcbbf671c2248b1",
@@ -76,10 +3320,11 @@
     ".opencode/opencode.json": "d22a4e077bede638ca180486cb20df967cdae0b7f8f39552cbcd41a2bfc0402a",
     ".opencode/package-lock.json": "9b1265e028aeef5440f1de140afa559272c820440e587622c96a0f3b49e623bd",
     ".opencode/package.json": "2d036aa9b15c658f0411aefbd13b9a6cfa0cc1ff5d508dd49fef5a46eda852e3",
+    ".stcignore": "1ce116a3dc2a1e3ccf103b976958406ee5283bdca34fb7810d5c34ba8b7b1c14",
     ".vscode/extensions.json": "926925a0d7f8b5e0e9e84667ac901095f7ffdb83afb54de65662d6e4cfb78ad1",
     ".vscode/settings.json": "54224dc29195ac0e0ae6a3ce38d5cd7aeb390357259a37c860a28a3f1087ef71",
     "AGENTS.md": "e1d607be3c46e5473c2a7aa6d43c8a8faf25f992aa7a1ce170ab8bfac04d88e9",
-    "Cargo.lock": "fc494b7dc683c28261778b0e9d5e944347116e6d5818fb75a8281043edc5e7aa",
+    "Cargo.lock": "fa5ea7c3e2af1f1dc1ac3f6ba4f4d7f254d02c759a93b2073e610b28d4551c23",
     "Cargo.toml": "9cccba0a8b7bcab6a2fafaf06c63f219a6f9c2a81604d0a408ae593074d8ddcc",
     "changes/BASELINE-001.md": "89235164085793f6ea8df5140ec032522d2523a7264a4b3c0b3a210745552c06",
     "changes/CHG-001.md": "14b0dcb1c2b91b2b8dfab95e6da4dbdd71ae29d21e6a85e193a4d9e3cb31154c",
@@ -110,10 +3355,37 @@
     "changes/CHG-026.md": "47021292d4b9e19d35e95344666619fca2ffeb63d74ce31e70f87f16a2cd2cc5",
     "changes/CHG-027.md": "516ba960e7d4d82836d93ec2043e64a831ce9fb930f4a3bc99db1cbf9d270a4f",
     "changes/CHG-028.md": "8b6a869ee9ec82a74ccb30b203295561f00620eb7e513bab7bad3f6bffa2e8e6",
+    "changes/CHG-029.md": "51f0d6f3b17b1bfadec25855dda4b5c1b9894561914ddace5956f6cca6d910ed",
+    "changes/CHG-030.md": "c86999b09ef99c3c7a7be7a11aed81193c818781df9f8d2feccf143c27f0ebe3",
+    "changes/CHG-031.md": "9d9d70738195957d27ddba1f1f1f5a169da292f66ad1b9ef6abcd3dedc43e1a9",
+    "docs/architecture/00-overview.md": "d88523e187eac1aef5a85939639722f38b3cbac41a55327cfe1c28a9bb87d682",
+    "docs/architecture/10-kernel.md": "80f773ffecdaafac0b64dfb99a3ddb8c05f801d39c9d2533397b4e905bb5e4f9",
+    "docs/architecture/20-rtp1-wire.md": "f32223c6d43ccf048f06176cb288baf46156477a72e24f1a4389a88756ca1a1c",
+    "docs/architecture/30-remote-lifecycle.md": "6d1961eb57944c982afcc088e4f6d42303edfeead3328eb61856b622f545eba3",
+    "docs/architecture/40-cli.md": "13cd100b03f63a42bf13f27012066ee146b6b6f8d7c16ea177a0237c9b9afff2",
+    "docs/architecture/50-desktop-tauri.md": "1063e4f2b3a60d5819ac11f8ec79129954bbbf96633870e4e5b2e492f59946e6",
+    "docs/architecture/60-data-flow.md": "9c3982464e761a9d008e36d6cac112106734ffd8ab2c8c428ca37415adf702ee",
+    "docs/architecture/70-runtime-epoch.md": "86e05805dcae1d9fd28e21e21647d4caaa653ec28593df571611cefa66f2e96b",
+    "docs/architecture/80-security.md": "8f85a207047fce40f47f613aae7588e5b14b00e4a5aa6c5ec7543d695d17f850",
+    "docs/architecture/90-performance.md": "4375894d12cc98bfc97d138ff892d5b5cb24eedd9c3c9c478cbd23e354d937de",
+    "docs/architecture/images/00-overview.svg": "9a590a7d028e1f10a4955e8ce7da627a0e8b39c8d5a3673f793a765f4e3403aa",
+    "docs/architecture/images/20-rtp1-frame.svg": "c4eaf6499258c75f393cd0abd6282c594f1eeab8e333e494e6f69f33a6834820",
+    "docs/architecture/images/30-attachment-lifecycle.svg": "64fe173892e5a0eced6d308a696269e0805ba95e16573cbd7de3752f39747595",
+    "docs/architecture/images/30-terminal-lifecycle.svg": "661eab2b0c630f46f44de8cab5e4f8327071d88c60273e8ad89c7cca5eec297d",
+    "docs/architecture/notes/IMPLEMENTATION-ACCEPTANCE.md": "2f37f9b4846693e549620f103776c192b26bc6b5dd5ceda7722403539108fd70",
+    "docs/architecture/notes/PHASE-A-FINAL-ACCEPTANCE.md": "1840c8caeb20ea23507cb4490d6e63e3abebe2372fc619e25a7f8dae5960a3c9",
+    "docs/architecture/notes/PHASE-A6-LIVE-VALIDATION.md": "6e93ef78fa40b36062b14b2af64655a4a4abddb7e8118d52f72594ca0b59fd2e",
+    "docs/architecture/README.md": "f71438aae9e25dcd0930b2e11c1704738b84a62434e23ad24cdec123a67667d3",
+    "docs/architecture/RIDGE-RUNTIME-FOUNDATION-FINAL.md": "d01f71069337118b66f327a333d5e046a7e837fae5d5bc674da094ef5c6fe9c9",
+    "docs/architecture/specs/L2-PERF-001.md": "5ab998154a67036b4125ca77a997c390915065002893a137b0dceaed12d4888d",
+    "docs/architecture/specs/L2-PROTO-001.md": "6f6a0423e41429ea73ac75aacdd60758c6d3740d1fddcc1797d92aba63715fa5",
+    "docs/architecture/specs/L2-REMOTE-001.md": "f8dcb7e09b27444aae13adf5f3f4bd7a8f9895a51504f5c4895d25a40a07e3df",
+    "docs/architecture/specs/L2-TERM-001.md": "d07348ffbf397a236d3f18be2c257c3f554921f067ac9a4ff84172343b319d30",
     "docs/iterations/2026-07-24-notebook-notes-archive/README.md": "dcd51ae6ee46d9aca4163ce6801ac80f6eee96766a296d795ea58fb67c3b8a5e",
     "docs/iterations/README.md": "d0cae0b0d6966497a3e7d2d06c28a79aefc8e9b3d05b2446a00556512c466626",
-    "docs/README_CN.md": "34453c55206c88e9620cb10431b2b23cf2dc3c882289a04a2098a6703a0e9fea",
-    "package.json": "d7e327dc7bcf9ca401bccf37099389fa2b1783eb75e5e982b7ab615eeea3c28f",
+    "docs/README_CN.md": "8932531370504d2820f207f6cd3f5d92852066c9a5ae696c4a065ae256fa889a",
+    "IMPLEMENTATION-ACCEPTANCE.md": "2f37f9b4846693e549620f103776c192b26bc6b5dd5ceda7722403539108fd70",
+    "package.json": "65ba08dd5ed950d0fb843ff3774b4e94a2dbc10f50c1b942f7899df1f05cb90f",
     "packages/remote/package.json": "3c9d355179aefeaf12877e4e44bc5b41ba8812fc23825024f01da3b082f6b1db",
     "packages/remote/src/index.ts": "ae66d492761ce353faab343fe9215ab48235088dee9cd5ce1621392948999c30",
     "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts": "7abb718851c25821146276ac974fbad2aa64e011e142e2623fe2c6a164324b08",
@@ -222,10 +3494,11 @@
     "packages/remote/src/shared/terminal/manager.attach.test.ts": "a307d6eeb268d00250f3ec62be13ae26dc8c624552296b990bd4c943a080e88c",
     "packages/remote/src/shared/terminal/manager.test.ts": "f135a44372d12127d973fa3188a4d92183702a74854f212cf613c5dff2d551ce",
     "packages/remote/src/shared/terminal/manager.ts": "04e021620265f5d6485d3262aa433dda23fcbd547fdf350da964bd21964025c3",
+    "packages/remote/src/shared/terminal/managerPerfBaseline.test.ts": "e9c283f517409b377258748ee2285a8a16baf3694119d9aa132582d8c9f93283",
     "packages/remote/src/shared/terminal/mobileCopy.test.ts": "b23fbcedeb74e00efcbc21b521a45328cec76af32ef4d7db351cd37c86d1a143",
     "packages/remote/src/shared/terminal/mobileCopy.ts": "53d24a89916d6599a2433aa031370c0c020d8a8abafdc7fe0e4ef0bdf1a79f88",
-    "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts": "b578ca4a89c3aaaddb896f16dbdb0e3c047b4e8d8ca89a89c6eea4ab3fdbfe29",
-    "packages/remote/src/shared/terminal/mobileTouchScroll.ts": "8453a5cc80e2779be07ad0df21a4683f5541921e7f2e4820d0b227811a9f343b",
+    "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts": "c5a128a7dd0ecfcc318fdbce42dfca735c372bff1e76e48a838535453ebb3918",
+    "packages/remote/src/shared/terminal/mobileTouchScroll.ts": "ee0697066587bd6da373707daf2f7513e81ada2167908e7ae2054a170f5e97d7",
     "packages/remote/src/shared/terminal/mouseForwardPolicy.test.ts": "ec8af9fd6542fae792064b2f81ce8ac52ccbc43cce9a9a7f6c70752926b040a2",
     "packages/remote/src/shared/terminal/mouseForwardPolicy.ts": "dc5209398f31473a287ca1e423770f913b57f03783745b188c4c81532812381b",
     "packages/remote/src/shared/terminal/paneDockResolve.test.ts": "af05572c62bde05e28e564a2aef76372d80eb56e8908453d27c22ced38ec5a87",
@@ -291,10 +3564,10 @@
     "packages/remote/src/shared/transport/types.ts": "1ade66c0baca4453e5b04db89d48fad2ad613d161852ee0e9451cfb29aea21e1",
     "packages/remote/src/shared/transport/unknownText.test.ts": "9ef6eb2dd61145aa2af8bec1cefe49fec7cba8eccc1b12d1835d635ff245a0a3",
     "packages/remote/src/shared/transport/unknownText.ts": "7364fc7fc183a44ea2b26b665da64c1e6ded6d18e2ec80012ebb6a294fd2b66d",
-    "packages/remote/src/shared/transport/wsRemote.behavior.test.ts": "0fb4677e0000cc501507c98f395a09f726d150237686c4834b96866f9eb024e8",
-    "packages/remote/src/shared/transport/wsRemote.ts": "d4591f9504a61b7d3b36a468a04657d9194e3f50677c06352936944314985f4e",
+    "packages/remote/src/shared/transport/wsRemote.behavior.test.ts": "4a792abc3207d0738828e33d30073dc5c497b424cfc95fd1ae400350aa856d32",
+    "packages/remote/src/shared/transport/wsRemote.ts": "1eb53cf90a0336ecf1d41ac05c9623b8a281c46cad7b1e46f8fbab7a7636d4fb",
     "packages/remote/src/shared/transport/wsRemotePending.test.ts": "894c0e2732ea59df167edd0799aa2bcc4d38bcb6c8734925daa8e25c8287c93d",
-    "packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts": "e8e2289ab3afd6d70a38cc2ec2ed000e2741f35e2af968f823c061a5644d5472",
+    "packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts": "950294335971ffe1c0e1d3ce176ac40d409a973fc98b3c3f335fa6a5faee8063",
     "packages/remote/src/shared/transport/wsRemoteUrl.test.ts": "0e7c6cf6b54ece8a3ba4e58e8e8017e68d55256ea7ced09e4b2442e72507ec40",
     "packages/remote/tsconfig.json": "4d72265d4e993a19956e24f1f492580978648aca90769c258edd40061ba5c6ca",
     "packages/rg-split/.github/workflows/pages.yml": "7b19d4a4b9b430a150bba9d767735ba396be989382bfd11884511cd582a30bde",
@@ -326,47 +3599,49 @@
     "packages/ridge-cli/.gitignore": "44c92e3a70ad3307b7056871c2bdb096d8bfa9373f5bf06a79bb6324a20ff2fb",
     "packages/ridge-cli/build.rs": "b4d5c992c03a7a4baaa742a5d9d53491fa4a1a21a3a12fa76e87996b990e8e98",
     "packages/ridge-cli/Cargo.lock": "36603060e32c7f5dddb315fdfc44c0a3abb3499624393fdf8f85eecf86ca8562",
-    "packages/ridge-cli/Cargo.toml": "0ecf19e76933ea31515ca8b9f386711d5ea5699a5d77ac228cefe9a8941d4007",
-    "packages/ridge-cli/README.md": "6fd0a6eb037189287f4cfaeae7a3cef3e18252245b9356b433ea1af6e1ec907f",
-    "packages/ridge-cli/ridge-cli.service": "190f2878f991a3ac3c6b847cc01821796cfec913be0dda59314d7724ce4b813e",
+    "packages/ridge-cli/Cargo.toml": "d39c64c76e3a8f52e732fddb6f4ec52dcf4855de04c365d03c3c3048037ef4ca",
+    "packages/ridge-cli/README.md": "44fef8694f46ad27c921a376b8d1183dfb310460cafa043f35c5c0f54e549b4f",
+    "packages/ridge-cli/ridge-cli.service": "6cbb8d9360b6271aebe6974d5e6b49cab001a2a5abf9817e58d3ed0a3f27b74f",
     "packages/ridge-cli/ridge-tmux.env.example": "15591d7e9ed8dc36f10990b24891f6338c804e8f31882f419ec59ddee339c0b1",
-    "packages/ridge-cli/ridge-tmux.service": "913d409fd4c11017b119a6c98f67c32a0a5880982fc1df737a14c92e79aadfba",
+    "packages/ridge-cli/ridge-tmux.service": "2bec0fa6b856cbbd120e4105403ebdaf89c155b0c7660937b17227bf2a073664",
     "packages/ridge-cli/src/batching.rs": "b7f7f2da6aca72f71720e5a0f3f9b65b4bb38305f72ff5c987c796aedc469413",
-    "packages/ridge-cli/src/config.rs": "ecd1b260e7d4c41ea3f3f41e24eeb68c4354a2dc143e3a30ade058dbd21accb9",
+    "packages/ridge-cli/src/config.rs": "b2b9b759532129f88ea141da014c3a7631d7ecdb387b54b638fe6c28de1a76d4",
     "packages/ridge-cli/src/core_host.rs": "0980a1117e983fcb28a9f4dc3751a4816f3845703d8281153b0120d13e524ace",
-    "packages/ridge-cli/src/daemon_ctl.rs": "665141d25c7f8805850dca83f9fe2b344b09747f6a7bbd130e63a1fbd91999f2",
-    "packages/ridge-cli/src/daemon.rs": "f42a07a6577ad709b750067373c357d1ad6e5b20d67037660681b55b93deecef",
+    "packages/ridge-cli/src/daemon_ctl.rs": "cfbafd0f038bcede1ad4627f18fc05d857faf8ebb2f99bbe80b774826fba452f",
+    "packages/ridge-cli/src/daemon.rs": "8f5f253d411ecc7e988172e0fa58d0639742b18d1eb5859ab3d5e34cc490ca5d",
     "packages/ridge-cli/src/e2ee.rs": "f35f1ad3a3a35dcf6d386c977d0e48b789719224c9998f439f6c5d3f2f99f680",
     "packages/ridge-cli/src/envelope.rs": "af555e7d661a7156c50b40e3d5071d90a11001c395f761cfab78a7940c5a15a6",
     "packages/ridge-cli/src/fs_reuse.rs": "8d752b689545d0f681647c312eda9e0a9698613dfe407536940061ffdd582c4b",
-    "packages/ridge-cli/src/host.rs": "05f37155f5fa3b2e1992536d8914c336781429f43d66109725b77f01cf67a949",
+    "packages/ridge-cli/src/host.rs": "89f27743d871020ad5b6df4dd2db2555c027e9bda676a55264eac3d2d99f3855",
     "packages/ridge-cli/src/ice.rs": "c47f5b006863a248524d13ed00c5904a73c9af4582bc55867a89bf08574f496c",
-    "packages/ridge-cli/src/kernel_ctl.rs": "e31ef67b26bce0b85b479bfed8c50b93e4413e218183905d0577d940d2de9350",
-    "packages/ridge-cli/src/kernel_host_impl.rs": "b21b3f0af956e6bd444989d8e24c5156b14e7d34167e88932d1e6a62783ef783",
+    "packages/ridge-cli/src/kernel_ctl.rs": "f7854b76ba3962a5e30581f4f991c425f39b81958a794e0b7bbed10a8cf632a1",
+    "packages/ridge-cli/src/kernel_host_impl.rs": "72bf5cbb3d1241287b143f6adf1ca8d27ebed3bc6b2df4b592eecfbbaa84a746",
     "packages/ridge-cli/src/key_binding.rs": "8ab85a23b514c35471a085430e7cee5101ad6a484fb87ff07d4f3b6ffebfe7f6",
-    "packages/ridge-cli/src/login_flow.rs": "84a2d819fbda02289934651f3d8ac1079ed0011274e2cc653baa6001b40b6792",
-    "packages/ridge-cli/src/main.rs": "a2ed4faab9f2c81556a1a65517dc949f755f6e70ab96625493c7cc8cb2ed6843",
+    "packages/ridge-cli/src/login_flow.rs": "14d79bc790eff64fa2fa1a070c6234c4712f3072e551aa7ef40b27110174f18c",
+    "packages/ridge-cli/src/main.rs": "5019f1b92dcaae037c06ddf7f60024fe3b11135c591f657765096bf101bb0163",
     "packages/ridge-cli/src/mux.rs": "f6ee87eee360a29268edcbf8177582d791cc0081b64a405366a9ee74759d05d5",
     "packages/ridge-cli/src/protocol.rs": "87387d444a46d390c1758ded26724621a141be208b5b1db77efa2971998945fa",
-    "packages/ridge-cli/src/pty.rs": "e70bd20573ae7d40579919cbf2fd845b296d17779a6119b9d3710b2afe0d2376",
-    "packages/ridge-cli/src/rpc.rs": "bb9a760a3b05dcff2d2409972855f6badc602f0b343b97322587a3533631eb15",
+    "packages/ridge-cli/src/pty.rs": "99722be442a12d5d51b42d43635cd25a8cac07819d39c41cd0df014716cc5bd7",
+    "packages/ridge-cli/src/rpc.rs": "b750e020406c9b3df7ccca016b6156d2a95a96e743dfd1a048cf2aa2c1cd53f1",
     "packages/ridge-cli/src/rtc.rs": "d617e68b30315962c4d7931c951b061beb808b08bdab0fd1d159708e48b18c2b",
-    "packages/ridge-cli/src/session.rs": "1325049704374701838925652e2813fab1ba405fc84fe591e033e11a8e28c578",
+    "packages/ridge-cli/src/rtp1_kernel_client.rs": "2effc5e86a480ccf83b555a9d380579230ac6e80dbc28d6b17142d5cf1b2786f",
+    "packages/ridge-cli/src/session.rs": "46cfeb5bc6b5fd42381f2024eb1c2e22ad276e00d3d19c81479065c356697778",
     "packages/ridge-cli/src/signaling.rs": "10938242d9eee4a735cef710dd6b911feee94bee6f07cd11756ecda424dc6e1e",
-    "packages/ridge-cli/src/totp.rs": "6b7675a47b16c4478dcacc17377df12861b9455557bee387049b0d08633a984c",
-    "packages/ridge-cli/src/tui/dashboard.rs": "c03f0f53c44e5de08d18b28ee033a948ac7648f55850b6f5bcae91075b833730",
+    "packages/ridge-cli/src/totp.rs": "26e33866784d9a5fc3c822a3187778781f6a7e2dbd227ef990c4df4b7bab8bc7",
+    "packages/ridge-cli/src/tui/dashboard.rs": "2c617250c0056931daec6f7eacec8f296ae5418be329eacec422b3fd909e8f89",
     "packages/ridge-cli/src/tui/keymap.rs": "f18b4e273069ec5bf113b807d194a40cb2a0bb87157e4e632a06e1c968f2a9f3",
-    "packages/ridge-cli/src/tui/lan_host_impl.rs": "8e394a08f08325b8ec119a3ed67066e9ae0a30452a2a6cb7656b4abb5cc8ecaf",
-    "packages/ridge-cli/src/tui/lan_host.rs": "407ebad361efbbcd95cdb51fc8a04c1943650702e29b478fa67ab7f7c996c650",
+    "packages/ridge-cli/src/tui/lan_host_impl.rs": "2eef90e2a8783e8b7bb0f0f10e369a3216ade748abc51063ce5bf7d8d73e7e9e",
+    "packages/ridge-cli/src/tui/lan_host.rs": "1f3eb60faceaae0d26bef6f77050f1f73d727df7cb42ca449b30df23911f029f",
     "packages/ridge-cli/src/tui/lan_proto.rs": "bb079cfbf0be9c58ceda1d50772b26c973bf8cb2cf13d1493b500687979662bc",
-    "packages/ridge-cli/src/tui/lan_session.rs": "59bf85296986763fbbebfeb47e719e2ba874cc032afa887520206940f15d769f",
-    "packages/ridge-cli/src/tui/mod.rs": "ea3d10ff254699e293bacc9fe188f8781b602c6f7d2ba71c55b0b630915b1bbf",
+    "packages/ridge-cli/src/tui/lan_session.rs": "0da3dbfb4ba023bdffba0d76895c8525d1d064d89006c008390427269eaab5cf",
+    "packages/ridge-cli/src/tui/mod.rs": "33903c613d4b7b51fcffb3bcd61203b0e82a7116f5341538320707e367bded4c",
     "packages/ridge-cli/src/tui/pager.rs": "9f1f6d2ef859561665891440412da4c82341c0171ba0d9f4ad6f1405e98e4440",
     "packages/ridge-cli/src/tui/qr_display.rs": "a335b2686daf81fbc939d0c0a727b189ba5e6214897ae06cc628a569874eb1c3",
-    "packages/ridge-cli/src/tui/scrollback.rs": "d84388024d8b0b5aee06f94209eb9c87410092d1cd0041fd49c037abfc112ca0",
-    "packages/ridge-cli/src/tui/session.rs": "e7462103fd8cd6f7f138c7dc85409db7eb969cc40e5c855079739c97ab688118",
+    "packages/ridge-cli/src/tui/scrollback.rs": "9c35f91ea429a811f28af0732bf63e49f7431a61b4d2d0c0d1a66596036b4192",
+    "packages/ridge-cli/src/tui/session.rs": "01e1a0332ec46bb721a1a705714d6dabcfedb8ad7cae56bd8750ba9ea0b7f7b7",
     "packages/ridge-cli/src/tui/workspace.rs": "e6581d2c2f8c88226e5a475874df72b579a245ee5e6798d20a5bde7f6cd46f22",
-    "packages/ridge-cli/tests/kernel_lifecycle_e2e.rs": "e3419e6834c584d04184fe1912d1a6780a2af932698304e7cad464560c42c8f5",
+    "packages/ridge-cli/tests/kernel_lifecycle_e2e.rs": "1472c9005b2c0391211f8dd7f9dcc2f11f01e619038b25a58b03d5bf8cba1f99",
+    "packages/ridge-cli/tests/rtp1_kernel_e2e.rs": "877df95b6edc3ed27d0ce43037f9ed98d5e242ca8da24704d58a343d5d4c12e6",
     "packages/ridge-core/bash.exe.stackdump": "fa22e17346c9c40873e91e45ce5d8997c07ece194ca6bd99e8b97e256275ad46",
     "packages/ridge-core/Cargo.toml": "c7eef4fac7c832c0bb83a82eb121eb3c8014df7fcdbb854095194df91c7a18e9",
     "packages/ridge-core/src/capability_matrix_guard.rs": "cdb1a7bc239071e9163beaffd828601c01b7b79257f3e6e7e981b58ec48dbf2e",
@@ -416,16 +3691,31 @@
     "packages/ridge-core/src/workspace/mod.rs": "9ab96b938a7b07ed183f78d15b989482e4f2c1d9de98921a960e7878fbb5d06a",
     "packages/ridge-core/src/workspace/mode.rs": "11ce709693f54f4ffd9bc077f421272b7d9f8f98881b4c2287a0908917c78bf3",
     "packages/ridge-core/src/workspace/pane_tree.rs": "598e17f6c797ee65794b9dabace3b6f16536f3d21d6a5974d5f920007022c0b4",
-    "packages/ridge-kernel/Cargo.toml": "9e04c62730d6054bcb495f9257bb5ff6128f4c54ebda7bf07f8ecc223b7939b3",
+    "packages/ridge-kernel/Cargo.toml": "050730e6c7646307718389bcad6406c94770af3537fdf0b3542d3a80925ca81b",
     "packages/ridge-kernel/src/agent_profiles.rs": "b10ea428e8e489fa2e34160f2d5c20399f000f875760f75b07653fdf9bf58b28",
     "packages/ridge-kernel/src/client.rs": "f4250426988b2b846c19648d12425949bbcfbad06d05482115a10e073cd6947d",
-    "packages/ridge-kernel/src/domain.rs": "c21a655298478b0e58e7b7186491cb67fa17870d7c190da06c481ed4b22e4906",
-    "packages/ridge-kernel/src/kernel_mcp.rs": "b222425d6b09cdbbbbace86cac6c50ad0553bea0594bc4b0a9a28f5d8070d62e",
-    "packages/ridge-kernel/src/lib.rs": "708a49712506ca45812ba671237d503735fa52bb50098a0729ca140efe73044f",
+    "packages/ridge-kernel/src/domain.rs": "8050d11ec13679973896d041a3c27674127a93708b40ec8afc494119785be4ca",
+    "packages/ridge-kernel/src/kernel_backed_handle.rs": "5de55fbb1811032d19a65cbccf0ed7d42122879a237521dcf6502174edd97ca7",
+    "packages/ridge-kernel/src/kernel_mcp.rs": "4a2f6a5595db55872cd7cb1c23ecce067edbcb41f9d3050e566b2f90df9a58aa",
+    "packages/ridge-kernel/src/lib.rs": "2c431e1c2980785b3cb4bdf623d36be17397bcf1935a8534bfb240c41833a175",
     "packages/ridge-kernel/src/main.rs": "0d9e64630dbfeb5324720f2b3a0076087e2b669d98dbdf5c6638725227dd095b",
-    "packages/ridge-kernel/src/pty.rs": "d3950c894b947fa17a8234c367403d637ce830fb76d9450f6ce46af76b1e3b8c",
+    "packages/ridge-kernel/src/pty.rs": "8358c2d9c345f8805efdb72b0a8ba905d12ac664262326c5a7b2c96b27429ee2",
     "packages/ridge-kernel/src/registry.rs": "7f911b81caa8f4c110b47ee75e7153a143df5750b76f11c2b1be47cc5ca53ce9",
-    "packages/ridge-kernel/src/server.rs": "07301d6ce16b5f1046827c8d721f33924185a0c5f39f17ee4094b3f941c6531a",
+    "packages/ridge-kernel/src/rtp1_session.rs": "eb2ccf5a0ded98adb7cadb97b230636ce831ef84b2d4e2ef844b39860a466358",
+    "packages/ridge-kernel/src/rtp1_ws.rs": "512faefb0a72b1d8c6e163396a07942101cb2d285c7d764436733a82a85dd84b",
+    "packages/ridge-kernel/src/rtp1.rs": "b759668cbe21237ad03a2c405ee55ad38339dd2b2fe237f3bb2c215c0c749625",
+    "packages/ridge-kernel/src/server.rs": "34642c42bd8e1c2b0c30b5335681e6e2e356f497d50e75bea6e9d0cd1e629b82",
+    "packages/ridge-kernel/tests/conformance_contract.rs": "e19f0e6b29f420d77d8f241ffcc9b3a167ee442e6a7e6cdaa74b903460bff9eb",
+    "packages/ridge-kernel/tests/conformance_kernel_backed.rs": "7ca71190ec9bce8d1826482b96494f26e82061d9ae2da5e0a2ef44ed2e52f075",
+    "packages/ridge-kernel/tests/conformance_replay.rs": "2d3c6ed1a3adb5dac1dc54e849ba8b2f22e7add59a513d9f20c80ec8b658001d",
+    "packages/ridge-kernel/tests/conformance_rtp1.rs": "7344d57e432a590e24e29258f42d089a9fc0dbce57387c2fcb23fc383f50d6bb",
+    "packages/ridge-kernel/tests/conformance_runtime.rs": "11d31d535e4d947dc27d983b8b171855c804fca54fc35e4b83f21fbbbed0142f",
+    "packages/ridge-kernel/tests/foundation_conformance.rs": "b5a3088805fb6a0e2dffcbaa3bd2708183af4755320ffc79615098afca9e0e7e",
+    "packages/ridge-kernel/tests/kernel_backend_waterfall.rs": "4bdaca416060ca1ee859ee1747ff4abd498c37f7c9da253a1fc23c95587348cc",
+    "packages/ridge-kernel/tests/performance_baseline.rs": "7b78605e029d993eac744f6019acca57429fe56035107c1e0e915546168ed761",
+    "packages/ridge-kernel/tests/remote_backpressure.rs": "c30fe77d9d3d74c01841119d9ffc3cdf33ec67a1466faf935ef052d234830d9a",
+    "packages/ridge-kernel/tests/stability_fault.rs": "6d10b3997b74ecf5e5ca8f40b28dca8f69c9fc9e88db3629178c1beb70c74b46",
+    "packages/ridge-kernel/tests/terminal_live.rs": "b39968b4eba324083b073b3bb58adecbcebd28c9a6b7bdedcc7943024fd8d05b",
     "packages/ridge-mcp/Cargo.toml": "b73549275b0b487a78a1f95a0009158a04772f88bcf392836f8b7038b7b82135",
     "packages/ridge-mcp/src/a2a.rs": "425cc305f165b0c5b9ebcf88553fe7863a78bf85dc0fdcb146edd691e5bce057",
     "packages/ridge-mcp/src/addressing.rs": "cf2099d8fdcfa3585bc686be44b8787d36e98b6b41c46eae6810111ab8b850a7",
@@ -450,12 +3740,12 @@
     "packages/ridge-remote/src/mdns.rs": "2a365e1873c0557deb0402d2a7575141841a5e681c881aacdc2ffad6f5f644ed",
     "packages/ridge-remote/src/net.rs": "9e0a00bc4971a0613c1420ed139e0e56702c25c2c8bf2f1039546b09da0e9da7",
     "packages/ridge-remote/src/pane.rs": "8d853285e2a558c85fb6779c88baea807f4deb34883e214b759adff18737980a",
-    "packages/ridge-remote/src/serve.rs": "646b2b627f4393100e4428b5c6642da190886f63ee21e9c1bbbc6eaba9d0294c",
+    "packages/ridge-remote/src/serve.rs": "03079add6dbb9e6f88126e5557ca2c8ec74a7c3ad499d8941f8c003efd2e6a20",
     "packages/ridge-remote/src/server_app.rs": "f44ba5d11292f91eca0625fdc1a28afeb9de57bbf3ae0263d8dfa6fd3df92c73",
     "packages/ridge-remote/src/server.rs": "43c90aa3e75c1f638c78ea6c3e336d8579fdbc52990450050b56445648464518",
     "packages/ridge-remote/src/tls.rs": "16f86973e8962ace89dfb359d2edf152154120ed417bd2755d7c6442cacc12d4",
-    "packages/ridge-remote/src/ua.rs": "eac7a543b4f2523333b50f37580dff348cee56f23c2c4f699a8c905657e49a5b",
-    "packages/ridge-remote/tests/ua_fork_serve.rs": "2c00d546df64b7728c4a80949e6141ba14488eee2c7cc1effd0afb4daeda2e6d",
+    "packages/ridge-remote/src/ua.rs": "2f5556aea6f2082eca389c40f806a3d30f7b472d075322854c2b8cff2aaa24b6",
+    "packages/ridge-remote/tests/ua_fork_serve.rs": "0cb77183fdffa24177e888e4a19cf7578e4e06e6d49994004c5573a63241f077",
     "packages/ridge-term/.gitignore": "d7b4a1a278c52ee7a5bb20a5997bc79bb5e68d47e5bc8c26b7b7f41b09fd30b6",
     "packages/ridge-term/build.mjs": "ea43e2da9e2cdcd70501cad38ff3293fdca94f4ef770485848d2fa08c3ee0f96",
     "packages/ridge-term/build.sh": "e1f2beba00ccc999548e155b447919051887dd59ce5bbf53415d0ee2bd68dfaa",
@@ -501,12 +3791,23 @@
     "packages/ridge-tmux/src/http.rs": "a3792ce75dea7c8182b1f4d49d6090b26491269a1ec900b20abdfdde047d9fe7",
     "packages/ridge-tmux/src/lib.rs": "f452d1b38e8ee52cea8b169ddba9ebdcf7a8d85743291f0502e7c45d2ea4dc1f",
     "packages/ridge-tmux/src/mcp.rs": "add5c214582f229db701036a299d52cf1f1128a3c3dbd9ccfebcb342a145ef15",
+    "PHASE-A-FINAL-ACCEPTANCE.md": "1840c8caeb20ea23507cb4490d6e63e3abebe2372fc619e25a7f8dae5960a3c9",
+    "PHASE-A6-LIVE-VALIDATION.md": "6e93ef78fa40b36062b14b2af64655a4a4abddb7e8118d52f72594ca0b59fd2e",
     "playwright.config.ts": "e31bbecef48cd393151ebc8f04fae32f5c3494aea62e7c968d0406cbc3308b1e",
-    "pnpm-lock.yaml": "59e4cc0540f43b1feb19acf65a99f770c2cbbb8e3094b180f4a36120595507b8",
+    "pnpm-lock.yaml": "8ed8fb2d39a5271745ce2afc555365857c413cd43e8ea9b6f45de0b2fc40d848",
     "pnpm-workspace.yaml": "7cd11e9d9455835e231260b9656f0fc437e6201a6b1520fe7a0917c9217571a1",
-    "README.md": "24952f4ce68e731b5e2cd436a56ec8ebc9037681bc129061193840da1953206f",
+    "README.md": "78baca6e68f8f1e52bdf516a5c0241223acc6f92baf8feaf1f2e57be9949d9ef",
+    "REMOTE-BACKPRESSURE-DIAGNOSIS.md": "757deaeaa5c7d669059dd9a977b38cae60150b6ec42d3c564c3167cb60a720b0",
+    "REMOTE-FOUR-ISSUES.md": "ac7ecd04409ebdff0a1eb1233fa6c8b48aca511dad22335e7a81ed3eb0591f4d",
+    "REMOTE-INTEGRATION-EVIDENCE.md": "c57cd4625c1086743fbbb641aba6c728992901d0bfe2bff9bf567026e470dffa",
+    "REMOTE-RELEASE-READINESS.md": "bc4081ac0f033df0fbc40e786b12f7b2a75b7d60faec50ad768ac147266b373d",
+    "REMOTE-RESUME.md": "2ee58819ab59df39e7ad38228cf4bb8fca3baecd4f91224bd086d8631ea811aa",
+    "RIDGE-CURRENT-STATE.md": "6d113b1de638b1141c722541532dae1e6bc798c890e2a1f2274568be93d3ed9e",
+    "RIDGE-DESKTOP-REMOTE-CLOSEOUT.md": "908e29ad5a287235702ba6d109d3bdfca185d710e8ac5db03b76d3914b2b6c3e",
+    "RIDGE-RUNTIME-FOUNDATION-FINAL.md": "c7258806d396944178fe92e4c09006a84b3a2a48fe6e73c2e84e371060f9ede4",
     "ridge.theme": "092e095921335cd31a677c644dc681e6168fad4198bc67c1a4a7eaafefce4d0d",
     "scripts/app-csp.test.mjs": "e95d7961512fd7d1ae09c6fbd5cfea3a8a065c423cc4772d5f840985fa1b9c4a",
+    "scripts/browser-smoke-candidate.mjs": "ed962a65a6b8fbc1232ab4858e719e1de6927cf9d041a1ec99751227d998b318",
     "scripts/build-remote-desktop.mjs": "ef2d84022c894db6c8e4525d21ca553c04b917d4e964d9b63c587b128bf691f0",
     "scripts/build-ridge-mcp-sidecar.mjs": "7c91eb3f973186e51586fe6dbb760e43ff9b1257c8df243bfda67cbc2d0fa447",
     "scripts/build-ridge-mcp-sidecar.test.mjs": "9bbdbcd926fe7c7d7c0cd5ba446b1e1ba3af350e3bde7b6e0d98e9aef3b0f3e5",
@@ -574,6 +3875,7 @@
     "scripts/perf-compare.ps1": "d4959cf5ebd761f34ee880963295c44a2bb6b1e841a7ef04897749e99fab1b76",
     "scripts/perf-frame-compare.ps1": "5126cbbd5a8b91f8183ed7723139f5deeff5fd53d1e99a0cc15fdc89ff368682",
     "scripts/post-build-rename.mjs": "627ec1f8eee73dc2f162c583049bfb733350ef90d69514f43cc2b510cb3b1cdf",
+    "scripts/print-candidate-provenance.mjs": "0fbdb0822b92bfcaeb61bea4f96a86685ea9b149c1dd1c8d0a97bf5f523ab073",
     "scripts/prune-stale-fonts.mjs": "6f43eedf7fb7715d57b3359001e6f046cab8ea86dd0f10f305365edb9a286b8b",
     "scripts/publish-remote-cloud.mjs": "d9f08472eb922ef93663172a0aab611f521dd0bec8176fb32de68f3f88f16e8d",
     "scripts/quality-helpers.test.mjs": "5fae151d134100fc21936875d1014306352e6dd3563eafa988ebf5b609c8fad6",
@@ -589,7 +3891,10 @@
     "scripts/remote-state-e2e.mjs": "9c5cb61ae29e598b0d8fac981de471524c38058bea0c1f15a1536a20d59620d5",
     "scripts/remote-verify-fix.mjs": "26719a53e9fb872118c862bcd0125d33c793de8349d8a0e7d39aaf2d325a0ef8",
     "scripts/ridge-tmux-log-setup.ps1": "6dea5f56ebba87f458772b94bd9b97ef91f68b4e8f2c88a5187daa1eca8a7939",
+    "scripts/rtp1-kernel-e2e.mjs": "65802bca8db2b44efbb4380a8f363b8e553e95b51915a47ae51c7b687745e3cc",
     "scripts/run-weaknet-lab.mjs": "c7ed9e1cbdb8dfc00017e4d2e8b808a9468042195cb37bf817d5f06bb1c831c5",
+    "scripts/served-bundles-check.mjs": "d29139428bfcd51ec61009c94cc38c5d24b060ae6f9ea8483f7b6ed0f1627970",
+    "scripts/smoke-candidate.mjs": "9aefd87d7a994d7390da73e374c6bcf88b85a768a0676be6d3f980846a56cc58",
     "scripts/start-all.sh": "d88870995e132bb17a7689df0b39988c77c9581f315ba3c6684626f70cd51f34",
     "scripts/start-remote-dev.mjs": "d20fa8db0b57e452a34f76b93b3b58e25e08dc98bb67d47ec322649dc08a32a1",
     "scripts/start-vite-dev.mjs": "c4ed2a03ebfea69d09280b514e0a7fbd02b391e094cad1abcda89abfb58409ed",
@@ -638,8 +3943,12 @@
     "site/styles/main.css": "494d9e1eef95bea98e5aa62ecfeb43d7ee28145af9f300942ddd9aab552a6b0e",
     "sonar-project.properties": "f1b7de7c6d1d81b0d0607d999a0c5854700cb9979d56cd3cd9ea023658d08da9",
     "specs/l2-agent-commune-exact-binding.md": "0677d43b4695f2a6d7c124984bc4b07a89f137ade2692ed8518ed6007fd7d5b1",
+    "specs/L2-PERF-001.md": "5fb650bd23b218fd95670912a948fd94ecefd3ac25828e78fdee85a0b7530858",
+    "specs/L2-PROTO-001.md": "3e2b2863642323bfb24e9aa237c10a2e36c0f4b48d84ba97c127738693e90f7c",
+    "specs/L2-REMOTE-001.md": "45bd63843b5f78d4365495abb586c57ffc39255bd04e10624f356ed1f5b4d600",
     "specs/l2-remote-mobile-semantic-v2.md": "bf682b64a55828c7f19be8f9edbbade8b128b12b53a0704ac773dd24295ff60b",
     "specs/l2-remote-rendering-parity.md": "8bdbff19144b6dcc67a5297c9c2d605684038e3f55e3475d02713216141a9530",
+    "specs/L2-TERM-001.md": "51ed3380b85dcdccaa014878026f7fc86eb90b8d250132d056c98f58a103cc06",
     "specs/l2-tui-mobile-pty-lifecycle.md": "e7510ac0599b74da9f2ddbb17cf24d094ecd04500714bdbe65d5d03b2b443673",
     "specs/l4-ridge-mcp-sidecar-windows-x64.md": "25b8b3a31fb5f1180b1095b977b9127b0c8780aff640d80481c29eab1b946e24",
     "specs/migration/L2-OBS-CARGO-TOML-2e9d962a.md": "04280efd61dad7135c2ea9a8dfff7e9cc932e99f27b55436d3f66dc179275a5d",
@@ -1693,7 +5002,7 @@
     "specs/migration/TEST-OBS-TESTS-E2E-SMOKE-SPEC-TS-7a9d389d.md": "b89e26b773c2b2b3e666f897fa2c2f4415984aafa511c51a53c800f2526cf798",
     "specs/project.md": "5d8b6d5b58a40f7e951807eaddfad5c444e9fa18fa5fa4dca0b1e23c930f66dc",
     "src/app.css": "734e1899b09bdc6349d4c3d2047b8d4952aeceb8227f0cef8c632eec8d182f8e",
-    "src/app.html": "ee22a2d2237a50519df6b9e1350521ba946a4f186c3e4558983657d516d27f4d",
+    "src/app.html": "0b12d99bbc529b98f6cfd89172c669110cac05da2abf3cdf038e0b2c0735ba57",
     "src/bash.exe.stackdump": "0072f4271d656357109d55b4f1d3a4642f0459ed1c34b75c30c2d4ca395e07cc",
     "src/hooks.server.ts": "c6a07cbdf29ef3466bafcf6f8e76bdf4fa3cd9b0ed5d8f0f34db1c476e8afaa1",
     "src/lib/actions/autoGrow.ts": "20928f8b44609c46fa6b31c8b664bb7df2a69936928dfea4600f1c25b8a0458d",
@@ -1736,7 +5045,7 @@
     "src/lib/components/PaneShellSwitcher.svelte": "e54a96003933d6dcdc29702d168c64d4d8642ff82667db40f5139aabbcee04ae",
     "src/lib/components/QuickOpen.svelte": "77c2a3f8f2c5a31e545e8b72879dae61c5840bc5239b8a3505ac143c1fd291d7",
     "src/lib/components/RidgeDialog.svelte": "1c39ad434c3dd40a4cff8ddf95897b5c8efe3a6440c96194654431611c091d42",
-    "src/lib/components/RidgePane.svelte": "50330015a80ba274c0c35349694ba3dd9e15d6771654263086f7a0e038c9aad8",
+    "src/lib/components/RidgePane.svelte": "edd8d76401ca4818d96540e268c21fb133b1a54622e1f4d6b7d5c49412873a36",
     "src/lib/components/SaveWorkspaceDialog.svelte": "f264d16025dd2abe5bd6683177262ec7629ba04303f414b96860ef614e2521fa",
     "src/lib/components/SearchModal.svelte": "ea4b5eaec92cfd2d8460a9243f0dfe256663759e7993b742ce4bd33e23a0db21",
     "src/lib/components/SearchSidebar.svelte": "0aa0a5b38437d31d2ec57a7778f6cbd7be85f399bc10846aa167608c54781033",
@@ -1771,7 +5080,7 @@
     "src/lib/i18n/messages/explorer.ts": "8ac72fe497ec83194cb6aafc3070277c586e0db1229e928134ab59b65731e287",
     "src/lib/i18n/messages/index.ts": "34d32385049ea2242cd863cda9cfd9e572946e31310b30946597d18a62e314d7",
     "src/lib/i18n/messages/main.ts": "417755b01a0474cd37ccf41b0acbe3ae035b1a50b098d8c2d0c71eeb5cb4c224",
-    "src/lib/i18n/messages/mobile.ts": "9596f6f2b92f181644d0d7700ae551d2b87914fc0849a8a6259ae710e5e03970",
+    "src/lib/i18n/messages/mobile.ts": "884044c7b001cba6811fbd1b03e7b6b5694f65dbc7bb82d632a8e611567896bd",
     "src/lib/i18n/messages/scm.ts": "366bcc658d1e25f0399383a4127f56eaea7aa8098d57ce07a3c34182883e5929",
     "src/lib/i18n/messages/ui.ts": "2d106ca623d95be3193a85d236ef43aa60c07b2c6b159ddc74f7f63cd83fa3ba",
     "src/lib/i18n/messages/workspace.ts": "29f83399417a0f33cd40e98591a0f9d017a33c642dc70e6d43ea1b696f8467da",
@@ -1860,7 +5169,7 @@
     "src/lib/stores/termSettings.ts": "5a93a0a60aa5db475689df677e53ab026c80c0c30b493664a4d0f2bc048e519e",
     "src/lib/stores/themes.slug.test.ts": "286344e7b1824f3e929b3d799d9e5e2d4969744f741ff6e74a7db869672d6ed5",
     "src/lib/stores/themes.test.ts": "2ef223c8501520cadd5092188eb61c4f3f12b62198d3677c8879e11df4c8a27c",
-    "src/lib/stores/themes.ts": "36215f5222d4cd359c546e864cf7781fe93358caf17ea2e30cbf069c691f938d",
+    "src/lib/stores/themes.ts": "771a3a51be8d6ed499762961874c2ca8c7a77ff88ecb3538d595fd87412c5ae2",
     "src/lib/stores/toast.ts": "b668056ef5e1a150dfbb60c35e7c8af5510eb65dc40384fa33ef82404bfe02b7",
     "src/lib/teammate/AgentCenterPanel.svelte": "08842335c629a45cf324ec25924f2de6bfa0d0ee152a399c69888986ca24f200",
     "src/lib/teammate/agentCommuneModel.test.ts": "cf97d47d4180b5c13f0ecd683a57b047b87113366921bb4b2d0cc423950862dc",
@@ -1897,8 +5206,8 @@
     "src/lib/terminal/paneSizeSync.ts": "24e1574e84efe11d5bd2a2577d500be6d188610cb2da1cc47a54e6acaa0e39fa",
     "src/lib/terminal/ptyRuntimeSnapshot.test.ts": "81f95d69493227d6c14a4a2c211f6deeb24bd6cffe9c9e29d79ead8bbf06cd24",
     "src/lib/terminal/ptyRuntimeSnapshot.ts": "f1997ce8ce0b2e4f440b8a83f907aac6b9caf4cbd31d02b1cc77e05cb570eb42",
-    "src/lib/terminal/ptyWriteQueue.test.ts": "e37e53aa706c30990425b520935dd9a0af4eba5889b978a430612fb328d376bf",
-    "src/lib/terminal/ptyWriteQueue.ts": "76b2021beccc6c52fdf7bdff1f4e913ee032b02c5d9e6f0c7b76deff68eb82f0",
+    "src/lib/terminal/ptyWriteQueue.test.ts": "bd941a22453fb116071519810c653445058a884d46d4ab83fa03331097770159",
+    "src/lib/terminal/ptyWriteQueue.ts": "c49f54c33aa1df8e9c0614de9149e4bd66d02e102614777ef8b4a6c153ee0d8f",
     "src/lib/terminal/refreshEntrypoints.test.ts": "378eae86e77d3faf3bd38228a4c6eb5b9666051cd46cf918ea78119631065d5c",
     "src/lib/terminal/rendererBackend.test.ts": "3eb2834c9bac04053a7552c8a86bc4e7b1e12d9cb0a798998e9709f728d6cac4",
     "src/lib/transport/context.ts": "0c85ff19e66d6a291ea78d7bbd6f2f14524155fe657a3bde257e1aed61d9e3c6",
@@ -1953,8 +5262,10 @@
     "src/remote/index.html": "0126ebd002d6334f80ef94ccfcf887f507e7671841500d0e246816dbb326468c",
     "src/remote/lib/clipboard.test.ts": "193c8770ebe7a5ffe239fbb126ebedb63de7c3c1797b88e3081811852dd90538",
     "src/remote/lib/clipboard.ts": "eb5114470fff3122d310d8b7af8fdb1130c4e380943208684748ec9efd062463",
-    "src/remote/lib/cloudRemote.test.ts": "4296ea041cdce7a738f8d11d28faa4840dad199738d457602dc7ac60eb1f911a",
+    "src/remote/lib/cloudRemote.test.ts": "d8665e4bd76bc1de59bf1d3064a14fc37e621e9ee0ac8f8147c59f7ab58c0910",
     "src/remote/lib/cloudRemote.ts": "f8a69ba14b09ad18f8d4c406d9571df4784ea8bc198001d872d62e0766f64fb4",
+    "src/remote/lib/deviceClass.test.ts": "6be768fe89285e68a4425c717030d0801f00fe10a2bf7d79fe1c2900f4f83daf",
+    "src/remote/lib/deviceClass.ts": "3f21a5183358460c477dad2b83a31c4bca4bc67ba68bf418036389efdd664142",
     "src/remote/lib/FileViewer.svelte": "c911c3de4d0b2fd40e0e6f0fee919085b12b5a09886151cbd4fad10a36b19e78",
     "src/remote/lib/generationGuard.test.ts": "b0f08e505186944fa4397c6d1429152960186f609c791a25fb1565613ade8c2c",
     "src/remote/lib/generationGuard.ts": "74da229bfe89693ad129f4ea611b8749ed172277ce57a7608687a722919588b1",
@@ -1988,8 +5299,8 @@
     "src/remote/lib/SidebarTeamRoster.test.ts": "fe7764e5389d6a80cb6cba363e86ff708e82d844afba0987c5dfca0e7edb9f6b",
     "src/remote/lib/teamRosterScope.test.ts": "3e92991e10a3c39f2733132f86834555f0ce41cc0e6f324fd1bd75a389479582",
     "src/remote/lib/teamRosterScope.ts": "fee9ffda95569021e91a9a04338e0ad43b767d9eafe8eaca41ca262c8efd691b",
-    "src/remote/lib/TerminalCanvas.svelte": "b57ec04a15cb3e0ee99af719ac3162a31738bd0a7c815076d212804e3661d3b4",
-    "src/remote/lib/TerminalCanvas.test.ts": "bc4e5e041984b32e37a36d739bc2c718f238409c46b151df48ab34dac8b4466c",
+    "src/remote/lib/TerminalCanvas.svelte": "931b4a350f146adfdde73eb9e1b1970097151784b754b43e2880b3e996d57e6d",
+    "src/remote/lib/TerminalCanvas.test.ts": "98138f033602f861e402524d72a4633aedf9ebcf77a89bd5b31af399b7894be8",
     "src/remote/lib/theme.test.ts": "e263c8426d8e7644a7df7b3f34ed15f192efc37a062b9ca4f25de28976ab375b",
     "src/remote/lib/theme.ts": "98173950d59022d6daa450fa3a723a1678332f792f252c421a0499d193d53d03",
     "src/remote/lib/treeState.svelte.ts": "8acb30c9d974e69c88f7b4028c192f03477bbfb89148603293b2f411f8e76198",
@@ -1999,7 +5310,7 @@
     "src/remote/lib/WorkspaceTree.test.ts": "6aa202064211325e9c65e13b52128cdcfd0b7837f07b0fa6ec8a74da1b18dd4b",
     "src/remote/main.test.ts": "d289a24d6edd97681a6c6a19c99e4c624a5a25c86bb3a6011000883bd0bdc029",
     "src/remote/main.ts": "f16545e499e65c52b5b44939a1a295895eb88b8931f76209b04e6dcef95b0888",
-    "src/remote/MainApp.svelte": "2235597c9fe9e60932f54ee8b9433985fed75da383264d152d0567e847fbf5f4",
+    "src/remote/MainApp.svelte": "124c2954c106cd7024933d81f11179efc19b970a79ae2cf5091703e78f5962e3",
     "src/remote/MainApp.test.ts": "42e6e24e580bdc24b9972a385ded7cc4cb1812d382b64fe2e9cda6546fa78539",
     "src/remote/public/apple-touch-icon.png": "fcf04070e1ae0e72599b39cf3c118a81c57d01dbb98b894b6ba988bda26cc01e",
     "src/remote/public/favicon.png": "7b0d863efa5a660174ce0242b3b356c70cd952eceda2589da50819aa82cc02ac",
@@ -2015,7 +5326,7 @@
     "src/routes/+layout.ts": "06d9b38b113e4c1bf159b3942d7d65302ce05bb01713b438df91b73ad9be9ee6",
     "src/routes/+page.svelte": "323daaed74d62daea62ef17b079112e41119dfe29fd56483a2fd8ec477121c6e",
     "src/service-worker.test.ts": "5b610c9326b08a18f6884e72a6599b7b3b469262f85b9127a9e0574a183f6c93",
-    "src/service-worker.ts": "e3dc68f56f9ca04c24ea8bb9b25ab8538df0521a76749fac492199aa25da9073",
+    "src/service-worker.ts": "6bd694a37575254c9ca2ccfe626de3605a093e1a06c1b27cc93ed8b750bd53df",
     "src/shared/sidebar/gitRequestLifecycle.test.ts": "42899d8d467fdfad8fbd27bdfb85b24555b592a8c6c155ce36c67920e1ab0d29",
     "src/shared/sidebar/SidebarFileTree.svelte": "18acff5601ade0270fc8f0039ba42e5b482b2d9343cbb6333d8949b44b7b6728",
     "src/shared/sidebar/SidebarGitPanel.svelte": "6f5056ccf81b6ef487510b8e388dfee19681ed8c24b20453c8b8a967a55e8085",
@@ -2052,40 +5363,44 @@
     "src-tauri/src/commands/cloud_pane.rs": "dc8ffcc26a64ae9412a3d9c9737b0d1ba3ca5dcc946d7ed0496d6ad30cbc81c4",
     "src-tauri/src/commands/fs_watch.rs": "83f6430dce891a70ead9c9827084d339ac6e256d5dca6f4b01f8e10b43c55868",
     "src-tauri/src/commands/git.rs": "597aab091b8121ce35451c837daed4270da299901fdb5f5afa28dbd12d0fcc85",
-    "src-tauri/src/commands/mod.rs": "9ef7b6020bd16bf0d7fcb856dbc04bafdc6318ae2064d8168e00c85b74351c41",
+    "src-tauri/src/commands/kernel_install.rs": "d72f77c0fef8c35e1c197c55b9163b1f302d5ec946f920ffb839c785810236f8",
+    "src-tauri/src/commands/mod.rs": "5c9ec5bf3bf58ab667207bbd85a24b108b8948aa5d16340823cd59c4478d99a3",
     "src-tauri/src/commands/pane.rs": "52dfaea4f3563fd5dde5753fb8f00126ec0ef5bb1539eeb562f2e243410aef33",
     "src-tauri/src/commands/process.rs": "b532da141627102076ef2e45a79a4619e3cde2885ecf8dec50844a6d3740168a",
-    "src-tauri/src/commands/project.rs": "a715a77f979e8e12148d533e4cedd7e69245e5652963bd120354871a013d55f3",
+    "src-tauri/src/commands/project.rs": "40f0fdf4d26176717a4b486f5dd2d36239eebe90d8010c25a9f6da1bbb10cc62",
     "src-tauri/src/commands/remote.rs": "ec8aefada7fa95ab8a5c044ca49f2d1a3112a16fa4d2949973e10d607cbb3c94",
     "src-tauri/src/commands/ridge_file.rs": "319a2d84419903b59d8fba19ebae4098c7b8ce1916e46b9ba964024f3b1158fb",
     "src-tauri/src/commands/settings.rs": "2c1bb36c76f44c6b56d44ee8158bf23bf6c8793f072165c2430635fa509dee07",
     "src-tauri/src/commands/teammate.rs": "d2371c9ae3b84623f126965f88eb1484f94e390beac5e11f375c8092c9d06558",
     "src-tauri/src/commands/terminal_font.rs": "39997ef7a5cf589e08f864d6dd193c8cb8323483950cb9b194340b5e0aee234a",
-    "src-tauri/src/commands/terminal.rs": "ee4781da4e77cf470375b66001644e63c08e21df15b85f0dae0d615d700ad0da",
+    "src-tauri/src/commands/terminal_input_seq.rs": "b375e2a28045dc2925b163d686ed83456d880b1f9614286438c38068d592add8",
+    "src-tauri/src/commands/terminal_shim.rs": "252266d8f117ab04ba83caf9e9acfbf5876f5b638b1e1aa6074d2614a6d113fe",
+    "src-tauri/src/commands/terminal.rs": "a1fd98e370b05f616d509e0d4d3316447167e5d12fab6978a17b52a38475af1c",
     "src-tauri/src/commands/theme.rs": "ea97039111921101dec6a3684861e925f80477aa6424e8c59999ba4d87665f16",
     "src-tauri/src/commands/watch.rs": "e7669055e585c832502a98afe916e5616191779cae0051cef34fb19d5bcf27c2",
     "src-tauri/src/commands/workspace.rs": "76dafb16a07d0727cb7735896274bcf91a07467a8b81dc5bf0d6f2ac60cbf220",
     "src-tauri/src/db/mod.rs": "a453f7b9b7a871f0937877e855ef4e8f90f9ab067b4107bd9dfeca65169e915c",
     "src-tauri/src/db/projects.rs": "0ba9ee7f277fd82e8dcccd120a714805d71ae782887693ec7399d62800cc0f08",
     "src-tauri/src/deep_root.rs": "254f3ffba14c0bbabdf3134f2e56677531ca66e44d18cf51f509db47eed548f4",
-    "src-tauri/src/engine/kernel_pty.rs": "5ab415ea72d105d34c18c15e2bd8bc03ebfe19fe4c864acb0d944cb55bf77ff9",
+    "src-tauri/src/engine/kernel_pty.rs": "bceee79ea6bbcbbcda75ac8329715ef83233888cf005e38c4ff7bfdff03dbe7b",
     "src-tauri/src/engine/mod.rs": "60a7f8316fe90cddb795c99879a5bedcf2a753456565789b0062f8bbfe70f61b",
     "src-tauri/src/engine/pane_tree.rs": "889cf2931ca0a2fcc596dc7cd32471ff0633f1fccb797ceabceb3512876b4780",
     "src-tauri/src/engine/parser.rs": "f073aa834d9b883859b63d0428c366b15bbeadde78ef8db32c0c02577be9e1cb",
-    "src-tauri/src/engine/pty.rs": "b0d89c93fd3051192d4f52029c02d263411813d96b79848a5e4b9f6489eef962",
+    "src-tauri/src/engine/pty.rs": "5b8bad8a0b9b7f6d069a6b349decab418056e98ce83a8f9bcf4028b049aa2e12",
     "src-tauri/src/fs/mod.rs": "bdb863c60970a2c3510035067e4b37113f32986a8257333cf54e40ae80fd8cf9",
     "src-tauri/src/fs/search.rs": "1f127f6b93e3d1d7cba073b0df624cd06d71cb976f764f598e29923509563820",
     "src-tauri/src/fs/tree.rs": "290a178559a0e972e2feb4a525ac56f367904b38b5a7512eca8f1f037751fa10",
     "src-tauri/src/hosts/desktop_surface.rs": "323813f06d34db0adc424a0086db47a59dd98b47161165d321313c96a81fd568",
     "src-tauri/src/hosts/foreign_history.rs": "0114c41f56a00e11c0c7bba53605cdafcea8a34585efa2d9a3a5fa223281e262",
     "src-tauri/src/hosts/history_commands.rs": "ab58257d167cff5ef69933013b2a6e52bd924f2612a45d604df274b4acdf9c47",
-    "src-tauri/src/hosts/lan_transport.rs": "0b5aef8a5f6b7d6916cc3e993a634fcbfe9faa62e4c56ad92810bd69e3a4c2d9",
+    "src-tauri/src/hosts/lan_transport.rs": "cff3ff6f894da3fee4b6f811ff8e854ae8ed71597262345eee38b7df6a13c27b",
     "src-tauri/src/hosts/live_backpressure.rs": "9b4527f83530311035257eb50a3145a9516d41c2e96417f6f4781114f596781f",
-    "src-tauri/src/hosts/mod.rs": "e32e3a9d98ce59df14442c651a4103427d283d7cd227ad338440f725e5e6e63c",
-    "src-tauri/src/hosts/outbound.rs": "7efe4008d3a8a029a0531fc470fc0a80ee65b056a90c9d02a839b54f4422a18d",
-    "src-tauri/src/hosts/reconnect_supervisor.rs": "bfa1f452aadc84edec2feca8f4ed684b36685011d0dfbb8f3737b9806b04025e",
-    "src-tauri/src/kernel_lifecycle.rs": "4ffbda539fe2b89fc0fd36428fec592deffc3b4668989847cfae9265e29b2e85",
-    "src-tauri/src/lib.rs": "fc9af68d445ce7ac53696d0c2a1f1060de12265aedc60d1be75b584e315f91a3",
+    "src-tauri/src/hosts/mod.rs": "c2f95072dc402b3e5e3481f88cf4af273105d42b2431f17ab09b36b8306ed844",
+    "src-tauri/src/hosts/outbound.rs": "496a1b88fb9cc24b8cfebdaed106138ceefc3176d43441d7f7417a2ac75e0605",
+    "src-tauri/src/hosts/reconnect_supervisor.rs": "ced8f5692bb39f05da60975a54f5e10071cd2a1a1fbe5f414148ef4b227065ae",
+    "src-tauri/src/hosts/rtp1_outbound.rs": "ea8731ba8ad750f159ba9e78b255d41cabe762ff15e0699c8d021f5721c07da2",
+    "src-tauri/src/kernel_lifecycle.rs": "cec2727dd89679d791cdd554d1e00715995674506af7c4ea0949db7a860af601",
+    "src-tauri/src/lib.rs": "883fe56612b29078c4f10036fa039cf7e86d6360d57e70b7b115b1a0e50199c8",
     "src-tauri/src/lsp/mod.rs": "1949326544ce1c62b9787d1cd14b2b0d22a1d4e1e7ae78673263eeea585a2432",
     "src-tauri/src/main.rs": "061e62419256ca4909c7824148f172afd526d8f19d52f41cca7a69b3cb8bd8dd",
     "src-tauri/src/reconnect_policy.rs": "74845bbb82e035b0719d9255e43e527c79acfc3dea87c32921aef40d9d45e8d0",
@@ -2112,7 +5427,7 @@
     "src-tauri/src/teammate/os_freeze.rs": "ee990a9694b0977792b5ee9ca38ffb1f4a1120518b6ee8c3ccff850f0aa0530e",
     "src-tauri/src/teammate/profiles.rs": "7a2032e47312666d5b655ecd4f361aeca6e11f7a9b6c5607dbfd6d06469545cb",
     "src-tauri/src/teammate/rollback.rs": "f4764e8f355c24240d21d6d64bafe615482a33cf615686bef9560bcce0ba3dfc",
-    "src-tauri/src/teammate/server.rs": "d0fb75256d3a0927592a32467e197b06f09799ba417e03368bd33dbee69f304e",
+    "src-tauri/src/teammate/server.rs": "1cad56c486161c509417cd4e35ffaf2ce9d91b3e3a9254db8c42a17a55748c0a",
     "src-tauri/src/teammate/suspend.rs": "cc356a2cc07f86f02990a7c47bd69d3979bd2e61f4b64fd312897a6ba6db4234",
     "src-tauri/src/tray.rs": "dc834d8b4c48714235061d5029337b3421f1cada855a5427f307366cb6509c8e",
     "src-tauri/src/types.rs": "739ac1c262f93f27288763038744ae3371a33d7a1b382e994bffb2e18b59f35c",
@@ -2127,8 +5442,13 @@
     "src-tauri/wix/path-env.wxs": "0b4fa57aab8854d864d5ab1bc68a7b2086491485e9b0d3785da17c58aa6faf2c",
     "static/1.jpg": "b5ec3fd433d81f9f7b217571e76aabf35557cce8d8d619aba580486e4e78faa4",
     "static/2.jpg": "1900d74ce291a27234f8f4d92abc03fd4b8490cc0871d2f7159fa88844eeb32b",
+    "static/apple-touch-icon.png": "fcf04070e1ae0e72599b39cf3c118a81c57d01dbb98b894b6ba988bda26cc01e",
     "static/favicon.png": "5146ed79b486cb9e1cdcdd7814cd22ae78e70ceb30fa06b4cd9a16cf121bc9e6",
     "static/fonts/flags.woff2": "85c0857c03f3bfa9971b5bccdafd4337bade1f76accc74002c0f1de466cf4702",
+    "static/icon-192.png": "db4522541aba65360218355d3e01781ed82e1d472dcafa36b5d87207ef5a052b",
+    "static/icon-512.png": "ca5aa13cbe7eeb9d078722cf99de19017996e3b8b4f431bd8376b07ee64236a2",
+    "static/icon-maskable-512.png": "c72c42d5ee1b48504ea8dbd247cf37f38feedc7458a38339992e07947e3f0132",
+    "static/manifest.webmanifest": "dde7f5c4d81070beb7d8903e9f8168afda0c4e5fd8ffb4e61d6d3145323e96e8",
     "static/mobile/assets/index-BPfF1vzx.css": "5d3b52cafc5b8d80b45f7cc9cc1585fd21ef4d51e9b8c77224856f085c29caea",
     "static/mobile/assets/index-Cm2sAwTC.js": "9ce4377b09610a22edc354d1abd2aae0b1f018e5c008ab69028ed296ce7fd849",
     "static/mobile/assets/ridge_term_bg-qYsB2L3X.wasm": "2fe3ad9f6ca0b021ca15888f8f72a4cf0b3aa5e42813550c057d5a31505a9837",
@@ -2156,13 +5476,13 @@
     "tests/e2e-shell/theme-rotation.spec.ts": "09645cfde5b057c340e8c723375b0bd926b00b1e916a7bc68d108781dbbe9676",
     "tsconfig.json": "3543fe49263e8b2cf7990aa1dcdedbe2de6619242063ac5c6e12f3518d2bc111",
     "vite.config.js": "4a46f763b134c6cf1897ec4744b85b0a1d1786b638049ef40566b8a92df3a00d",
-    "vite.remote.config.js": "df43a21a7a0c5178f25950836210094b0f850beebe274096508ce1bc1f3946a6",
+    "vite.remote.config.js": "93d92ba17293b953fd59e3d328dcd7f890bc72c17d0d32a8a07812ce5a4c79a4",
     "vitest.config.ts": "cfcf5dcfa1cda6218192e2ee1d818d286820870d69aab06257b21e5011e3b000",
     "wdio.conf.ts": "d0fcf9d44d0c5aeef0465b0afb094dd300ad2160bbc2f8f86ba824b4272e0b20",
     "wdio.frame.conf.ts": "9dd731eb731ba8fa78a4580dff28e014b9c06dc9a74e6d316ecc0219bcd825fd",
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-c1ab27e39fe0",
-  "manifestHash": "c1ab27e39fe0195ab7652aadc176df74cdac0cbf66071014aca2e708a2a2540e"
+  "buildId": "BUILD-30a0dc4b9743",
+  "manifestHash": "30a0dc4b974376ce69d155de984aafe53f30f994bde3a396b2811ef0c8f853ca"
 }

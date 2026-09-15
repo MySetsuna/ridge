@@ -1,11 +1,11 @@
 ---
 id: L2-TERM-001
 level: L2
+parent: L1-PROJECT-001
 title: Terminal Rendering Contract
 status: APPROVED
 origin: authored
 migration_state: PROPOSED
-depends_on: [L1-PROJECT-001]
 ---
 
 ## §1 范围

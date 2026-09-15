@@ -1,11 +1,12 @@
 ---
 id: L2-PERF-001
 level: L2
+parent: L1-PROJECT-001
 title: Terminal / Remote Performance
 status: APPROVED
 origin: authored
 migration_state: PROPOSED
-depends_on: [L1-PROJECT-001, L2-TERM-001, L2-PROTO-001, L2-REMOTE-001]
+depends_on: [L2-TERM-001, L2-PROTO-001, L2-REMOTE-001]
 ---
 
 ## §1 范围
