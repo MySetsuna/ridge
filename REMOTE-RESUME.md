@@ -597,7 +597,7 @@ shell flag，本轮在既定范围内修。）
 仅含 CHG-031 工作产物与必要生成文件。
 
 ```
-commit:    <见 git log -1>  （含本文档；§10.2 字段在第二轮 doc fixup 补）
+commit:    875a791e   （本 commit；后续 §10.2 hash 字段在本提交内更新）
 parent:    667d8389f1892b7862ba920a887bed59bce10e72
 diff:      changes/CHG-031.md                    (new, 99 行)
            changes/CHG-029.md                    (M, 2 行 affects 修正)
