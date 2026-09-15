@@ -148,12 +148,19 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
   });
 
   it('drops a half-open socket when heartbeat receives no pong', async () => {
+    // §A bounded detection: a single missed pong is below the threshold;
+    // only N=3 consecutive deadline fires (each cycle = 15 s interval +
+    // 10 s deadline) force-close the socket. 1 miss → still connected.
     const { conn, ws } = connect();
     await vi.advanceTimersByTimeAsync(15_000);
     expect(ws.sent).toContainEqual({ type: 'ping' });
     expect(conn.state()).toBe('connected');
-
     await vi.advanceTimersByTimeAsync(10_000);
+    expect(conn.state()).toBe('connected');
+    // Two more missed cycles → threshold crossed → drop.
+    // Cycle 2: ping at t=30, deadline at t=40.
+    // Cycle 3: ping at t=45, deadline at t=55 → close.
+    await vi.advanceTimersByTimeAsync(30_000);
     expect(conn.state()).toBe('disconnected');
     conn.disconnect();
   });

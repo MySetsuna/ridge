@@ -125,6 +125,12 @@ const PONG_TIMEOUT_MS = 10_000;
 // Snappier deadline when we re-probe on foreground/online — we want to notice a
 // dead socket fast so the reconnect feels instant when the user returns.
 const LIVENESS_PROBE_TIMEOUT_MS = 4_000;
+// §A bounded liveness detection: a single missed pong is no proof the socket is
+// dead — a half-dead proxy may eat one pong and recover on the next beat. Force
+// close only after this many CONSECUTIVE deadline fires without ANY inbound
+// frame in between. Any inbound frame (pong or otherwise) resets the counter,
+// which prevents a flaky mobile network from triggering needless full reconnects.
+const MAX_CONSECUTIVE_PONG_MISSES = 3;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 15_000;
 /**
@@ -647,6 +653,12 @@ export class RemoteConnection implements RemoteLink {
   private _initialConnectTimer: ReturnType<typeof setTimeout> | null = null;
   private _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private _pongDeadline: ReturnType<typeof setTimeout> | null = null;
+  /** §A last outbound ping timestamp (epoch ms); 0 if never sent. Diagnostic. */
+  private _lastPingAt = 0;
+  /** §A last inbound pong / any-frame timestamp (epoch ms); 0 if never received. */
+  private _lastInboundAt = 0;
+  /** §A consecutive pong-deadline fires since the last inbound frame. Reset by ANY inbound. */
+  private _consecutivePongMisses = 0;
   private _hasConnectedOnce = false;
   private readonly reconnectListeners: Set<() => void> = new Set();
   private _windowListenersAttached = false;
@@ -875,6 +887,12 @@ export class RemoteConnection implements RemoteLink {
       this.ws = null;
     }
     this.setState('connecting');
+    // §A: a fresh connection owns a fresh bounded-detection counter. The
+    // previous socket's misses (or healthy pongs) do not bleed into the new
+    // measurement window.
+    this._lastPingAt = 0;
+    this._lastInboundAt = 0;
+    this._consecutivePongMisses = 0;
     // §perf: start a fresh measurement window for this connection attempt
     // (first connect and every reconnect both funnel through _open).
     this._perf = { connectStart: performance.now(), upgradeStart: null, firstFrame: null, firstPtyBytes: null };
@@ -1063,6 +1081,10 @@ export class RemoteConnection implements RemoteLink {
   private _handleMessageRefactored(event: MessageEvent): void {
     this._perf.firstFrame ??= performance.now();
     if (this._pongDeadline) { clearTimeout(this._pongDeadline); this._pongDeadline = null; }
+    // §A: ANY inbound frame resets the consecutive-miss counter — the socket
+    // is observably alive even when the peer doesn't echo our ping fast enough.
+    this._lastInboundAt = Date.now();
+    this._consecutivePongMisses = 0;
     if (event.data instanceof ArrayBuffer) {
       this._handleBinaryMessage(event.data);
       return;
@@ -1168,10 +1190,17 @@ export class RemoteConnection implements RemoteLink {
    *  fires, the socket is dead (frozen/half-open) → force a drop + reconnect. */
   private _pingNow(deadlineMs: number) {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this._lastPingAt = Date.now();
     this.send({ type: 'ping' });
     if (this._pongDeadline) clearTimeout(this._pongDeadline);
     this._pongDeadline = setTimeout(() => {
       this._pongDeadline = null;
+      // §A bounded detection: ONE missed pong is not enough to declare the
+      // socket dead. Increment, and only force-close after the configured
+      // consecutive threshold. The next interval ping continues to probe;
+      // any inbound frame in between resets the counter without action.
+      this._consecutivePongMisses += 1;
+      if (this._consecutivePongMisses < MAX_CONSECUTIVE_PONG_MISSES) return;
       if (this.ws) { try { this.ws.close(); } catch { /* noop */ } }
       this._handleDrop();
     }, deadlineMs);
@@ -1597,6 +1626,18 @@ export class RemoteConnection implements RemoteLink {
   get rpcSchedulingDiagnostics() {
     return this.paneScheduler.diagnostics;
   }
+
+  // §A liveness diagnostics — read-only views over the bounded-detection state.
+  /** Epoch ms of the last outbound ping (0 if none in the current connection). */
+  get lastPingAt(): number { return this._lastPingAt; }
+  /** Epoch ms of the last inbound frame, ping/pong or otherwise (0 if none). */
+  get lastInboundAt(): number { return this._lastInboundAt; }
+  /**
+   * Number of consecutive pong-deadline fires since the last inbound frame.
+   * Force-close only fires after `MAX_CONSECUTIVE_PONG_MISSES`. Diagnostic only;
+   * callers must NOT couple UX to this number directly.
+   */
+  get consecutivePongMisses(): number { return this._consecutivePongMisses; }
 
   // ── Workspace operations via WS ───────────────────────────────────
   async listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }> {

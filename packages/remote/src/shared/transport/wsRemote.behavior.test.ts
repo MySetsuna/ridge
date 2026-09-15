@@ -427,4 +427,54 @@ describe('RemoteConnection public communication contract', () => {
 		).toBe(true);
 		conn.disconnect();
 	});
+
+	// §A bounded liveness detection: a single missed pong must NOT force-close
+	// the socket. The transport should observe the heartbeat, increment the
+	// miss counter, and only escalate to a forced close after the configured
+	// consecutive threshold — by which point the dead-socket hypothesis is
+	// strong enough to justify a reconnect.
+	it('does not force-close after a single missed pong', () => {
+		const { conn, ws } = connect();
+		const documentStub = document as unknown as { hidden: boolean; addEventListener: ReturnType<typeof vi.fn> };
+		const visibility = documentStub.addEventListener.mock.calls.find(([name]) => name === 'visibilitychange')?.[1] as () => void;
+		documentStub.hidden = false;
+		visibility(); // → _pingNow(LIVENESS_PROBE_TIMEOUT_MS)
+		vi.advanceTimersByTime(4_500);
+		// After ONE missed deadline the socket must still be OPEN.
+		expect(ws.readyState).toBe(WebSocket.OPEN);
+		expect((conn as unknown as { consecutivePongMisses: number }).consecutivePongMisses).toBeGreaterThanOrEqual(1);
+		conn.disconnect();
+	});
+
+	it('only forces close after the consecutive-pong-miss threshold', () => {
+		const { conn, ws } = connect();
+		const documentStub = document as unknown as { hidden: boolean; addEventListener: ReturnType<typeof vi.fn> };
+		const visibility = documentStub.addEventListener.mock.calls.find(([name]) => name === 'visibilitychange')?.[1] as () => void;
+		// Three deadline fires in a row (no inbound frames between them) must
+		// trip the bounded-detection threshold and force-close the socket.
+		for (let i = 0; i < 3; i++) {
+			documentStub.hidden = false;
+			visibility();
+			vi.advanceTimersByTime(4_500);
+		}
+		expect(ws.readyState).toBe(WebSocket.CLOSED);
+		expect((conn as unknown as { consecutivePongMisses: number }).consecutivePongMisses).toBeGreaterThanOrEqual(3);
+		conn.disconnect();
+	});
+
+	it('resets the bounded-detection counter on ANY inbound frame', () => {
+		const { conn, ws } = connect();
+		const documentStub = document as unknown as { hidden: boolean; addEventListener: ReturnType<typeof vi.fn> };
+		const visibility = documentStub.addEventListener.mock.calls.find(([name]) => name === 'visibilitychange')?.[1] as () => void;
+		// One missed pong → counter = 1.
+		documentStub.hidden = false;
+		visibility();
+		vi.advanceTimersByTime(4_500);
+		expect((conn as unknown as { consecutivePongMisses: number }).consecutivePongMisses).toBeGreaterThanOrEqual(1);
+		// Any inbound frame (a hello echo) resets it without closing.
+		ws.receive({ type: 'hello', capabilities: ['pane'] });
+		expect((conn as unknown as { consecutivePongMisses: number }).consecutivePongMisses).toBe(0);
+		expect(ws.readyState).toBe(WebSocket.OPEN);
+		conn.disconnect();
+	});
 });
