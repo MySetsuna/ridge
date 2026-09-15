@@ -3385,7 +3385,7 @@
     "docs/iterations/README.md": "d0cae0b0d6966497a3e7d2d06c28a79aefc8e9b3d05b2446a00556512c466626",
     "docs/README_CN.md": "8932531370504d2820f207f6cd3f5d92852066c9a5ae696c4a065ae256fa889a",
     "IMPLEMENTATION-ACCEPTANCE.md": "2f37f9b4846693e549620f103776c192b26bc6b5dd5ceda7722403539108fd70",
-    "package.json": "65ba08dd5ed950d0fb843ff3774b4e94a2dbc10f50c1b942f7899df1f05cb90f",
+    "package.json": "917b2fdfb37d7c2eb2c6a47ff031cb008817f660c02929fbabcea6a151b32c61",
     "packages/remote/package.json": "3c9d355179aefeaf12877e4e44bc5b41ba8812fc23825024f01da3b082f6b1db",
     "packages/remote/src/index.ts": "ae66d492761ce353faab343fe9215ab48235088dee9cd5ce1621392948999c30",
     "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts": "7abb718851c25821146276ac974fbad2aa64e011e142e2623fe2c6a164324b08",
@@ -3791,17 +3791,18 @@
     "packages/ridge-tmux/src/http.rs": "a3792ce75dea7c8182b1f4d49d6090b26491269a1ec900b20abdfdde047d9fe7",
     "packages/ridge-tmux/src/lib.rs": "f452d1b38e8ee52cea8b169ddba9ebdcf7a8d85743291f0502e7c45d2ea4dc1f",
     "packages/ridge-tmux/src/mcp.rs": "add5c214582f229db701036a299d52cf1f1128a3c3dbd9ccfebcb342a145ef15",
+    "patches/@jackjiang18__spectree@0.1.1.patch": "28a329f5955cd433fc5afb0843612ffd02207f3d17506651e516b72e7558b6ae",
     "PHASE-A-FINAL-ACCEPTANCE.md": "1840c8caeb20ea23507cb4490d6e63e3abebe2372fc619e25a7f8dae5960a3c9",
     "PHASE-A6-LIVE-VALIDATION.md": "6e93ef78fa40b36062b14b2af64655a4a4abddb7e8118d52f72594ca0b59fd2e",
     "playwright.config.ts": "e31bbecef48cd393151ebc8f04fae32f5c3494aea62e7c968d0406cbc3308b1e",
-    "pnpm-lock.yaml": "8ed8fb2d39a5271745ce2afc555365857c413cd43e8ea9b6f45de0b2fc40d848",
+    "pnpm-lock.yaml": "efe65cf90d3edc34390da2199648ac72973dd6cb5160bbd51c12f87c19dafeac",
     "pnpm-workspace.yaml": "7cd11e9d9455835e231260b9656f0fc437e6201a6b1520fe7a0917c9217571a1",
     "README.md": "78baca6e68f8f1e52bdf516a5c0241223acc6f92baf8feaf1f2e57be9949d9ef",
     "REMOTE-BACKPRESSURE-DIAGNOSIS.md": "757deaeaa5c7d669059dd9a977b38cae60150b6ec42d3c564c3167cb60a720b0",
     "REMOTE-FOUR-ISSUES.md": "ac7ecd04409ebdff0a1eb1233fa6c8b48aca511dad22335e7a81ed3eb0591f4d",
     "REMOTE-INTEGRATION-EVIDENCE.md": "c57cd4625c1086743fbbb641aba6c728992901d0bfe2bff9bf567026e470dffa",
     "REMOTE-RELEASE-READINESS.md": "bc4081ac0f033df0fbc40e786b12f7b2a75b7d60faec50ad768ac147266b373d",
-    "REMOTE-RESUME.md": "2ee58819ab59df39e7ad38228cf4bb8fca3baecd4f91224bd086d8631ea811aa",
+    "REMOTE-RESUME.md": "c8ce4b04f7e1266ccfbdd482956844da1b1f916a8f4cc8c173a8167f8013029b",
     "RIDGE-CURRENT-STATE.md": "6d113b1de638b1141c722541532dae1e6bc798c890e2a1f2274568be93d3ed9e",
     "RIDGE-DESKTOP-REMOTE-CLOSEOUT.md": "908e29ad5a287235702ba6d109d3bdfca185d710e8ac5db03b76d3914b2b6c3e",
     "RIDGE-RUNTIME-FOUNDATION-FINAL.md": "c7258806d396944178fe92e4c09006a84b3a2a48fe6e73c2e84e371060f9ede4",
@@ -5483,6 +5484,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-30a0dc4b9743",
-  "manifestHash": "30a0dc4b974376ce69d155de984aafe53f30f994bde3a396b2811ef0c8f853ca"
+  "buildId": "BUILD-ec74fb2f07c1",
+  "manifestHash": "ec74fb2f07c1122b8d23ce8771bc73c5a4ecc5134ae15ce1096f5403c1e2876a"
 }

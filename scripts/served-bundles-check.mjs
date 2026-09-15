@@ -18,6 +18,8 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pinnedHttpsJson, pinnedAgent } from "./tls-host.mjs";
+import { get as httpsGet } from "node:https";
 
 const HOST_PORT = Number(process.env.RIDGE_SMOKE_HOST_PORT ?? "5120");
 const ROOT = resolve(process.env.RIDGE_ROOT ?? ".");
@@ -34,11 +36,22 @@ function localFileSha256(rel) {
 }
 
 async function fetchHttps(path) {
-  const r = await fetch(`https://127.0.0.1:${HOST_PORT}${path}`, {
-    signal: AbortSignal.timeout(10000),
+  // Pinned to host CA (Goal §3 — no TLS bypass)
+  const agent = pinnedAgent();
+  const url = `https://127.0.0.1:${HOST_PORT}${path}`;
+  return await new Promise((resolve, reject) => {
+    const req = httpsGet(url, { agent }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        const buf = Buffer.concat(chunks);
+        resolve({ status: res.statusCode, sha256: sha256(buf), size: buf.length });
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(10000, () => req.destroy(new Error("timeout")));
+    req.end();
   });
-  const buf = Buffer.from(await r.arrayBuffer());
-  return { status: r.status, sha256: sha256(buf), size: buf.length };
 }
 
 async function sleep(ms) {
@@ -72,9 +85,7 @@ if (BOOT) {
   for (let i = 0; i < 30; i += 1) {
     await sleep(500);
     try {
-      const r = await fetch(`https://127.0.0.1:${HOST_PORT}/health`, {
-        signal: AbortSignal.timeout(3000),
-      });
+      const r = await pinnedHttpsJson(`https://127.0.0.1:${HOST_PORT}/health`);
       if (r.status === 200) { up = true; break; }
     } catch {
       /* not yet */

@@ -1,0 +1,132 @@
+diff --git a/dist/src/compiler/index.js b/dist/src/compiler/index.js
+index 447f9e5cae1ce7ff8164a5419049ee0ec2ca9424..fa66af3403858a82a780af6efca04e554a8cd0dc 100644
+--- a/dist/src/compiler/index.js
++++ b/dist/src/compiler/index.js
+@@ -52,7 +52,7 @@ export function createBuildManifest(root, graph, changeId) {
+         .map((node) => ({ id: node.id, level: node.level, nodeHash: node.contentHash, codeTargets: [...node.codeTargets], testTargets: [...node.testTargets], status: node.status, ...(node.fields.public_interface !== undefined ? { interfaceSignatures: asStringArray(node.fields.public_interface, "public_interface") } : {}) }));
+     const allowedPaths = [...new Set(units.flatMap((unit) => [...unit.codeTargets, ...unit.testTargets]))].sort();
+     const testCommand = readTestCommand(root);
+-    const baseline = fileHashes(root, [".spectree", ".git", "node_modules", "dist", ".iteration"]);
++    const baseline = fileHashes(root, readIgnorePatterns(root));
+     const previous = readBuildManifest(root);
+     if (previous && previous.manifestHash !== buildManifestHash(previous)) {
+         throw new Error("LOCK_E_MANIFEST_HASH: existing spectree.lock.json is not self-consistent");
+@@ -85,6 +85,31 @@ function readTestCommand(root) {
+     }
+     return value.map((item) => item.trim());
+ }
++export function readIgnorePatterns(root) {
++    // Project-specific .stcignore takes precedence over the hardcoded default.
++    // Config may point at a different file via "ignoreFile" — honor that.
++    let cfgPath = null;
++    try {
++        const cfg = JSON.parse(readFileSync(join(root, ".spectree", "config.json"), "utf8"));
++        if (cfg && typeof cfg.ignoreFile === "string")
++            cfgPath = join(root, cfg.ignoreFile);
++    }
++    catch {
++        // no config
++    }
++    const patterns = new Set([".spectree", ".git", "node_modules", "dist", ".iteration"]);
++    const lines = [];
++    if (cfgPath && existsSync(cfgPath)) {
++        for (const raw of readFileSync(cfgPath, "utf8").split(/\r?\n/)) {
++            const t = raw.replace(/#.*$/, "").trim();
++            if (t)
++                lines.push(t.replace(/\/$/, ""));
++        }
++    }
++    for (const l of lines)
++        patterns.add(l);
++    return [...patterns];
++}
+ export function writeBuildManifest(root, manifest) {
+     const schema = validateSchema(manifest, "lock.schema.json");
+     if (!schema.valid)
+diff --git a/dist/src/shared/index.js b/dist/src/shared/index.js
+index 7dd5607cfa918c5d8810f49150863d2d7db47689..96ce61b180af2dd98a82d8c156d4960ab71f336c 100644
+--- a/dist/src/shared/index.js
++++ b/dist/src/shared/index.js
+@@ -23,15 +23,48 @@ export function normalizePath(value) {
+ export function listFiles(root, ignored = []) {
+     const result = [];
+     const absoluteRoot = resolve(root);
++    // Build the predicate once. Patterns can be:
++    //   - bare component ("node_modules") — match at any depth
++    //   - path prefix ("packages/ridge-term/pkg") — match exact or as dir prefix
++    //   - glob ("target-*", ".stcignore-style/*.log") — match via globToRegExp
++    const patterns = ignored.map((raw) => {
++        const pattern = raw.replace(/\/$/, "");
++        const hasGlob = /[*?[\]]/.test(pattern);
++        if (hasGlob) {
++            return (rel) => new RegExp(`(?:^|/)${globToRegExp(pattern).source.slice(1)}`).test(rel);
++        }
++        if (pattern.includes("/")) {
++            return (rel) => rel === pattern || rel.startsWith(pattern + "/");
++        }
++        return (rel) => rel.split("/").includes(pattern);
++    });
++    const isIgnored = (rel) => patterns.some((p) => p(rel));
+     const walk = (directory) => {
+         for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+             const absolute = join(directory, entry.name);
+             const rel = normalizePath(relative(absoluteRoot, absolute));
+-            if (ignored.some((prefix) => rel === prefix || rel.startsWith(`${prefix}/`)))
++            if (isIgnored(rel))
++                continue;
++            // withFileTypes Dirent uses lstat semantics; a symlink-to-dir appears
++            // as neither isDirectory nor isFile. statSync follows the link: if
++            // it's a dir, treat as a directory (recurse); otherwise as file.
++            // A symlink that points to a directory under an ignored prefix
++            // (pnpm stores nested deps via symlinks into node_modules/.pnpm) is
++            // intentionally skipped — the target is already covered by the
++            // top-level ignore.
++            let stat;
++            try {
++                stat = statSync(absolute);
++            }
++            catch {
+                 continue;
+-            if (entry.isDirectory())
++            }
++            if (stat.isDirectory()) {
++                if (entry.isSymbolicLink())
++                    continue;
+                 walk(absolute);
+-            else
++            }
++            else if (stat.isFile())
+                 result.push(rel);
+         }
+     };
+diff --git a/dist/src/trace/index.js b/dist/src/trace/index.js
+index 63dae0c4e65fcc3d90e08377c41c70b9da6f250b..6d2e2c6f6d9d7d9c55ab249d619754f0f3c33895 100644
+--- a/dist/src/trace/index.js
++++ b/dist/src/trace/index.js
+@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
+ import { spawnSync } from "node:child_process";
+ import { join } from "node:path";
+ import { fileHashes, pathMatches, publicInterfaces } from "../shared/index.js";
+-import { buildManifestHash } from "../compiler/index.js";
++import { buildManifestHash, readIgnorePatterns } from "../compiler/index.js";
+ import { validateSchema } from "../schema/index.js";
+ export function verifyBuild(root, graph, manifest, options = {}) {
+     const diagnostics = [];
+@@ -16,7 +16,7 @@ export function verifyBuild(root, graph, manifest, options = {}) {
+     if (manifest.specHash !== graph.hash) {
+         diagnostics.push({ code: "LOCK_E_HASH_MISMATCH", severity: "ERROR", message: `lock spec hash ${manifest.specHash} differs from current ${graph.hash}` });
+     }
+-    const current = fileHashes(root, [".spectree", ".git", "node_modules", "dist", ".iteration"]);
++    const current = fileHashes(root, readIgnorePatterns(root));
+     const changedPaths = [...new Set([...Object.keys(manifest.baseline), ...Object.keys(current)])]
+         .filter((path) => manifest.baseline[path] !== current[path])
+         .sort();
+@@ -59,7 +59,7 @@ export function verifyBuild(root, graph, manifest, options = {}) {
+         else {
+             const command = [...manifest.testCommand];
+             const executable = process.platform === "win32" && command[0] === "npm" ? "npm.cmd" : command[0];
+-            const run = spawnSync(executable, command.slice(1), { cwd: root, encoding: "utf8", timeout: 120_000, windowsHide: true, maxBuffer: 10 * 1024 * 1024 });
++            const run = spawnSync(executable, command.slice(1), { cwd: root, encoding: "utf8", timeout: 120_000, windowsHide: true, maxBuffer: 10 * 1024 * 1024, shell: process.platform === "win32" });
+             testStatus = run.status === 0 && !run.error ? "PASS" : "FAIL";
+             if (testStatus === "FAIL")
+                 diagnostics.push({ code: "TEST_E_FAILED", severity: "ERROR", message: run.error?.message || run.stderr || `test command exited with ${run.status}` });

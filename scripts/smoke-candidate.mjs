@@ -7,17 +7,21 @@
 //   3. Kernel /v1/health + /v1/status return the documented JSON contract.
 //   4. The kernel pid is from THIS candidate's process tree (not an installed instance).
 //
+// TLS posture (Goal §3 — no TLS bypass):
+//   Host HTTPS is pinned to the host's self-signed CA via scripts/tls-host.mjs.
+//   Kernel HTTP (loopback) has no TLS.
+//
 // Isolates:
 //   - port 5120 (overridable via RIDGE_SMOKE_HOST_PORT)
 //   - RIDGE_KERNEL_DATA_DIR = temp dir per-run
 //   - RIDGE_REMOTE_HOST_REGISTRY not set (default), so kernel uses isolated data dir
-//
-// Reads kernel port from RIDGE_KERNEL_DATA_DIR/kernel.json.
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { get as httpsGet, Agent as HttpsAgent } from "node:https";
+import { pinnedHttpsJson, loadHostCa } from "./tls-host.mjs";
 
 const HOST_PORT = Number(process.env.RIDGE_SMOKE_HOST_PORT ?? "5120");
 const BIN = resolve(
@@ -34,10 +38,22 @@ async function sleep(ms) {
   await new Promise((r) => setTimeout(r, ms));
 }
 
-async function probe(url, opts = {}) {
+async function get(url, opts = {}) {
+  if (url.startsWith("https://")) return pinnedHttpsJson(url);
   const res = await fetch(url, { ...opts, signal: AbortSignal.timeout(5000) });
   const text = await res.text();
   return { status: res.status, text, headers: Object.fromEntries(res.headers) };
+}
+
+// Sanity: we can read the host CA BEFORE booting — but the host may not
+// have generated one yet if it's a fresh data dir. The host will create
+// it on first boot, so we just proceed and let the first HTTPS probe fail
+// fast if the cert is somehow unavailable.
+try {
+  const ca = loadHostCa();
+  console.log(`[smoke] pinned host CA (${ca.length} bytes)`);
+} catch (e) {
+  console.log(`[smoke] no pre-existing CA; host will generate on boot`);
 }
 
 const dataDir = mkdtempSync(join(tmpdir(), "ridge-smoke-"));
@@ -45,7 +61,6 @@ console.log(`[smoke] isolated data dir: ${dataDir}`);
 console.log(`[smoke] candidate binary: ${BIN}`);
 console.log(`[smoke] host port: ${HOST_PORT}`);
 
-// Boot host. The kernel spawn is internal; we read kernel.json afterwards.
 const child = spawn(
   BIN,
   ["host", "--port", String(HOST_PORT)],
@@ -80,29 +95,26 @@ let hostUp = false;
 for (let i = 0; i < 30; i += 1) {
   await sleep(500);
   try {
-    const r = await probe(`https://127.0.0.1:${HOST_PORT}/health`, {
-      // self-signed TLS: ignore via custom dispatcher
-      // node fetch doesn't allow that; we'll accept self-signed by trusting it
-    });
+    const r = await get(`https://127.0.0.1:${HOST_PORT}/health`);
     if (r.status === 200) {
       hostUp = true;
       break;
     }
   } catch {
-    // not yet
+    // not yet, or cert not ready
   }
 }
 if (!hostUp) fail("Host /health never returned 200");
 
 // 1. Host /health
-const hostHealth = await probe(`https://127.0.0.1:${HOST_PORT}/health`);
+const hostHealth = await get(`https://127.0.0.1:${HOST_PORT}/health`);
 if (hostHealth.status !== 200) fail("Host /health not 200", hostHealth);
 if (hostHealth.text !== "ok")
   fail(`Host /health body mismatch (expected "ok")`, hostHealth);
-console.log(`[smoke] PASS host /health → 200 "ok"`);
+console.log(`[smoke] PASS host /health → 200 "ok" (pinned to host CA)`);
 
 // 2. Host /info
-const hostInfo = await probe(`https://127.0.0.1:${HOST_PORT}/info`);
+const hostInfo = await get(`https://127.0.0.1:${HOST_PORT}/info`);
 if (hostInfo.status !== 200) fail("Host /info not 200", hostInfo);
 let infoJson;
 try {
@@ -135,8 +147,7 @@ console.log(
 );
 
 // 4. Kernel /v1/health (token required)
-const tokenHeader = { "x-ridge-kernel-token": kernel.token };
-const kernelHealth = await probe(
+const kernelHealth = await get(
   `http://127.0.0.1:${kernel.port}/v1/health`,
 );
 if (kernelHealth.status !== 200)
@@ -157,7 +168,8 @@ console.log(
 );
 
 // 5. Kernel /v1/status (token required)
-const kernelStatus = await probe(
+const tokenHeader = { "x-ridge-kernel-token": kernel.token };
+const kernelStatus = await get(
   `http://127.0.0.1:${kernel.port}/v1/status`,
   { headers: tokenHeader },
 );
@@ -177,14 +189,44 @@ console.log(
 );
 
 // 6. Negative: missing token should 401
-const kernelNoToken = await probe(
+const kernelNoToken = await get(
   `http://127.0.0.1:${kernel.port}/v1/status`,
 );
 if (kernelNoToken.status !== 401)
   fail(`Kernel /v1/status without token: expected 401, got ${kernelNoToken.status}`, kernelNoToken);
 console.log(`[smoke] PASS kernel /v1/status without token → 401`);
 
-// 7. Clean shutdown
+// 7. Negative: HTTPS probe without pinned agent should be REJECTED.
+//    Verifies that the agent is actually pinning, not silently bypassing.
+{
+  const directAgent = new HttpsAgent({ rejectUnauthorized: true });
+  const blocked = await new Promise((resolve) => {
+    const req = httpsGet(
+      `https://127.0.0.1:${HOST_PORT}/health`,
+      { agent: directAgent },
+      (res) => resolve({ status: res.statusCode, ok: true }),
+    );
+    req.on("error", (err) => resolve({ ok: false, code: err.code, msg: err.message }));
+    req.setTimeout(3000, () => req.destroy(new Error("timeout")));
+    req.end();
+  });
+  if (blocked.ok) {
+    fail(
+      `unpinned HTTPS probe succeeded — pinning is NOT effective (status=${blocked.status}). ` +
+      `The host CA must NOT be in the system trust store.`,
+      blocked,
+    );
+  }
+  if (blocked.code !== "UNABLE_TO_VERIFY_LEAF_SIGNATURE" &&
+      blocked.code !== "SELF_SIGNED_CERT_IN_CHAIN" &&
+      blocked.code !== "DEPTH_ZERO_SELF_SIGNED_CERT" &&
+      blocked.code !== "ERR_TLS_CERT_ALTNAME_INVALID") {
+    fail(`unpinned HTTPS probe failed for unexpected reason: ${blocked.code}`, blocked);
+  }
+  console.log(`[smoke] PASS unpinned HTTPS probe rejected (${blocked.code}) — pinning is effective`);
+}
+
+// 8. Clean shutdown
 child.kill("SIGINT");
 await sleep(500);
 try {

@@ -7,6 +7,12 @@ node_modules
 /.webview2-*
 *.log
 *.patch
+# pnpm patches are committed (canonical per-pkg fix lives in the patch file,
+# applied automatically by `pnpm install --frozen-lockfile`); do NOT ignore
+# these files even though the generic `*.patch` glob above would otherwise
+# match them.
+!/patches/**
+!/patches/*.patch
 /.svelte-kit
 /package
 !.env.example
@@ -70,6 +76,7 @@ scripts/tmp-*.mjs
 # release evidence live under docs/; transient intake/agent/artifact files
 # stay local and must not become release inputs.
 /.iteration/**
+/scripts/.iteration/**
 
 # Generated remote/PWA output and local runtime signal directories.
 /.pw-remote-profile-backup-*/

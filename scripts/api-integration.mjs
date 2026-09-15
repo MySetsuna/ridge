@@ -1,6 +1,15 @@
-// scripts/browser-smoke-candidate.mjs
+// scripts/api-integration.mjs
 //
-// Browser-layer acceptance for the candidate Host + Kernel.
+// API/protocol integration test for the candidate Host + Kernel.
+//
+// Scope (renamed from browser-smoke-candidate.mjs in v9-14 / Goal §2):
+//   THIS SCRIPT ONLY CALLS KERNEL HTTP ENDPOINTS. It does NOT drive a real
+//   browser; it does NOT load the SPA; it does NOT exercise the UI input
+//   pipeline. It validates that the same wire protocol the SPA uses works
+//   end-to-end against THIS candidate, with correct auth, lease semantics,
+//   resize, A→B→A, late response, and detach/reconnect.
+//
+// For actual browser-driven UI E2E see scripts/browser-ui-e2e.mjs.
 //
 // §5: drive the same kernel endpoints the Web SPA bundles use:
 //   - auth: kernel token from RIDGE_KERNEL_DATA_DIR/kernel.json (the registry
@@ -22,20 +31,21 @@
 //   - resize then re-list: cols/rows reflect new value
 //   - auth on every authenticated call; 401 expected when token stripped
 //
+// TLS posture (Goal §3):
+//   Host /health on https:// pinned to host CA via tls-host.mjs. Kernel
+//   loopback is HTTP.
+//
 // Isolation:
 //   - isolated data dir (RIDGE_KERNEL_DATA_DIR)
 //   - port 5120 (Host) + kernel dynamic port from kernel.json
 //   - candidate binary at target/test-rdg/release/ridge.exe
-//
-// Goal §5 deliverables: prove browser-layer flow is wired correctly against
-// THIS candidate; record PASS/FAIL per step with sequence numbers so a human
-// can compare against desktop/mobile SPA behaviour on a real device.
 
 import { spawn } from "node:child_process";
 import { Buffer } from "node:buffer";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pinnedHttpsJson } from "./tls-host.mjs";
 
 const HOST_PORT = Number(process.env.RIDGE_SMOKE_HOST_PORT ?? "5120");
 const BIN = resolve(
@@ -152,9 +162,7 @@ let hostUp = false;
 for (let i = 0; i < 30; i += 1) {
   await sleep(500);
   try {
-    const r = await fetch(`https://127.0.0.1:${HOST_PORT}/health`, {
-      signal: AbortSignal.timeout(3000),
-    });
+    const r = await pinnedHttpsJson(`https://127.0.0.1:${HOST_PORT}/health`);
     if (r.status === 200) hostUp = true;
   } catch {
     /* not yet */

@@ -108,5 +108,10 @@
     "webdriverio": "^9.27.1",
     "workbox-window": "^7.4.1",
     "ws": "^8.20.1"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "@jackjiang18/spectree@0.1.1": "patches/@jackjiang18__spectree@0.1.1.patch"
+    }
   }
 }
