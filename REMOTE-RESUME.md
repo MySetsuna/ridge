@@ -1221,6 +1221,33 @@ desktop 5/6 PASS + 1 PARTIAL（IO）
   是 mobileTerminalCanvas 节流）适配 desktop；或 v9-16 补 kernel
   host 4 个方法的低开销实现
 
+**wire shape 实证（v23/v24 strict regex 实测）**：
+- mobile SPA：PTY input 经 `paneRpcScheduler.enqueueInput` →
+  `rpc.request('write_to_pty', {paneId, data})` → 但浏览器→
+  host 这一层由 cloudHostBridge 包了二进制 envelope
+  (`packages/remote/src/shared/cloud/cloudHostBridge.ts:959` →
+  `encodeJsonFrame`，0x11 前缀)；Playwright 抓包
+  `TextDecoder` 解出的不是明文 `"method":"write_to_pty"`,
+  所以 `ptyFrameCount=0`
+- desktop SPA：PTY input 经 RidgePane → `manager.sendStdin` →
+  tauriShim → WS，但 tauriShim 的 `write_to_pty` 路径在 web-remote
+  build 下**无具体实现**（`src/lib/transport/tauriShim/bridge.test.ts`
+  仅 unit test，无运行路径）；同样 `ptyFrameCount=0`
+- v20/v22 mobile IO "PASS" 实为 regex race — 任意 `"data"` 命中
+  偶然命中的可能是 `error.data` 或 envelope frame 含 data 字段；
+  v23 strict 把这层 race 暴露为真实 PARTIAL
+- v25/v26 间歇 certutil 卡死 = 环境问题，与代码无关
+
+**v9-15 切片收口范围（本机可做尽）**：
+- ✅ 测试侧：补 shell probe + RidgePane container focus + ptyFrameCount
+- ✅ 文档侧：路径定位 / 收口路径明示 / wire shape 实证 / runbook 六类
+- ❌ 产品侧（需 v9-16 走审批）：
+  - RidgePane.svelte:1786 attach reactive 边界 — 共享代码改 + 移动端回归
+  - kernel host 4 方法（`packages/ridge-cli/src/kernel_host_impl.rs:897` 补 default 分支）
+  - tauriShim `write_to_pty` 真实实现（desktop 浏览器路径 PTY input
+    wire 不通）
+- ❌ 原生 Tauri 路径 E2E（独立 CHG 覆盖）
+
 ### 12.2 NATIVE_TAURI_REMOTE
 
 **本次范围**：仅记录，不展开独立 E2E。
@@ -1433,7 +1460,7 @@ powershell -ExecutionPolicy Bypass -File \
 
 | 项 | 阻塞点 | 收口路径 | 阻塞方 |
 |---|---|---|---|
-| desktop IO 全 PASS | keyboard.type 在 RidgePane attach reactive 边界被某 effect 抢跑；剩余 char 丢 | SPA 内 keyboard 节流对齐 mobile 模式；或 desktop `terminalImeMode` 默认 `ime` | 产品 |
+| desktop IO 全 PASS | 实际两段叠加：(a) tauriShim `write_to_pty` 路径在 web-remote build 下无运行实现（`src/lib/transport/tauriShim/bridge.test.ts` 仅 unit test，无运行路径）；(b) RidgePane.svelte:1786 attach reactive 边界 keyboard 节流 | (a) 在 tauriShim core.ts 把 `write_to_pty` 接入 `provider.invoke` 路径（与 `invoke('list_saved_workspace_files')` 同款）；(b) desktop `terminalImeMode` 默认 `ime` 复用 IME helper textarea 焦点 sink | 产品 + 审批 |
 | kernel host 4 个方法 | `list_workspace_save_info` / `get_shell_history` / `set_user_default_cwd` / `start_watching_paths` 未实现 | `packages/ridge-cli/src/kernel_host_impl.rs:897` 前补 default 分支；最小空实现即可恢复 desktop 路径 attach 完整链 | 产品 + 审批 |
 | Native Tauri Remote E2E | 与 Web Remote 路径独立 | 单独 CHG 覆盖；不混入 v9-15 范围 | 产品 + 范围 |
 | diagnostic export 自动化 | §12.5 约定为手工 log tee + 真机自带导出 | 真机首次需要时补自动化 | 工具 |
@@ -1464,5 +1491,25 @@ desktop IO 收口涉及 `src/lib/components/RidgePane.svelte` 共享
   时间 / 操作记录）
 - desktop IO 全 PASS（或产品评估后判定可接受 PARTIAL）
 - kernel host 4 方法实现 + 通过 desktop E2E 验证
+- tauriShim `write_to_pty` 真实实现（浏览器路径 PTY input
+  wire 通）
 
 才允许进入 BETA_READY 重评估流程。
+
+**v9-16 解锁前置（审批点）**：
+1. `packages/ridge-cli/src/kernel_host_impl.rs:897` 补 4 方法
+   default 分支（最小空实现：`list_workspace_save_info` →
+   `Value::Array(vec![])`；`get_shell_history` →
+   `Value::Array(vec![])`；`set_user_default_cwd` →
+   `Ok(Value::Null)`；`start_watching_paths` →
+   `Ok(Value::Null)`）— **stc lock + 审批**
+2. `src/lib/transport/tauriShim/core.ts` 把 `write_to_pty` 接入
+   `provider.invoke`（与现有 `invoke('list_saved_workspace_files')`
+   同款）；不在 tauriShim 伪造 PTY 行为，仅转发到 host kernel
+3. `src/lib/components/RidgePane.svelte:1786` attach reactive 边界
+   — 共享代码改 + mobile 回归（mobile 改 `terminalImeMode` 默认
+   `ime` 后需重跑 v25/v26 验证）
+
+v9-15 first slice 不实施上述 1/2/3（共享代码改动需 mobile 回归 +
+产品审批；kernel host 改动需 stc lock + 审批）；本切片接受 desktop
+IO PARTIAL 为已知收口前置路径，由 v9-16 切片收敛。
