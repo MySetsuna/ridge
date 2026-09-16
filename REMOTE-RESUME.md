@@ -1034,6 +1034,19 @@ TOTP；kernel 的 `/verify` 仅接受当前 30s 窗口码）。Desktop SPA 缺
 ```
 证据目录：`scripts/.iteration/browser-ui-e2e/`。
 
+**Desktop 终端组件差异（v18/v19 shell 探针确认）**：mobile SPA
+走 `MainApp.svelte` + `TerminalCanvas.svelte`，`.hidden-input`
+是规范输入 sink。Desktop SPA 走 `SharedWorkspaceSurface` 路径，
+不挂 `TerminalCanvas`，因此 `<textarea class="hidden-input">`
+为 0、`<canvas>` 仍为 1、`<div class="app-root">` / `.term-stage`
+均为 0。该差异是产品架构事实，不是测试 gap；desktop 键盘事件需
+走 canvas 自身或 SharedWorkspaceSurface 自带 wrapper。当前 host
+又缺 4 个 kernel 方法（`list_workspace_save_info` /
+`get_shell_history` / `set_user_default_cwd` / `start_watching_paths`）
+致 desktop IO + A→B→A 段无法端到端验证 → 收口为 PARTIAL。
+v9-15 真机 runbook 需先确认 desktop 键盘路径是否需要显式补回
+`hidden-input` 焦点 sink 或依赖 canvas-direct。
+
 ### 11.4 TLS_VALIDATION
 
 正常启动说明与默认验收中**不得**要求
