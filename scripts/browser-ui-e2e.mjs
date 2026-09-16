@@ -444,11 +444,14 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
     });
   }
 
-  // 4. Real terminal IO via real keyboard events. The mobile SPA exposes
-  //    `.hidden-input` so keystrokes route to the PTY through the SPA's
-  //    input pipeline (the same path a touch/IME user takes), NOT a
-  //    direct kernel write call. The desktop SPA uses the canvas itself
-  //    for keyboard focus — clicking the canvas + typing works there.
+  // 4. Real terminal IO via real keyboard events. The mobile SPA mounts
+  //    `TerminalCanvas.svelte`, which renders <textarea class="hidden-input">
+  //    as the canonical focus sink (handles IME composition + raises the
+  //    mobile soft keyboard). The desktop SPA uses SharedWorkspaceSurface
+  //    with its own terminal wrapper that does NOT mount TerminalCanvas and
+  //    therefore has no `.hidden-input` — desktop keystrokes route through
+  //    the canvas itself. The canvas click below arms the terminal pane in
+  //    either case.
   const IO_TAG = `BROWSER_UI_${mode.toUpperCase()}_${Date.now().toString(36)}`;
   let ioDone = false;
   // Click the canvas first to ensure the SPA's IME pipeline is
@@ -458,22 +461,30 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
   if (await cv.count()) {
     await cv.click({ position: { x: 50, y: 50 } }).catch(() => {});
   }
-  // Try .hidden-input focus first (mobile); fall back to direct keyboard
-  // type (desktop, where the canvas has focus).
-  const hidden = page.locator(".hidden-input");
+  // Focus the hidden textarea — wait up to 8s because the textarea only
+  // mounts after the canvas + PTY binding completes. Use force:true so
+  // the focus attempt ignores pointer-events:none / aria-hidden=true.
+  const hidden = page.locator("textarea.hidden-input").first();
+  let hiddenCount = 0;
   try {
-    await hidden.waitFor({ state: "attached", timeout: 3_000 });
-    await hidden.focus().catch(() => {});
-    ioDone = true;
+    await hidden.waitFor({ state: "attached", timeout: 8_000 });
+    hiddenCount = await page.locator("textarea.hidden-input").count();
+    await hidden.focus({ force: true }).catch(() => {});
+    // Verify focus actually landed (some builds reject force:focus on
+    // aria-hidden elements).
+    const focusedTag = await page.evaluate(() => document.activeElement?.tagName ?? "");
+    if (focusedTag === "TEXTAREA") ioDone = true;
   } catch {
-    /* desktop uses canvas-direct — no hidden input */
+    /* textarea never mounted — fall through to canvas-direct path */
   }
   if (ioDone) {
     await page.keyboard.type(`echo ${IO_TAG}`, { delay: 30 });
   } else {
-    // Desktop path: page-level keyboard type goes to the focused element,
-    // which after our canvas click is the canvas itself (SPA listens via
-    // window-level keydown for canvas-bound terminal panes).
+    // Fallback: page-level keyboard type goes to the focused element,
+    // which after our canvas click should be the canvas itself (some
+    // SPA versions wire canvas-level keydown for terminal panes). This
+    // path is best-effort — desktop's IME pipeline sometimes ignores
+    // synthetic keyboard events without an explicit focus().
     await page.keyboard.type(`echo ${IO_TAG}`, { delay: 30 });
   }
   await page.keyboard.press("Enter");
@@ -500,16 +511,30 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
   }
   const sentData = extractSentData(wsFrames.sent);
   const fullSent = sentData.includes(IO_TAG);
+  // Probe SPA shell shape to disambiguate "desktop didn't mount the hidden
+  // textarea because the SPA intentionally drops it on desktop-class viewports"
+  // from "the SPA never got far enough to mount TerminalCanvas". Both are
+  // PARTIAL (product gap), but the latter is also a build-path regression
+  // worth surfacing for the next v9-15 真机 runbook pass.
+  const shellProbe = await page.evaluate(() => ({
+    appRoot: document.querySelectorAll(".app-root").length,
+    displayContents: document.querySelectorAll(".display-contents").length,
+    canvas: document.querySelectorAll("canvas").length,
+    termStage: document.querySelectorAll(".term-stage").length,
+    activeIsTextarea: document.activeElement?.tagName ?? null,
+  }));
   expect(
     `IO: real keyboard input reaches WS as ${IO_TAG.slice(0, 24)}… (${mode})`,
     fullSent,
     {
       usedHiddenInput: ioDone,
+      hiddenTextareaCount: hiddenCount,
       sentFrames: wsFrames.sent.length,
       sentDataLen: sentData.length,
       sentDataTail: sentData.slice(-120),
       firstFrame: wsFrames.sent[0]?.slice(0, 200),
       lastFrame: wsFrames.sent.at(-1)?.slice(0, 200),
+      shell: shellProbe,
     },
   );
 
