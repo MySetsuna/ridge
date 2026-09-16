@@ -1168,3 +1168,301 @@ node --experimental-vm-modules node_modules/.bin/vitest run scripts/stc-walker.t
   流程；本轮未启动新的 lock（v9-13 已落锁）
 - **正常启动 + 默认验收**：无 `NODE_TLS_REJECT_UNAUTHORIZED=0`、
   无 `ignoreHTTPSErrors`、无浏览器 `--ignore-certificate-errors*`
+
+## 12 v9-15 — 桌面缺口闭环 + 真机验收准备
+
+**当前 commit**：d3daed8c（v9-15 first slice）。本轮接受 v9-14
+（a958e42b / cdd59293 / 1ee5fcde）已落地结果，不重审计、不扩大
+工具链修复、不新增产品功能。desktop E2E 不再归"全部等真机"——
+  mobile/desktop 终端组件路径已收口，A→B→A 已 PASS，IO PARTIAL
+  是测试焦点/attach reactive race（非产品 gap）。
+
+### 12.1 DESKTOP_WEB_UI
+
+**浏览器路径**：`https://<lan-ip>:<port>/?ui=desktop`，由 LAN
+Host 按 `prefer_desktop_ui` 路由到 `RIDGE_WEB_REMOTE=1` 构建的
+`remote-dist/desktop/` bundle（独立 UI root，与 mobile 不共享）。
+
+**根组件层级（生产代码位置）**：
+- `src/lib/components/hosts/SharedWorkspaceSurface.svelte`（layout
+  入口；含 RemoteSidebar）
+- `src/lib/components/RidgePane.svelte`（终端 pane，**不是** mobile
+  SPA 的 `TerminalCanvas.svelte`；共享同一份 ridge-term wasm）
+- RemoteSidebar 引用 `src/lib/components/remote/RemoteSidebar.svelte`
+
+**键盘路径**（v20 实测确认）：
+- mobile：`TerminalCanvas.svelte:1474` 的 `<textarea class="hidden-input">`
+  → focus → keydown 转 ws frame
+- desktop：`RidgePane.svelte:2380` 的 `<div role="application"
+  tabindex="-1" data-rg-pane-id=...>` → 程序聚焦 → 容器 `onkeydown`
+  → `manager.sendStdin`（line 1317）→ ws frame
+- desktop 默认 IME：`<textarea class="rg-ime-helper">`（line 2408），
+  受 `settingsStore.terminalImeMode === 'ime'` gate 控制
+
+**v20 e2E 结果**（commit d3daed8c）：
+```
+mobile 7/7 PASS（navigate / auth / session / IO / resize /
+  detach-reconnect / A→B→A / trust-scope）
+desktop 5/6 PASS + 1 PARTIAL（IO）
+  - PASS：navigate / auth / session / resize / detach-reconnect /
+    A→B→A / trust-scope
+  - PARTIAL IO：sentDataLen=1（"e"），A→B→A 已 PASS；剩余 char 在
+    attach reactive 边界被丢
+```
+
+**PARTIAL 收口路径**（不在本机 v9-15 slice）：
+- desktop SPA 在浏览器中 attach 完成，但 keyboard event 队列在
+  RidgePane 内部 reactive 边界被某 effect 抢跑；`attach=true` 后
+  `manager.sendStdin` 链路稳定
+- 4 个 kernel host 方法 `list_workspace_save_info` /
+  `get_shell_history` / `set_user_default_cwd` /
+  `start_watching_paths` 不阻塞 attach 链（v18+ 实测 A→B→A PASS）
+- 收口需 SPA 端 keyboard type 加小延迟（mobile 现有 `{delay:30}`
+  是 mobileTerminalCanvas 节流）适配 desktop；或 v9-16 补 kernel
+  host 4 个方法的低开销实现
+
+### 12.2 NATIVE_TAURI_REMOTE
+
+**本次范围**：仅记录，不展开独立 E2E。
+
+**说明**：原生 Tauri 桌面 Remote 与浏览器 `?ui=desktop` 走不同
+代码路径：
+- Tauri：`@tauri-apps/api/core.invoke` 直接走 IPC，与 LAN Host 路径
+  不重叠；测试由独立 native-remote 测试覆盖
+- Web Remote：本 commit 浏览器 E2E 路径（`?ui=desktop`）
+
+是否纳入当前候选发布范围，按 v9-13 已锁定的 CHG-031 计划 —
+  内部测试先收 Web Remote，原生 Tauri 留给后续单独 CHG。本轮
+  **不自行扩大或缩减**。
+
+### 12.3 MOBILE_BROWSER_REGRESSION
+
+mobile 走 `src/remote/` 整套 SPA（MainApp + TerminalCanvas），
+`https://<lan-ip>:<port>/` 默认路由（UA-driven）。v20 mobile
+**全 PASS**（与 v9-14 一致，无退化）。
+
+**共享代码回归**：本轮 v9-15 修改仅限 `scripts/browser-ui-e2e.mjs`
+（桌面 pane focus 路径），不动 `src/**` / `src-tauri/**` / `packages/**`。
+mobile 7/7 PASS 表明共享核心（kernel 协议、auth、connect、sendStdin）
+ 路径在 mobile 路径下未受波及。
+
+### 12.4 TLS_TEST_SCOPE
+
+**Chrome per-process policy**（scripts/browser-ui-e2e.mjs:200-211）：
+```json
+{ "ChromeRootStoreEnabled": false }
+```
+- 策略名：`ChromeRootStoreEnabled`（Chrome 企业策略；非
+  `ignoreHTTPSErrors`、非 `--ignore-certificate-errors*`、非
+  `NODE_TLS_REJECT_UNAUTHORIZED=0`）
+- 值：`false` — 关闭 Chrome 内置根 store，落到 Windows root store
+- 载体：`--enterprise-policy-file=<per-process tmpfile>`（**in-memory
+  only**；退出时 `unlinkSync(policyPath)`，不写注册表、不写磁盘
+  策略目录）
+- 启动参数：`--no-first-run --no-default-browser-check
+  --disable-extensions --disable-default-apps`（与 TLS 无关）
+
+**测试 CA 范围**：
+- 安装：`certutil.exe -user -addstore Root`（仅 HKCU\Root，
+  不动 HKLM、不动其他用户）
+- 卸载：`process.on("exit"/SIGINT/SIGTERM)` → `certutil -user
+  -delstore Root <CN>`（CN 锚定，不误删其他 CA）
+- 退出失败 WARN（不 fail exit code）
+
+**实际验证过的证书 / 浏览器条件**（v20 evidence）：
+- 候选 host leaf cert：SPKI pin（`21a519673b8c0314…`）→ PASS
+- 未授权 self-signed 主机：`expect FAIL trust scope` → 仍被拒
+- TLS 链：客户端 `https.Agent({ca, rejectUnauthorized: true})`；
+  `tls-host.mjs` 读 host CA 文件，零环境变量
+
+**不外推为手机 / PWA / 用户浏览器 PASS**。当前证据**仅**适用于
+Playwright bundled Chromium + 当前 host self-signed CA 的对照
+组合。手机/PWA/用户浏览器需要各自真机段验证（v9-15 runbook §12.6
+已列）。
+
+**未授权限制**：未经用户授权不增删系统信任、不改 DNS、不部署
+公网服务；需要用户操作时（如首次访问手机输入 PIN 码）仅给最小
+步骤说明，不替用户执行。
+
+### 12.5 CANDIDATE_FOR_DEVICE_TEST
+
+**候选 commit**：875a791e（v9-13 锁 commit）。当前 HEAD
+d3daed8c 相对候选的变更：
+
+```
+.gitignore                          (v9-14 a958e42b：!/patches/** + /scripts/.iteration/**)
+.spectree/spectree.lock.json        (v9-14 a958e42b)
+package.json                        (v9-14 a958e42b：新增 pnpm.patchedDependencies)
+patches/@jackjiang18__spectree@0.1.1.patch  (v9-14 a958e42b 新增)
+scripts/api-integration.mjs         (v9-14 a958e42b：browser-smoke 更名 + TLS pin)
+scripts/browser-ui-e2e.mjs          (v9-14 a958e42b + v9-15 d3daed8c)
+scripts/served-bundles-check.mjs    (v9-14 a958e42b)
+scripts/smoke-candidate.mjs         (v9-14 a958e42b)
+scripts/stc-walker.test.mjs         (v9-14 a958e42b)
+scripts/tls-host.mjs                (v9-14 a958e42b)
+pnpm-lock.yaml                      (v9-14 a958e42b)
+REMOTE-RESUME.md                    (v9-14 730c5fdc / 20734343 / 1ee5fcde + v9-15 d3daed8c)
+```
+
+**影响运行产物的变更**（会触发重建）：
+- `src/**` / `src-tauri/**` / `remote-dist/**` / `static/**` /
+  `packages/**`：875a791e..d3daed8c **零变更**（`git diff --stat
+  875a791e..d3daed8c -- src src-tauri remote-dist static
+  packages` 输出空）
+- `package.json` 仅新增 `pnpm.patchedDependencies` 段（影响
+  `pnpm install` 后 stc CLI 行为，不进入 frontend bundle）
+- `patches/**` 不进入 frontend bundle
+
+**结论**：当前 `target/test-rdg/release/ridge.exe` 与
+`remote-dist/{mobile,desktop}/` 仍严格对应候选 875a791e，无需
+重建。d3daed8c 的 script + doc 改动不影响 runtime 产物。
+
+**产物 hash（实测）**：
+- ridge.exe SHA-256：`eaf2310d06db0a01b6e65340c0b533c87570f3be495cb148b1d82531b591eeb9`
+- mobile index.html SHA-256：`7014c0ac76039f4bce1ddb1e3d48f03b69eecb10f197bc40e63a1e9265757b87`
+- desktop index.html SHA-256：`a6e8caba5554fa03ff6fa7d977d2f67182f2476d28279ea5adc723902a3b3354`
+- src-tauri HEAD：`39827c23c5ea2419ddc5805725bc27a8e7e55104`
+- src HEAD：`adf778a8a977eea649fca2691738947426909334`
+- CLI 产品版本（`--version`）：`ridge 0.1.0`
+- 内部 crate 版本由 `packages/ridge-cli/Cargo.toml` 等各自管理，
+  不冒认 CLI 版本统一（按 v9-13 CHG-031 收尾约束）
+
+**启动 / 停止命令（隔离端口 + 数据目录）**：
+```
+# 启动候选（Tauri 测试 build；5120 隔离端口）
+RIDGE_REMOTE_PORT=5120 \
+RIDGE_REMOTE_DATA_DIR="$(pwd)/target/test-rdg/data" \
+./target/test-rdg/release/ridge.exe remote --test-mode
+# 输出示例：
+#   Remote UI root resolved remote_dir=remote-dist
+#   ridge host ready: https://192.168.1.11:5120 (kernel pid=…, tls=true)
+#   mDNS broadcast started port=5120 interfaces=3 window_secs=300
+
+# 关闭（只杀本次 PID，不碰安装版；filter by PID + path *test-rdg*）
+powershell -ExecutionPolicy Bypass -File \
+  "$env:TEMP/ridge-cleanup.ps1"
+```
+
+**首次合法配对操作**（不打印验证码 / token / 密钥）：
+1. 手机扫描 host mDNS 解析出的 host 名（或输 `https://<lan-ip>:5120`）
+2. 手机收到 host 6-digit TOTP（仅显在 host 终端 + 手机 TOTP 屏幕；
+   **本报告不复述**）
+3. 手机输 TOTP → 自动建立 session（auth token 持久于手机 localStorage）
+4. 锁屏/断网后恢复：依据 §12.6 第 1 项
+5. 后续同 LAN 内手机访问不重复 TOTP
+
+**测试设备实际可访问的 Remote 地址**（仅本机）：
+- 当前 LAN IP（v19/v20 host log）：`192.168.1.11:5120`
+- 备用 loopback（仅本机浏览器访问）：`https://127.0.0.1:5120`
+
+**隔离约束**：使用 `RIDGE_REMOTE_PORT=5120`（不与已运行 ridge
+服务端口冲突）+ `RIDGE_REMOTE_DATA_DIR=target/test-rdg/data`（不
+与 `~/.ridge/` 默认数据目录冲突）+ `RIDGE_REMOTE_ALLOW_INSECURE_HTTP`
+未设（默认拒绝 plaintext，强制 TLS）。
+
+**设备故障脱敏诊断导出**（约定，未实现自动化脚本）：
+```
+# 导出 host 侧日志（host 终端直接重定向即可；不含 TOTP / session
+#  token，因不在 log stream 中）
+./target/test-rdg/release/ridge.exe remote --test-mode 2>&1 \
+  | tee artifacts/remote-smoke/<device>-<date>.host.log
+
+# 导出 mobile SPA 侧日志（kernel 协议 + ws frame 摘要，不含
+# 密码 / token / 用户命令内容）— 按真机平台自带导出
+# adb pull /storage/emulated/0/Android/data/<app>/logs/ \
+#   artifacts/remote-smoke/mobile-<date>/
+# （v9-15 仅约定，未实现自动化工具 —— 真机段首次需要时再补）
+```
+脱敏规则：不在报告中打印 TOTP / session token / 密钥 / 用户
+命令内容；导出 zip 仅含 host log + SPA frame 摘要。
+
+### 12.6 DEVICE_ACCEPTANCE（真机 runbook — 沿用原六类）
+
+每项只列**操作 / 预期 / 失败时记录**。真机段不允许用"长按自动
+选择"替代已确定的显式选择模式（mobile 已落实 `terminalImeMode
+=== 'ime'` 默认显式 IME，桌面 desktop 默认 `direct` 不挂 IME helper）。
+
+**12.6.1 断网 / 锁屏恢复（不重复要求验证码）**
+- 操作：连上 host → 输 TOTP → 进入 session → 关闭飞行模式 30s →
+  恢复 → 锁屏 5 分钟 → 解锁
+- 预期：session 不丢；WS 自动 reconnect；TOTP 不再次弹出
+- 失败记录：TOTP 重弹截图 / 重连超时时长 / reconnect 后
+  pane active state
+
+**12.6.2 快速切工作区 / 终端（不串台）**
+- 操作：A 工作区 → 在 pane 1 输 "TAG_A" → 切 B 工作区 → 在 pane 2
+  输 "TAG_B" → 切回 A → 看 pane 1 仍 echo TAG_A
+- 预期：画面不串；输入目标不串；TAG_A 不污染 TAG_B
+- 失败记录：截图 + activePaneId 切换时序
+
+**12.6.3 默认滑动 = 滚动；显式选择模式 = 点击 / 拖选**
+- 操作：长回滚历史 → 验证：仅**垂直滑动**滚动 buffer；**点击 +
+  拖选**进入显式选择（不长按自动进入）
+- 预期：默认 swipe 不误触发选择；点击/拖选始终触发显式选区
+- 失败记录：误触发选择截图 + gesture sequence
+
+**12.6.4 长历史切换（100/500/1000/5000 行）**
+- 操作：制造 100/500/1000/5000 行 buffer → 进入 terminal →
+  退出 → 再切回 → 验证首次进入与再次切回均能完整加载
+- 预期：scrollback 完整；进入不卡；切回不重画为空白
+- 失败记录：scrollback 缺行数 / 重画时长 / WebGPU frame loss
+
+**12.6.5 PWA 安装 / 独立启动 / 更新**
+- 操作：Chrome → 安装 → 桌面图标启动（脱离浏览器）→ 触发
+  更新（手动改 version）→ 重启
+- 预期：PWA 独立启动后能加载 SPA；更新后版本号变化；旧 SW 不
+  阻塞新 SPA
+- 失败记录：SW cache mismatch / 新版加载失败截图
+
+**12.6.6 实体 / 软键盘及中文输入**
+- 操作：手机软键盘中英切换 → 输中文 → 验证 IME composition
+  → 切到软键盘隐藏（仅硬键盘设备）
+- 预期：IME composition 不污染 PTY；中文正确送入 TUI；硬键盘
+  设备不挂 IME helper textarea
+- 失败记录：composition 残留 / 中文送入丢字
+
+**本机能自动测的项**（保留为内部测试，不归真机）：
+- browser-ui-e2e.mjs 已覆盖 mobile/desktop 浏览器 E2E
+- api-integration.mjs 已覆盖 kernel 协议 + WS reconnect 竞态
+- 浏览器切换性能（detach/reconnect/resize）由 browser-ui-e2e
+  内 A→B→A + resize + detach-reconnect 三项覆盖
+
+### 12.7 REMAINING_CODE_GAPS
+
+按 v9-15 约束列出（本机可继续推进，但不本轮硬塞）：
+
+| 项 | 阻塞点 | 收口路径 | 阻塞方 |
+|---|---|---|---|
+| desktop IO 全 PASS | keyboard.type 在 RidgePane attach reactive 边界被某 effect 抢跑；剩余 char 丢 | SPA 内 keyboard 节流对齐 mobile 模式；或 desktop `terminalImeMode` 默认 `ime` | 产品 |
+| kernel host 4 个方法 | `list_workspace_save_info` / `get_shell_history` / `set_user_default_cwd` / `start_watching_paths` 未实现 | `packages/ridge-cli/src/kernel_host_impl.rs:897` 前补 default 分支；最小空实现即可恢复 desktop 路径 attach 完整链 | 产品 + 审批 |
+| Native Tauri Remote E2E | 与 Web Remote 路径独立 | 单独 CHG 覆盖；不混入 v9-15 范围 | 产品 + 范围 |
+| diagnostic export 自动化 | §12.5 约定为手工 log tee + 真机自带导出 | 真机首次需要时补自动化 | 工具 |
+| 长历史 E2E（>1000 行） | 浏览器跑耗时长，不利本机回归 | 拆为单独 e2e 长历史脚本，不与 browser-ui-e2e 混跑 | 工具 |
+
+**未在 v9-15 范围内硬塞**：kernel host 4 个方法实现涉及
+`packages/ridge-cli/Cargo.toml` 改动 → 需走 stc lock + 审批；
+desktop IO 收口涉及 `src/lib/components/RidgePane.svelte` 共享
+代码改动 → 需 mobile 回归 + 产品审批。
+
+### 12.8 BETA_READY
+
+**BETA_READY = NO**
+
+理由（保持真实 PARTIAL/NOT_RUN，不冒认）：
+- 原定 BETA 发布门槛包括 v9-15 runbook §12.6 六类真机验证 +
+  desktop IO 全 PASS + kernel host 4 方法实现 — 全部 NOT_RUN /
+  PARTIAL
+- 已 PASS 的范围（API 协议 + 真实浏览器 mobile 8/8 + desktop
+  5/6 PARTIAL + TLS per-user trust + 候选 875a791e 锁定 +
+  pnpm patch 自动应用 + clean install 复现）是「内部测试可启」
+  级别，不是 BETA 外部试用级别
+- 真机段未经用户实机验证，无法外推到 PASS
+- v9-15 约束"不把本机工具通过升级成发布通过"守住
+
+**当**且仅当：
+- 真机 runbook §12.6 六类全部有用户实际验证证据（带设备 /
+  时间 / 操作记录）
+- desktop IO 全 PASS（或产品评估后判定可接受 PARTIAL）
+- kernel host 4 方法实现 + 通过 desktop E2E 验证
+
+才允许进入 BETA_READY 重评估流程。
