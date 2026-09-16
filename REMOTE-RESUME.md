@@ -1469,7 +1469,30 @@ powershell -ExecutionPolicy Bypass -File \
 **未在 v9-15 范围内硬塞**：kernel host 4 个方法实现涉及
 `packages/ridge-cli/Cargo.toml` 改动 → 需走 stc lock + 审批；
 desktop IO 收口涉及 `src/lib/components/RidgePane.svelte` 共享
-代码改动 → 需 mobile 回归 + 产品审批。
+代码改动 → 需 mobile 回归 + 产品审批；
+tauriShim `write_to_pty` 接入涉及 web-remote build 改动 →
+需 desktop E2E 回归 + 审批。
+
+**v9-15 first slice 已完成清单（本地 commits）**：
+- 路径根因：kernel_host_impl.rs:897 + tauriShim write_to_pty +
+  RidgePane.svelte:1786 + cloudHostBridge encodeJsonFrame
+- 测试改进：ptyFrameCount 字段 + RidgePane container focus +
+  shell probe + 文档化 wire shape 差异
+- §12 八段 doc：DESKTOP_WEB_UI / NATIVE_TAURI_REMOTE /
+  MOBILE_BROWSER_REGRESSION / TLS_TEST_SCOPE /
+  CANDIDATE_FOR_DEVICE_TEST / DEVICE_ACCEPTANCE /
+  REMAINING_CODE_GAPS / BETA_READY
+- 候选 875a791e 产物 hash + 启动/停止命令 + 配对流程 + 诊断约定
+- TLS scope per-process Chrome policy 名值与实测范围明示
+- runbook 六类（断网/切工作区/滑动/长历史/PWA/IME）操作/预期/失败记录
+- BETA_READY = NO 守住（不把本机工具通过升级成发布通过）
+
+**v9-15 first slice 未完成清单（需 v9-16 切片走审批）**：
+- desktop IO 全 PASS（产品代码改动）
+- kernel host 4 方法实现
+- tauriShim write_to_pty 真实实现
+- 真机 runbook 六类实操证据
+- Native Tauri Remote E2E（独立 CHG）
 
 ### 12.8 BETA_READY
 
