@@ -1171,11 +1171,24 @@ node --experimental-vm-modules node_modules/.bin/vitest run scripts/stc-walker.t
 
 ## 12 v9-15 — 桌面缺口闭环 + 真机验收准备
 
-**当前 commit**：d3daed8c（v9-15 first slice）。本轮接受 v9-14
+**当前 commit**：0ae882db（v9-15 first slice 封顶）。本轮接受 v9-14
 （a958e42b / cdd59293 / 1ee5fcde）已落地结果，不重审计、不扩大
 工具链修复、不新增产品功能。desktop E2E 不再归"全部等真机"——
   mobile/desktop 终端组件路径已收口，A→B→A 已 PASS，IO PARTIAL
   是测试焦点/attach reactive race（非产品 gap）。
+
+**v9-15 first slice 状态（commit 0ae882db 封顶）**：
+- `git diff --stat 875a791e..HEAD -- src src-tauri remote-dist static
+  packages` 输出空 — 候选 875a791e 对应的运行产物严格未动，§12.5
+  SHA-256 仍有效
+- 本切片"本机可执行"交集 100% 执行；desktop IO PARTIAL 闭环 =
+  `kernel_host_impl.rs:897` + `tauriShim/core.ts` +
+  `RidgePane.svelte:1786` 三处产品代码改动，**均超出本切片约束**
+  （需 stc lock + 审批 / 共享代码改 + mobile 回归），列 §12.8
+  v9-16 解锁前置
+- BETA_READY = NO 守住（§12.8）
+- 5 commits 全 local 未 push（`git status` ahead 18 commits，未授权
+  推送约束）
 
 ### 12.1 DESKTOP_WEB_UI
 
