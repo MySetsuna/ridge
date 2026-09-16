@@ -447,11 +447,13 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
   // 4. Real terminal IO via real keyboard events. The mobile SPA mounts
   //    `TerminalCanvas.svelte`, which renders <textarea class="hidden-input">
   //    as the canonical focus sink (handles IME composition + raises the
-  //    mobile soft keyboard). The desktop SPA uses SharedWorkspaceSurface
-  //    with its own terminal wrapper that does NOT mount TerminalCanvas and
-  //    therefore has no `.hidden-input` — desktop keystrokes route through
-  //    the canvas itself. The canvas click below arms the terminal pane in
-  //    either case.
+  //    mobile soft keyboard). The desktop SPA uses `RidgePane.svelte`
+  //    inside SharedWorkspaceSurface; it relies on `container.onkeydown`
+  //    on a `tabindex=-1` `[data-rg-pane-id]` element (plus an IME helper
+  //    textarea gated on `terminalImeMode === 'ime'`). The canvas click
+  //    below arms the terminal pane in either case; the desktop path
+  //    additionally focuses the pane container so keyboard events route
+  //    to RidgePane's onContainerKeyDown.
   const IO_TAG = `BROWSER_UI_${mode.toUpperCase()}_${Date.now().toString(36)}`;
   let ioDone = false;
   // Click the canvas first to ensure the SPA's IME pipeline is
@@ -475,7 +477,21 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
     const focusedTag = await page.evaluate(() => document.activeElement?.tagName ?? "");
     if (focusedTag === "TEXTAREA") ioDone = true;
   } catch {
-    /* textarea never mounted — fall through to canvas-direct path */
+    /* textarea never mounted — desktop SPA's RidgePane uses container-level
+       onkeydown on a tabindex=-1 [data-rg-pane-id] element. Focus the
+       pane container directly so keyboard events route through. */
+    const paneContainer = page.locator("[data-rg-pane-id]").first();
+    if (await paneContainer.count()) {
+      try {
+        await paneContainer.focus();
+        const focused = await page.evaluate(() => ({
+          tag: document.activeElement?.tagName ?? null,
+          pane: document.activeElement?.getAttribute?.("data-rg-pane-id") ?? null,
+          role: document.activeElement?.getAttribute?.("role") ?? null,
+        }));
+        if (focused.pane) ioDone = true;
+      } catch { /* pane container not focusable in this build */ }
+    }
   }
   if (ioDone) {
     await page.keyboard.type(`echo ${IO_TAG}`, { delay: 30 });
