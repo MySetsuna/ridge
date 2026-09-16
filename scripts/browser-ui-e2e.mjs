@@ -509,14 +509,18 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
   // input buffer; the legacy wire format sends one frame per char.
   await sleep(5_000);
 
-  // Extract the cumulative `data` field from all write_to_pty frames.
-  // Frame strings may be partial / non-strict-JSON due to Playwright's
-  // capture path; use a loose regex to pull out any `data":"<chunk>"`.
+  // Extract the cumulative `data` payload from PTY-input frames. The
+  // mobile SPA wraps the bridge frame in a binary envelope (encodeJsonFrame
+  // 0x11 prefix) and the desktop SPA's web-remote build goes through
+  // tauriShim, so most PTY input does NOT appear on the ws as a plain
+  // `{"method":"write_to_pty","params":{"data":"..."}}` JSON-RPC text frame
+  // — we therefore scan any frame for a recognizable TAG-bearing payload
+  // to remain useful as a smoke check, and rely on `ptyFrameCount` below
+  // to disambiguate the actual transport shape.
   function extractSentData(frames) {
     let buf = "";
     for (const f of frames) {
       if (typeof f !== "string") continue;
-      // Reset lastIndex per-frame so we don't skip frames.
       const re = /"data"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
       let m;
       while ((m = re.exec(f)) !== null) {
@@ -547,6 +551,9 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
       hiddenTextareaCount: hiddenCount,
       sentFrames: wsFrames.sent.length,
       sentDataLen: sentData.length,
+      ptyFrameCount: wsFrames.sent.filter((f) =>
+        typeof f === "string" && /"method"\s*:\s*"write_to_pty"/.test(f),
+      ).length,
       sentDataTail: sentData.slice(-120),
       firstFrame: wsFrames.sent[0]?.slice(0, 200),
       lastFrame: wsFrames.sent.at(-1)?.slice(0, 200),
