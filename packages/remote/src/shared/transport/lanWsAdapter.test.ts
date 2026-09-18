@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { LanWsAdapter } from './lanWsAdapter';
 import type { ConnectionState } from './wsRemote';
-import type { RemoteConnection } from './wsRemote';
+import { RemoteConnection } from './wsRemote';
 import type { ControlFrame } from './types';
 
 /**
@@ -255,5 +255,166 @@ describe('LanWsAdapter — authState (FIX-4)', () => {
     conn.setState('connected'); // same → deduped (no emit)
     conn.setState('disconnected'); // → pending
     expect(seen).toEqual(['authorized', 'pending']);
+  });
+});
+
+describe('LanWsAdapter — v9-16 subscribe-pane registration parity (CHG-032)', () => {
+  // Desktop Web Remote output broke because `bridge.subscribePane` only sent a
+  // `subscribe-pane` notification without establishing the pane registration
+  // (`paneKeysById`) that binary PTY dispatch requires. The adapter must route
+  // the notification through `RemoteConnection.subscribePane` — the exact
+  // function the mobile path uses. These tests drive a REAL RemoteConnection
+  // (no socket connect needed: registration + dispatch are socket-independent)
+  // with host-format `pane_frame` bytes (16B UUID prefix + raw PTY payload).
+  const WS_ID = '11111111-2222-4333-8444-555555555555';
+  const PANE_A = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const PANE_B = 'ffffffff-1111-4222-8333-444444444444';
+  const MARK_A = 'V916_DESKTOP_MARKER_A_Q7Z3';
+  const MARK_B = 'V916_DESKTOP_MARKER_B_K9W2';
+
+  function uuidToBytes(uuid: string): Uint8Array {
+    const hex = uuid.replaceAll('-', '');
+    const out = new Uint8Array(16);
+    for (let i = 0; i < 16; i++) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    return out;
+  }
+
+  function hostPaneBinary(paneId: string, text: string): ArrayBuffer {
+    const prefix = uuidToBytes(paneId);
+    const body = new TextEncoder().encode(text);
+    const frame = new Uint8Array(16 + body.length);
+    frame.set(prefix, 0);
+    frame.set(body, 16);
+    return frame.buffer.slice(0);
+  }
+
+  function makeLiveAdapter(): {
+    conn: RemoteConnection;
+    adapter: LanWsAdapter;
+    sent: Record<string, unknown>[];
+  } {
+    const conn = new RemoteConnection();
+    const sent: Record<string, unknown>[] = [];
+    vi.spyOn(conn, 'send').mockImplementation((msg) => {
+      sent.push(msg as Record<string, unknown>);
+    });
+    return { conn, adapter: new LanWsAdapter(conn), sent };
+  }
+
+  function injectBinary(conn: RemoteConnection, buf: ArrayBuffer): void {
+    // Calls the real private dispatch with host-format bytes (the socket event
+    // wrapper only does `new Uint8Array(data)` + the 0x13 tag check, both
+    // covered by wsRemote.behavior tests over a real fake socket).
+    (conn as unknown as { _handleBinaryMessage: (data: ArrayBuffer) => void })._handleBinaryMessage(buf);
+  }
+
+  it('routes subscribe-pane through conn.subscribePane: exactly one legacy wire frame', () => {
+    const { adapter, sent } = makeLiveAdapter();
+    adapter.sendControl({
+      jsonrpc: '2.0',
+      method: 'subscribe-pane',
+      params: { paneId: PANE_A, workspaceId: WS_ID, active: true },
+    });
+    // Registration + a single send inside conn.subscribePane — no double
+    // subscribe, and the wire shape is the legacy frame the host dispatches.
+    expect(sent).toEqual([{ type: 'subscribe-pane', paneId: PANE_A, workspaceId: WS_ID, active: true }]);
+  });
+
+  it('delivers binary pane_frame to onPaneBytes after subscribe (desktop output parity)', () => {
+    const { conn, adapter } = makeLiveAdapter();
+    const got: { paneId: string; text: string }[] = [];
+    adapter.onPaneBytes((paneId, bytes) => got.push({ paneId, text: new TextDecoder().decode(bytes) }));
+    adapter.sendControl({
+      jsonrpc: '2.0',
+      method: 'subscribe-pane',
+      params: { paneId: PANE_A, workspaceId: WS_ID, active: true },
+    });
+    injectBinary(conn, hostPaneBinary(PANE_A, `echo ${MARK_A}\r\n${MARK_A}\r\n`));
+    expect(got.length).toBe(1);
+    expect(got[0].paneId).toBe(PANE_A);
+    expect(got[0].text).toContain(MARK_A);
+  });
+
+  it('drops binary for panes that were never subscribed (registration guard intact)', () => {
+    const { conn, adapter } = makeLiveAdapter();
+    const got: unknown[] = [];
+    adapter.onPaneBytes((paneId, bytes) => got.push([paneId, bytes]));
+    injectBinary(conn, hostPaneBinary(PANE_A, MARK_A));
+    expect(got).toEqual([]);
+  });
+
+  it('routes rapid A→B→A frames to their own panes with zero cross-leak', () => {
+    const { conn, adapter } = makeLiveAdapter();
+    const got: { paneId: string; text: string }[] = [];
+    adapter.onPaneBytes((paneId, bytes) => got.push({ paneId, text: new TextDecoder().decode(bytes) }));
+    for (const paneId of [PANE_A, PANE_B]) {
+      adapter.sendControl({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId, workspaceId: WS_ID } });
+    }
+    injectBinary(conn, hostPaneBinary(PANE_B, MARK_B));
+    injectBinary(conn, hostPaneBinary(PANE_A, MARK_A));
+    expect(got.map((g) => g.paneId)).toEqual([PANE_B, PANE_A]);
+    expect(got[0].text).toContain(MARK_B);
+    expect(got[0].text).not.toContain(MARK_A);
+    expect(got[1].text).toContain(MARK_A);
+    expect(got[1].text).not.toContain(MARK_B);
+  });
+
+  it('unsubscribe-pane unregisters locally AND still forwards exactly one frame', () => {
+    const { conn, adapter } = makeLiveAdapter();
+    const got: unknown[] = [];
+    adapter.onPaneBytes((paneId, bytes) => got.push([paneId, bytes]));
+    adapter.sendControl({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: PANE_A, workspaceId: WS_ID } });
+    injectBinary(conn, hostPaneBinary(PANE_A, MARK_A));
+    expect(got.length).toBe(1);
+    adapter.sendControl({ jsonrpc: '2.0', method: 'unsubscribe-pane', params: { paneId: PANE_A, workspaceId: WS_ID } });
+    injectBinary(conn, hostPaneBinary(PANE_A, MARK_A));
+    expect(got.length).toBe(1); // stale post-unsubscribe frame is dropped
+  });
+
+  it('forwards the unsubscribe frame on the wire exactly once', () => {
+    const { adapter, sent } = makeLiveAdapter();
+    adapter.sendControl({ jsonrpc: '2.0', method: 'unsubscribe-pane', params: { paneId: PANE_A, workspaceId: WS_ID } });
+    expect(sent).toEqual([{ type: 'unsubscribe-pane', paneId: PANE_A, workspaceId: WS_ID }]);
+  });
+
+  it('re-subscribe after unregister restores delivery (reconnect analogue)', () => {
+    const { conn, adapter } = makeLiveAdapter();
+    const got: unknown[] = [];
+    adapter.onPaneBytes((paneId, bytes) => got.push([paneId, bytes]));
+    const sub = { jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: PANE_A, workspaceId: WS_ID } };
+    adapter.sendControl(sub);
+    adapter.sendControl({ jsonrpc: '2.0', method: 'unsubscribe-pane', params: { paneId: PANE_A, workspaceId: WS_ID } });
+    adapter.sendControl(sub); // reconnect resync re-notifies → re-registers
+    injectBinary(conn, hostPaneBinary(PANE_A, MARK_A));
+    expect(got.length).toBe(1);
+  });
+
+  it('malformed subscribe (missing ids) falls back to the legacy bare send', () => {
+    const { adapter, sent } = makeLiveAdapter();
+    adapter.sendControl({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'abc' } });
+    expect(sent).toEqual([{ type: 'subscribe-pane', paneId: 'abc' }]);
+  });
+
+  it('never intercepts a request-shaped subscribe-pane (with id): no response hang', () => {
+    const { conn, adapter, sent } = makeLiveAdapter();
+    const got: unknown[] = [];
+    adapter.onPaneBytes((paneId, bytes) => got.push([paneId, bytes]));
+    adapter.sendControl({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'subscribe-pane',
+      params: { paneId: PANE_A, workspaceId: WS_ID },
+    });
+    // Translated as a normal invoke-request (the host dispatches it and
+    // replies); crucially NO local registration happens through the
+    // response-less subscribePane path, so the RPC cannot hang.
+    expect(sent).toEqual([{
+      type: 'invoke-request',
+      cmd: 'subscribe-pane',
+      args: { paneId: PANE_A, workspaceId: WS_ID },
+      _reqId: 3,
+    }]);
+    injectBinary(conn, hostPaneBinary(PANE_A, MARK_A));
+    expect(got).toEqual([]);
   });
 });

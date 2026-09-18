@@ -5,7 +5,18 @@
 // Goal §2: this script is NOT an API/protocol test. It starts a real Chromium
 // (Playwright-launched), loads the candidate SPA at https://127.0.0.1:5120/,
 // and drives the actual UI: TOTP entry, session selection, terminal input via
-// real keyboard events, resize, detach/reconnect, A→B→A.
+// real keyboard events, resize, reload-based detach/reconnect, second IO,
+// and a real two-pane A→B→A switch when the layout mounts ≥2 panes.
+//
+// IO gates (v9-16, CHG-032) assert marker CONTENT at three layers — never a
+// bare frame count:
+//   1. sent: keystrokes left the page as `write_to_pty` input (cmd/method-gated);
+//   2. echo: the host PTY executed the command and streamed the marker back;
+//   3. page (desktop): the page fed those bytes into `manager.feed`, attributed
+//      to a mounted pane via the SPA's own RIDGE_PTY_TRACE diagnostic.
+// A forged UI, mocked output, transport bypass, or frame-count-only claim
+// cannot satisfy all three. Mobile has no ptyBridge tracer (direct kernel feed
+// into a WebGPU canvas), so its page-side proof is canvas-mounted + screenshot.
 //
 // TLS posture (Goal §3 — no blanket bypass; no system trust changes):
 //   Per-test, scoped to the CURRENT USER (HKCU) only — NEVER the machine-wide
@@ -304,12 +315,21 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
       classifyUnsupported(text);
     } else if (m.type() === "log") {
       classifyUnsupported(text);
+      if (text.startsWith("[pty-trace")) {
+        ptyTraceTotal += 1;
+        if (ptyTraceLines.length < 400) ptyTraceLines.push(text);
+      }
     }
   });
 
   // Capture WS frames so we can assert on the wire — proving the UI drove
   // the protocol, not direct fetch() bypass.
   const wsFrames = { sent: [], received: [] };
+  // PTY-output trace lines (the SPA's own `RIDGE_PTY_TRACE` diagnostic, fired
+  // inside `manager.feed` — the exact call that renders bytes). Kept bounded;
+  // total count tracked separately so the cap never hides a PASS/FAIL flip.
+  const ptyTraceLines = [];
+  let ptyTraceTotal = 0;
   page.on("websocket", (socket) => {
     const capture = (direction, event) => {
       const payload = event?.payload ?? event;
@@ -444,6 +464,16 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
     });
   }
 
+  // Arm the SPA's own PTY-output tracer BEFORE typing. `ptyBridge` reads this
+  // localStorage flag on every `pty-output` event and logs
+  // `[pty-trace <pane6>] …` from inside `manager.feed` — the exact render-path
+  // call. Observing it is not UI injection: no DOM, event, or frame is forged.
+  try {
+    await page.evaluate(() => {
+      try { window.localStorage.setItem("RIDGE_PTY_TRACE", "1"); } catch { /* private mode */ }
+    });
+  } catch { /* page already closed */ }
+
   // 4. Real terminal IO via real keyboard events. The mobile SPA mounts
   //    `TerminalCanvas.svelte`, which renders <textarea class="hidden-input">
   //    as the canonical focus sink (handles IME composition + raises the
@@ -509,18 +539,24 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
   // input buffer; the legacy wire format sends one frame per char.
   await sleep(5_000);
 
-  // Extract the cumulative `data` payload from PTY-input frames. The
-  // mobile SPA wraps the bridge frame in a binary envelope (encodeJsonFrame
-  // 0x11 prefix) and the desktop SPA's web-remote build goes through
-  // tauriShim, so most PTY input does NOT appear on the ws as a plain
-  // `{"method":"write_to_pty","params":{"data":"..."}}` JSON-RPC text frame
-  // — we therefore scan any frame for a recognizable TAG-bearing payload
-  // to remain useful as a smoke check, and rely on `ptyFrameCount` below
-  // to disambiguate the actual transport shape.
-  function extractSentData(frames) {
+  // Wire observation (NOT a gate by itself): PTY-input `data` payloads across
+  // the SPA's real wire shapes. Two shapes occur on the LAN leg:
+  //   (a) legacy `invoke-request` envelope (desktop SPA via tauriShim bridge AND
+  //       mobile SPA via paneScheduler, when talking to a LAN host):
+  //         {"type":"invoke-request","cmd":"write_to_pty","args":{"data":"…"},"_reqId":N}
+  //   (b) native JSON-RPC request (only after a host negotiates it via $/hello):
+  //         {"jsonrpc":"2.0","id":N,"method":"write_to_pty","params":{"data":"…"}}
+  // (A third shape, the cloud 0x11 binary envelope from cloudHostBridge, only
+  // occurs on the cloud/WebRTC leg — never on LAN. Earlier revisions wrongly
+  // blamed a wire-shape mismatch; the v9-16 root cause is the client's missing
+  // pane registration, fixed in CHG-032.)
+  // A frame counts only when it carries BOTH the `write_to_pty` call signature
+  // (`cmd` or `method`) AND a `"data":"…"` field — never on a bare `data` match.
+  function extractWriteData(frames) {
     let buf = "";
     for (const f of frames) {
       if (typeof f !== "string") continue;
+      if (!/"(?:cmd|method)"\s*:\s*"write_to_pty"/.test(f)) continue;
       const re = /"data"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
       let m;
       while ((m = re.exec(f)) !== null) {
@@ -529,8 +565,51 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
     }
     return buf;
   }
-  const sentData = extractSentData(wsFrames.sent);
-  const fullSent = sentData.includes(IO_TAG);
+  function countWriteFrames(frames) {
+    let desktopWire = 0;
+    let jsonRpc = 0;
+    for (const f of frames) {
+      if (typeof f !== "string") continue;
+      if (/"cmd"\s*:\s*"write_to_pty"/.test(f)) desktopWire += 1;
+      else if (/"method"\s*:\s*"write_to_pty"/.test(f)) jsonRpc += 1;
+    }
+    return { desktopWire, jsonRpc };
+  }
+  const sentData = extractWriteData(wsFrames.sent);
+  const sentIncludesTag = sentData.includes(IO_TAG);
+  const writeCounts = countWriteFrames(wsFrames.sent);
+  // Output proof, layer 1: the host PTY executed the command and streamed the
+  // bytes back. Received frames are the raw binary pane stream
+  // (16B-UUID-prefixed) UTF-8-decoded per frame; joining restores markers split
+  // across frame boundaries (frames arrive ordered on one socket).
+  const receivedJoined = wsFrames.received.filter((f) => typeof f === "string").join("");
+  const echoedIncludesTag = receivedJoined.includes(IO_TAG);
+  // Output proof, layer 2 (desktop only): the page itself fed those bytes into
+  // the render path. `pty-trace` lines fire inside `manager.feed`.
+  // Mobile has no ptyBridge tracer (it feeds the kernel directly and renders
+  // to a WebGPU canvas with no DOM text), so its page-side proof is the
+  // canvas-mount gate above plus the final screenshot evidence.
+  let traceIncludesTag = false;
+  let tracePanePrefix = null;
+  if (!isMobile) {
+    let domPaneIds = [];
+    try {
+      domPaneIds = await page.evaluate(() =>
+        Array.from(document.querySelectorAll("[data-rg-pane-id]"))
+          .map((el) => el.getAttribute("data-rg-pane-id"))
+          .filter(Boolean),
+      );
+    } catch { /* page already closed */ }
+    const prefixes = new Set(domPaneIds.map((id) => id.slice(0, 6)));
+    for (const line of ptyTraceLines) {
+      const pm = line.match(/^\[pty-trace ([0-9a-f]{6})\]/);
+      if (pm && prefixes.has(pm[1]) && line.includes(IO_TAG)) {
+        traceIncludesTag = true;
+        tracePanePrefix = pm[1];
+        break;
+      }
+    }
+  }
   // Probe SPA shell shape to disambiguate "desktop didn't mount the hidden
   // textarea because the SPA intentionally drops it on desktop-class viewports"
   // from "the SPA never got far enough to mount TerminalCanvas". Both are
@@ -543,23 +622,48 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
     termStage: document.querySelectorAll(".term-stage").length,
     activeIsTextarea: document.activeElement?.tagName ?? null,
   }));
+  // Gate 1 (input): real keyboard events left the page as PTY input.
   expect(
     `IO: real keyboard input reaches WS as ${IO_TAG.slice(0, 24)}… (${mode})`,
-    fullSent,
+    sentIncludesTag,
     {
       usedHiddenInput: ioDone,
       hiddenTextareaCount: hiddenCount,
       sentFrames: wsFrames.sent.length,
       sentDataLen: sentData.length,
-      ptyFrameCount: wsFrames.sent.filter((f) =>
-        typeof f === "string" && /"method"\s*:\s*"write_to_pty"/.test(f),
-      ).length,
+      ptyFrameDesktopWire: writeCounts.desktopWire,
+      ptyFrameJsonRpc: writeCounts.jsonRpc,
       sentDataTail: sentData.slice(-120),
       firstFrame: wsFrames.sent[0]?.slice(0, 200),
       lastFrame: wsFrames.sent.at(-1)?.slice(0, 200),
       shell: shellProbe,
     },
   );
+  // Gate 2 (PTY execution): the host executed the command and streamed the
+  // marker back. A forged UI or frame-count-only claim cannot produce this:
+  // only a live PTY echoing through the real transport does.
+  expect(
+    `IO: PTY echo of ${IO_TAG.slice(0, 24)}… returned via WS (${mode})`,
+    echoedIncludesTag,
+    {
+      receivedFrames: wsFrames.received.length,
+      receivedTail: receivedJoined.slice(-200),
+    },
+  );
+  // Gate 3 (page render path, desktop only): the page fed the echoed bytes
+  // into `manager.feed`, attributed to a mounted pane. Mobile has no tracer;
+  // its render proof is canvas-mounted (gate above) + final screenshot.
+  if (!isMobile) {
+    expect(
+      `IO: page fed PTY bytes containing ${IO_TAG.slice(0, 24)}… into pane ${tracePanePrefix ?? "?"} (${mode})`,
+      traceIncludesTag,
+      {
+        ptyTraceTotal,
+        ptyTraceKept: ptyTraceLines.length,
+        tracePanePrefix,
+      },
+    );
+  }
 
   // 5. Resize via UI event. Simulates a window/orientation change.
   const beforeRect = await page.evaluate(() => ({
@@ -581,37 +685,65 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
     { beforeRect, afterRect },
   );
 
-  // 6. Detach/reconnect via UI: simulate by calling the SPA's detach button
-  //    if exposed, otherwise by closing the WebSocket via Page and observing
-  //    a reconnect attempt.
-  // NOTE: most candidates expose the detach affordance as part of the file
-  // viewer sidebar / multi-pane chrome. We probe the WS frame count delta as
-  // a proxy: a clean detach + re-attach closes + reopens the lease.
-  const wsBeforeDetach = wsFrames.sent.length + wsFrames.received.length;
-  // Force-detach by closing all open WebSockets through the page context.
-  await page.evaluate(() => {
-    // Close any WS the page owns (the SPA holds the lease WS).
-    // We don't reach into app code; we just close at the transport layer.
+  // 6. Detach/reconnect through a REAL user-achievable path: page reload.
+  // Reload tears down the transport (WS close), reboots the SPA, re-authenticates
+  // with the persisted session token (no fresh TOTP needed), re-handshakes, and
+  // re-subscribes the pane — exercising the full resume chain instead of
+  // no-op'ing on a test hook the page doesn't expose.
+  const wsBeforeReload = wsFrames.sent.length + wsFrames.received.length;
+  let reloadOk = false;
+  try {
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+    reloadOk = true;
+  } catch (e) {
+    expect(`detach/reconnect: page reloads without hanging (${mode})`, false, { error: String(e) });
+  }
+  let gateGoneAfterReload = false;
+  if (reloadOk) {
+    // The saved session token should carry auth across the reload; if the gate
+    // reappears anyway, retry the captured TOTP once (same 30s window permitting).
     try {
-      const sockets = (window).__ridgeSocketForTest;
-      if (sockets && Array.isArray(sockets)) for (const s of sockets) s.close?.();
-    } catch { /* no exposed hook — that's fine, fall through */ }
-  });
-  await sleep(800);
-  // SPA should attempt to reconnect (resume lease).
-  const wsAfterDetach = wsFrames.sent.length + wsFrames.received.length;
+      const totpAgain = page.locator('input[inputmode="numeric"]').first();
+      await totpAgain.waitFor({ state: "visible", timeout: 6_000 }).then(() => true).catch(() => false);
+      if (await totpAgain.count()) {
+        await totpAgain.fill(totp).catch(() => {});
+        const connectBtn = page.locator("button").filter({ hasText: /Connect|连接|验证|Verify|继续/i }).first();
+        if (await connectBtn.count()) await connectBtn.click().catch(() => {});
+        else await totpAgain.press("Enter").catch(() => {});
+      }
+    } catch { /* token path already past the gate */ }
+    gateGoneAfterReload = await page
+      .waitForFunction(
+        () => {
+          if (document.querySelector(".wr-gate")) return false;
+          const body = document.body?.innerText ?? "";
+          if (/Verify & Connect|验证失败/.test(body)) return false;
+          return true;
+        },
+        null,
+        { timeout: 30_000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+    try {
+      await page.locator("canvas").first().waitFor({ state: "visible", timeout: 20_000 });
+    } catch { /* canvas gate reported below */ }
+  }
+  await sleep(4_000); // let the resumed subscription replay stream in
+  const wsAfterReload = wsFrames.sent.length + wsFrames.received.length;
   expect(
-    `detach/reconnect: WS activity resumes after transport close (${mode})`,
-    wsAfterDetach >= wsBeforeDetach, // at minimum: connection state unchanged is ok; reconnect adds frames
-    { wsBeforeDetach, wsAfterDetach, sent: wsFrames.sent.length, received: wsFrames.received.length },
+    `detach/reconnect: session resumes after reload with fresh WS streams (${mode})`,
+    reloadOk && gateGoneAfterReload && wsAfterReload > wsBeforeReload,
+    { wsBeforeReload, wsAfterReload, sent: wsFrames.sent.length, received: wsFrames.received.length },
   );
 
-  // 7. A→B→A — if the SPA exposes a session switcher, drive it. The mobile
-  //    SPA typically shows the workspace tree; clicking another pane is the
-  //    user-visible A→B switch.
-  //    For desktop, there's typically a sidebar with multiple sessions.
-  //    As a universal proxy: ensure the WS is still alive after the switch
-  //    dance by typing another tag.
+  // 7. Post-reconnect IO + rapid A→B→A. Step 6 reloaded the page, so this
+  // second marker round-trips over the RESUMED session — proving detach/
+  // reconnect did not break input or output. Transport-level pane routing
+  // (rapid A→B→A with zero cross-leak) is proven deterministically by the
+  // lanWsAdapter unit tests; here we additionally attempt a REAL two-pane
+  // switch whenever the layout actually mounts ≥2 panes, and SKIP (never fake)
+  // when it does not.
   if (ioDone || canvasOk) {
     // Re-attach focus (mobile: hidden input; desktop: canvas) before typing
     // the switch tag. Same canvas-click dance as the IO test above.
@@ -622,29 +754,89 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
     const hidden2 = page.locator(".hidden-input");
     if (await hidden2.count()) {
       await hidden2.focus().catch(() => {});
+    } else {
+      const paneContainer2 = page.locator("[data-rg-pane-id]").first();
+      if (await paneContainer2.count()) {
+        await paneContainer2.focus().catch(() => {});
+      }
     }
     const SWITCH_TAG = `BROWSER_UI_${mode.toUpperCase()}_SWITCH_${Date.now().toString(36)}`;
     await page.keyboard.type(`echo ${SWITCH_TAG}`, { delay: 30 });
     await page.keyboard.press("Enter");
     await sleep(4_000);
-    function extractSentData2(frames) {
-      let buf = "";
-      for (const f of frames) {
-        if (typeof f !== "string") continue;
-        const re = /"data"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
-        let m;
-        while ((m = re.exec(f)) !== null) {
-          try { buf += JSON.parse(`"${m[1]}"`); } catch { buf += m[1]; }
-        }
-      }
-      return buf;
-    }
-    const sentAfterSwitch = extractSentData2(wsFrames.sent);
+    const sentAfterSwitch = extractWriteData(wsFrames.sent);
     expect(
-      `A→B→A: terminal still responsive after switch sequence (${mode})`,
+      `reconnect-IO: input still reaches WS after reload (${mode})`,
       sentAfterSwitch.includes(SWITCH_TAG),
       { sentFrames: wsFrames.sent.length, sentDataLen: sentAfterSwitch.length },
     );
+    const receivedAfterSwitch = wsFrames.received.filter((f) => typeof f === "string").join("");
+    expect(
+      `reconnect-IO: PTY echo of SWITCH_TAG returned after reload (${mode})`,
+      receivedAfterSwitch.includes(SWITCH_TAG),
+      { receivedFrames: wsFrames.received.length },
+    );
+    if (!isMobile) {
+      const traceAfterSwitch = ptyTraceLines.filter((l) => l.includes(SWITCH_TAG));
+      expect(
+        `reconnect-IO: page fed SWITCH_TAG bytes after reload (${mode})`,
+        traceAfterSwitch.length > 0,
+        { ptyTraceTotal, matchingLines: traceAfterSwitch.length },
+      );
+    }
+  }
+
+  // 7b. Rapid A→B→A pane switch with per-pane marker attribution (desktop
+  // only, and only when the layout really mounts ≥2 panes — otherwise SKIP
+  // with a logged reason; the transport unit tests carry the routing proof).
+  if (!isMobile && (ioDone || canvasOk)) {
+    let switchNote = "skipped: single-pane layout (routing proven by transport unit tests)";
+    try {
+      const paneIds = await page.evaluate(() =>
+        Array.from(new Set(
+          Array.from(document.querySelectorAll("[data-rg-pane-id]"))
+            .map((el) => el.getAttribute("data-rg-pane-id"))
+            .filter(Boolean),
+        )),
+      );
+      if (Array.isArray(paneIds) && paneIds.length >= 2) {
+        const [idA, idB] = paneIds;
+        const tagB = `BROWSER_UI_DESKTOP_PANEB_${Date.now().toString(36)}`;
+        const tagA2 = `BROWSER_UI_DESKTOP_PANEA2_${Date.now().toString(36)}`;
+        const markB = ptyTraceLines.length;
+        await page.locator(`[data-rg-pane-id="${idB}"]`).first().click({ position: { x: 60, y: 60 } }).catch(() => {});
+        await page.locator(`[data-rg-pane-id="${idB}"]`).first().focus().catch(() => {});
+        await page.keyboard.type(`echo ${tagB}`, { delay: 30 });
+        await page.keyboard.press("Enter");
+        await sleep(4_000);
+        const markA = ptyTraceLines.length;
+        await page.locator(`[data-rg-pane-id="${idA}"]`).first().click({ position: { x: 60, y: 60 } }).catch(() => {});
+        await page.locator(`[data-rg-pane-id="${idA}"]`).first().focus().catch(() => {});
+        await page.keyboard.type(`echo ${tagA2}`, { delay: 30 });
+        await page.keyboard.press("Enter");
+        await sleep(4_000);
+        const sliceB = ptyTraceLines.slice(markB, markA);
+        const sliceA = ptyTraceLines.slice(markA);
+        const preB = idB.slice(0, 6);
+        const preA = idA.slice(0, 6);
+        const bHit = sliceB.some((l) => l.includes(`[pty-trace ${preB}]`) && l.includes(tagB));
+        const aHit = sliceA.some((l) => l.includes(`[pty-trace ${preA}]`) && l.includes(tagA2));
+        // Cross-leak: B's window must not show A2's marker attributed to B, and
+        // vice versa (each pane's feed carries only its own input).
+        const bLeak = sliceB.some((l) => l.includes(`[pty-trace ${preB}]`) && l.includes(tagA2));
+        const aLeak = sliceA.some((l) => l.includes(`[pty-trace ${preA}]`) && l.includes(tagB));
+        switchNote = `panes=${idA.slice(0, 6)}/${preB} bHit=${bHit} aHit=${aHit} bLeak=${bLeak} aLeak=${aLeak}`;
+        expect(`A→B→A: marker lands in the focused pane only (${mode})`, bHit && aHit && !bLeak && !aLeak, {
+          switchNote,
+          sliceBLen: sliceB.length,
+          sliceALen: sliceA.length,
+        });
+      } else {
+        console.log(`[browser-ui] A→B→A pane-switch ${switchNote}`);
+      }
+    } catch (e) {
+      console.log(`[browser-ui] A→B→A pane-switch skipped (driver error, not a product verdict): ${String(e).slice(0, 160)}`);
+    }
   }
 
   // 8. Negative: a host we did NOT install a CA for must still be REJECTED.

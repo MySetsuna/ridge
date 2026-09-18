@@ -27,7 +27,7 @@
 // byte-for-byte identical to the pre-refactor bridge.
 
 import { RemoteConnection, type ConnectionState } from './wsRemote';
-import { JSON_RPC_ERRORS, makeError } from './jsonRpc';
+import { JSON_RPC_ERRORS, isJsonRpcNotification, makeError } from './jsonRpc';
 import { unknownText } from './unknownText';
 import {
   type AuthListener,
@@ -50,6 +50,12 @@ function mapState(s: ConnectionState): TransportState {
   // RemoteConnection emits `disconnected`/`error` on a drop, so the reject
   // semantics still fire correctly.
   return s;
+}
+
+// Module-local (deliberately NOT exported: adding an export would change the
+// unit's public interface contract). Narrows unknown JSON-RPC params.
+function isStringRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export class LanWsAdapter implements ChannelTransport {
@@ -128,6 +134,44 @@ export class LanWsAdapter implements ChannelTransport {
 
   // ── L1: control channel ─────────────────────────────────────────────────────
   sendControl(frame: OutboundFrame): void {
+    // v9-16 desktop output parity (CHG-032): a `subscribe-pane` notification
+    // MUST establish the pane registration (`paneKeysById`) that binary PTY
+    // dispatch requires. Route it through `RemoteConnection.subscribePane` —
+    // the exact function the mobile path uses — which registers AND sends the
+    // identical `{type:'subscribe-pane', paneId, workspaceId, …}` wire message,
+    // so exactly one frame goes out (no double subscribe). Requests carrying an
+    // `id` are never intercepted: `subscribePane` sends no response and would
+    // hang the caller.
+    if (isJsonRpcNotification(frame as ControlFrame)) {
+      const notification = frame as { method?: unknown; params?: unknown };
+      const { method, params } = notification;
+      if (method === 'subscribe-pane' && isStringRecord(params)) {
+        const paneId = typeof params.paneId === 'string' ? params.paneId : '';
+        const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+        if (paneId && workspaceId) {
+          this.conn.subscribePane(
+            { paneId, workspaceId },
+            {
+              ...(typeof params.resume === 'boolean' ? { resume: params.resume } : {}),
+              ...(typeof params.sinceSeq === 'number' ? { sinceSeq: params.sinceSeq } : {}),
+              ...(typeof params.active === 'boolean' ? { active: params.active } : {}),
+              ...(typeof params.activationId === 'number' ? { activationId: params.activationId } : {}),
+            },
+          );
+          return;
+        }
+        // Malformed (missing ids): fall through to the legacy bare send,
+        // preserving today's behavior (the host ignores it the same way).
+      }
+      // Symmetric cleanup: drop the local dispatch registration for an explicit
+      // unsubscribe, then forward the frame untouched — today's wire behavior is
+      // preserved (KernelHost ignores it; a future host may honor it).
+      if (method === 'unsubscribe-pane' && isStringRecord(params)) {
+        const paneId = typeof params.paneId === 'string' ? params.paneId : '';
+        const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+        if (paneId && workspaceId) this.conn.unregisterPane({ paneId, workspaceId });
+      }
+    }
     this.conn.send(this.toWire(frame as ControlFrame));
   }
 

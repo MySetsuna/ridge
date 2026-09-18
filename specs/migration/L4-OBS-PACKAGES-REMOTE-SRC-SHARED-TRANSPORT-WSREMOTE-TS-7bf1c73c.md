@@ -62,6 +62,7 @@ public_interface:
   - export type MetaListener
   - export type PtyResizeListener
   - export type RawByteListener
+  - export type TerminalFrameListener
   - export type ThemeListener
   - export type WsMessage
 verified_by:

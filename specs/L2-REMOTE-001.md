@@ -3,10 +3,12 @@ id: L2-REMOTE-001
 level: L2
 parent: L1-PROJECT-001
 title: Remote Session Lifecycle
-status: APPROVED
+status: LOCKED
 origin: authored
 migration_state: PROPOSED
-depends_on: [L2-TERM-001, L2-PROTO-001]
+depends_on:
+  - L2-TERM-001
+  - L2-PROTO-001
 ---
 
 ## §1 范围

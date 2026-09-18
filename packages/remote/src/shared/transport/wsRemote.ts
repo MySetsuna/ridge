@@ -1487,6 +1487,17 @@ export class RemoteConnection implements RemoteLink {
   }
 
   /**
+   * v9-16 (CHG-032): symmetric counterpart to {@link subscribePane} for
+   * transports that route subscribe notifications through `sendControl`
+   * (desktop LAN adapter). Removes the binary-dispatch registration
+   * (`paneKeysById`) without touching the socket. Unknown panes are a no-op.
+   */
+  unregisterPane(pane: PaneRef): void {
+    if (!pane.paneId || !pane.workspaceId) return;
+    this._deletePaneRef(paneRefKey(pane));
+  }
+
+  /**
    * §history-pull（LAN 对齐 cloudRemote）: fetch the next older batch of this
    * pane's scrollback (bytes with `seq < cursor`) to PREPEND above the current
    * buffer when the viewport nears the top. Returns the raw bytes, or `null`

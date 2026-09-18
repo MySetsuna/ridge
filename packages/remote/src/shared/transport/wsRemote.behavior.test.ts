@@ -477,4 +477,50 @@ describe('RemoteConnection public communication contract', () => {
 		expect(ws.readyState).toBe(WebSocket.OPEN);
 		conn.disconnect();
 	});
+
+	// v9-16 (CHG-032): unregisterPane is the symmetric counterpart to
+	// subscribePane for the desktop LAN adapter path. Driven over the real fake
+	// socket with host-format pane_frame bytes (16B UUID prefix + raw payload).
+	it('unregisterPane drops later binary for that pane only (no cross-pane effect)', () => {
+		const { conn, ws } = connect();
+		const workspaceId = 'workspace-a';
+		const paneA = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+		const paneB = 'ffffffff-1111-4222-8333-444444444444';
+		const got: string[] = [];
+		conn.onRawBytes((ref, bytes) => got.push(`${ref.paneId}:${new TextDecoder().decode(bytes)}`));
+		conn.subscribePane({ workspaceId, paneId: paneA });
+		conn.subscribePane({ workspaceId, paneId: paneB });
+		ws.receiveBinary(hostPaneFrame(paneA, 'MARK-A-1'));
+		expect(got).toEqual([`${paneA}:MARK-A-1`]);
+		conn.unregisterPane({ workspaceId, paneId: paneA });
+		ws.receiveBinary(hostPaneFrame(paneA, 'MARK-A-2-stale'));
+		ws.receiveBinary(hostPaneFrame(paneB, 'MARK-B-1'));
+		expect(got).toEqual([`${paneA}:MARK-A-1`, `${paneB}:MARK-B-1`]);
+		conn.disconnect();
+	});
+
+	it('unregisterPane is a no-op for unknown panes and malformed refs', () => {
+		const { conn, ws } = connect();
+		const got: string[] = [];
+		conn.onRawBytes((ref, bytes) => got.push(`${ref.paneId}:${new TextDecoder().decode(bytes)}`));
+		expect(() => conn.unregisterPane({ workspaceId: 'workspace-a', paneId: 'no-such-pane' })).not.toThrow();
+		expect(() => conn.unregisterPane({ workspaceId: '', paneId: '' })).not.toThrow();
+		expect(() => conn.unregisterPane({ workspaceId: 'workspace-a', paneId: '' })).not.toThrow();
+		// A later subscribe still registers normally (no poisoned state).
+		const paneId = '01234567-89ab-cdef-0123-456789abcdef';
+		conn.subscribePane({ workspaceId: 'workspace-a', paneId });
+		ws.receiveBinary(hostPaneFrame(paneId, 'ALIVE'));
+		expect(got).toEqual([`${paneId}:ALIVE`]);
+		conn.disconnect();
+	});
 });
+
+function hostPaneFrame(paneId: string, text: string): Uint8Array {
+	// Mirrors the host's pane_frame wire format (ridge_remote::pane): 16B UUID
+	// prefix + raw PTY bytes — the same shape as the existing binary test above.
+	const hex = paneId.replaceAll('-', '');
+	const frame = new Uint8Array(16 + text.length);
+	for (let i = 0; i < 16; i++) frame[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+	frame.set(new TextEncoder().encode(text), 16);
+	return frame;
+}

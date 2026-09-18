@@ -151,7 +151,12 @@
   },
   {
     "changeId": "CHG-031",
-    "specHash": "1dab3f779de8e9a2b10603f9fd51a965a5ad501692df5553499127d47bfaaa0e",
-    "approvedAt": "2026-09-15T17:24:05.778Z"
+    "specHash": "0c994630d8fc80ff9f3b4a8eb908e91b5ad3008f9e014e6ec221e662850f9681",
+    "approvedAt": "2026-09-18T07:12:43.744Z"
+  },
+  {
+    "changeId": "CHG-032",
+    "specHash": "01d012a7654981544c1b9142852987015d361385008a3381bd606a993d902738",
+    "approvedAt": "2026-09-18T08:04:53.242Z"
   }
 ]

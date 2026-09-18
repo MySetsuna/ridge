@@ -182,6 +182,7 @@ public_interface:
   - export type RemotePerfStage
   - export type ResyncHook
   - export type StateListener
+  - export type TerminalFrameListener
   - export type ThemeListener
   - export type TransportState
   - export type Unsubscribe
