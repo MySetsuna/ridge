@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "changeId": "CHG-044",
-  "specHash": "3feb7b666eee92a2f38902cc9368209cfe273c25b9a569a765b1ea409f171488",
+  "changeId": "CHG-045",
+  "specHash": "d9098a5c6fa6ad931733b73306bd1fa6f3dbd9fd30930a63418d256a122b2c83",
   "units": [],
   "allowedPaths": [],
   "testCommand": [
@@ -29,7 +29,7 @@
     ".vscode/extensions.json": "926925a0d7f8b5e0e9e84667ac901095f7ffdb83afb54de65662d6e4cfb78ad1",
     ".vscode/settings.json": "54224dc29195ac0e0ae6a3ce38d5cd7aeb390357259a37c860a28a3f1087ef71",
     "AGENTS.md": "e1d607be3c46e5473c2a7aa6d43c8a8faf25f992aa7a1ce170ab8bfac04d88e9",
-    "Cargo.lock": "fa5ea7c3e2af1f1dc1ac3f6ba4f4d7f254d02c759a93b2073e610b28d4551c23",
+    "Cargo.lock": "3eae1fe42591656db6e5238a19c3208c85b8ae49b2eb74b032114eb0fdf3bd1e",
     "Cargo.toml": "9cccba0a8b7bcab6a2fafaf06c63f219a6f9c2a81604d0a408ae593074d8ddcc",
     "changes/BASELINE-001.md": "89235164085793f6ea8df5140ec032522d2523a7264a4b3c0b3a210745552c06",
     "changes/CHG-001.md": "14b0dcb1c2b91b2b8dfab95e6da4dbdd71ae29d21e6a85e193a4d9e3cb31154c",
@@ -76,6 +76,7 @@
     "changes/CHG-042.md": "09c7b7980235e53c68fda0031d74dd2ad2e46c1e70aa00ad5c9a2093858ac005",
     "changes/CHG-043.md": "95a559ca3fb33a36c5ce2270f54c801943ef77492d90cae440f8a6c523a7e9b5",
     "changes/CHG-044.md": "e2b625b69832e26ec9637d48c8650ae3dfb9449e116b4cf9d1d0560fa3867f2d",
+    "changes/CHG-045.md": "3c1d0d50a87893b0d837f1c9d9fa5048e46872076608a99c15812a1931d35edb",
     "docs/architecture/00-overview.md": "d88523e187eac1aef5a85939639722f38b3cbac41a55327cfe1c28a9bb87d682",
     "docs/architecture/10-kernel.md": "80f773ffecdaafac0b64dfb99a3ddb8c05f801d39c9d2533397b4e905bb5e4f9",
     "docs/architecture/20-rtp1-wire.md": "f32223c6d43ccf048f06176cb288baf46156477a72e24f1a4389a88756ca1a1c",
@@ -104,7 +105,7 @@
     "docs/operations/remote-cloud-release.md": "e0b484baf2f88db3e081468a53c4ea5be290152ddb5557a2573f15ef344c3430",
     "docs/README_CN.md": "8932531370504d2820f207f6cd3f5d92852066c9a5ae696c4a065ae256fa889a",
     "IMPLEMENTATION-ACCEPTANCE.md": "2f37f9b4846693e549620f103776c192b26bc6b5dd5ceda7722403539108fd70",
-    "package.json": "0058d22b3c183eb17b672afb6223fcc3eed01191b20e06a490b7ad2fcecd2784",
+    "package.json": "62efb1f3dc57362779c8f12cb515fb1f510981a44fc46691989240ef4ae318f2",
     "packages/remote/package.json": "3c9d355179aefeaf12877e4e44bc5b41ba8812fc23825024f01da3b082f6b1db",
     "packages/remote/src/index.ts": "ae66d492761ce353faab343fe9215ab48235088dee9cd5ce1621392948999c30",
     "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts": "7abb718851c25821146276ac974fbad2aa64e011e142e2623fe2c6a164324b08",
@@ -2064,7 +2065,7 @@
     "src-tauri/build.rs": "67135ac3b6dfd3c93a0bb047ab339d8926c8fd8289c8d52bce480c083e9ca61c",
     "src-tauri/capabilities/default.json": "0aea69d6e967d9018481608de11dc5a992b38cabee3e825095353cab0cf5d8c2",
     "src-tauri/Cargo.lock": "736528b17382bf99c0cee212647529614b1555c46dea0428e13abeefc49ec44f",
-    "src-tauri/Cargo.toml": "2093bd26286c137904f9391d07586dace0f99bed24ca6b30873317c98dab0637",
+    "src-tauri/Cargo.toml": "cc228f483784b2061462e2e057ccb6bfc40e22205286ddbf585858ba1a9a4871",
     "src-tauri/gen/schemas/acl-manifests.json": "6e09a8d1446e2640a18c93fdbb0fdabfb913e31af7ca946dd4b171d6796d8283",
     "src-tauri/gen/schemas/capabilities.json": "ee5989f2da424f6247baacb2e93e445a53d9265f2ab5ad453c738e001f02220d",
     "src-tauri/gen/schemas/desktop-schema.json": "1d75d79fc208fd9703b312646c8ac6ead58e9acdf90e0af236eb2aeef928c9de",
@@ -2160,7 +2161,7 @@
     "src-tauri/src/utils/mod.rs": "bb7273be15007066a27b40d1fb8285c4f151034e20cc046bef8c131b3eabcf7b",
     "src-tauri/src/utils/pane_id.rs": "81d1e702be5468d013a52b4dd00fd45011b5e3d69184d8a99945df61d99369e8",
     "src-tauri/src/utils/pty_log.rs": "5cf120a817a7b15162562a36a69150392a346f91e657ba3c220e5a5f25b0cb44",
-    "src-tauri/tauri.conf.json": "a95e4b75e124b622c8922fc6a8a2911faba98b0d1bd8211719798edc37df29dc",
+    "src-tauri/tauri.conf.json": "964de4f98487f5a46167895e80ad12879b89a0ff92b5e165cb09cba6c55de781",
     "src-tauri/tests/win_manifest_boot.rs": "5d6cdc73371fb907cdc5ab03c5e821483275d4f79477045fe35660936115f934",
     "src-tauri/wix/path-env.wxs": "0b4fa57aab8854d864d5ab1bc68a7b2086491485e9b0d3785da17c58aa6faf2c",
     "static/1.jpg": "b5ec3fd433d81f9f7b217571e76aabf35557cce8d8d619aba580486e4e78faa4",
@@ -2206,6 +2207,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-a7318e1a6764",
-  "manifestHash": "a7318e1a676418998319f4d68bcc4669caab733277daec48bf4ecf024435baeb"
+  "buildId": "BUILD-5500e2be168a",
+  "manifestHash": "5500e2be168a63dd1f66858cc607854bf4f76adfa7f63481a523fd1dbd4f367b"
 }
