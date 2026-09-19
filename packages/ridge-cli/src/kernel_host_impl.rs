@@ -25,7 +25,7 @@ use ridge_kernel::client::{
     request_json, resize_domain_pty, resync_domain_pty_output, running_endpoint,
     scrollback_domain_pty, write_domain_pty, DomainPtyLaunch, KernelPtyInfo, KernelPtyOutput,
 };
-use ridge_kernel::registry::KernelEndpoint;
+use ridge_kernel::registry::{read_endpoint, KernelEndpoint};
 use ridge_remote::auth::{RemoteAuth, SessionStore};
 use ridge_remote::host::{HostAuth, HostError, HostMeta, RemoteHost, WorkspaceProvider, WsConn};
 use ridge_remote::serve::UaServeConfig;
@@ -90,7 +90,165 @@ pub struct KernelHost {
 
 impl KernelHost {
     fn current_endpoint(&self) -> KernelEndpoint {
-        select_endpoint(self.endpoint.clone(), running_endpoint())
+        // Registry reads are local and cheap. Avoid probing the kernel health
+        // endpoint on every projection request when the host is still bound
+        // to the same boot generation; those probes use a bounded socket read
+        // timeout and can serialize startup RPCs behind the topology poll.
+        let Some(refreshed) = read_endpoint() else {
+            return self.endpoint.clone();
+        };
+        if refreshed.pid == self.endpoint.pid
+            && refreshed.port == self.endpoint.port
+            && refreshed.token == self.endpoint.token
+        {
+            self.endpoint.clone()
+        } else {
+            select_endpoint(self.endpoint.clone(), running_endpoint())
+        }
+    }
+
+    fn seed_workspace_pane(
+        endpoint: &KernelEndpoint,
+        workspace_id: Uuid,
+    ) -> Result<Uuid, String> {
+        let pane_id = Uuid::new_v4();
+        request_json(
+            endpoint,
+            "PUT",
+            &format!("/v1/domain/workspaces/{workspace_id}/topology"),
+            Some(&json!({
+                "pane_tree": {
+                    "root": { "Leaf": pane_id },
+                    "panes": {
+                        pane_id.to_string(): {
+                            "id": pane_id,
+                            "mode": "Terminal"
+                        }
+                    }
+                }
+            })),
+        )?;
+        create_domain_pty(
+            endpoint,
+            pane_id,
+            None,
+            None,
+            Some(workspace_id),
+            "shell",
+            Some("remote-lan"),
+        )?;
+        Ok(pane_id)
+    }
+
+    fn create_workspace_json(&self, name: Option<&str>) -> Result<Value, String> {
+        let endpoint = self.current_endpoint();
+        let body = name.map(|value| json!({ "name": value }));
+        let value = request_json(
+            &endpoint,
+            "POST",
+            "/v1/domain/workspaces",
+            body.as_ref(),
+        )?;
+        let workspace_id = value
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .and_then(|id| Uuid::parse_str(id).ok())
+            .ok_or_else(|| "kernel create-workspace response missing workspace_id".to_string())?;
+        request_json(
+            &endpoint,
+            "POST",
+            &format!("/v1/domain/workspaces/{workspace_id}/activate"),
+            None,
+        )?;
+        Self::seed_workspace_pane(&endpoint, workspace_id)?;
+        Ok(json!({
+            "success": true,
+            "workspaceId": workspace_id.to_string(),
+            "createdWorkspace": true,
+        }))
+    }
+
+    fn set_split_ratios(&self, args: &Value) -> Result<Value, String> {
+        let workspace_id = self.workspace_id(args.get("workspaceId").and_then(Value::as_str))?;
+        let mut detail = request_json(
+            &self.current_endpoint(),
+            "GET",
+            &format!("/v1/domain/workspaces/{workspace_id}"),
+            None,
+        )?;
+        let mut layout = detail
+            .get_mut("layout")
+            .map(Value::take)
+            .ok_or_else(|| "kernel workspace response missing layout".to_string())?;
+        let updates = if let Some(updates) = args.get("updates").and_then(Value::as_array) {
+            updates
+                .iter()
+                .map(|update| {
+                    let path = update
+                        .get("path")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| "split ratio update missing path".to_string())?
+                        .iter()
+                        .map(|value| {
+                            value
+                                .as_u64()
+                                .map(|index| index as usize)
+                                .ok_or_else(|| "split ratio path must contain integers".to_string())
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let ratios = update
+                        .get("ratios")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| "split ratio update missing ratios".to_string())?
+                        .iter()
+                        .map(|value| {
+                            value
+                                .as_f64()
+                                .ok_or_else(|| "split ratios must contain numbers".to_string())
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok((path, ratios))
+                })
+                .collect::<Result<Vec<_>, String>>()?
+        } else {
+            vec![ (
+                args.get("path")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| "split ratio update missing path".to_string())?
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_u64()
+                            .map(|index| index as usize)
+                            .ok_or_else(|| "split ratio path must contain integers".to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                args.get("ratios")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| "split ratio update missing ratios".to_string())?
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_f64()
+                            .ok_or_else(|| "split ratios must contain numbers".to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ) ]
+        };
+        for (path, ratios) in updates {
+            apply_split_ratios(&mut layout, &path, &ratios)?;
+        }
+        let panes = pane_metadata_for_layout(&layout)?;
+        let topology = request_json(
+            &self.current_endpoint(),
+            "PUT",
+            &format!("/v1/domain/workspaces/{workspace_id}/topology"),
+            Some(&json!({ "pane_tree": { "root": layout, "panes": panes } })),
+        )?;
+        if topology.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err("kernel rejected split ratio topology update".to_string());
+        }
+        Ok(Value::Null)
     }
 
     fn snapshot(&self) -> KernelSnapshot {
@@ -128,6 +286,9 @@ impl KernelHost {
                     .and_then(Value::as_str)
                     .and_then(|id| Uuid::parse_str(id).ok())
                 {
+                    if let Err(error) = Self::seed_workspace_pane(&endpoint, id) {
+                        errors.push(format!("seed initial workspace pane: {error}"));
+                    }
                     ids.push(id);
                 }
             }
@@ -147,6 +308,13 @@ impl KernelHost {
 
     fn workspace_id(&self, requested: Option<&str>) -> Result<Uuid, String> {
         let snapshot = self.snapshot();
+        Self::workspace_id_from_snapshot(&snapshot, requested)
+    }
+
+    fn workspace_id_from_snapshot(
+        snapshot: &KernelSnapshot,
+        requested: Option<&str>,
+    ) -> Result<Uuid, String> {
         if let Some(raw) = requested.filter(|value| !value.trim().is_empty()) {
             let id = Uuid::parse_str(raw).map_err(|error| error.to_string())?;
             if snapshot.ids.contains(&id) {
@@ -161,7 +329,7 @@ impl KernelHost {
     }
 
     fn panes(&self, workspace_id: Uuid, snapshot: &KernelSnapshot) -> Vec<Value> {
-        snapshot
+        let mut panes = snapshot
             .ptys
             .iter()
             .filter(|pty| pty.workspace_id == Some(workspace_id))
@@ -176,7 +344,37 @@ impl KernelHost {
                     "cols": pty.cols,
                 })
             })
-            .collect()
+            .collect::<Vec<_>>();
+
+        // The kernel graph can contain a stable pane before its PTY is
+        // attached (fresh remote workspace, or a shell being rebuilt). Keep
+        // that identity visible to the browser so the real pane component can
+        // perform its normal create/attach path instead of rendering an empty
+        // workspace and waiting for a manual "new terminal" action.
+        if let Ok(detail) = request_json(
+            &self.current_endpoint(),
+            "GET",
+            &format!("/v1/domain/workspaces/{workspace_id}"),
+            None,
+        ) {
+            if let Some(graph_panes) = detail.get("panes").and_then(Value::as_array) {
+                for pane_id in graph_panes.iter().filter_map(Value::as_str) {
+                    if panes.iter().any(|pane| pane["id"] == pane_id) {
+                        continue;
+                    }
+                    panes.push(json!({
+                        "id": pane_id,
+                        "title": "shell",
+                        "cwd": Value::Null,
+                        "shell_kind": Value::Null,
+                        "status": "detached",
+                        "rows": 24,
+                        "cols": 80,
+                    }));
+                }
+            }
+        }
+        panes
     }
 
     fn layout(&self, workspace_id: Uuid, snapshot: &KernelSnapshot) -> Value {
@@ -266,6 +464,45 @@ impl KernelHost {
 
     fn create_pane(&self, args: &Value, snapshot: &KernelSnapshot) -> Result<Uuid, String> {
         let workspace_id = self.workspace_id(args.get("workspaceId").and_then(Value::as_str))?;
+        if let Some(requested) = args
+            .get("paneId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            let pane_id = Uuid::parse_str(requested)
+                .map_err(|error| format!("invalid pane id: {requested}: {error}"))?;
+            if snapshot
+                .ptys
+                .iter()
+                .any(|pty| pty.pty_id == pane_id && pty.workspace_id == Some(workspace_id))
+            {
+                return Ok(pane_id);
+            }
+
+            let detail = request_json(
+                &self.current_endpoint(),
+                "GET",
+                &format!("/v1/domain/workspaces/{workspace_id}"),
+                None,
+            )?;
+            if !workspace_detail_contains_pane(&detail, pane_id) {
+                return Err(format!(
+                    "pane {pane_id} does not belong to workspace {workspace_id}"
+                ));
+            }
+            let shell = args.get("shell").and_then(Value::as_str);
+            let cwd = args.get("cwd").and_then(Value::as_str);
+            create_domain_pty(
+                &self.current_endpoint(),
+                pane_id,
+                shell,
+                cwd,
+                Some(workspace_id),
+                "shell",
+                Some("remote-lan"),
+            )?;
+            return Ok(pane_id);
+        }
         let target = snapshot
             .ptys
             .iter()
@@ -324,6 +561,75 @@ fn capture_kernel_result<T>(
         },
         Some,
     )
+}
+
+fn apply_split_ratios(layout: &mut Value, path: &[usize], ratios: &[f64]) -> Result<(), String> {
+    let mut node = layout;
+    for index in path {
+        let children = node
+            .get_mut("Split")
+            .and_then(Value::as_object_mut)
+            .and_then(|split| split.get_mut("children"))
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| "split ratio path does not reach a split".to_string())?;
+        node = children
+            .get_mut(*index)
+            .ok_or_else(|| format!("split ratio path index out of range: {index}"))?;
+    }
+    let split = node
+        .get_mut("Split")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "split ratio target is not a split".to_string())?;
+    let child_count = split
+        .get("children")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    if child_count != ratios.len() {
+        return Err(format!(
+            "split ratios len {} != children {}",
+            ratios.len(), child_count
+        ));
+    }
+    let sum: f64 = ratios.iter().sum();
+    if !sum.is_finite() || sum <= f64::EPSILON {
+        return Err("split ratios sum is zero or non-finite".to_string());
+    }
+    split.insert(
+        "ratios".to_string(),
+        json!(ratios.iter().map(|ratio| ratio / sum * 100.0).collect::<Vec<_>>()),
+    );
+    Ok(())
+}
+
+fn pane_metadata_for_layout(layout: &Value) -> Result<serde_json::Map<String, Value>, String> {
+    let mut panes = serde_json::Map::new();
+    collect_pane_metadata(layout, &mut panes)?;
+    Ok(panes)
+}
+
+fn collect_pane_metadata(
+    node: &Value,
+    panes: &mut serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    if let Some(id) = node.get("Leaf").and_then(Value::as_str) {
+        let pane_id = Uuid::parse_str(id).map_err(|error| format!("invalid pane id {id}: {error}"))?;
+        panes.insert(
+            id.to_string(),
+            json!({ "id": pane_id, "mode": "Terminal" }),
+        );
+        return Ok(());
+    }
+    let children = node
+        .get("Split")
+        .and_then(Value::as_object)
+        .and_then(|split| split.get("children"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "kernel workspace layout contains an invalid pane node".to_string())?;
+    for child in children {
+        collect_pane_metadata(child, panes)?;
+    }
+    Ok(())
 }
 
 struct KernelSnapshot {
@@ -399,19 +705,9 @@ impl WorkspaceProvider for KernelHost {
         Ok(json!({ "success": true, "workspaceId": id.to_string() }))
     }
 
-    fn create_workspace(&self, _name: Option<String>) -> Result<Value, HostError> {
-        let value = request_json(
-            &self.current_endpoint(),
-            "POST",
-            "/v1/domain/workspaces",
-            None,
-        )
-        .map_err(HostError::BadRequest)?;
-        Ok(json!({
-            "success": true,
-            "workspaceId": value.get("workspace_id").cloned().unwrap_or(Value::Null),
-            "createdWorkspace": true,
-        }))
+    fn create_workspace(&self, name: Option<String>) -> Result<Value, HostError> {
+        self.create_workspace_json(name.as_deref())
+            .map_err(HostError::BadRequest)
     }
 
     fn close_workspace(&self, workspace_id: &str) -> Result<Value, HostError> {
@@ -485,6 +781,49 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
     let (mut tx, mut rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
     let subscriptions = Arc::new(Mutex::new(std::collections::HashSet::<(Uuid, Uuid)>::new()));
+    let runtime = tokio::runtime::Handle::current();
+    let (dispatch_tx, mut dispatch_rx) = mpsc::unbounded_channel::<Value>();
+    let dispatch_out_tx = out_tx.clone();
+    let dispatch_host = Arc::clone(&host);
+    let dispatch_subscriptions = Arc::clone(&subscriptions);
+    let dispatch_runtime = runtime.clone();
+    let _dispatch_worker = tokio::task::spawn_blocking(move || {
+        while let Some(value) = dispatch_rx.blocking_recv() {
+            let Some(reply) = handle_text(
+                &value,
+                &dispatch_host,
+                &dispatch_runtime,
+                &dispatch_out_tx,
+                &dispatch_subscriptions,
+            ) else {
+                continue;
+            };
+            if dispatch_out_tx.send(Message::Text(reply)).is_err() {
+                break;
+            }
+        }
+    });
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Value>();
+    let input_out_tx = out_tx.clone();
+    let input_host = Arc::clone(&host);
+    let input_subscriptions = Arc::clone(&subscriptions);
+    let input_runtime = runtime;
+    let _input_worker = tokio::task::spawn_blocking(move || {
+        while let Some(value) = input_rx.blocking_recv() {
+            let Some(reply) = handle_text(
+                &value,
+                &input_host,
+                &input_runtime,
+                &input_out_tx,
+                &input_subscriptions,
+            ) else {
+                continue;
+            };
+            if input_out_tx.send(Message::Text(reply)).is_err() {
+                break;
+            }
+        }
+    });
     let mut last_panes_frame = panes_frame(&host);
     let mut topology_poll = tokio::time::interval(Duration::from_millis(250));
     topology_poll.tick().await;
@@ -534,9 +873,12 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
             Some(Ok(message)) = rx.next() => match message {
                 Message::Text(text) => {
                     let Ok(value) = serde_json::from_str::<Value>(&text) else { continue; };
-                    if let Some(reply) = handle_text(&value, &host, &out_tx, &subscriptions) {
-                        if tx.send(Message::Text(reply)).await.is_err() { break; }
-                    }
+                    let target = if is_latency_sensitive_pty_message(&value) {
+                        &input_tx
+                    } else {
+                        &dispatch_tx
+                    };
+                    if target.send(value).is_err() { break; }
                 }
                 Message::Ping(bytes) => { if tx.send(Message::Pong(bytes)).await.is_err() { break; } }
                 Message::Close(_) => break,
@@ -547,13 +889,30 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
     }
 }
 
+fn is_latency_sensitive_pty_message(value: &Value) -> bool {
+    if matches!(
+        value.get("type").and_then(Value::as_str),
+        Some("stdin" | "subscribe-pane")
+    ) {
+        return true;
+    }
+    let method = value
+        .get("method")
+        .or_else(|| value.get("cmd"))
+        .and_then(Value::as_str);
+    matches!(
+        method,
+        Some("write_to_pty" | "write_pty" | "subscribe-pane" | "subscribe_pane_raw")
+    )
+}
+
 fn handle_text(
     value: &Value,
     host: &Arc<KernelHost>,
+    runtime: &tokio::runtime::Handle,
     out_tx: &mpsc::UnboundedSender<Message>,
     subscriptions: &Arc<Mutex<std::collections::HashSet<(Uuid, Uuid)>>>,
 ) -> Option<String> {
-    let snapshot = host.snapshot();
     if value.get("jsonrpc").and_then(Value::as_str) == Some("2.0") {
         let method = value.get("method").and_then(Value::as_str).unwrap_or("");
         let params = value.get("params").cloned().unwrap_or(Value::Null);
@@ -567,23 +926,32 @@ fn handle_text(
         }
         if id.is_none() {
             if matches!(method, "subscribe-pane" | "subscribe_pane_raw") {
+                let snapshot = host.snapshot();
                 if rtp1_kernel_enabled() {
-                    start_subscription_rtp1(&params, host, &snapshot, out_tx, subscriptions);
+                    start_subscription_rtp1(
+                        &params,
+                        host,
+                        &snapshot,
+                        runtime,
+                        out_tx,
+                        subscriptions,
+                    );
                 } else {
-                    start_subscription(&params, host, &snapshot, out_tx, subscriptions);
+                    start_subscription(&params, host, &snapshot, runtime, out_tx, subscriptions);
                 }
             }
             return None;
         }
         let id = id.unwrap();
         return Some(
-            jsonrpc_result(&id, dispatch(method, &params, host, out_tx, subscriptions)).to_string(),
+            jsonrpc_result(&id, dispatch(method, &params, host, runtime, out_tx, subscriptions))
+                .to_string(),
         );
     }
     if value.get("type").and_then(Value::as_str) == Some("invoke-request") {
         let cmd = value.get("cmd").and_then(Value::as_str).unwrap_or("");
         let args = value.get("args").cloned().unwrap_or(Value::Null);
-        let result = dispatch(cmd, &args, host, out_tx, subscriptions);
+        let result = dispatch(cmd, &args, host, runtime, out_tx, subscriptions);
         return Some(invoke_result_wire(
             value.get("_reqId").cloned().unwrap_or(Value::Null),
             result,
@@ -593,20 +961,28 @@ fn handle_text(
         "ping" => Some(json!({"type":"pong"}).to_string()),
         "list-panes" | "list-workspace-panes" => Some(panes_frame(host).to_string()),
         "subscribe-pane" => {
-            start_subscription(value, host, &snapshot, out_tx, subscriptions);
+            let snapshot = host.snapshot();
+            start_subscription(value, host, &snapshot, runtime, out_tx, subscriptions);
             None
         }
         "stdin" => {
-            let _ = dispatch("write_to_pty", value, host, out_tx, subscriptions);
+            let _ = dispatch("write_to_pty", value, host, runtime, out_tx, subscriptions);
             None
         }
         "resize" | "claim-pane" | "refresh-pane" => {
-            let _ = dispatch("resize_pane", value, host, out_tx, subscriptions);
+            let _ = dispatch("resize_pane", value, host, runtime, out_tx, subscriptions);
             None
         }
         "create-pane" => Some(
-            create_pane_wire_result(dispatch("create_pane", value, host, out_tx, subscriptions))
-                .to_string(),
+            create_pane_wire_result(dispatch(
+                "create_pane",
+                value,
+                host,
+                runtime,
+                out_tx,
+                subscriptions,
+            ))
+            .to_string(),
         ),
         "create-workspace" => Some(
             create_workspace_wire_result(
@@ -639,8 +1015,15 @@ fn handle_text(
             .to_string(),
         ),
         "close-pane" => Some(
-            close_pane_wire_result(dispatch("close_pane", value, host, out_tx, subscriptions))
-                .to_string(),
+            close_pane_wire_result(dispatch(
+                "close_pane",
+                value,
+                host,
+                runtime,
+                out_tx,
+                subscriptions,
+            ))
+            .to_string(),
         ),
         "list-workspaces" => Some(
             json!({"type":"workspaces","workspaces":host.list_workspaces_json()["workspaces"]})
@@ -696,21 +1079,109 @@ fn dispatch(
     method: &str,
     args: &Value,
     host: &Arc<KernelHost>,
+    runtime: &tokio::runtime::Handle,
     out_tx: &mpsc::UnboundedSender<Message>,
     subscriptions: &Arc<Mutex<std::collections::HashSet<(Uuid, Uuid)>>>,
 ) -> Result<Value, String> {
+    // Unsupported SPA probes must fail before the snapshot projection. The
+    // projection performs multiple kernel HTTP calls; keeping it ahead of the
+    // final `other` arm lets a burst of optional probes delay the first pane
+    // subscription and makes real keyboard input appear to lose output.
+    if !is_kernel_host_method(method) {
+        return Err(format!("method not supported by kernel host: {method}"));
+    }
+    // PTY input already carries its stable pane identity. Let the kernel's
+    // authenticated PTY endpoint validate that identity directly; the broad
+    // projection below remains only for fallback pane resolution and methods
+    // that genuinely need the complete snapshot.
+    if matches!(method, "write_to_pty" | "write_pty") {
+        if let Some(raw_pane_id) = args
+            .get("paneId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            let pane_id = Uuid::parse_str(raw_pane_id)
+                .map_err(|error| format!("invalid pane id: {raw_pane_id}: {error}"))?;
+            let data = args.get("data").and_then(Value::as_str).unwrap_or("");
+            let endpoint = host.current_endpoint();
+            write_domain_pty(&endpoint, pane_id, data.as_bytes())?;
+            return Ok(Value::Null);
+        }
+    }
+    // Workspace creation and optional desktop probes do not need a topology
+    // snapshot. Keep them ahead of the synchronous projection so a burst of
+    // startup calls cannot delay the first real workspace action.
+    if method == "create_workspace" {
+        let name = args.get("name").and_then(Value::as_str);
+        return host.create_workspace_json(name);
+    }
+    if matches!(method, "set_split_ratios_at_path" | "set_split_ratios_batch") {
+        return host.set_split_ratios(args);
+    }
+    if matches!(
+        method,
+        "detect_available_shells"
+            | "get_shell_history"
+            | "list_saved_workspaces"
+            | "list_workspace_save_info"
+            | "list_native_sessions"
+            | "set_user_default_cwd"
+            | "start_watching_paths"
+            | "get_pane_foreground_process"
+            | "get_pty_runtime_identity"
+            | "get_workspace_memory"
+            | "get_teammate_topology"
+            | "list_hitl_pending"
+            | "get_orchestration_health"
+            | "read_agent_recent_replies"
+    ) {
+        return match method {
+            "detect_available_shells" => serde_json::to_value(
+                ridge_core::commands::shell::detect_available_shells(),
+            )
+            .map_err(|error| error.to_string()),
+            "get_shell_history" => ridge_core::commands::shell::get_shell_history()
+                .map(|history| json!(history))
+                .map_err(|error| error.to_string()),
+            "list_saved_workspaces" | "list_workspace_save_info" | "list_native_sessions" => {
+                Ok(json!([]))
+            }
+            "set_user_default_cwd" | "start_watching_paths" => Ok(Value::Null),
+            "get_pane_foreground_process"
+            | "get_pty_runtime_identity"
+            | "get_workspace_memory"
+            | "get_teammate_topology"
+            | "list_hitl_pending"
+            | "get_orchestration_health"
+            | "read_agent_recent_replies" => Ok(Value::Null),
+            _ => unreachable!("guarded snapshot-free kernel-host method"),
+        };
+    }
+    if method == "list_workspaces" {
+        return Ok(host.list_workspaces_json()["workspaces"].clone());
+    }
+    if method == "get_active_workspace_id" {
+        let snapshot = host.snapshot();
+        return snapshot
+            .active
+            .or_else(|| snapshot.ids.first().copied())
+            .map(|id| Value::String(id.to_string()))
+            .ok_or_else(|| "kernel has no workspace".to_string());
+    }
     let snapshot = host.snapshot();
     match method {
-        "get_active_workspace_id" => host
-            .workspace_id(None)
-            .map(|id| Value::String(id.to_string())),
-        "list_workspaces" => Ok(host.list_workspaces_json()["workspaces"].clone()),
         "get_pane_layout" | "get_pane_layout_for" | "get_window_pane_layout" => {
-            let id = host.workspace_id(args.get("workspaceId").and_then(Value::as_str))?;
+            let id = KernelHost::workspace_id_from_snapshot(
+                &snapshot,
+                args.get("workspaceId").and_then(Value::as_str),
+            )?;
             Ok(host.layout(id, &snapshot))
         }
         "get_workspace_snapshot" => {
-            let id = host.workspace_id(args.get("workspaceId").and_then(Value::as_str))?;
+            let id = KernelHost::workspace_id_from_snapshot(
+                &snapshot,
+                args.get("workspaceId").and_then(Value::as_str),
+            )?;
             Ok(
                 json!({"workspaceId":id,"panes":host.panes(id,&snapshot),"layout":host.layout(id,&snapshot)}),
             )
@@ -718,7 +1189,8 @@ fn dispatch(
         "write_to_pty" | "write_pty" => {
             let id = host.pane_id(args, &snapshot)?;
             let data = args.get("data").and_then(Value::as_str).unwrap_or("");
-            write_domain_pty(&host.current_endpoint(), id, data.as_bytes())?;
+            let endpoint = host.current_endpoint();
+            write_domain_pty(&endpoint, id, data.as_bytes())?;
             Ok(Value::Null)
         }
         "resize_pane" | "resize_pty" => {
@@ -743,11 +1215,21 @@ fn dispatch(
             Ok(Value::Null)
         }
         "subscribe-pane" | "subscribe_pane_raw" | "register_pane_delta_channel" => {
-            start_subscription(args, host, &snapshot, out_tx, subscriptions);
+            start_subscription(args, host, &snapshot, runtime, out_tx, subscriptions);
             Ok(Value::Null)
         }
         "create_pane" | "create-pane" => {
             let pane_id = host.create_pane(args, &snapshot)?;
+            let workspace_id =
+                host.workspace_id(args.get("workspaceId").and_then(Value::as_str))?;
+            Ok(json!({"success":true,"workspaceId":workspace_id,"paneId":pane_id}))
+        }
+        "split_pane" => {
+            let mut split_args = args.clone();
+            if let Some(object) = split_args.as_object_mut() {
+                object.remove("paneId");
+            }
+            let pane_id = host.create_pane(&split_args, &snapshot)?;
             let workspace_id =
                 host.workspace_id(args.get("workspaceId").and_then(Value::as_str))?;
             Ok(json!({"success":true,"workspaceId":workspace_id,"paneId":pane_id}))
@@ -766,30 +1248,6 @@ fn dispatch(
                 None,
             )?;
             Ok(json!({"success":true,"workspaceId":id}))
-        }
-        // Web-Remote desktop (?ui=desktop) routes create_workspace through
-        // bridge.invoke() → RpcClient JSON-RPC dispatch. The kernel exposes
-        // POST /v1/domain/workspaces; we proxy here so the desktop UI can
-        // bootstrap a fresh workspace without a separate transport path.
-        "create_workspace" => {
-            let name = args.get("name").and_then(Value::as_str);
-            let body = name.map(|value| serde_json::json!({ "name": value }));
-            let result = request_json(
-                &host.current_endpoint(),
-                "POST",
-                "/v1/domain/workspaces",
-                body.as_ref(),
-            )?;
-            let workspace_id = result
-                .get("workspace_id")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            Ok(json!({
-                "success": true,
-                "workspaceId": workspace_id,
-                "createdWorkspace": true,
-            }))
         }
         "search" | "search_files" => {
             let root = args
@@ -898,6 +1356,65 @@ fn dispatch(
     }
 }
 
+fn is_kernel_host_method(method: &str) -> bool {
+    matches!(
+        method,
+        "get_active_workspace_id"
+            | "list_workspaces"
+            | "get_pane_layout"
+            | "get_pane_layout_for"
+            | "get_window_pane_layout"
+            | "get_workspace_snapshot"
+            | "write_to_pty"
+            | "write_pty"
+            | "resize_pane"
+            | "resize_pty"
+            | "subscribe-pane"
+            | "subscribe_pane_raw"
+            | "register_pane_delta_channel"
+            | "create_pane"
+            | "create-pane"
+            | "split_pane"
+            | "close_pane"
+            | "close-pane"
+            | "switch_workspace"
+            | "create_workspace"
+            | "set_split_ratios_at_path"
+            | "set_split_ratios_batch"
+            | "search"
+            | "search_files"
+            | "get_directory_children"
+            | "list-files"
+            | "get_file_tree"
+            | "read_file"
+            | "text_search"
+            | "load_terminal_font_faces"
+            | "read_terminal_font_face_chunk"
+            | "detect_available_shells"
+            | "get_shell_history"
+            | "change_pane_shell"
+            | "list-git-status"
+            | "list_saved_workspace_files"
+            | "list_saved_workspaces"
+            | "list_workspace_save_info"
+            | "list_native_sessions"
+            | "set_user_default_cwd"
+            | "start_watching_paths"
+            | "get_pane_foreground_process"
+            | "get_pty_runtime_identity"
+            | "get_workspace_memory"
+            | "get_teammate_topology"
+            | "list_hitl_pending"
+            | "get_orchestration_health"
+            | "read_agent_recent_replies"
+            | "open_workspace_from_file"
+            | "use_global_workspace"
+            | "activate_pane_pty"
+            | "set_pane_delta_mode"
+            | "get_theme_data"
+    )
+}
+
 fn panes_frame(host: &Arc<KernelHost>) -> Value {
     let snapshot = host.snapshot();
     let workspace_id = snapshot
@@ -928,6 +1445,18 @@ fn workspace_detail_pane_target(value: &Value) -> Option<Uuid> {
             panes
                 .iter()
                 .find_map(|pane| pane.as_str().and_then(|id| Uuid::parse_str(id).ok()))
+        })
+}
+
+fn workspace_detail_contains_pane(value: &Value, pane_id: Uuid) -> bool {
+    value
+        .get("panes")
+        .and_then(Value::as_array)
+        .is_some_and(|panes| {
+            panes
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|id| id == pane_id.to_string())
         })
 }
 
@@ -1012,6 +1541,7 @@ fn start_subscription(
     args: &Value,
     host: &Arc<KernelHost>,
     snapshot: &KernelSnapshot,
+    runtime: &tokio::runtime::Handle,
     out_tx: &mpsc::UnboundedSender<Message>,
     subscriptions: &Arc<Mutex<std::collections::HashSet<(Uuid, Uuid)>>>,
 ) {
@@ -1028,7 +1558,7 @@ fn start_subscription(
     let endpoint = host.current_endpoint();
     let tx = out_tx.clone();
     let subscriptions_for_task = subscriptions.clone();
-    tokio::spawn(async move {
+    runtime.spawn(async move {
         // P0-5 + P0-4 (audit C5 + C4 fix): lease + subscriptions
         // slot are guarded by a Drop type so any early-return path
         // (scrollback error / next-seq error / attach error / tx send
@@ -1158,6 +1688,7 @@ fn start_subscription_rtp1(
     args: &Value,
     host: &Arc<KernelHost>,
     snapshot: &KernelSnapshot,
+    runtime: &tokio::runtime::Handle,
     out_tx: &mpsc::UnboundedSender<Message>,
     subscriptions: &Arc<Mutex<std::collections::HashSet<(Uuid, Uuid)>>>,
 ) {
@@ -1176,7 +1707,7 @@ fn start_subscription_rtp1(
     let tx = out_tx.clone();
     let host_for_task = host.clone();
     let subscriptions_for_task = subscriptions.clone();
-    tokio::spawn(async move {
+    runtime.spawn(async move {
         // Fetch the host_info / runtime_epoch via the standard status
         // endpoint first. The kernel status body carries host_id +
         // runtime_epoch (set in server.rs).
@@ -1490,6 +2021,29 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_kernel_host_method_is_classified_before_snapshot() {
+        assert!(is_kernel_host_method("subscribe_pane_raw"));
+        assert!(is_kernel_host_method("write_to_pty"));
+        assert!(is_kernel_host_method("get_pane_foreground_process"));
+        assert!(is_kernel_host_method("start_watching_paths"));
+        assert!(is_kernel_host_method("get_shell_history"));
+    }
+
+    #[test]
+    fn pty_subscription_shares_the_latency_sensitive_queue_with_input() {
+        assert!(is_latency_sensitive_pty_message(&json!({ "type": "stdin" })));
+        assert!(is_latency_sensitive_pty_message(
+            &json!({ "type": "subscribe-pane" })
+        ));
+        assert!(is_latency_sensitive_pty_message(
+            &json!({ "type": "invoke-request", "cmd": "subscribe_pane_raw" })
+        ));
+        assert!(!is_latency_sensitive_pty_message(
+            &json!({ "type": "invoke-request", "cmd": "get_workspace_snapshot" })
+        ));
+    }
+
+    #[test]
     fn kernel_layout_is_converted_to_remote_shape() {
         let snapshot = KernelSnapshot {
             ids: Vec::new(),
@@ -1653,6 +2207,23 @@ mod tests {
         let failure = create_pane_wire_result(Err("workspace has no pane to split".into()));
         assert_eq!(failure["success"], false);
         assert_eq!(failure["error"], "workspace has no pane to split");
+    }
+
+    #[test]
+    fn workspace_detail_contains_requested_pane_only() {
+        let pane_id = Uuid::from_u128(1);
+        assert!(workspace_detail_contains_pane(
+            &json!({ "panes": [pane_id.to_string()] }),
+            pane_id
+        ));
+        assert!(!workspace_detail_contains_pane(
+            &json!({ "panes": [Uuid::from_u128(2).to_string()] }),
+            pane_id
+        ));
+        assert!(!workspace_detail_contains_pane(
+            &json!({ "panes": [] }),
+            pane_id
+        ));
     }
 
     #[test]

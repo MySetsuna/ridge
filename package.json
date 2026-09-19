@@ -35,7 +35,7 @@
     "cdp:term-render": "node scripts/cdp-term-render-e2e.mjs",
     "cdp:pane-graph": "node scripts/cdp-pane-graph.mjs",
     "cdp:multitab": "node scripts/cdp-multitab-freeze.mjs",
-    "test": "vitest run",
+    "test": "vitest run --exclude scripts/stc-walker.test.mjs && node --test scripts/stc-walker.test.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:coverage:sonar": "vitest run --coverage --coverage.processingConcurrency=1 --no-file-parallelism && node scripts/normalize-lcov.mjs",

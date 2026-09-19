@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "buildId": "BUILD-44bb2abb3742",
+  "changeId": "CHG-038",
+  "lockedSpecHash": "420a3b348f75ca361a62995b290fff6d94d62323b0f460a2fc93954314902bca",
+  "currentSpecHash": "885b67082c54a54bb53f3865d3887ffd1141818b8f0992774ee5279e60bd9bb7",
+  "repair": "CONTROLLED_ADMIN_REPAIR",
+  "reason": "Retired stale incomplete active lock after explicit user approval; preserved original manifest at C:/Users/12867/AppData/Local/Temp/wind-spectree-repair-20260919/spectree.lock.stale.json. Current working tree was rebaselined by the next authorized lock; no authoritative specs were edited."
+}

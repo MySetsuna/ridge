@@ -20,6 +20,7 @@ import * as cloudApi from '@ridge/remote/shared/cloud/apiClient';
 import { RidgeCloudHost, type CloudControllerSession, type HostSignalState } from '@ridge/remote/shared/cloud/ridgeCloudProvider';
 import { CloudHostBridge } from '@ridge/remote/shared/cloud/cloudHostBridge';
 import { makeCloudHostPaneSource } from '@ridge/remote/shared/cloud/cloudHostPaneSource';
+import { bytesToBase64 } from '@ridge/remote/shared/cloud/e2ee';
 import {
   collectPaneIds,
   filterWorkspaceResult,
@@ -174,6 +175,21 @@ function buildHost(): RidgeCloudHost | null {
                 invoke<boolean>('verify_remote_totp_bind', {
                   transcript: Array.from(bindTranscript),
                   tag: Array.from(tag),
+                })
+              : undefined,
+          // Trust grants are host-local Tauri commands, not Remote RPC methods.
+          // Keeping them on this direct path makes the 24h grant survive refresh
+          // and lets a full reconnect reauthorize without replaying an expired OTP.
+          totpTrustCheck: !access
+            ? (ctrlPub) =>
+                invoke<boolean>('totp_trust_check', {
+                  ctrlPubB64: bytesToBase64(ctrlPub),
+                })
+            : undefined,
+          totpTrustRecord: !access
+            ? (ctrlPub) =>
+                invoke<void>('totp_trust_record', {
+                  ctrlPubB64: bytesToBase64(ctrlPub),
                 })
             : undefined,
           // §7.4 trusted-controller grant：注入信道绑定 transcript 供 Ed25519 proof 验证。

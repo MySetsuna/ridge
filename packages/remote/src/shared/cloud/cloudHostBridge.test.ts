@@ -42,6 +42,8 @@ function makeRig(opts: {
   paneOutputSource?: ConstructorParameters<typeof CloudHostBridge>[0]['paneOutputSource'];
   totpVerifier?: (code: string) => Promise<boolean>;
   totpBindVerifier?: (tag: Uint8Array) => Promise<boolean>;
+  totpTrustCheck?: (ctrlPub: Uint8Array) => Promise<boolean>;
+  totpTrustRecord?: (ctrlPub: Uint8Array) => Promise<void>;
   bindTranscript?: Uint8Array | null;
   hostEventSource?: ConstructorParameters<typeof CloudHostBridge>[0]['hostEventSource'];
   preauthorized?: boolean;
@@ -56,6 +58,8 @@ function makeRig(opts: {
     paneOutputSource: opts.paneOutputSource,
     totpVerifier: opts.totpVerifier,
     totpBindVerifier: opts.totpBindVerifier,
+    totpTrustCheck: opts.totpTrustCheck,
+    totpTrustRecord: opts.totpTrustRecord,
     bindTranscript: opts.bindTranscript,
     hostEventSource: opts.hostEventSource,
     preauthorized: opts.preauthorized,
@@ -1003,12 +1007,9 @@ describe('CloudHostBridge — §7.4 TOTP trust-grant handshake', () => {
     const { secretKey: privKey, publicKey: pubKey } = ed25519.keygen();
     const transcript = new Uint8Array([1, 2, 3, 4]);
 
-    const invoke = vi.fn(async (method: string) => {
-      if (method === 'totp_trust_check') return true;
-      return null;
-    });
+    const trustCheck = vi.fn(async () => true);
     const { sendControl, sentControl } = makeRig({
-      invoke,
+      totpTrustCheck: trustCheck,
       totpVerifier: async () => true, // TOTP verifier present (so gating is active)
       bindTranscript: transcript,
     });
@@ -1034,8 +1035,8 @@ describe('CloudHostBridge — §7.4 TOTP trust-grant handshake', () => {
     expect(results).toHaveLength(1);
     expect(results[0].trusted).toBe(true);
 
-    // totp_trust_check was called with the correct pub key
-    expect(invoke).toHaveBeenCalledWith('totp_trust_check', { ctrlPubB64: bytesToBase64(pubKey) });
+    // The persistent trust lookup uses the dedicated host callback, not Remote RPC.
+    expect(trustCheck).toHaveBeenCalledWith(pubKey);
   });
 
   it('rejects bad sig: totp-trust-result{trusted:false}, gate stays closed', async () => {
@@ -1082,9 +1083,11 @@ describe('CloudHostBridge — §7.4 TOTP trust-grant handshake', () => {
   it('rejects malformed/locked trust proofs and tolerates trust-record invoke failure', async () => {
     const { secretKey, publicKey } = ed25519.keygen();
     const logs: Array<[string, string]> = [];
-    const invoke = vi.fn(async () => { throw new Error('trust store offline'); });
+    const trustCheck = vi.fn(async () => false);
+    const trustRecord = vi.fn(async () => { throw new Error('trust store offline'); });
     const rig = makeRig({
-      invoke,
+      totpTrustCheck: trustCheck,
+      totpTrustRecord: trustRecord,
       totpVerifier: async () => true,
       log: (level, message) => logs.push([level, message]),
     });
@@ -1105,7 +1108,7 @@ describe('CloudHostBridge — §7.4 TOTP trust-grant handshake', () => {
     rig.sendControl({ t: 'totp-verify', code: '123456' });
     await vi.waitFor(() => expect(rig.sentControl()).toContainEqual({ t: 'totp-result', ok: true }));
     await Promise.resolve();
-    expect(invoke).toHaveBeenCalledWith('totp_trust_record', expect.anything());
+    expect(trustRecord).toHaveBeenCalledWith(publicKey);
     expect(logs.some(([level, message]) => level === 'error' && message.includes('totp_trust_record'))).toBe(true);
 
     const locked = makeRig({ totpVerifier: async () => true });
@@ -1148,8 +1151,11 @@ describe('CloudHostBridge — S1 兼容回落面（构造点矩阵门禁）', ()
     // totp_trust_check 决定。本测试钉死该回落面；fail-closed 改造（S1 退役目标）应
     // 要求 transcript 必在后才接受 trust-proof。
     const { secretKey, publicKey } = ed25519.keygen();
-    const invoke = vi.fn(async (m: string) => (m === 'totp_trust_check' ? true : null));
-    const { bridge, sendControl, sentControl } = makeRig({ invoke, totpVerifier: async () => true });
+    const trustCheck = vi.fn(async () => true);
+    const { bridge, sendControl, sentControl } = makeRig({
+      totpTrustCheck: trustCheck,
+      totpVerifier: async () => true,
+    });
 
     sendControl({ t: 'totp-trust-hello', pub: bytesToBase64(publicKey) });
     await Promise.resolve();
@@ -1162,7 +1168,7 @@ describe('CloudHostBridge — S1 兼容回落面（构造点矩阵门禁）', ()
 
     const result = sentControl().find((f) => f.t === 'totp-trust-result');
     expect(result?.trusted).toBe(true);
-    expect(invoke).toHaveBeenCalledWith('totp_trust_check', { ctrlPubB64: bytesToBase64(publicKey) });
+    expect(trustCheck).toHaveBeenCalledWith(publicKey);
     // S1 遥测（F1）：无 transcript 的 proof 恰好计一次。
     expect(bridge.fallbackCounters).toEqual({
       trustProofWithTranscript: 0,
@@ -1172,8 +1178,11 @@ describe('CloudHostBridge — S1 兼容回落面（构造点矩阵门禁）', ()
 
   it('transcript 不对称即拒：controller 带 transcript 签名而 host 无 → trusted:false', async () => {
     const { secretKey, publicKey } = ed25519.keygen();
-    const invoke = vi.fn(async (m: string) => (m === 'totp_trust_check' ? true : null));
-    const { sendControl, sentControl } = makeRig({ invoke, totpVerifier: async () => true });
+    const trustCheck = vi.fn(async () => true);
+    const { sendControl, sentControl } = makeRig({
+      totpTrustCheck: trustCheck,
+      totpVerifier: async () => true,
+    });
 
     sendControl({ t: 'totp-trust-hello', pub: bytesToBase64(publicKey) });
     await Promise.resolve();
@@ -1186,6 +1195,6 @@ describe('CloudHostBridge — S1 兼容回落面（构造点矩阵门禁）', ()
 
     const result = sentControl().find((f) => f.t === 'totp-trust-result');
     expect(result?.trusted).toBe(false);
-    expect(invoke).not.toHaveBeenCalledWith('totp_trust_check', expect.anything());
+    expect(trustCheck).not.toHaveBeenCalled();
   });
 });

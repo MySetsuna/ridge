@@ -1038,7 +1038,7 @@ describe('CloudRemoteConnection reconnect', () => {
 
     conn.notifyState('connected'); // recovery edge
     await flush();
-    expect(verifyTotpSpy).toHaveBeenCalledWith('123456'); // re-auth with cached code
+    expect(verifyTotpSpy).toHaveBeenCalledWith('123456'); // compatibility fallback after trust miss
     expect(reconnected).toBe(1); // MainApp resync triggered
     expect(conn.state()).toBe('connected');
   });
@@ -1100,7 +1100,7 @@ describe('CloudRemoteConnection reconnect', () => {
 // §A 真正恢复测试 (Goal #3):
 //  - 旧 OTP 过期但授权有效 → 断线恢复无需验证码
 //  - 授权撤销 → 恢复被拒绝
-//  - 不持久化 TOTP；优先 _verifiedCode；fallback 到 trust-grant
+//  - 不持久化 TOTP；优先 trust-grant；旧 host fallback 到 _verifiedCode
 // 这些不变量覆盖 Goal 关心的「不能仅凭发出了 ping 宣称连接健康」——
 // 重连的判定是 host 的 verifyTotp / tryTrustGrant 真实结果，**不**是
 // provider.state 切到 'connected' 就完事。
@@ -1142,8 +1142,8 @@ describe('A — CloudRemoteConnection recovery: trust-grant 静默授权 + 撤�
     expect((conn as any)._failure?.category).toBe('channel');
   });
 
-  it('同时有 _verifiedCode 和 trust-grant → 优先用 _verifiedCode（不浪费 trust 调用）', async () => {
-    // 反向断言：cached code 是 fast path，trust-grant 是 fallback
+  it('同时有 _verifiedCode 和 trust-grant → 优先 trust-grant（不重放过期验证码）', async () => {
+    // Trust grant is the 24h fast path; cached code remains compatibility fallback.
     const handle = fakeHandle();
     (handle.tryTrustGrant as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(true);
     verifyTotpSpy.mockResolvedValue(true);
@@ -1153,9 +1153,8 @@ describe('A — CloudRemoteConnection recovery: trust-grant 静默授权 + 撤�
     conn.notifyState('disconnected');
     conn.notifyState('connected');
     await flush();
-    expect(verifyTotpSpy).toHaveBeenCalledWith('cached-code');
-    // trust-grant **不**被调（已被 fast path 救场）
-    expect((handle.tryTrustGrant as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+    expect((handle.tryTrustGrant as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(verifyTotpSpy).not.toHaveBeenCalled();
   });
 
   it('不允许 setVerifiedCode 后被后续 reconnect 清掉（不持久化是文档契约，内存保留 OK）', () => {

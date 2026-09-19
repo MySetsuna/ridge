@@ -189,7 +189,7 @@ async function drainPtyInput(
     lane.activeBytes = inputEncoder.encode(data).byteLength;
     try {
       await enqueuePtyWrite(key, () => {
-        if (inputLanes.get(key) !== lane) return;
+        if (inputLanes.get(key) !== lane) return Promise.resolve();
         return write(data);
       });
     } catch (error) {

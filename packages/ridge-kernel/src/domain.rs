@@ -1000,8 +1000,17 @@ pub async fn domain_pty_write(
         Err(_) => return Ok(bad_request("data_b64 must be valid base64")),
     };
     let controller_id = format!("legacy-http:{}", pty_id);
-    st.ptys.attach_controller(pty_id, controller_id.clone());
-    match st.ptys.write_with_controller(pty_id, &controller_id, &data) {
+    let ptys = st.ptys.clone();
+    let write_result = match tokio::task::spawn_blocking(move || {
+        ptys.attach_controller(pty_id, controller_id.clone());
+        ptys.write_with_controller(pty_id, &controller_id, &data)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+    match write_result {
         Ok(()) => Ok(Json(json!({ "ok": true }))),
         Err(crate::pty::PtyInputError::ControllerIdUnknown) => Ok(bad_request(
             "controller_id_unknown: input rejected (no attached controller matches)",

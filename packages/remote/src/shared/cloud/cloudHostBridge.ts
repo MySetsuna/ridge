@@ -150,6 +150,12 @@ export type TotpVerifier = (code: string) => Promise<boolean>;
  */
 export type TotpBindVerifier = (tag: Uint8Array) => Promise<boolean>;
 
+/** Host-side persistent trust lookup. Kept separate from the restricted RPC path. */
+type TotpTrustChecker = (ctrlPub: Uint8Array) => Promise<boolean>;
+
+/** Host-side persistent trust write. Kept separate from the restricted RPC path. */
+type TotpTrustRecorder = (ctrlPub: Uint8Array) => Promise<void>;
+
 export interface CloudHostBridgeConfig {
   /** 执行本地命令（注入 Tauri `invoke` 或 mock）。 */
   invoke: InvokeFn;
@@ -170,6 +176,10 @@ export interface CloudHostBridgeConfig {
    * 完全不门控，向后兼容）。
    */
   totpBindVerifier?: TotpBindVerifier;
+  /** Direct host command for the 24h controller-grant lookup. */
+  totpTrustCheck?: TotpTrustChecker;
+  /** Direct host command for recording a successful controller grant. */
+  totpTrustRecord?: TotpTrustRecorder;
   /**
    * 可选：§7.3 信道绑定 transcript（hostEphPub ‖ controllerEphPub）。用于 §7.4
    * trusted-controller grant 握手的 Ed25519 签名消息构造。未注入时 trust-proof **不是**
@@ -210,6 +220,8 @@ export class CloudHostBridge {
   private readonly paneOutputSource?: PaneOutputSource;
   private readonly totpVerifier?: TotpVerifier;
   private readonly totpBindVerifier?: TotpBindVerifier;
+  private readonly totpTrustCheck?: TotpTrustChecker;
+  private readonly totpTrustRecord?: TotpTrustRecorder;
   /** §7.4 信道绑定 transcript（来自 config）。 */
   private readonly bindTranscript: Uint8Array | null;
   private readonly log: (level: 'warn' | 'error', message: string, detail?: unknown) => void;
@@ -262,6 +274,8 @@ export class CloudHostBridge {
     this.paneOutputSource = config.paneOutputSource;
     this.totpVerifier = config.totpVerifier;
     this.totpBindVerifier = config.totpBindVerifier;
+    this.totpTrustCheck = config.totpTrustCheck;
+    this.totpTrustRecord = config.totpTrustRecord;
     this.bindTranscript = config.bindTranscript ?? null;
     // iter-60 G9：安装 host 事件 tap；verified 门控在转发点（TOTP 前不外泄）。
     this.hostEventStop =
@@ -414,12 +428,14 @@ export class CloudHostBridge {
     }
 
     let trusted = false;
-    try {
-      trusted = await this.invoke('totp_trust_check', {
-        ctrlPubB64: bytesToBase64(ctrlPub),
-      }) as boolean;
-    } catch (error) {
-      this.log('error', 'totp_trust_check invoke threw; treating as not trusted', error);
+    if (!this.totpTrustCheck) {
+      this.log('warn', 'totp_trust_check callback is not configured; treating as not trusted');
+    } else {
+      try {
+        trusted = await this.totpTrustCheck(ctrlPub);
+      } catch (error) {
+        this.log('error', 'totp_trust_check callback threw; treating as not trusted', error);
+      }
     }
     if (trusted && (this.totpVerifier ?? this.totpBindVerifier)) {
       this.verified = true;
@@ -491,10 +507,14 @@ export class CloudHostBridge {
   }
 
   private recordTrustedController(): void {
-    if (!this.trustCtrlPub) return;
-    const ctrlPubB64 = bytesToBase64(this.trustCtrlPub);
-    void this.invoke('totp_trust_record', { ctrlPubB64 }).catch((error: unknown) => {
-      this.log('error', 'totp_trust_record invoke threw (ignored)', error);
+    if (!this.trustCtrlPub || !this.totpTrustRecord) {
+      if (this.trustCtrlPub) {
+        this.log('warn', 'totp_trust_record callback is not configured; grant not persisted');
+      }
+      return;
+    }
+    void this.totpTrustRecord(this.trustCtrlPub).catch((error: unknown) => {
+      this.log('error', 'totp_trust_record callback threw (ignored)', error);
     });
   }
 

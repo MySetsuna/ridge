@@ -1276,21 +1276,77 @@ pub fn request_json(
     stream
         .write_all(request.as_bytes())
         .map_err(|e| format!("write kernel: {e}"))?;
-    let mut raw = String::new();
-    stream
-        .take(2 * 1024 * 1024)
-        .read_to_string(&mut raw)
-        .map_err(|e| format!("read kernel: {e}"))?;
-    let (head, body) = raw
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| "malformed kernel response".to_string())?;
+    let (head, body) = read_http_response(&mut stream)?;
     if !head.starts_with("HTTP/1.1 200") {
         return Err(format!(
             "kernel HTTP response: {}",
             head.lines().next().unwrap_or("unknown")
         ));
     }
+    let body = std::str::from_utf8(&body).map_err(|e| format!("parse kernel JSON: {e}"))?;
     serde_json::from_str(body).map_err(|e| format!("parse kernel JSON: {e}"))
+}
+
+const MAX_KERNEL_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_KERNEL_HEADER_BYTES: usize = 64 * 1024;
+
+fn read_http_response(stream: &mut TcpStream) -> Result<(String, Vec<u8>), String> {
+    let mut raw = Vec::with_capacity(4096);
+    let header_end = loop {
+        let mut chunk = [0_u8; 4096];
+        let read = stream
+            .read(&mut chunk)
+            .map_err(|e| format!("read kernel: {e}"))?;
+        if read == 0 {
+            return Err("malformed kernel response".to_string());
+        }
+        raw.extend_from_slice(&chunk[..read]);
+        if let Some(position) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position;
+        }
+        if raw.len() > MAX_KERNEL_HEADER_BYTES {
+            return Err("kernel response headers too large".to_string());
+        }
+    };
+
+    let head = String::from_utf8(raw[..header_end].to_vec())
+        .map_err(|e| format!("read kernel headers: {e}"))?;
+    let content_length = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())
+            .flatten()
+    });
+    let mut body = raw[header_end + 4..].to_vec();
+
+    if let Some(content_length) = content_length {
+        if content_length > MAX_KERNEL_RESPONSE_BYTES {
+            return Err("kernel response body too large".to_string());
+        }
+        body.truncate(content_length);
+        while body.len() < content_length {
+            let remaining = content_length - body.len();
+            let mut chunk = vec![0_u8; remaining.min(8192)];
+            let read = stream
+                .read(&mut chunk)
+                .map_err(|e| format!("read kernel: {e}"))?;
+            if read == 0 {
+                return Err("kernel response body truncated".to_string());
+            }
+            body.extend_from_slice(&chunk[..read]);
+        }
+    } else {
+        if body.len() > MAX_KERNEL_RESPONSE_BYTES {
+            return Err("kernel response body too large".to_string());
+        }
+        stream
+            .take((MAX_KERNEL_RESPONSE_BYTES - body.len()) as u64)
+            .read_to_end(&mut body)
+            .map_err(|e| format!("read kernel: {e}"))?;
+    }
+
+    Ok((head, body))
 }
 
 #[cfg(test)]
@@ -1372,6 +1428,42 @@ mod tests {
 
         let malformed = request_probe("200 OK", "not-json").unwrap_err();
         assert!(malformed.starts_with("parse kernel JSON:"));
+    }
+
+    #[test]
+    fn request_json_reads_content_length_before_keep_alive_eof() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request);
+            let body = r#"{"ok":true}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            thread::sleep(Duration::from_secs(1));
+        });
+
+        let started = std::time::Instant::now();
+        let result = request_json(
+            &KernelEndpoint {
+                pid: std::process::id(),
+                port,
+                token: "request-probe-token".into(),
+                started_at_unix: 1,
+            },
+            "GET",
+            "/v1/domain/agents",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(result["ok"], true);
+        assert!(started.elapsed() < Duration::from_millis(800));
+        server.join().unwrap();
     }
 
     #[test]

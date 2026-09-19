@@ -193,15 +193,102 @@ const caPath = join(dataDir, "host-ca.pem");
 writeFileSync(caPath, caPem);
 
 function runCertutil(args) {
-  // Sync exec; small output, no streaming needed.
-  const r = spawnSync("certutil.exe", args, { stdio: ["ignore", "pipe", "pipe"] });
-  return { code: r.status, stdout: r.stdout?.toString() ?? "", stderr: r.stderr?.toString() ?? "" };
+  // Sync exec; small output, no streaming needed. v9-17: this step has shown
+  // intermittent hangs (a certutil child blocked on an invisible interactive
+  // prompt). Bound each invocation; on timeout kill the child and return a
+  // synthetic failure so the test FAILs loudly instead of hanging forever.
+  try {
+    const r = spawnSync("certutil.exe", args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 20_000,
+      windowsHide: true,
+    });
+    return {
+      code: r.status,
+      stdout: r.stdout?.toString() ?? "",
+      stderr: r.stderr?.toString() ?? "",
+      error: r.error?.message ?? null,
+    };
+  } catch (e) {
+    return { code: -1, stdout: "", stderr: String(e), error: String(e) };
+  }
 }
 
+// v9-17: certutil -user -addstore has shown an INTERMITTENT interactive-prompt
+// hang in this environment (a run once got past it, three runs hung at the same
+// step). The TLS policy is unchanged — we still install the host CA into the
+// per-user Root store (HKCU) and Chrome still reads it via the normal Windows
+// root store (ChromeRootStoreEnabled=false policy). Only the transport differs:
+// PowerShell's X509Store API writes the same store programmatically, with no
+// interactive prompt, and does NOT touch HKLM / other users / system trust.
+function installCaViaPowerShell(pemPath) {
+  const ps = [
+    "$ErrorActionPreference='Stop';",
+    `$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2('${pemPath.replace(/'/g, "''")}');`,
+    "$store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root','CurrentUser');",
+    "$store.Open('ReadWrite');",
+    "$existing = $store.Certificates | Where-Object { $_.Thumbprint -eq $cert.Thumbprint };",
+    "if (-not $existing) { $store.Add($cert) }",
+    "$store.Close();",
+    "Write-Output ('CA_INSTALLED=' + $cert.Thumbprint)",
+  ].join(" ");
+  try {
+    const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ps], {
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      windowsHide: true,
+    });
+    return {
+      code: r.status,
+      stdout: r.stdout?.toString() ?? "",
+      stderr: r.stderr?.toString() ?? "",
+      error: r.error?.message ?? null,
+    };
+  } catch (e) {
+    return { code: -1, stdout: "", stderr: String(e), error: String(e) };
+  }
+}
+
+function removeCaViaPowerShell(thumbprintOrCn) {
+  const ps = [
+    "$ErrorActionPreference='Stop';",
+    "$store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root','CurrentUser');",
+    "$store.Open('ReadWrite');",
+    `$found = $store.Certificates | Where-Object { $_.Thumbprint -eq '${thumbprintOrCn}' -or $_.Subject -match '${String(thumbprintOrCn).replace(/[^A-Za-z0-9 ]/g, '')}' };`,
+    "foreach ($c in $found) { $store.Remove($c) }",
+    "$store.Close();",
+    "Write-Output ('CA_REMOVED=' + ($found.Count))",
+  ].join(" ");
+  try {
+    const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ps], {
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      windowsHide: true,
+    });
+    return { code: r.status, stdout: r.stdout?.toString() ?? "", stderr: r.stderr?.toString() ?? "", error: r.error?.message ?? null };
+  } catch (e) {
+    return { code: -1, stdout: "", stderr: String(e), error: String(e) };
+  }
+}
+
+/** Thumbprint of the CA we are about to install (for scoped removal). */
+let installedCaThumbprint = null;
+
 const installRes = runCertutil(["-user", "-addstore", "Root", caPath]);
-if (installRes.code !== 0) {
-  console.error("[browser-ui] FAIL install CA into CurrentUser\\Root", installRes);
-  process.exit(1);
+if (installRes.code !== 0 || installRes.error) {
+  // v9-17: certutil hung on its interactive prompt → fall back to writing the
+  // SAME per-user Root store via PowerShell (no prompt, no system trust, no
+  // --ignore-certificate-errors). If that also fails, FAIL with the exact
+  // blocker so the environment issue is recorded, not worked around.
+  console.log(`[browser-ui] certutil -addstore ${installRes.error ? "hung/errored" : "failed"} (${installRes.error ?? `code ${installRes.code}`}) — falling back to PowerShell CurrentUser\\Root write`);
+  const psRes = installCaViaPowerShell(caPath);
+  if (psRes.code !== 0 || psRes.error || !/CA_INSTALLED=/.test(psRes.stdout)) {
+    console.error("[browser-ui] FAIL install CA into CurrentUser\\Root", { installRes, psRes });
+    process.exit(1);
+  }
+  const tp = psRes.stdout.match(/CA_INSTALLED=([0-9A-Fa-f]+)/)?.[1] ?? null;
+  if (tp) installedCaThumbprint = tp;
+  console.log(`[browser-ui] CA installed in CurrentUser\\Root via PowerShell (thumbprint=${tp})`);
 }
 console.log(`[browser-ui] CA installed in CurrentUser\\Root`);
 
@@ -234,6 +321,15 @@ function cleanup() {
   const r = runCertutil(["-user", "-delstore", "Root", caSubjectCn]);
   if (r.code === 0) {
     console.log(`[browser-ui] CA removed from CurrentUser\\Root`);
+  } else if (installedCaThumbprint) {
+    // certutil delstore can hang the same way → remove by thumbprint via
+    // PowerShell (same per-user store, scoped to our own cert).
+    const pr = removeCaViaPowerShell(installedCaThumbprint);
+    if (pr.code === 0 && /CA_REMOVED=/.test(pr.stdout)) {
+      console.log(`[browser-ui] CA removed from CurrentUser\\Root via PowerShell`);
+    } else {
+      console.error(`[browser-ui] WARN failed to remove CA ${caSubjectCn} from CurrentUser\\Root: certutil=${r.stderr} ps=${pr.error ?? pr.stderr}`);
+    }
   } else {
     // Don't fail the test on cleanup error — but log loudly.
     console.error(
@@ -523,6 +619,22 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
       } catch { /* pane container not focusable in this build */ }
     }
   }
+  // Desktop RidgePane may mount a non-focusable IME helper (or a stale
+  // textarea locator from another surface). If focus did not land there,
+  // explicitly focus the pane container before sending real key events.
+  if (!ioDone) {
+    const paneContainer = page.locator("[data-rg-pane-id]").first();
+    if (await paneContainer.count()) {
+      try {
+        await paneContainer.focus();
+        const focused = await page.evaluate(() => ({
+          tag: document.activeElement?.tagName ?? null,
+          pane: document.activeElement?.getAttribute?.("data-rg-pane-id") ?? null,
+        }));
+        if (focused.pane) ioDone = true;
+      } catch { /* pane container not focusable in this build */ }
+    }
+  }
   if (ioDone) {
     await page.keyboard.type(`echo ${IO_TAG}`, { delay: 30 });
   } else {
@@ -578,6 +690,37 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
   const sentData = extractWriteData(wsFrames.sent);
   const sentIncludesTag = sentData.includes(IO_TAG);
   const writeCounts = countWriteFrames(wsFrames.sent);
+  // v9-17 debug: show every write_to_pty frame sent + every invoke-result frame
+  // received whose _reqId could correspond to a write, plus the raw last 6
+  // received frames. This distinguishes "keystrokes never sent" from
+  // "sent but host reply never resolved" from "reply resolved but output dropped".
+  const writeSentSamples = wsFrames.sent
+    .filter((f) => typeof f === "string" && /write_to_pty/.test(f))
+    .slice(-4);
+  const invokeResultSamples = wsFrames.received
+    .filter((f) => typeof f === "string" && /invoke-result/.test(f))
+    .slice(-8);
+  console.log(`[browser-ui] DEBUG ${mode}: writeSentSamples=${JSON.stringify(writeSentSamples, null, 0)}`);
+  console.log(`[browser-ui] DEBUG ${mode}: invokeResultSamples=${JSON.stringify(invokeResultSamples, null, 0)}`);
+  console.log(`[browser-ui] DEBUG ${mode}: lastReceived=${JSON.stringify(wsFrames.received.filter((f) => typeof f === "string").slice(-6), null, 0)}`);
+  // v9-17 debug: correlate sent write _reqIds against every received
+  // invoke-result (any _reqId), to prove whether the host replied at all.
+  const writeReqIds = writeSentSamples
+    .map((s) => {
+      try { return JSON.parse(s).args?._reqId ?? null; } catch { return null; }
+    })
+    .filter((x) => x !== null);
+  const allReceivedResults = wsFrames.received
+    .filter((f) => typeof f === "string" && /invoke-result/.test(f))
+    .map((f) => {
+      try { const j = JSON.parse(f); return `id=${j._reqId}${j._error !== undefined ? ":ERR" : ":OK"}`; } catch { return "unparseable"; }
+    });
+  const receivedReqIds = wsFrames.received
+    .filter((f) => typeof f === "string" && /invoke-result/.test(f))
+    .map((f) => { try { return JSON.parse(f)._reqId; } catch { return null; } }).filter((x) => x !== null);
+  console.log(`[browser-ui] DEBUG ${mode}: writeReqIds=${JSON.stringify(writeReqIds)} matchedReply=${writeReqIds.map((id) => receivedReqIds.includes(id))}`);
+  console.log(`[browser-ui] DEBUG ${mode}: allReceivedResults=${JSON.stringify(allReceivedResults)}`);
+  console.log(`[browser-ui] DEBUG ${mode}: binaryReceivedCount=${wsFrames.received.filter((f) => typeof f !== "string").length}`);
   // Output proof, layer 1: the host PTY executed the command and streamed the
   // bytes back. Received frames are the raw binary pane stream
   // (16B-UUID-prefixed) UTF-8-decoded per frame; joining restores markers split
@@ -886,24 +1029,33 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
 }
 
 // ── run both modes ──────────────────────────────────────────────────────
+// v9-17 debug: RIDGE_BROWSER_E2E_DESKTOP_ONLY=1 skips the mobile leg (the
+// mobile TOTP window frequently expires during the slow CA+launch sequence;
+// desktop re-boots the host for a fresh code and is the leg under study).
+const desktopOnly = process.env.RIDGE_BROWSER_E2E_DESKTOP_ONLY === "1";
+
 // Mobile gets the first TOTP; before desktop we reboot the host so the
 // 6-digit code is fresh (the kernel's /verify only accepts codes within
 // the current TOTP window, ~30s, and the mobile flow exhausts that window).
-await driveMode({
-  mode: "mobile",
-  urlSuffix: "/",
-  viewport: { width: 390, height: 844 },
-  isMobile: true,
-  userAgent:
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 "
-    + "(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
-  suffix: "mobile",
-});
+if (!desktopOnly) {
+  await driveMode({
+    mode: "mobile",
+    urlSuffix: "/",
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    userAgent:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 "
+      + "(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+    suffix: "mobile",
+  });
 
-totp = await bootHost();
-console.log(`[browser-ui] desktop TOTP captured (post-reboot): ${totp}`);
-({ caPem, spki } = await waitForTlsMaterial());
-console.log(`[browser-ui] desktop host TLS material ready (spki ${spki.slice(0, 16)}…)`);
+  totp = await bootHost();
+  console.log(`[browser-ui] desktop TOTP captured (post-reboot): ${totp}`);
+  ({ caPem, spki } = await waitForTlsMaterial());
+  console.log(`[browser-ui] desktop host TLS material ready (spki ${spki.slice(0, 16)}…)`);
+} else {
+  console.log(`[browser-ui] desktop-only debug run (mobile leg skipped)`);
+}
 
 await driveMode({
   mode: "desktop",

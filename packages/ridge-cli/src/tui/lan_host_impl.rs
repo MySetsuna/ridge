@@ -631,6 +631,21 @@ fn dispatch_lan_invoke_for_connection(
             if let Some(requested) = args.get("workspaceId").and_then(Value::as_str) {
                 ensure_current_workspace(requested, ws_id)?;
             }
+            if let Some(requested) = args
+                .get("paneId")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                let pane_id = Uuid::parse_str(requested)
+                    .map_err(|_| format!("invalid pane id: {requested}"))?;
+                if workspace.lock().unwrap().find(pane_id).is_none() {
+                    return Err(format!("pane not found: {pane_id}"));
+                }
+                // The LAN workspace spawns its PTY when the session is created.
+                // Desktop Web Remote still sends create_pane for that existing
+                // layout leaf, so this must be an idempotent acknowledgement.
+                return Ok(Value::Null);
+            }
             let pane_id = create_rdg_pane(workspace, shell, cwd)?;
             Ok(create_pane_result(ws_id, pane_id))
         }
@@ -1675,6 +1690,29 @@ mod tests {
         assert_eq!(result["workspaceId"], ws_id.to_string());
         assert_eq!(workspace.lock().unwrap().sessions.len(), 1);
         // Dropping the shared workspace releases the PTY bridge and its child.
+        drop(workspace);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn existing_pane_create_is_idempotent() {
+        let workspace = super::super::workspace::new_shared();
+        let ws_id = Uuid::parse_str("abababab-abab-abab-abab-abababababab").unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let created = dispatch_lan_invoke("create_pane", &json!({}), &workspace, ws_id, &tx)
+            .expect("create pane");
+        let pane_id = created["paneId"].as_str().expect("pane id");
+
+        let result = dispatch_lan_invoke(
+            "create_pane",
+            &json!({ "workspaceId": ws_id.to_string(), "paneId": pane_id }),
+            &workspace,
+            ws_id,
+            &tx,
+        )
+        .expect("existing pane create should acknowledge");
+
+        assert_eq!(result, Value::Null);
+        assert_eq!(workspace.lock().unwrap().sessions.len(), 1);
         drop(workspace);
     }
 

@@ -578,22 +578,20 @@ export class CloudRemoteConnection implements RemoteLink {
     if (this.disposed || this._reconnecting) return;
     this._reconnecting = true;
     try {
-      // Re-authorize. An ICE-restart keeps the host's §4 gate open (verifyTotp is a
-      // no-op ok); a full re-handshake re-gates it, so the cached code re-opens it —
-      // unless a long outage expired the code's time window, in which case the host
-      // rejects and we surface 'error' so the user refreshes for a fresh code.
+      // Re-authorize. Prefer the signed 24h controller grant so a full reconnect
+      // never depends on replaying an expired six-digit code. The in-memory code
+      // remains only as a compatibility fallback for older hosts.
       let ok = this.fixedAuthorized;
-      if (!this.fixedAuthorized && this._verifiedCode) {
-        ok = await this.handle.verifyTotp(this._verifiedCode).catch(() => false);
-      } else if (!this.fixedAuthorized) {
-        // §7.4：本会话经信任授权进入（无缓存 TOTP 码）。full re-handshake 会重置 host 的
-        // §4 门，故重连后重跑静默信任握手重新开门；旧 host 无 challenge → 超时 false。
+      if (!this.fixedAuthorized) {
         ok = await this.handle.tryTrustGrant().catch(() => false);
+        if (!ok && this._verifiedCode) {
+          ok = await this.handle.verifyTotp(this._verifiedCode).catch(() => false);
+        }
       }
       if (this.disposed) return;
       if (!ok) {
-        // 重连后 re-auth 失败：多为长时间断网导致缓存 TOTP 码过期，刷新拿新码即可恢复
-        //（非账户/权限问题）→ 归通道类，UI 提示「通道异常」并允许重试/刷新。
+        // Trust expired/revoked and compatibility OTP also failed: keep the gate
+        // closed and surface a recoverable channel error.
         this._failure = { category: 'channel' };
         this.setState('error');
         return;
