@@ -1549,3 +1549,160 @@ tauriShim `write_to_pty` 接入涉及 web-remote build 改动 →
 v9-15 first slice 不实施上述 1/2/3（共享代码改动需 mobile 回归 +
 产品审批；kernel host 改动需 stc lock + 审批）；本切片接受 desktop
 IO PARTIAL 为已知收口前置路径，由 v9-16 切片收敛。
+
+---
+
+## 13 v9-16 — Desktop Web Remote IO 闭环
+
+**当前 HEAD**：`f3b4a391`（release 0.1.87），工作树干净。`stc validate` →
+VALID。范围：`?ui=desktop` 输入输出闭环；不动 mobile 已通过路径；不
+碰 Native Tauri Remote。
+
+**本轮执行流（已落地）**：
+1. `1fabfadd` — CHG-031 closeout + CHG-032 desktop LAN output
+   subscription parity（COMPLETED）
+2. `f0c55293` — cloud totp trust + reconnect flow fix（CHG-033..044）
+3. `f3b4a391` — release 0.1.87（CHG-045）
+
+### 13.1 DESKTOP_INPUT_PATH
+
+**PASS。** 链条：
+  `RidgePane.svelte:1327` `invoke('write_to_pty', …)` →
+  `tauriShim/core.ts:56` `bridge.invoke` → `RpcClient.request` →
+  `lanWsAdapter.ts:205-213` `toWire` → `{"type":"invoke-request",
+  "cmd":"write_to_pty", "args":{…}, "_reqId":N}` →
+  `kernel_host_impl.rs:583-591` invoke-request 分支 → `dispatch`
+  → `:718-723` `write_to_pty` 写 PTY。
+
+v9-15 §12.1 的 wire shape 实证在 LAN 腿上误判：
+- 0x11（`encodeJsonFrame`）只属 **cloud/WebRTC 腿**（cloudHostBridge）
+- LAN 腿 desktop + mobile 都发 `cmd:"write_to_pty"`，同形状，无分歧
+- E2E strict regex `"method":"write_to_pty"` 永远 0（v9-15 计数 bug）
+
+### 13.2 DESKTOP_OUTPUT_PATH
+
+**FAIL → PASS（CHG-032 后）**。根因 + 修复：
+- **根因（v9-16 复现 4/4 PASS）**：desktop 输出订阅走 `bridge.subscribePane`
+  → `rpc.notify('subscribe-pane')` → `LanWsAdapter.sendControl` → `conn.send`。
+  全仓 `RemoteConnection._setPaneRef` **仅 1 处调用**（`wsRemote.ts:1466`
+  `subscribePane()`）。`rpc.notify` 路径从不触发它 → `paneKeysById`
+  恒空 → `_handleBinaryMessage`（`wsRemote.ts:947-972`）静默丢全部
+  16B-UUID `pane_frame` → `bridge.dispatchRawBytes` 永远收不到字节。
+- **修复**（CHG-032，已落地）：
+  - `lanWsAdapter.ts` 截获 `subscribe-pane` notification 改调
+    `conn.subscribePane({paneId, workspaceId}, opts)` 代替 `conn.send`。
+    线形零改动（`subscribePane` 内部发的 envelope 与 `toWire` 展平
+    结果同 JSON 语义）。
+  - `wsRemote.ts` 新增 `unregisterPane(pane)`（约 8 行），委托现有
+    私有 `_deletePaneRef`；不存在时 no-op。
+- **不动** `kernel_host_impl.rs:897`（4 方法非 IO 阻塞）/ `RidgePane.svelte:1786`
+  （attached 门非阻塞，manager.attach 后置 true）/ `tauriShim write_to_pty`
+  （走通用 `bridge.invoke`）。
+- Mobile 直调 `conn.subscribePane`（`MainApp.svelte:961`）已注册，
+  正常 — 与 desktop 共用同一 L1/L2 契约，不引入第二套 transport。
+
+### 13.3 DESKTOP_IO_E2E
+
+**PASS（CHG-032 3-layer gates）**：
+- L3 unit: `lanWsAdapter.test.ts` 11 用例 + `wsRemote.behavior.test.ts`
+- E2E: `scripts/browser-ui-e2e.mjs` v9-16 探针 —
+  `extractWriteData`（双形状 `cmd`+`method`）+ `countWriteFrames` +
+  `writeSentSamples` + `writeReqIds ↔ receivedReqIds` 相关性 + A→B→A
+  后 `extractWriteData` 复用 + `echoedBack` PTY echo 回 SPA 断言
+- 传输层复现：mobile oracle（`conn.subscribePane` 后注入 host
+  格式二进制帧）收到 marker；desktop 路径同帧 `received.length===0`
+  → 同根因 → 修复后两边均收到（4/4 PASS）
+
+页面显示断言（`TerminalManager` 内核文本含 marker）由真实 E2E
+`echoedBack` + `manager.feed` 内 `[pty-trace <pane6>] …` 控制台
+标记保证（不 mock，不注入 UI，不绕 transport）。
+
+### 13.4 MOBILE_REGRESSION
+
+**保持。** `pnpm test`：2082 passed / 17 skipped；mobile 直接相关 4
+文件 128/128 PASS（TerminalCanvas 46、cloudRemote 61、
+mobileTouchScroll 7、wsRemote.behavior 14）。`scripts/stc-walker.test.mjs`
+suite 收集错误属 pre-existing 基建问题（HEAD 提交即有），与本轮无关。
+mobile 共享路径（paneScheduler → invoke-request → 16B 二进制输出）
+零改动。
+
+### 13.5 CHANGED_FILES
+
+**v9-16 实际落地的运行/脚本/测试文件**（与 v9-15 875a791e 起点的运行
+产物比对，diff 为空区为 doc/spec）：
+
+| 路径 | 变更 | CHG |
+|---|---|---|
+| `packages/remote/src/shared/transport/lanWsAdapter.ts` | `sendControl` 截 `subscribe-pane` 改调 `conn.subscribePane`；新 `unsubscribe-pane` 路由 | CHG-032 |
+| `packages/remote/src/shared/transport/wsRemote.ts` | 新 `unregisterPane(pane)`（约 8 行） | CHG-032 |
+| `packages/remote/src/shared/transport/lanWsAdapter.test.ts` | 11 用例覆盖新分支 | CHG-032 |
+| `packages/remote/src/shared/transport/wsRemote.behavior.test.ts` | paneRef 注册/注销/重连 | CHG-032 |
+| `scripts/browser-ui-e2e.mjs` | `extractWriteData`/`countWriteFrames`/`writeSentSamples`/`writeReqIds` 相关性 + cloud TOTP trust fix | CHG-031, CHG-033..044 |
+| `packages/remote/src/shared/cloud/cloudHostBridge.ts` + `.test.ts` | cloud trust fix 配套 | CHG-033..044 |
+| `packages/ridge-cli/src/kernel_host_impl.rs` | cloud TOTP trust + dispatch 补强（不动 §12.8 v9-15 列的 4 方法 default 分支） | CHG-033..044 |
+| `packages/ridge-cli/src/tui/lan_host_impl.rs` | cloud reconnect flow 配套 | CHG-033..044 |
+| `packages/ridge-kernel/src/{client,domain}.rs` | cloud handshake | CHG-033..044 |
+| `src/lib/remote/cloud/cloudHostStore.ts` + `src/lib/terminal/ptyWriteQueue.ts` | cloud 路径状态机 | CHG-033..044 |
+| `src/remote/lib/cloudRemote.ts` + `.test.ts` | cloud remote | CHG-033..044 |
+| `changes/CHG-031.md` .. `changes/CHG-045.md` | 变更审批与扩展（每个 ≤40 行） | 1fabfadd / f0c55293 / f3b4a391 |
+| `.spectree/{approvals.json,recoveries/*,spectree.lock.json}` | 锁/审批/recovery 记录（与 CHG-031..045 对应） | 1fabfadd / f0c55293 / f3b4a391 |
+| `docs/operations/remote-cloud-release.md` | cloud 发布说明 | f0c55293 |
+
+**未触**：`src/lib/components/RidgePane.svelte` / `tauriShim/core.ts` /
+`kernel_host_impl.rs:897`（v9-15 §12.8 列为"v9-16 审批点"，经 v9-16
+复现**非阻塞**已确认）。
+
+### 13.6 CANDIDATE_HASHES
+
+**当前产物（HEAD `f3b4a391` / release 0.1.87，`print-candidate-provenance.mjs`
+实测）**：
+
+- 源 commit：`f3b4a391abbaa31ce8c0b62b1a3e2f2e8ee541f6`（clean）
+- 产品版本 0.1.87（4 处一致：`package.json` / `src-tauri/tauri.conf.json`
+  / `src-tauri/Cargo.toml` / `Cargo.lock` ridge）
+- 库 crate 版本 0.1.0（per-crate 惯例，非 release 契约）
+- `target/test-rdg/release/ridge.exe` 42494464 bytes，sha256
+  `29e421d0dce7af34d657a0fcfcd1908e94eb3730ffcd68814f4f11058242808c`
+- `remote-dist/desktop/index.html` 19324 bytes，sha256
+  `883bdcbc4a478e906234dcc75064269378ecffac38999608ac1fca50812a731e`
+- `remote-dist/mobile/index.html` 1973 bytes，sha256
+  `8c62ae2aa71920396a44abcb8fb6e430aa37d45743403c33cbe20dc0814a53c2`
+- `remote-dist/mobile/sw.js` 17397 bytes，sha256
+  `f5ad2ff8f5abe0bd04ce222f77837c6aec4b652105dee0041f5d2d6114af785c`
+- `remote-dist/mobile/manifest.webmanifest` 460 bytes，sha256
+  `c4a90f82bb5a9512a1109a562797446694362ff12c09498bb4251215364994b0`
+
+隔离端口 `5120` / 隔离数据 `target/test-rdg/data`（沿用 §12.5 约束）。
+
+### 13.7 REMAINING_GAPS
+
+- **真机六类 runbook**（断网/锁屏恢复、快速切工作区、滑动模式、长
+  历史切换、PWA 安装/更新、IME）— NOT_RUN（本机无 GUI/真机）。设
+  备专属，沿用 §12.6 runbook。
+- **Native Tauri Remote E2E**（与 Web Remote 路径独立）— NOT_RUN，
+  独立 CHG（§12.2 不在本轮范围）。
+- **诊断导出自动化**（§12.5 约定手工 log tee）— 真机首次需要时再补。
+- **长历史 E2E（>1000 行）**— 单独脚本（§12.7）。
+- **CHG-031 pending proposal 原样保留** — `stc next` 仍为
+  `stc apply CHG-031 --confirm`（CHG-031 已 COMPLETED，但 pending
+  proposal 字段未清理，属审批元数据待人工 ack）。
+- **真机之前 desktop IO 不外推为 BETA 外部试用 PASS**（守住 §13.12）。
+
+### 13.8 BETA_READY
+
+**BETA_READY = NO。**
+
+理由（保持真实 PARTIAL/NOT_RUN，不冒认）：
+- v9-16 desktop LAN output 断点已闭环（CHG-032，11 unit + E2E 3-layer）
+- mobile 7/7 全 PASS
+- 但 **真机六类 runbook** 全 NOT_RUN；无法外推到 BETA 外部试用级别
+- Native Tauri Remote E2E 仍 NOT_RUN
+- CHG-031 pending proposal 待人工 ack
+
+**当**且仅当：
+- 真机 runbook §12.6 六类全部有用户实际验证证据（带设备 / 时间 /
+  操作记录）
+- Native Tauri Remote E2E 补完（或产品评估后判定可接受 NOT_RUN）
+- CHG-031 pending proposal 由用户明确 ack / reject
+
+才允许进入 BETA_READY 重评估流程。
