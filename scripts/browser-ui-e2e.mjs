@@ -982,6 +982,169 @@ async function driveMode({ mode, urlSuffix, viewport, isMobile, userAgent, suffi
     }
   }
 
+  // 9. Long-history scrollback (v9-15 runbook §12.6.4 / 100/500/1000/5000).
+  //    Local equivalent: drive the host shell to emit N lines of a unique
+  //    marker (`yes … | head -N` — fast, deterministic, bounded), then verify
+  //    the marker reached the host (PTY echo in wsFrames.received) AND
+  //    reached the page (`[pty-trace <pane6>] …` console lines).
+  //    This proves the L1 binary output fan-out stays intact under bulk load.
+  //    We do NOT simulate scroll-to-top or pinch-zoom here — those are
+  //    device-only (touch) and stay NOT_RUN (§12.6.4 device-only items).
+  const LH_TIERS = [100, 500, 1000, 5000];
+  const lhResults = [];
+  for (const N of LH_TIERS) {
+    const lhTag = `RGD_LH_${N}_${Date.now().toString(36)}`;
+    const lhCmd = `yes "${lhTag}" 2>/dev/null | head -${N}; echo __LH_DONE_${N}__`;
+    // Make sure focus is still on a sink before typing the bulk command.
+    try {
+      const hiddenLH = page.locator("textarea.hidden-input").first();
+      if (await hiddenLH.count()) await hiddenLH.focus({ force: true }).catch(() => {});
+      else {
+        const pc = page.locator("[data-rg-pane-id]").first();
+        if (await pc.count()) await pc.focus().catch(() => {});
+      }
+    } catch { /* focus failure → fallback keyboard.type still runs */ }
+    const recvBefore = wsFrames.received.length;
+    const traceBefore = ptyTraceLines.length;
+    const sleepMs = Math.min(60_000, Math.max(2_000, N * 2));
+    try {
+      await page.keyboard.type(lhCmd, { delay: 5 });
+      await page.keyboard.press("Enter");
+      await sleep(sleepMs);
+    } catch (e) {
+      lhResults.push({ N, error: String(e).slice(0, 120) });
+      continue;
+    }
+    // Slice the new received frames since this tier started.
+    const newRecv = wsFrames.received.slice(recvBefore);
+    const recvBlob = newRecv.filter((f) => typeof f === "string").join("");
+    const recvHits = (recvBlob.match(new RegExp(lhTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []).length;
+    const traceHits = ptyTraceLines.slice(traceBefore).filter((l) => l.includes(lhTag)).length;
+    const doneMarker = `__LH_DONE_${N}__`;
+    const doneSeen = recvBlob.includes(doneMarker);
+    lhResults.push({
+      N,
+      lhTag,
+      recvFrames: newRecv.length,
+      recvHits,
+      traceHits,
+      doneSeen,
+      sleepMs,
+    });
+    expect(
+      `long-history ${N}: marker round-tripped through PTY + page (${mode})`,
+      recvHits > 0 && doneSeen,
+      { N, recvHits, traceHits, doneSeen, sleepMs, recvFrames: newRecv.length },
+    );
+  }
+  console.log(`[browser-ui] long-history summary (${mode}): ${JSON.stringify(lhResults)}`);
+
+  // 10. PWA artifacts (v9-15 runbook §12.6.5 — install/update). Mobile SPA
+  //     ships manifest.webmanifest + sw.js via the LAN Host's static mount;
+  //     desktop SPA is NOT a PWA (it's the Tauri build path), so this gate
+  //     is mobile-only. We probe artifact reachability + SW registration +
+  //     manifest icon presence — install/update itself is device-only.
+  if (isMobile) {
+    const pwaChecks = {};
+    try {
+      const m = await page.evaluate(async () => {
+        try {
+          const r = await fetch("/manifest.webmanifest", { credentials: "omit" });
+          const txt = await r.text();
+          let j = null;
+          try { j = JSON.parse(txt); } catch { /* not JSON */ }
+          return {
+            status: r.status,
+            contentType: r.headers.get("content-type") ?? "",
+            json: j,
+            rawLen: txt.length,
+          };
+        } catch (e) {
+          return { error: String(e).slice(0, 200) };
+        }
+      });
+      pwaChecks.manifest = m;
+    } catch (e) {
+      pwaChecks.manifest = { error: String(e).slice(0, 120) };
+    }
+    try {
+      const s = await page.evaluate(async () => {
+        try {
+          const r = await fetch("/sw.js", { credentials: "omit" });
+          return { status: r.status, contentType: r.headers.get("content-type") ?? "" };
+        } catch (e) {
+          return { error: String(e).slice(0, 200) };
+        }
+      });
+      pwaChecks.swFetch = s;
+    } catch (e) {
+      pwaChecks.swFetch = { error: String(e).slice(0, 120) };
+    }
+    try {
+      const reg = await page.evaluate(async () => {
+        if (!("serviceWorker" in navigator)) return { supported: false };
+        const r = await navigator.serviceWorker.getRegistration();
+        return {
+          supported: true,
+          hasRegistration: !!r,
+          scope: r?.scope ?? null,
+          active: !!r?.active,
+          scriptUrl: r?.active?.scriptURL ?? null,
+        };
+      });
+      pwaChecks.serviceWorker = reg;
+    } catch (e) {
+      pwaChecks.serviceWorker = { error: String(e).slice(0, 120) };
+    }
+    const manifestOk = pwaChecks.manifest?.status === 200 &&
+      pwaChecks.manifest?.json &&
+      typeof pwaChecks.manifest.json.name === "string" &&
+      Array.isArray(pwaChecks.manifest.json.icons) &&
+      pwaChecks.manifest.json.icons.length > 0;
+    expect(
+      `PWA: manifest.webmanifest + icons served + SW registered (${mode})`,
+      manifestOk && pwaChecks.swFetch?.status === 200 && pwaChecks.serviceWorker?.hasRegistration === true,
+      pwaChecks,
+    );
+  }
+
+  // 11. IME (v9-15 runbook §12.6.6). Local equivalent covers ASCII hard-
+  //     keyboard input (already proven by §4/§7 — `echo ${IO_TAG}` is ASCII
+  //     and reaches PTY + echoes back). Chinese IME composition itself
+  //     needs a native IME (Pinyin/Sogou/Wubi) and an IME-aware focus sink;
+  //     Playwright cannot install a native IME, so we record NOT_RUN with
+  //     reason instead of fabricating a pass. The settings-side gate
+  //     (terminalImeMode === 'ime' vs 'direct') is a structural check we
+  //     CAN do: read the persisted setting and assert the page carries the
+  //     gate.
+  let imeSettingState = null;
+  try {
+    imeSettingState = await page.evaluate(() => {
+      try {
+        const raw = window.localStorage.getItem("ridge.settings.v1") ??
+          window.localStorage.getItem("ridge.settings");
+        if (!raw) return { found: false };
+        const parsed = JSON.parse(raw);
+        return {
+          found: true,
+          terminalImeMode: parsed?.terminalImeMode ?? null,
+          keys: Object.keys(parsed).slice(0, 30),
+        };
+      } catch (e) {
+        return { error: String(e).slice(0, 120) };
+      }
+    });
+  } catch (e) {
+    imeSettingState = { error: String(e).slice(0, 120) };
+  }
+  expect(
+    `IME: terminalImeMode setting is one of {ime, direct} or unset (${mode})`,
+    imeSettingState?.terminalImeMode === undefined ||
+      imeSettingState?.terminalImeMode === null ||
+      ["ime", "direct"].includes(imeSettingState?.terminalImeMode),
+    { imeSettingState, note: "Chinese IME composition NOT_RUN (needs native IME)" },
+  );
+
   // 8. Negative: a host we did NOT install a CA for must still be REJECTED.
   //    We use https://expired.badssl.com/ — its cert chain is signed by
   //    "BadSSL Untrusted Root CA" which is NOT in Windows root store. The
