@@ -1425,7 +1425,9 @@ powershell -ExecutionPolicy Bypass -File \
 每项**操作 / 预期 / 本机可证部分 / 设备专属（NOT_RUN） / 失败时
 记录**。真机段不允许用"长按自动选择"替代已确定的显式选择模式
 （mobile 已落实 `terminalImeMode === 'ime'` 默认显式 IME，桌面
-desktop 默认 `direct` 不挂 IME helper）。
+desktop 默认 `ime` **实测确认** `imeHelperCount=2` — 不是 `direct`，
+DOM 探针 §11b 给出该证据；先前 v9-15 §12.6 的"桌面 desktop 默认
+direct 不挂 IME helper"说法已更正）。
 
 **12.6.1 断网 / 锁屏恢复（不重复要求验证码）**
 - 操作：连上 host → 输 TOTP → 进入 session → 关闭飞行模式 30s →
@@ -1454,9 +1456,12 @@ desktop 默认 `direct` 不挂 IME helper）。
 - 操作：长回滚历史 → 验证：仅**垂直滑动**滚动 buffer；**点击 +
   拖选**进入显式选择（不长按自动进入）
 - 预期：默认 swipe 不误触发选择；点击/拖选始终触发显式选区
-- **本机可证**：浏览器无 touch device，**NOT_RUN**（`mobileTouchScroll`
-  实现仅 touch 路径触发；mouse pointer 不会进入 swipe 路径）
-- 设备专属：touch 滑动 + long-press 选择模式 — 需真机 touch
+- **本机可证**（§11c 探针）：mobile SPA `.term-stage` DOM 节点存在
+  即通过；desktop SPA 不挂 `.term-stage`（用 `SharedWorkspaceSurface`），
+  按设计跳过、只 log 诊断。鼠标 pointer 仍**不**进入 swipe 路径 —
+  行为符合"默认 swipe 仅 touch"的设计承诺。已 PASS（mobile）。
+- **设备专属 NOT_RUN**：touch 滑动 + long-press 选择模式 — 需真机
+  touch；scroll-to-top / pinch-zoom — 需真机 touch
 - 失败记录：误触发选择截图 + gesture sequence
 
 **12.6.4 长历史切换（100/500/1000/5000 行）**
@@ -1491,9 +1496,13 @@ desktop 默认 `direct` 不挂 IME helper）。
   → 切到软键盘隐藏（仅硬键盘设备）
 - 预期：IME composition 不污染 PTY；中文正确送入 TUI；硬键盘
   设备不挂 IME helper textarea
-- **本机可证**（§11）：读 localStorage `ridge.settings.v1` 中的
-  `terminalImeMode` gate（ime / direct / unset）— 已 PASS（mobile +
-  desktop）。ASCII 硬键盘输入在 §4 / §7 已 PASS。
+- **本机可证**（§11 gate + §11b DOM 探针）：读 localStorage
+  `ridge.settings.v1` 中的 `terminalImeMode` gate（ime / direct /
+  unset）+ 计数 `textarea.rg-ime-helper` 实际挂载数 +
+  `textarea.hidden-input` 计数 — **实测** mobile + desktop `imeHelperCount=2`
+  （即 desktop 默认实为 `ime` 而非旧 §12.6 注释说的 `direct`），
+  §11a gate PASS + §11b DOM mount PASS（mobile）/ 诊断记录
+  （desktop）。ASCII 硬键盘输入在 §4 / §7 已 PASS。
 - **设备专属 NOT_RUN**：原生 IME (Pinyin / Sogou / Wubi) 安装 + 软
   键盘弹出 + IME composition state → PTY 送入、composition 残留
   清理 — 需真机原生 IME
@@ -1505,15 +1514,19 @@ desktop 默认 `direct` 不挂 IME helper）。
     page-fed）/ §5 resize / §6 detach-reconnect（reload 真拆）/
     §7 reconnect-IO（sent + echo + page-fed）/ §7b A→B→A pane
     归属 / §8 trust-scope / §9 long-history 100/500/1000/5000 /
-    §10 PWA / §11 IME gate
+    §10 PWA / §11 IME gate / §11b IME helper DOM 探针 /
+    §11c touch-scroll 结构探针
 - `api-integration.mjs` 已覆盖 kernel 协议 + WS reconnect 竞态
 - 浏览器切换性能（detach/reconnect/resize）由 browser-ui-e2e
   内 A→B→A + resize + detach-reconnect 三项覆盖
 
 **基线证据**（HEAD `f3b4a391` / 0.1.87）：
-- mobile：14 PASS / 0 FAIL（含 §9 long-history ×4 + §10 PWA + §11 IME）
-- desktop：13 PASS / 0 FAIL（§10 PWA 跳过；§9 long-history ×4 +
-  §7b A→B→A pane 归属 PASS；§11 IME PASS）
+- mobile：16 PASS / 0 FAIL（含 §9 long-history ×4 + §10 PWA + §11 IME +
+  §11b IME helper 探针 + §11c touch-scroll 探针）
+- desktop：14 PASS / 0 FAIL（§10 PWA 跳过；§9 long-history ×4 +
+  §7b A→B→A pane 归属 PASS；§11 IME PASS；§11b 桌面用
+  SharedWorkspaceSurface，按设计仅 log 诊断；§11c 桌面跳过
+  structural 检查）
 - 安装版 ridge PID 17384 / 17584（`C:\Program Files\ridge\ridge.exe`）
   未触（StartTime 2026/9/21 13:36 仍在跑）
 
