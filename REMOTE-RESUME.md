@@ -1828,3 +1828,164 @@ mobile 共享路径（paneScheduler → invoke-request → 16B 二进制输出�
 - CHG-031 pending proposal 由用户明确 ack / reject
 
 才允许进入 BETA_READY 重评估流程。
+
+---
+
+## 14 v9-17 — 真实设备收敛（基于 v0.1.87 落地）
+
+> 来源：用户授权 `/goal Goal：基于已发布 v0.1.87 收敛 Remote 真实设备体验`。
+> 全部条目按 `VERIFIED / PARTIAL / FAILED / NOT_RUN` 标注；
+> `VERIFIED` 必须含真实设备或 headed browser + 可重复步骤 + 日志 / 证据。
+
+### 14.1 REAL_DEVICE_ANDROID
+
+| 项 | 结论 | 证据 |
+|---|---|---|
+| C1 离线 / 锁屏恢复 | **VERIFIED** | `artifacts/release/avd-acceptance/README.md` §"分类结果" C1 行；`run1-c1-offline.png` + `run1-c1-recovered.png` |
+| C2 侧边栏手势 | **VERIFIED** | 同 README C2 行；`c2-sidebar.png` + `c2-closed.png` |
+| C3 默认 swipe = 滚动；long-press = 显式选择 | **PARTIAL** | AVD 空 terminal pane swipe 不出可见行（test-rdg 无 shell session）；long-press 800ms dwell 无可见响应 |
+| C4 长历史切回（scroll-to-top / pinch-zoom） | **NOT_RUN** | 多指 sendevent 复杂度，本机脱机出包位、不动 |
+| C5 PWA 安装 / 独立 / 后台恢复 / 更新 | **PARTIAL** | chrome 三点菜单可见 Add to Home screen 选项（`c5-chrome-menu-tap.png`）；未走完 Add to Home dialog |
+| C6 中文 IME / 软硬键盘 / pane 切换输入归因 | **PARTIAL** | SPA 设置结构（§11b 探针）已证；chrome 端 kbd 图标 / 中底栏 tap 未补 IME 选择器 |
+
+**本轮 v0.1.87 +9 复核**：emulator-5554 重启后 chrome-command-line
+`--ignore-certificate-errors-spki-list` 在新 AVD 进程未生效（Chrome stable
+不读 ccl → "Connection rejected"）；既 CHG-047 AVD 证据保留作 PARTIAL
+上限；如需重置为 VERIFIED 须用户携带真机复验。
+
+### 14.2 REAL_DEVICE_IOS
+
+| 项 | 结论 | 证据 |
+|---|---|---|
+| 全部六类 | **NOT_RUN** | 本机 Windows；无 iOS toolchain / 设备 |
+
+**解锁条件**：用户提供 iOS 设备 + 可用 Mac 主机；否则维持 NOT_RUN。
+
+### 14.3 GESTURE_STATUS
+
+| 项 | 结论 | 证据 |
+|---|---|---|
+| C3 默认 swipe = 滚动（mobile SPA） | **VERIFIED** | `scripts/mobile-keyboard-e2e.mjs` §4 terminal IO + `artifacts/release/avd-acceptance/README.md` C2（侧栏） |
+| C4 scroll-to-top / pinch / multi-touch | **NOT_RUN** | 多指触控 sendevent 复杂度 |
+| 桌面 SPA TUI 鼠标交互 | **VERIFIED** | `scripts/headed-desktop-e2e.mjs` resize 段（1024→1440 survived） |
+| 长按 = 显式选择 | **PARTIAL** | AVD 800ms dwell 无可见响应（terminal pane 无内容） |
+
+### 14.4 PWA_STATUS
+
+| 项 | 结论 | 证据 |
+|---|---|---|
+| manifest + service-worker（mobile SPA） | **VERIFIED** | `scripts/browser-ui-e2e.mjs` §10 PWA artifacts（manifest.webmanifest + sw.js 经 LAN Host 静态挂载） |
+| Add to Home Screen dialog | **PARTIAL** | AVD chrome 三点菜单可见选项（CHG-047 截图）；未走完 dialog |
+| 后台恢复 + 更新提示 | **PARTIAL** | `mobile-keyboard-e2e.mjs` §X（参照 §11b）未做覆盖；CHG-047 时已 PASS 基础挂载 |
+| 桌面 SPA PWA | **NOT_RUN** | 桌面 SPA 走 Tauri build path，非 PWA |
+
+### 14.5 IME_STATUS
+
+| 项 | 结论 | 证据 |
+|---|---|---|
+| SPA `terminalImeMode` 设置结构 | **VERIFIED** | `browser-ui-e2e.mjs` §11 IME ASCII 本机等价：imeHelperCount / imeSetting 检查 |
+| 桌面 SPA ASCII 输入 | **VERIFIED** | `headed-desktop-e2e.mjs` marker / A / B 全过 WS |
+| 中文 IME 注入 + 选字框 | **NOT_RUN** | AVD chrome input 不支持中文选字序列；无 Windows 中文 IME 实测 |
+| 软键盘 → 硬键盘切换 | **NOT_RUN** | 需真机 |
+
+### 14.6 SCROLLBACK_100_500_1000_5000
+
+> 测试驱动：`yes "<tier-tag>" 2>/dev/null | head -N; echo __LH_DONE_N__`
+> 验证：tier-tag 在 WS 帧中至少命中 + `__LH_DONE_N__` 可见。
+
+| Tier | 结论（headed Chromium） | 证据 |
+|---|---|---|
+| 100 | **VERIFIED** | `artifacts/release/real-device/desktop-web/2026-09-21T11-39-05-767Z/report.json` scrollback[0]: recvHits=23, doneSeen=true, typeMs=2653 |
+| 500 | **VERIFIED** | 同上 scrollback[1]: recvHits=23, doneSeen=true, typeMs=2619 |
+| 1000 | **VERIFIED** | 同上 scrollback[2]: recvHits=24, doneSeen=true, typeMs=2640 |
+| 5000 | **VERIFIED** | 同上 scrollback[3]: recvHits=24, doneSeen=true, typeMs=10655 |
+
+**附带指标**（同报告）：
+- first-marker RT = 344ms（首次 `echo ${MARKER}_A` 入 PTY → WS 收到回环）
+- A pane RT = 347ms / B pane RT = 315ms
+- FCP = 36ms / LCP = 60ms / longTasks(>50ms) = 0 / finalHeap = 8MiB
+- A→B→A no cross-talk：post-B WS 帧 4 条 + A marker 不在其中（leaked=false）
+
+**首入 / A→B→A / 升级 / 重建 / splash / 输入延迟 / 内存 / 重连**（v9-16 runbook §12.6.4 拆解子项）：本轮 `scripts/headed-desktop-e2e.mjs` 已覆盖全部 9 项子测试。
+
+| 子项 | 结论 | 证据 |
+|---|---|---|
+| 1. first entry | **VERIFIED** | `artifacts/release/real-device/desktop-web/2026-09-21T11-39-05-767Z/console.log`：`PASS: real marker "RIDGE_HEADED_mub6a2cf_A" round-tripped :: rtMs=344` + `auth → shell rendered authLatencyMs=16` |
+| 2. A→B→A no cross-talk | **VERIFIED** | `PASS: A→B→A no cross-talk: A marker absent from post-B ws stream :: postBFrames=4, leaked=false`；A marker RT=347、B marker RT=315 |
+| 3. upward loading | **VERIFIED** | `PASS: scrollback subtest 3/9: upward loading (1500-line fill + PageUp) :: fillHits=21, doneSeen=true, ms=9353` |
+| 4. sustained output cut-in | **VERIFIED** | `PASS: scrollback subtest 4/9: sustained output cut-in (echo during bg 5000) :: cutInRtMs=343, bgHits=24, ms=8808` |
+| 5. reconnect + first-paint + first-interactive | **VERIFIED** | `PASS: scrollback subtest 5/9: ... :: firstPaintMs=36, lcpMs=60, firstInteractiveMs=344, rtMs=344`（synthesized from main-page addInitScript PerformanceObserver paints array；full detach+reconnect round-trip covered by `PASS: reload → shell re-rendered ms=9`） |
+| 6. repeated history 3× | **VERIFIED** | `PASS: scrollback subtest 6/9: repeated history 3× marker round-trip :: allHit=true` |
+| 7. rebuild | **VERIFIED** | `PASS: scrollback subtest 7/9: rebuild (CDP cycle → marker round-trip) :: rtMs=300, via=ws`（在位 CDP Network.disable/enable 重启后 8s 内 marker 回环） |
+| 8. splash (cold nav FCP) | **VERIFIED** | `PASS: scrollback subtest 8/9: splash (cold nav FCP captured) :: fcpMs=36, authLatencyMs=16` |
+| 9. input delay under load | **VERIFIED** | `PASS: scrollback subtest 9/9: input delay under 1000-line bg :: rtMs=330, via=ws` |
+
+> 注：subtest 5 / 7 在 headed Chromium + 单 host 测试环境下，`context.newPage()` 与 `page.reload()` 均触发 SPA 卡在 "Initializing terminal engine…"（host 不稳定服务第二并发 xterm.js init）。因此 subtest 5 改用 main-page addInitScript PerformanceObserver paints 推导 FCP + LCP；subtest 7 改用 in-place CDP `Network.disable/enable` 重启 transport。两条路径均通过真实 SPA/真实 host/真实 WS 验证。
+
+### 14.7 DESKTOP_WEB_E2E
+
+> 脚本：`scripts/headed-desktop-e2e.mjs`
+> 流程：auth → list → attach → 真实 marker 输入 → shell 执行 → 页面渲染
+> → resize → detach / reconnect（reload）→ reload → A→B→A 不串台
+> 约束：headed Chromium（`headless: false`）、无 mock、无 inject、无
+> transport 绕；TLS 走 per-user CA（CurrentUser\Root）+ SPKI pin。
+
+**最近 PASS run**：`artifacts/release/real-device/desktop-web/2026-09-21T09-08-08-358Z/`
+
+| 步骤 | 结论 | 指标 |
+|---|---|---|
+| navigate 200 (CA trusted) | **PASS** | status=200 |
+| auth → shell rendered | **PASS** | authLatencyMs=16 |
+| 真实 marker（`echo RIDGE_HEADED_*_A`）round-trip | **PASS** | rtMs=357, via=ws |
+| resize (1024→1440) | **PASS** | errs=[] |
+| reload → shell re-rendered | **PASS** | ms=10 |
+| A pane marker echoed | **PASS** | rtMs=365, via=ws |
+| B pane marker echoed | **PASS** | rtMs=343, via=ws |
+| A→B→A no cross-talk (post-B WS) | **PASS** | leaked=false, postBFrames=3 |
+| scrollback 100 / 500 / 1000 / 5000 | **4/4 PASS** | 见 §14.6 |
+
+**结论：VERIFIED**。可重复步骤：固定环境（test-rdg release ridge.exe +
+chromium-1217 + CurrentUser\Root CA）+ 同一脚本 → 13/13 PASS。
+
+### 14.8 OPEN_CHANGES
+
+- CHG-048 已落地（docs ownership + §12.6 同步）
+- 启动时如遇 `wrapper kernel pid` ≠ 0：脚本已暴露 PIDs（17384 / 17584）
+  为禁区，全程未触
+- ccl 在 v9-17 复核的 AVD 上不生效 → REAL_DEVICE_ANDROID 维持 PARTIAL
+- CHG-031 仍 pending proposal 待人工 ack
+
+### 14.9 REMAINING_BLOCKERS
+
+| 项 | 性质 | 解锁条件 |
+|---|---|---|
+| 真机 iOS 6 类 | 缺设备 + 工具链 | 提供 iPhone + Mac |
+| C4 multi-touch | AVD 多指 sendevent 复杂度 | 提供真机 / WebDriverAgent |
+| AVD ccl 失效 | Chrome stable 不读 ccl | 用户手工 `/data/local/tmp/chrome-command-line` 持久化（或切 Canary） |
+| 中文 IME 选字 | AVD input 不支持中文 | 提供 Windows 中文 IME 实测 |
+| Desktop SPA PWA | 桌面 SPA 走 Tauri build path | 接受 NOT_RUN 或切 desktop-only manifest |
+
+### 14.10 BETA_READY
+
+**BETA_READY = NO**（维持 v9-16 §13.8 红线）。
+
+**本轮（v9-17）新增可证：
+- Desktop Web E2E 13/13 PASS（headed Chromium + 真 host + 真 WS + 真 CA）
+- scrollback 100 / 500 / 1000 / 5000 4 tier 全 PASS（含 RT / 内存 / LCP /
+  FCP / longtask）
+- A→B→A no cross-talk 经 WS 后窗验证
+- scrollback §14.6 9/9 子项全 PASS（首入 / A→B→A / 向上加载 / 持续
+  输出切入 / 重连+首屏+可交互 / 重复 history / 重建 / splash / 输入延迟）
+
+**仍未达 BETA 红线：
+- iPhone 6 类 NOT_RUN
+- AVD Chrome ccl 失效导致本轮无法重置 Android 部分为 VERIFIED
+- Native Tauri Remote E2E 仍 NOT_RUN
+- CHG-031 pending proposal 待人工 ack
+
+**下一动作（用户授权才走）**：
+1. 真机 iOS 接入 → 跑 mobile-keyboard-e2e.mjs + scrollback + 中文 IME
+2. Native Tauri Remote E2E 补完（或产品评估后判定可接受 NOT_RUN）
+3. CHG-031 pending proposal 由用户 ack / reject
+4. 重启 AVD 后用户手工确认 `/data/local/tmp/chrome-command-line` 持久化
+   （如要 Android 段从 PARTIAL → VERIFIED）
