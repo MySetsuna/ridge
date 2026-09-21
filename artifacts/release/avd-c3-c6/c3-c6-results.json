@@ -1,0 +1,22 @@
+{
+  "c3": [
+    "scroll-up",
+    "scroll-down",
+    "longpress",
+    "tui-tap"
+  ],
+  "c4": {
+    "scrollTop": true,
+    "pinch": "sendevent-not-available-in-input",
+    "multiTouch": "skip-with-note"
+  },
+  "c5": [
+    "chrome-menu-opened",
+    "install-tap-attempted"
+  ],
+  "c6": [
+    "spa-kbd-toggle",
+    "pane-switch",
+    "ime-picker-opened"
+  ]
+}

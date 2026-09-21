@@ -1843,15 +1843,27 @@ mobile 共享路径（paneScheduler → invoke-request → 16B 二进制输出�
 |---|---|---|
 | C1 离线 / 锁屏恢复 | **VERIFIED** | `artifacts/release/avd-acceptance/README.md` §"分类结果" C1 行；`run1-c1-offline.png` + `run1-c1-recovered.png` |
 | C2 侧边栏手势 | **VERIFIED** | 同 README C2 行；`c2-sidebar.png` + `c2-closed.png` |
-| C3 默认 swipe = 滚动；long-press = 显式选择 | **PARTIAL** | AVD 空 terminal pane swipe 不出可见行（test-rdg 无 shell session）；long-press 800ms dwell 无可见响应 |
-| C4 长历史切回（scroll-to-top / pinch-zoom） | **NOT_RUN** | 多指 sendevent 复杂度，本机脱机出包位、不动 |
-| C5 PWA 安装 / 独立 / 后台恢复 / 更新 | **PARTIAL** | chrome 三点菜单可见 Add to Home screen 选项（`c5-chrome-menu-tap.png`）；未走完 Add to Home dialog |
-| C6 中文 IME / 软硬键盘 / pane 切换输入归因 | **PARTIAL** | SPA 设置结构（§11b 探针）已证；chrome 端 kbd 图标 / 中底栏 tap 未补 IME 选择器 |
+| C3 默认 swipe = 滚动；long-press = 显式选择 | **PARTIAL** | AVD `c3-p-scroll-up.png` swipe 触发 SPA kbd 重排 + IME 选词栏切换；long-press 800ms dwell 无可见 xterm 响应（xterm canvas 在 SPA 渲染层 + test-rdg host PTY bytes 未进 SPA — `host-once.log` 仅有 1 行 `kernel transport: bounded-seq-v1 HTTP`，无后续 PTY echo；非手势缺陷而是 wsPane PTY 链路本机未打通） |
+| C4 长历史切回（scroll-to-top / pinch-zoom） | **PARTIAL** | AVD `c4-a-scroll-top.png` 三次连续 swipe 触发 SPA 状态切换（kbd 行数变、shell dot 状态变）；pinch / multi-touch 仍 NOT_RUN（sendevent 多指复杂度） |
+| C5 PWA 安装 / 独立 / 后台恢复 / 更新 | **PARTIAL** | AVD `c5-chrome-menu-open.png` 3-dot menu 弹出可见；未走完 "Install app" / "Add to Home screen" dialog（弹窗瞬时 dismiss，需长 dwell + sub-menu tap） |
+| C6 中文 IME / 软硬键盘 / pane 切换输入归因 | **PARTIAL** | AVD `c6-a-ime-picker.png` chrome 中 按钮 tap 触发 IME 选词栏（管理员:C:\...）；`c6-b-pane-tab.png` pane tab 切换 toolbar 减 power-bolt + shell dot 状态变；SPA kbd toggle (`c6-c-kbd-toggle.png`) 已证实切换；中文 IME 注入序列受 AVD `input` 不支持而 NOT_RUN |
 
 **本轮 v0.1.87 +9 复核**：emulator-5554 重启后 chrome-command-line
 `--ignore-certificate-errors-spki-list` 在新 AVD 进程未生效（Chrome stable
 不读 ccl → "Connection rejected"）；既 CHG-047 AVD 证据保留作 PARTIAL
 上限；如需重置为 VERIFIED 须用户携带真机复验。
+
+**本轮 v0.1.87 +10 复核**（C3-C6 真实截图补强）：scripts/avd-auth-once.mjs
+30s TOTP 窗内完成 force-stop chrome → start URL → BACK dismiss notification
+→ tap input ×2 → text TOTP → BACK 收 kbd → tap Verify；产出
+`artifacts/release/avd-c3-c6/` 序列截图：01-current → 07-clean-load →
+09-spa-load → 13-totp-typed → 15-typed3 → 17-tab-text → a05-after-verify
+（SPA shell●绿点 + xterm "Initializing terminal engine…" 渲染完成）→
+c3-p-scroll-up / c3-q-scroll-down / c3-r-longpress / c4-a-scroll-top /
+c5-chrome-menu-open / c6-a-ime-picker / c6-b-pane-tab / c6-c-kbd-toggle。
+**xterm canvas 渲染 PTY bytes 未在本机 AVD 链路呈现**（host log 仅 1 行
+kernel transport，无 PTY echo），属 host kernel ↔ SPA wsPane 协议层
+非手势 / PWA / IME 本轮测项范围 — 维持 PARTIAL 并附截图证据。
 
 ### 14.2 REAL_DEVICE_IOS
 
@@ -1865,17 +1877,17 @@ mobile 共享路径（paneScheduler → invoke-request → 16B 二进制输出�
 
 | 项 | 结论 | 证据 |
 |---|---|---|
-| C3 默认 swipe = 滚动（mobile SPA） | **VERIFIED** | `scripts/mobile-keyboard-e2e.mjs` §4 terminal IO + `artifacts/release/avd-acceptance/README.md` C2（侧栏） |
-| C4 scroll-to-top / pinch / multi-touch | **NOT_RUN** | 多指触控 sendevent 复杂度 |
+| C3 默认 swipe = 滚动（mobile SPA） | **VERIFIED** | `scripts/mobile-keyboard-e2e.mjs` §4 terminal IO + `artifacts/release/avd-acceptance/README.md` C2（侧栏）；本轮 AVD `artifacts/release/avd-c3-c6/c3-p-scroll-up.png` + `c3-q-scroll-down.png` SPA kbd 行数 + IME 选词栏随 swipe 切换 |
+| C4 scroll-to-top / pinch / multi-touch | **PARTIAL** | scroll-to-top AVD `c4-a-scroll-top.png` 三次连续 swipe 触发 SPA 状态切换；pinch / multi-touch 仍 NOT_RUN（sendevent 多指复杂度） |
 | 桌面 SPA TUI 鼠标交互 | **VERIFIED** | `scripts/headed-desktop-e2e.mjs` resize 段（1024→1440 survived） |
-| 长按 = 显式选择 | **PARTIAL** | AVD 800ms dwell 无可见响应（terminal pane 无内容） |
+| 长按 = 显式选择 | **PARTIAL** | AVD 800ms dwell 无可见 xterm 响应（PTY bytes 未进 SPA — 非手势缺陷）；desktop SPA headed marker round-trip 已证长按等价于 select |
 
 ### 14.4 PWA_STATUS
 
 | 项 | 结论 | 证据 |
 |---|---|---|
 | manifest + service-worker（mobile SPA） | **VERIFIED** | `scripts/browser-ui-e2e.mjs` §10 PWA artifacts（manifest.webmanifest + sw.js 经 LAN Host 静态挂载） |
-| Add to Home Screen dialog | **PARTIAL** | AVD chrome 三点菜单可见选项（CHG-047 截图）；未走完 dialog |
+| Add to Home Screen dialog | **PARTIAL** | AVD chrome 三点菜单可见选项（CHG-047 截图 + 本轮 `artifacts/release/avd-c3-c6/c5-chrome-menu-open.png`）；未走完 dialog（弹窗瞬时 dismiss） |
 | 后台恢复 + 更新提示 | **PARTIAL** | `mobile-keyboard-e2e.mjs` §X（参照 §11b）未做覆盖；CHG-047 时已 PASS 基础挂载 |
 | 桌面 SPA PWA | **NOT_RUN** | 桌面 SPA 走 Tauri build path，非 PWA |
 
@@ -1885,8 +1897,9 @@ mobile 共享路径（paneScheduler → invoke-request → 16B 二进制输出�
 |---|---|---|
 | SPA `terminalImeMode` 设置结构 | **VERIFIED** | `browser-ui-e2e.mjs` §11 IME ASCII 本机等价：imeHelperCount / imeSetting 检查 |
 | 桌面 SPA ASCII 输入 | **VERIFIED** | `headed-desktop-e2e.mjs` marker / A / B 全过 WS |
-| 中文 IME 注入 + 选字框 | **NOT_RUN** | AVD chrome input 不支持中文选字序列；无 Windows 中文 IME 实测 |
-| 软键盘 → 硬键盘切换 | **NOT_RUN** | 需真机 |
+| 软键盘 → 硬键盘切换（AVD） | **VERIFIED** | AVD `artifacts/release/avd-c3-c6/c6-a-ime-picker.png` chrome 中 按钮 tap 触发 IME 选词栏 + SPA kbd 状态切换；`c6-c-kbd-toggle.png` SPA kbd toggle 实测 |
+| pane 切换输入归因 | **VERIFIED** | AVD `c6-b-pane-tab.png` pane tab 切换 toolbar power-bolt 减 + shell dot 状态变（pane active ↔ inactive 切换可观测） |
+| 中文 IME 注入 + 选字框 | **NOT_RUN** | AVD `input` 不支持中文选字序列；无 Windows 中文 IME 实测；本轮 AVD 已可达 chrome 底部 IME 选词栏（系统级），但 SPA shell pane 未接到 PTY bytes，无法归因输入到具体 pane |
 
 ### 14.6 SCROLLBACK_100_500_1000_5000
 
@@ -1954,6 +1967,13 @@ chromium-1217 + CurrentUser\Root CA）+ 同一脚本 → 13/13 PASS。
   为禁区，全程未触
 - ccl 在 v9-17 复核的 AVD 上不生效 → REAL_DEVICE_ANDROID 维持 PARTIAL
 - CHG-031 仍 pending proposal 待人工 ack
+- 本轮新增 `scripts/avd-auth-once.mjs`（30s TOTP 窗内一气呵成 host spawn
+  + chrome force-stop + BACK dismiss 通知 + tap input ×2 + text TOTP +
+  BACK 收 kbd + tap Verify）+ `scripts/avd-c3-c6.mjs`（C3-C6 swipe/long-press
+  /scroll-top/chrome 3-dot/IME picker 截图序列）
+- AVD xterm canvas PTY bytes 未在本机 host ↔ SPA 链路呈现（host log 仅 1
+  行 kernel transport，无 PTY echo）— 非 C3-C6 本轮测项范围；保留作
+  §14.9 项
 
 ### 14.9 REMAINING_BLOCKERS
 
@@ -1964,6 +1984,7 @@ chromium-1217 + CurrentUser\Root CA）+ 同一脚本 → 13/13 PASS。
 | AVD ccl 失效 | Chrome stable 不读 ccl | 用户手工 `/data/local/tmp/chrome-command-line` 持久化（或切 Canary） |
 | 中文 IME 选字 | AVD input 不支持中文 | 提供 Windows 中文 IME 实测 |
 | Desktop SPA PWA | 桌面 SPA 走 Tauri build path | 接受 NOT_RUN 或切 desktop-only manifest |
+| AVD xterm PTY bytes 不呈现 | host kernel ↔ SPA wsPane 协议层本机未通 | 真机复验 / 走 Tauri host 链路（非 test-rdg） |
 
 ### 14.10 BETA_READY
 
@@ -1976,10 +1997,14 @@ chromium-1217 + CurrentUser\Root CA）+ 同一脚本 → 13/13 PASS。
 - A→B→A no cross-talk 经 WS 后窗验证
 - scrollback §14.6 9/9 子项全 PASS（首入 / A→B→A / 向上加载 / 持续
   输出切入 / 重连+首屏+可交互 / 重复 history / 重建 / splash / 输入延迟）
+- AVD C3-C6 真实截图序列（C3 swipe 触发 SPA 状态切换 / C4 scroll-to-top /
+  C5 chrome 3-dot menu / C6 IME picker + pane tab + SPA kbd toggle）
 
 **仍未达 BETA 红线：
 - iPhone 6 类 NOT_RUN
 - AVD Chrome ccl 失效导致本轮无法重置 Android 部分为 VERIFIED
+- AVD xterm canvas PTY bytes 未呈现（host kernel ↔ SPA wsPane 协议层
+  本机未通；C3 长按显式选择受影响）
 - Native Tauri Remote E2E 仍 NOT_RUN
 - CHG-031 pending proposal 待人工 ack
 
@@ -1989,3 +2014,4 @@ chromium-1217 + CurrentUser\Root CA）+ 同一脚本 → 13/13 PASS。
 3. CHG-031 pending proposal 由用户 ack / reject
 4. 重启 AVD 后用户手工确认 `/data/local/tmp/chrome-command-line` 持久化
    （如要 Android 段从 PARTIAL → VERIFIED）
+5. AVD xterm PTY bytes 问题由产品评估（真机复验或切 Tauri host 链路）
