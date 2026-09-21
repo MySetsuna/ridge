@@ -1326,8 +1326,12 @@ Playwright bundled Chromium + 当前 host self-signed CA 的对照
 
 ### 12.5 CANDIDATE_FOR_DEVICE_TEST
 
-**候选 commit**：875a791e（v9-13 锁 commit）。当前 HEAD
-d3daed8c 相对候选的变更：
+**候选 commit**：875a791e（v9-13 锁 commit — v9-15 切片时的内部
+测试起点）。**当前候选已演进**：`f3b4a391` / release 0.1.87
+（CHG-031 closeout + CHG-032 desktop LAN output parity + CHG-033..044
+cloud 配套 + CHG-045 release）。当前产物 hash / 启动命令见 **§13.6**。
+
+当前 HEAD f3b4a391 相对 875a791e 的变更（相对 v9-15 切片点的扩展）：
 
 ```
 .gitignore                          (v9-14 a958e42b：!/patches/** + /scripts/.iteration/**)
@@ -1418,33 +1422,54 @@ powershell -ExecutionPolicy Bypass -File \
 
 ### 12.6 DEVICE_ACCEPTANCE（真机 runbook — 沿用原六类）
 
-每项只列**操作 / 预期 / 失败时记录**。真机段不允许用"长按自动
-选择"替代已确定的显式选择模式（mobile 已落实 `terminalImeMode
-=== 'ime'` 默认显式 IME，桌面 desktop 默认 `direct` 不挂 IME helper）。
+每项**操作 / 预期 / 本机可证部分 / 设备专属（NOT_RUN） / 失败时
+记录**。真机段不允许用"长按自动选择"替代已确定的显式选择模式
+（mobile 已落实 `terminalImeMode === 'ime'` 默认显式 IME，桌面
+desktop 默认 `direct` 不挂 IME helper）。
 
 **12.6.1 断网 / 锁屏恢复（不重复要求验证码）**
 - 操作：连上 host → 输 TOTP → 进入 session → 关闭飞行模式 30s →
   恢复 → 锁屏 5 分钟 → 解锁
 - 预期：session 不丢；WS 自动 reconnect；TOTP 不再次弹出
-- 失败记录：TOTP 重弹截图 / 重连超时时长 / reconnect 后
-  pane active state
+- **本机可证**（`browser-ui-e2e.mjs` §6 + §7）：reload 真实拆 WS →
+  token resume → 新 WS streams → reconnect-IO + PTY echo 都通。已
+  PASS（mobile + desktop）。
+- **设备专属 NOT_RUN**：飞行模式开关、锁屏 5min + 解锁、SPA 后台
+  冻结保活 — 需真机物理操作
+- 失败记录：TOTP 重弹截图 / 重连超时时长 / reconnect 后 pane active state
 
 **12.6.2 快速切工作区 / 终端（不串台）**
 - 操作：A 工作区 → 在 pane 1 输 "TAG_A" → 切 B 工作区 → 在 pane 2
   输 "TAG_B" → 切回 A → 看 pane 1 仍 echo TAG_A
 - 预期：画面不串；输入目标不串；TAG_A 不污染 TAG_B
+- **本机可证**（§7b）：双 pane 时 `[data-rg-pane-id]` A/B pane 各发
+  echo TAG → `[pty-trace <pane6>]` 断言 marker 归属正确（无 B 收
+  TAG_A / 无 A 收 TAG_B）。已 PASS（desktop）。单 pane 时 skip +
+  log reason，不假造。
+- **设备专属 NOT_RUN**：手机滑动切工作区手势、workspace sidebar
+  touch 滚动 — 需 touch device
 - 失败记录：截图 + activePaneId 切换时序
 
 **12.6.3 默认滑动 = 滚动；显式选择模式 = 点击 / 拖选**
 - 操作：长回滚历史 → 验证：仅**垂直滑动**滚动 buffer；**点击 +
   拖选**进入显式选择（不长按自动进入）
 - 预期：默认 swipe 不误触发选择；点击/拖选始终触发显式选区
+- **本机可证**：浏览器无 touch device，**NOT_RUN**（`mobileTouchScroll`
+  实现仅 touch 路径触发；mouse pointer 不会进入 swipe 路径）
+- 设备专属：touch 滑动 + long-press 选择模式 — 需真机 touch
 - 失败记录：误触发选择截图 + gesture sequence
 
 **12.6.4 长历史切换（100/500/1000/5000 行）**
 - 操作：制造 100/500/1000/5000 行 buffer → 进入 terminal →
   退出 → 再切回 → 验证首次进入与再次切回均能完整加载
 - 预期：scrollback 完整；进入不卡；切回不重画为空白
+- **本机可证**（§9）：每 tier 用 `yes <TAG> | head -N` 触发 host shell
+  输出 N 行唯一 marker → 断言 recv blob 含 marker + echoDone。
+  - mobile 5000 行：recvHits=19（10s wait）；100/500/1000 都 PASS
+  - desktop 5000 行：recvHits=31（10s wait）；100/500/1000 都 PASS
+  - 总计 mobile 4/4 + desktop 4/4 = 8 tier 全 PASS
+- **设备专属 NOT_RUN**：scroll-to-top / pinch-zoom 触屏手势 —
+  需 touch device
 - 失败记录：scrollback 缺行数 / 重画时长 / WebGPU frame loss
 
 **12.6.5 PWA 安装 / 独立启动 / 更新**
@@ -1452,6 +1477,13 @@ powershell -ExecutionPolicy Bypass -File \
   更新（手动改 version）→ 重启
 - 预期：PWA 独立启动后能加载 SPA；更新后版本号变化；旧 SW 不
   阻塞新 SPA
+- **本机可证**（§10，mobile-only）：fetch `/manifest.webmanifest`
+  200 + JSON 有效 + icons 数组非空 + fetch `/sw.js` 200 +
+  `navigator.serviceWorker.getRegistration()` 返回 active。已 PASS
+  （mobile）。desktop SPA 不走 PWA（属 Tauri build path），跳过。
+- **设备专属 NOT_RUN**：从 Chrome 安装 PWA 到桌面、standalone
+  窗口脱离浏览器、SW version bump 后旧 cache 替换、SW update
+  toast 触发 — 需真机 Chrome + 实际安装动作
 - 失败记录：SW cache mismatch / 新版加载失败截图
 
 **12.6.6 实体 / 软键盘及中文输入**
@@ -1459,13 +1491,31 @@ powershell -ExecutionPolicy Bypass -File \
   → 切到软键盘隐藏（仅硬键盘设备）
 - 预期：IME composition 不污染 PTY；中文正确送入 TUI；硬键盘
   设备不挂 IME helper textarea
+- **本机可证**（§11）：读 localStorage `ridge.settings.v1` 中的
+  `terminalImeMode` gate（ime / direct / unset）— 已 PASS（mobile +
+  desktop）。ASCII 硬键盘输入在 §4 / §7 已 PASS。
+- **设备专属 NOT_RUN**：原生 IME (Pinyin / Sogou / Wubi) 安装 + 软
+  键盘弹出 + IME composition state → PTY 送入、composition 残留
+  清理 — 需真机原生 IME
 - 失败记录：composition 残留 / 中文送入丢字
 
-**本机能自动测的项**（保留为内部测试，不归真机）：
-- browser-ui-e2e.mjs 已覆盖 mobile/desktop 浏览器 E2E
-- api-integration.mjs 已覆盖 kernel 协议 + WS reconnect 竞态
+**本机可自动测的项**（保留为内部测试，不归真机）：
+- `browser-ui-e2e.mjs` 已覆盖 mobile/desktop 浏览器 E2E
+  - §1 navigate / §2 auth / §3 session / §4 IO（input + echo +
+    page-fed）/ §5 resize / §6 detach-reconnect（reload 真拆）/
+    §7 reconnect-IO（sent + echo + page-fed）/ §7b A→B→A pane
+    归属 / §8 trust-scope / §9 long-history 100/500/1000/5000 /
+    §10 PWA / §11 IME gate
+- `api-integration.mjs` 已覆盖 kernel 协议 + WS reconnect 竞态
 - 浏览器切换性能（detach/reconnect/resize）由 browser-ui-e2e
   内 A→B→A + resize + detach-reconnect 三项覆盖
+
+**基线证据**（HEAD `f3b4a391` / 0.1.87）：
+- mobile：14 PASS / 0 FAIL（含 §9 long-history ×4 + §10 PWA + §11 IME）
+- desktop：13 PASS / 0 FAIL（§10 PWA 跳过；§9 long-history ×4 +
+  §7b A→B→A pane 归属 PASS；§11 IME PASS）
+- 安装版 ridge PID 17384 / 17584（`C:\Program Files\ridge\ridge.exe`）
+  未触（StartTime 2026/9/21 13:36 仍在跑）
 
 ### 12.7 REMAINING_CODE_GAPS
 
@@ -1476,6 +1526,18 @@ powershell -ExecutionPolicy Bypass -File \
 | desktop IO 全 PASS | 实际两段叠加：(a) tauriShim `write_to_pty` 路径在 web-remote build 下无运行实现（`src/lib/transport/tauriShim/bridge.test.ts` 仅 unit test，无运行路径）；(b) RidgePane.svelte:1786 attach reactive 边界 keyboard 节流 | (a) 在 tauriShim core.ts 把 `write_to_pty` 接入 `provider.invoke` 路径（与 `invoke('list_saved_workspace_files')` 同款）；(b) desktop `terminalImeMode` 默认 `ime` 复用 IME helper textarea 焦点 sink | 产品 + 审批 |
 | kernel host 4 个方法 | `list_workspace_save_info` / `get_shell_history` / `set_user_default_cwd` / `start_watching_paths` 未实现 | `packages/ridge-cli/src/kernel_host_impl.rs:897` 前补 default 分支；最小空实现即可恢复 desktop 路径 attach 完整链 | 产品 + 审批 |
 | Native Tauri Remote E2E | 与 Web Remote 路径独立 | 单独 CHG 覆盖；不混入 v9-15 范围 | 产品 + 范围 |
+
+**v9-16 后此表已被事实收敛**（详见 §13.2 / §13.5）：
+- "desktop IO 全 PASS" — CHG-032 修根因（`lanWsAdapter.sendControl`
+  截 `subscribe-pane` 改调 `conn.subscribePane` + `wsRemote.unregisterPane`）；
+  11 unit + 3-layer e2e gates PASS。v9-15 §12.7 列的"tauriShim
+  write_to_pty 缺失"与"RidgePane.svelte:1786 边界"经 v9-16 复现证实
+  **非阻塞**（bridge.invoke 通用路径 + manager.attach 后置 attached=true）。
+- "kernel host 4 方法" — v9-16 复现证实非阻塞 IO 链路；调用方全
+  带 `.catch` + `hasCapability` 降级灰显。本表未实施的 default 分支
+  最小空实现已**不再需要**。
+- 表内 5 项中 3 项已闭环；其余 2 项（Native Tauri E2E + 诊断导出
+  自动化）仍独立 CHG / 工具债，按 §13.7 推进。
 | diagnostic export 自动化 | §12.5 约定为手工 log tee + 真机自带导出 | 真机首次需要时补自动化 | 工具 |
 | 长历史 E2E（>1000 行） | 浏览器跑耗时长，不利本机回归 | 拆为单独 e2e 长历史脚本，不与 browser-ui-e2e 混跑 | 工具 |
 
