@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <title>Ridge Remote - Agent Terminal</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0d1117" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Ridge" />
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<!-- Terminal fonts are authorized and loaded from the client OS at runtime. -->
+<style>
+/* Default --rg-* palette (GitHub-dark). The desktop's active theme is pushed
+   over WS and overrides these on the document root (applyThemeVars). */
+:root{
+  --rg-bg:#0d1117;--rg-surface:#161b22;--rg-surface-2:#21262d;
+  --rg-border:#30363d;--rg-border-bright:#30363d;
+  --rg-fg:#e6edf3;--rg-fg-muted:#8b949e;
+  --rg-accent:#58a6ff;--rg-accent-glow:rgba(88,166,255,.15);
+  --rg-ansi-green:#3fb950;--rg-ansi-red:#f85149;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden;background:var(--rg-bg);color:var(--rg-fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;touch-action:manipulation;-webkit-overflow-scrolling:touch}
+</style>
+  <script type="module" crossorigin src="/assets/index-CNb-nLSp.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/workspace-tree-BWwuoK0g.css">
+  <link rel="stylesheet" crossorigin href="/assets/virtual-keyboard-DzOuMW8j.css">
+  <link rel="stylesheet" crossorigin href="/assets/terminal-canvas-BqJ13Uc3.css">
+  <link rel="stylesheet" crossorigin href="/assets/index-DgN5fL_0.css">
+<link rel="manifest" href="/manifest.webmanifest"></head>
+<body lang="zh-CN">
+<div id="app"></div>
+</body>
+</html>
