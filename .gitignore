@@ -97,3 +97,6 @@ scripts/tmp-*.mjs
 # Separate ridge-code checkout used for local reference work; it is not part
 # of this repository's release graph.
 /ridge-code/
+/artifacts/
+/apps/
+*.png
