@@ -138,31 +138,38 @@ if (!terminalUp) {
   // close the Chrome tab. ESC is used to dismiss the IME instead.
   const fallbacks = [[672, 2086], [672, 1894], [672, 1515]];
   let verified = false;
+  const findVerifyBtn = (g) => [...g.matchAll(/<node[^>]*>/g)]
+    .map((m) => {
+      const tag = m[0];
+      return {
+        cls: (tag.match(/class="([^"]*)"/) || [])[1] || "",
+        text: ((tag.match(/text="([^"]*)"/) || [])[1] || "").replace(/&amp;/g, "&"),
+        bounds: (tag.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/) || []).slice(1),
+      };
+    })
+    .find((n) => /Button|TextView/.test(n.cls) && /verify\s*&?\s*connect|验证|连接|继续/i.test(n.text) && n.bounds.length === 4);
   for (let attempt = 0; attempt < 5; attempt++) {
-    const gxml = dump(`ui-verify-${attempt}`);
+    let gxml = dump(`ui-verify-${attempt}`);
     if (/prop paneId=/.test(gxml)) { verified = true; break; }
-    // Parse each node tag and read attributes individually — uiautomator puts
-    // text= BEFORE class=, so a class-then-text regex never matches.
-    const bm = [...gxml.matchAll(/<node[^>]*>/g)]
-      .map((m) => {
-        const tag = m[0];
-        return {
-          cls: (tag.match(/class="([^"]*)"/) || [])[1] || "",
-          text: ((tag.match(/text="([^"]*)"/) || [])[1] || "").replace(/&amp;/g, "&"),
-          bounds: (tag.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/) || []).slice(1),
-        };
-      })
-      .find((n) => /Button|TextView/.test(n.cls) && /verify\s*&?\s*connect|验证|连接|继续/i.test(n.text) && n.bounds.length === 4);
+    // Chrome's autofill popup ("Show saved passwords…") covers the Verify
+    // button after typing a code — dismiss it by tapping a neutral header area
+    // before hunting for the button again.
+    if (/Show saved passwords|Show saved payment|autofill/i.test(gxml)) {
+      log("autofill popup detected — dismissing");
+      tap(672, 600);
+      await sleep(800);
+      gxml = dump(`ui-verify-${attempt}-undropped`);
+    }
+    const bm = findVerifyBtn(gxml);
     if (bm) {
       const cx = (Number(bm.bounds[0]) + Number(bm.bounds[2])) >> 1, cy = (Number(bm.bounds[1]) + Number(bm.bounds[3])) >> 1;
       log(`verify button ("${bm.text}") at (${cx},${cy})`);
       tap(cx, cy);
-    } else if (attempt >= 1 && attempt <= 3) {
-      key(111); // ESCAPE — hide IME without leaving the page
-      await sleep(600);
+    } else {
+      const [fx, fy] = fallbacks[Math.min(attempt, fallbacks.length - 1)];
+      log(`verify fallback tap (${fx},${fy})`);
+      tap(fx, fy);
     }
-    const [fx, fy] = fallbacks[Math.min(attempt, fallbacks.length - 1)];
-    if (!bm) { log(`verify fallback tap (${fx},${fy})`); tap(fx, fy); }
     await sleep(2500);
     if (/prop paneId=/.test(dump(`ui-verify-post-${attempt}`))) { verified = true; break; }
   }
@@ -172,18 +179,25 @@ if (!terminalUp) {
   screencap("02-typed");
 }
 // Safety: never type into the launcher. If the terminal isn't up, relaunch
-// Chrome once; abort hard if it still isn't.
-{
-  const up = /prop paneId=|attached=/.test(dump("ui-pre-type"));
-  if (!up) {
-    log("terminal not mounted after gate — relaunching Chrome");
-    adb(["shell", "am", "start", "-a", "android.intent.action.VIEW", "-n", "com.android.chrome/com.google.android.apps.chrome.Main", "-d", APP_URL]);
-    await sleep(7000);
-    if (!/prop paneId=|attached=/.test(dump("ui-pre-type-2"))) {
-      log("FATAL terminal still not mounted — aborting (would type into launcher)");
-      screencap("07-final");
-      process.exit(11);
-    }
+// Chrome once; abort hard if it still isn't. Impoverished a11y dumps (<35
+// nodes) are re-tried — they can't prove "not mounted".
+const dumpSeesTerminal = async (name) => {
+  for (let i = 0; i < 5; i++) {
+    const x = dump(i ? `${name}-retry-${i}` : name);
+    if (/prop paneId=|attached=/.test(x)) return true;
+    if ((x.match(/<node/g) || []).length >= 35) return false; // rich dump, genuinely gated/other
+    await sleep(2000);
+  }
+  return false;
+};
+if (!(await dumpSeesTerminal("ui-pre-type"))) {
+  log("terminal not mounted after gate — relaunching Chrome");
+  adb(["shell", "am", "start", "-a", "android.intent.action.VIEW", "-n", "com.android.chrome/com.google.android.apps.chrome.Main", "-d", APP_URL]);
+  await sleep(7000);
+  if (!(await dumpSeesTerminal("ui-pre-type-2"))) {
+    log("FATAL terminal still not mounted — aborting (would type into launcher)");
+    screencap("07-final");
+    process.exit(11);
   }
 }
 await sleep(6000);
