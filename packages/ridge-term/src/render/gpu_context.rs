@@ -90,14 +90,32 @@ pub const ATLAS_SUPERSAMPLE: u32 = 1;
 /// Prefer linear BGRA for WebGPU and linear RGBA for WebGL2. Keeping a
 /// capabilities fallback lets future browser formats fail at pipeline
 /// validation rather than at adapter selection.
-fn select_surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
-    [
-        wgpu::TextureFormat::Bgra8Unorm,
-        wgpu::TextureFormat::Rgba8Unorm,
-    ]
-    .into_iter()
-    .find(|candidate| formats.contains(candidate))
-    .or_else(|| formats.first().copied())
+///
+/// GLES note (2026-09-25): `Bgra8Unorm` is *texture*-filterable on WebGL2 via
+/// `EXT_texture_format_BGRA8888`, so wgpu lists it in surface capabilities —
+/// but it is NOT color-renderable there. Selecting it as the surface format
+/// makes every `framebufferTexture2D` return `INVALID_ENUM: invalid
+/// attachment` and the canvas stays black (seen on the AVD emulator's
+/// SwiftShader/ANGLE GLES stack). So on `wgpu::Backend::Gl` we must prefer
+/// `Rgba8Unorm` and only fall back to BGRA if that is all the surface offers.
+fn select_surface_format(
+    formats: &[wgpu::TextureFormat],
+    backend: wgpu::Backend,
+) -> Option<wgpu::TextureFormat> {
+    let (first, second) = match backend {
+        wgpu::Backend::Gl => (
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Bgra8Unorm,
+        ),
+        _ => (
+            wgpu::TextureFormat::Bgra8Unorm,
+            wgpu::TextureFormat::Rgba8Unorm,
+        ),
+    };
+    [first, second]
+        .into_iter()
+        .find(|candidate| formats.contains(candidate))
+        .or_else(|| formats.first().copied())
 }
 
 /// std140 size of `WallpaperUniform`: vec2(8) + vec2(8) + vec3-padded-to-vec4(16) = 32 bytes.
@@ -201,7 +219,7 @@ impl RasterizedGlyphCache {
 
 /// Per-process shared GPU resources. One instance for all panes.
 pub struct GpuContext {
-    pub instance: wgpu::Instance,
+    pub instance: Rc<wgpu::Instance>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub surface_format: wgpu::TextureFormat,
@@ -296,99 +314,145 @@ pub struct GpuContext {
 }
 
 thread_local! {
-    /// Process-wide singleton. `None` until the first
-    /// `GpuContext::get_or_init_for_canvas` call succeeds; cached thereafter.
-    /// Failure is *not* cached — each call re-attempts so a transient
-    /// adapter miss does not permanently lock the session out of WebGPU.
-    static SHARED_GPU: RefCell<Option<Rc<RefCell<GpuContext>>>> = const { RefCell::new(None) };
+    /// Process-wide `wgpu::Instance` singleton. Safe to share across
+    /// every SurfaceHost (instances only own a JS-side handle to the
+    /// browser GPU; the device + queue are per-instance and live inside
+    /// each `GpuContext`).
+    ///
+    /// Wrapped in `Rc` because `wgpu::Instance` is neither `Clone` nor
+    /// `Send`/`Sync` — the only way to share one across multiple
+    /// `GpuContext` initialisations on the wasm32 single-threaded
+    /// executor is reference counting.
+    ///
+    /// `None` until the first `GpuContext::get_or_init_for_canvas` call.
+    static SHARED_INSTANCE: RefCell<Option<Rc<wgpu::Instance>>> = const { RefCell::new(None) };
+
+    /// Process-wide aggregate of every `GpuContext`'s
+    /// `atlas_overwrite_after_cite` counter. With per-canvas `GpuContext`
+    /// instances, summing at the source keeps the JS-side
+    /// `__ridgeAtlasRace` query a stable single number — each new
+    /// `GpuContext` increments its OWN copy, and on drop the diff would
+    /// be lost. Aggregating here means the counter survives context
+    /// turnover and the JS detector sees the cumulative hit count
+    /// across the whole session.
+    static ATLAS_RACE_TOTAL: RefCell<u64> = const { RefCell::new(0) };
 }
 
 /// §atlas-race detector: read the process-wide overwrite-after-cite count
-/// from the shared GPU context. Returns 0 before the context initializes or
-/// before the first frame. Surfaced to JS via `lib.rs::atlasOverwriteAfterCiteCount`.
+/// aggregated across every `GpuContext`. With per-canvas GPU contexts
+/// (post AVD §A.8 fix) each pane's atlas has its own counter; we sum
+/// them at increment time so the JS-side `__ridgeAtlasRace` query stays
+/// a single stable number that survives workspace switches. Returns 0
+/// before the first GPU context initializes or before the first frame.
 pub fn atlas_overwrite_after_cite_count() -> u64 {
-    SHARED_GPU.with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .map(|rc| rc.borrow().atlas_overwrite_after_cite)
-            .unwrap_or(0)
-    })
+    ATLAS_RACE_TOTAL.with(|cell| *cell.borrow())
 }
 
 /// Register host-provided system-font bytes and synchronize a live shared
 /// rasterizer. The atlas is invalidated only when the payload is new.
+///
+/// With per-canvas `GpuContext` (post §A.8 AVD fix) the live rasterizer
+/// lives inside the most-recent `GpuContext`, which `SurfaceHost::init`
+/// created on demand. New `GpuContext` instances call
+/// `sync_registered_fonts()` themselves inside `Self::new`, so this
+/// function only needs to register the bytes into the global font-data
+/// registry — subsequent contexts will pick them up at construction.
+/// The return value still tells JS whether the payload was new (used
+/// by `fontLoadPromises` to short-circuit duplicate fetches).
 pub fn install_font_data(data: Vec<u8>) -> Result<bool, String> {
-    let added = super::glyph_rasterizer::register_font_data(data)?;
-    if !added {
-        return Ok(false);
-    }
-    SHARED_GPU.with(|cell| -> Result<(), String> {
-        let Some(ctx) = cell.borrow().as_ref().cloned() else {
-            return Ok(());
-        };
-        let mut ctx = ctx.borrow_mut();
-        ctx.rasterizer.sync_registered_fonts()?;
-        ctx.invalidate_atlas();
-        Ok(())
-    })?;
-    Ok(true)
+    super::glyph_rasterizer::register_font_data(data)
 }
 
 /// §stale-replay detector: read the process-wide count of cached replays
 /// aborted because a cited atlas layer was repurposed since caching (the
 /// cross-frame switch-workspace garble). 0 before the GPU context inits.
 impl GpuContext {
-    /// Lazily acquire the shared GPU context. First call performs the
-    /// full browser GPU bootstrap (instance + adapter + device + pipeline +
-    /// atlas); subsequent calls return the cached `Rc`.
+    /// Build a per-canvas GPU context. Every SurfaceHost gets its own
+    /// `GpuContext` (instance / adapter / device / pipeline / atlas /
+    /// rasterizer) tied to its own canvas — wgpu's device is bound to
+    /// the adapter that produced it, and that adapter must be
+    /// `request_adapter`'d against the canvas's surface to be
+    /// `compatible_surface`-correct. Reusing a device that was
+    /// `request_adapter`'d against a *different* surface produces a
+    /// wgpu `Surface::configure` Validation Error
+    /// ("Surface does not support the adapter's queue family") and
+    /// panics the host — the AVD §A.8 root cause. The `wgpu::Instance`
+    /// is shared process-wide (cheap to keep, expensive to re-create);
+    /// everything below it is per-canvas.
     ///
     /// Returns `Err` on adapter / device acquisition failure so the
-    /// caller (`WebGpuBackend::new`, eventually `RenderHandle
-    /// ::newWithWebgpuFirst`) can report an explicit initialization error.
-    /// Failure is not memoized — a flaky adapter on call N can succeed on
-    /// call N+1.
+    /// caller (`SurfaceHost::init`, eventually `RenderHandle
+    /// ::newWithWebgpuFirst`) can report an explicit initialization
+    /// error. Failure is not memoized — a flaky adapter on call N can
+    /// succeed on call N+1.
     pub async fn get_or_init_for_canvas(
         canvas: HtmlCanvasElement,
     ) -> Result<(Rc<RefCell<Self>>, wgpu::Surface<'static>), String> {
-        if let Some(rc) = SHARED_GPU.with(|cell| cell.borrow().clone()) {
-            let surface = rc
-                .borrow()
-                .instance
-                .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-                .map_err(|e| format!("GpuContext: create_surface failed: {e:?}"))?;
-            return Ok((rc, surface));
-        }
-
-        let instance = wgpu::util::new_instance_with_webgpu_detection(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL,
-            ..Default::default()
-        })
-        .await;
+        let instance: Rc<wgpu::Instance> = match SHARED_INSTANCE.with(|cell| cell.borrow().clone()) {
+            Some(rc) => rc,
+            None => {
+                let new: wgpu::Instance = wgpu::util::new_instance_with_webgpu_detection(
+                    wgpu::InstanceDescriptor {
+                        backends: wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL,
+                        ..Default::default()
+                    },
+                )
+                .await;
+                let rc = Rc::new(new);
+                SHARED_INSTANCE.with(|cell| *cell.borrow_mut() = Some(rc.clone()));
+                rc
+            }
+        };
         let surface = instance
             .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
             .map_err(|e| format!("GpuContext: create_surface failed: {e:?}"))?;
         let ctx = Self::new(instance, &surface).await?;
         let rc = Rc::new(RefCell::new(ctx));
-        SHARED_GPU.with(|cell| *cell.borrow_mut() = Some(rc.clone()));
         Ok((rc, surface))
     }
 
-    /// Bootstrap. Creates instance + adapter + device, then builds the
-    /// shader / pipeline / atlas / rasterizer / sampler.
+    /// Bootstrap. Creates adapter + device, then builds the shader /
+    /// pipeline / atlas / rasterizer / sampler. `instance` is held
+    /// by `Rc` (post §A.8 the same `wgpu::Instance` may back many
+    /// `GpuContext`s; cloning it isn't possible, so we keep the Rc
+    /// alive inside the struct's lifetime).
     async fn new(
-        instance: wgpu::Instance,
+        instance: Rc<wgpu::Instance>,
         compatible_surface: &wgpu::Surface<'_>,
     ) -> Result<Self, String> {
         // WebGL2 requires adapter selection against the canvas surface;
         // WebGPU also benefits from rejecting incompatible adapters here.
-        let adapter = instance
+        // WebGPU-first: try the primary path (WebGPU when available, else
+        // wgpu's WebGL2 fallback selected by its internal backend scan).
+        // If the primary path returns no adapter (e.g. AVD Chrome where
+        // `navigator.gpu.requestAdapter` returns null because the
+        // emulator's WebGPU implementation is partial), explicitly turn
+        // `force_fallback_adapter` on so wgpu picks the WebGL2 backend
+        // unconditionally. We must NOT silently give up on GPU here —
+        // the SwiftShader/ANGLE-backed WebGL2 context that AVD exposes
+        // is fast enough to render the terminal grid.
+        let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
                 compatible_surface: Some(compatible_surface),
                 force_fallback_adapter: false,
             })
             .await
-            .ok_or_else(|| "GpuContext: no WebGPU or WebGL2 adapter available".to_string())?;
+        {
+            Some(a) => a,
+            None => instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::default(),
+                    compatible_surface: Some(compatible_surface),
+                    force_fallback_adapter: true,
+                })
+                .await
+                .ok_or_else(|| {
+                    "GpuContext: no WebGPU or WebGL2 adapter available even with \
+                     force_fallback_adapter=true"
+                        .to_string()
+                })?,
+        };
 
         let adapter_info = adapter.get_info();
         let backend_name = match adapter_info.backend {
@@ -397,7 +461,7 @@ impl GpuContext {
             _ => "GPU",
         };
         let capabilities = compatible_surface.get_capabilities(&adapter);
-        let surface_format = select_surface_format(&capabilities.formats)
+        let surface_format = select_surface_format(&capabilities.formats, adapter_info.backend)
             .ok_or_else(|| "GpuContext: surface exposes no texture format".to_string())?;
         let surface_alpha_mode = if capabilities
             .alpha_modes
@@ -743,7 +807,17 @@ impl GpuContext {
             ..Default::default()
         });
 
-        let rasterizer = GlyphRasterizer::new(slot_w as u16, slot_h as u16)?;
+        let mut rasterizer = GlyphRasterizer::new(slot_w as u16, slot_h as u16)?;
+        // §A.8 AVD fix: pick up any system-font bytes the host supplied
+        // *before* this per-canvas GpuContext was constructed. The
+        // process-wide font-data registry is populated by
+        // `install_font_data` (called from JS font setup) and survives
+        // GpuContext turnover, so a newly-built rasterizer that ignored
+        // those bytes would rasterize fallbacks instead of the user-
+        // chosen fonts.
+        rasterizer
+            .sync_registered_fonts()
+            .map_err(|e| format!("GpuContext: rasterizer font sync failed: {e}"))?;
 
         // GlyphAtlas capacity = usable layer count so the LRU's eviction
         // trigger fires exactly when GPU slots are exhausted — never
@@ -968,7 +1042,13 @@ impl GpuContext {
 
         // Rasterizer dimensions must match the atlas slot so every admitted
         // Swash bitmap fits the `queue.write_texture` upload bounds.
-        let rasterizer = GlyphRasterizer::new(self.slot_w as u16, self.slot_h as u16)?;
+        let mut rasterizer = GlyphRasterizer::new(self.slot_w as u16, self.slot_h as u16)?;
+        // §A.8 AVD fix: re-sync the host-provided system-font bytes
+        // when rebuilding the atlas (rasterizer turn-over) so glyphs
+        // come from the user's font stack, not the fallback chain.
+        rasterizer
+            .sync_registered_fonts()
+            .map_err(|e| format!("GpuContext: rasterizer font sync failed: {e}"))?;
 
         self.atlas_texture = atlas_texture;
         self.atlas_view = atlas_view;
@@ -1137,6 +1217,12 @@ impl GpuContext {
             .unwrap_or(false)
         {
             self.atlas_overwrite_after_cite = self.atlas_overwrite_after_cite.wrapping_add(1);
+            // Mirror the bump into the process-wide aggregate so the
+            // JS-side `__ridgeAtlasRace` query stays a single stable
+            // number even after this `GpuContext` drops out of scope.
+            ATLAS_RACE_TOTAL.with(|cell| {
+                *cell.borrow_mut() = cell.borrow().wrapping_add(1);
+            });
             if self.atlas_cite_log_budget > 0 {
                 self.atlas_cite_log_budget -= 1;
                 let was_written = self

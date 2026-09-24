@@ -316,6 +316,24 @@
   // a re-selection every time. sessionStorage holds the heavy scrollback; these
   // lightweight "which ws / which pane" pointers go to localStorage so they also
   // survive a tab close, not just a reload.
+  // §force-reset (?reset=1): driver / harness hook to drop all SPA localStorage
+  // before reading savedActiveWs. Without it, a stale LS_PANEMAP_KEY from a
+  // previous Chrome profile (surviving `pm clear` on some AVD builds) would
+  // push `lastActivePanePerWorkspace` entries that target panes the kernel
+  // never registered — the canvas would mount with a stale paneId and the
+  // host's strict cross-workspace check rejects `resize_pane`. Only clears
+  // the keys this SPA owns; does not touch auth or kernel data.
+  try {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('reset') === '1') {
+      const prefix = 'rg-remote-';
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(prefix)) localStorage.removeItem(k);
+      }
+    }
+  } catch { /* ignore — URL parser / storage may not be available */ }
+
   const storageScope = untrack(() => ws.cacheScope?.() ?? `session-${sessionId()}`);
   const LS_WS_KEY = `rg-remote-active-ws:${storageScope}`;
   const LS_PANEMAP_KEY = `rg-remote-pane-map:${storageScope}`;
@@ -968,7 +986,12 @@
       // host's on-subscribe replay is absorbed by the alive kernel.
       const key = paneRefKey(pane);
       const active = activePaneRef();
-      if (!active || key !== paneRefKey(active)) return;
+      // §cold-boot-race (P5): active 未确立前（activeWorkspaceId='' / activePaneId=null）
+      // 不能 drop，否则 cold boot 期 host 先到的 PTY bytes 永久丢失。bytes 仍按
+      // per-pane 入 PaneFeedScheduler 队列（既有隔离，跨 pane 不串）；active binding
+      // 由 refreshWorkspaces / panes handler 落定后 setActive(subscriptionKey) →
+      // queue 正常 drain 到 active canvas。active 已确立且 key 不匹配 → drop straggler。
+      if (active && key !== paneRefKey(active)) return;
       paneFeedScheduler.enqueue(key, data);
       // During a keyed pane switch the old canvas may already be parked and
       // the new one not yet attached. Do not drop this frame: the next canvas
@@ -1084,13 +1107,10 @@
       refreshActivePane();
     }));
     stopConnection = onceCleanup(stops.map((stop) => () => stop()));
-    // §persist-state: seed the active workspace from localStorage before the
-    // first panes/workspaces arrive so the panes handler can restore the
-    // remembered pane immediately; refreshWorkspaces() then switches the host
-    // back to this workspace if it's currently on a different one.
-    if (savedActiveWs) {
-      ui.navigate(savedActiveWs, lastActivePanePerWorkspace.get(savedActiveWs) ?? null);
-    }
+    // §persist-state: refreshWorkspaces() is the single owner for establishing
+    // the initial active workspace + pane binding. savedActiveWs 不再独立
+    // pre-seed（消除 cold-boot 双写/竞态）；refreshWorkspaces 内部首轮会按
+    // savedActiveWs 决定是否要 host 切回 + restore remembered pane。
     ws.listPanes();
     refreshWorkspaces();
     return () => {
@@ -1169,6 +1189,79 @@
   $effect(() => {
     if (canvasRef && kernelTheme) canvasRef.applyTheme(kernelTheme);
   });
+
+  // §debug-pane-main: self-identifying bundle name so screenshots prove which
+  // build the page actually loaded (Vite rewrites import.meta.url per chunk).
+  const _bundleName = (() => {
+    try { return new URL(import.meta.url).pathname.split('/').pop() || '?'; } catch { return '?'; }
+  })();
+  // §debug-pane-main: which wasm asset the page fetched + which GL stack the
+  // browser exposes — screenshots then prove the loaded build and the GLES
+  // driver without needing CDP on the AVD.
+  const _glInfo = (() => {
+    try {
+      const wasm = (performance.getEntriesByType('resource') as PerformanceResourceTiming[])
+        .map((e) => e.name.split('/').pop() ?? '')
+        .filter((n) => n.includes('ridge_term_bg'))
+        .join(',') || '?';
+      const c = document.createElement('canvas');
+      const gl = c.getContext('webgl2');
+      const ver = gl ? String(gl.getParameter(gl.VERSION)).slice(0, 42) : 'no-webgl2';
+      const ren = gl ? String(gl.getParameter(gl.RENDERER)).slice(0, 38) : '-';
+      if (gl) gl.getExtension('WEBGL_lose_context')?.loseContext();
+      return `wasm=${wasm} gl=${ver} ren=${ren}`;
+    } catch (err) { return `glinfo err=${String(err).slice(0, 40)}`; }
+  })();
+
+  // §debug-pane-watch (?debug=pane=1): mirror activeLocation into
+  // document.title so the AVD driver can capture the live workspace/pane
+  // IDs via the Chrome tab strip / page dump. Off by default — no prod
+  // traffic cost; this effect never installs unless the query param is set.
+  let _paneDebugEnabled = false;
+  try {
+    if (new URL(window.location.href).searchParams.get('debug') === 'pane=1') _paneDebugEnabled = true;
+  } catch { /* ignore */ }
+  if (_paneDebugEnabled) {
+    let _lastTitle = '';
+    $effect(() => {
+      const ws = ui.activeWorkspaceId || '<none>';
+      const pn = ui.activePaneId || '<none>';
+      const ce = String(hostCanvasError ?? '').slice(0, 60);
+      const title = `[ws=${ws.slice(0,8)} pane=${pn.slice(0,8)} err=${ce}]`;
+      document.title = title;
+      // §debug-pane-log: stream via console.log so logcat captures every
+      // active-id change AND mirror into localStorage so driver can read via
+      // `adb shell run-as com.android.chrome cat files/.../Local Storage/...`
+      // AND POST to host's /debug/pane-state which logs into host-trace.
+      if (title !== _lastTitle) {
+        _lastTitle = title;
+        console.log(`[pane-debug] ${title} full_ws=${ws} full_pn=${pn}`);
+        try {
+          localStorage.setItem('rg-remote-debug-state', JSON.stringify({
+            ts: Date.now(),
+            activeWorkspaceId: ws,
+            activePaneId: pn,
+            hostCanvasError: ce,
+            fullUrl: window.location.href,
+          }));
+          // POST to host. The host's /debug/pane-state handler is mounted
+          // only when RIDGE_HOST_TRACE=1 (which the driver sets) — if missing,
+          // the fetch rejects but we don't care; the localStorage write above
+          // is the primary signal.
+          fetch('/debug/pane-state', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              ws, pn, ce,
+              fullWs: ui.activeWorkspaceId,
+              fullPn: ui.activePaneId,
+              ts: Date.now(),
+            }),
+          }).catch(() => {});
+        } catch { /* */ }
+      }
+    });
+  }
 
   // Trigger each optional chunk only after the authenticated app is connected
   // and the corresponding surface is relevant. The promises are cached so a
@@ -1355,7 +1448,7 @@
         inside the terminal region; initialization failures remain visible. -->
     <div class="term-stage" style:transform={`translateY(${ui.keyboardShift}px)`}>
       <canvas class="host-canvas" data-rg-host aria-hidden="true" use:hostCanvas></canvas>
-      {#if terminalCanvasPromise}
+      {#if terminalCanvasPromise && activePane}
         {#await terminalCanvasPromise}
           <div class="terminal-loading">{$t('mobile.initializingTerminal')}</div>
         {:then module}
@@ -1395,6 +1488,35 @@
       {/if}
     </div>
   {/if}
+
+  <!-- §debug-pane-overlay: ALWAYS visible (no URL gate). Sits OUTSIDE term-stage
+       at fixed position with z-index 10000 so it cannot be hidden by any
+       canvas chrome. Renders the actual props that MainApp hands to
+       TerminalCanvas + the latest hostCanvasError, so AVD screenshots prove
+       what the SPA saw at render time. -->
+  <div
+    data-pane-debug-main
+    style:position="fixed"
+    style:top="6px"
+    style:left="6px"
+    style:right="6px"
+    style:z-index="10000"
+    style:font="10px/1.4 ui-monospace,monospace"
+    style:color="#7fff7f"
+    style:background="rgba(0,0,0,0.92)"
+    style:padding="6px 8px"
+    style:border-radius="4px"
+    style:border="1px solid #7fff7f"
+    style:pointer-events="none"
+    style:word-break="break-all"
+  >
+    <div>[MAINAPP] activeWs={ui.activeWorkspaceId ?? '<null>'}</div>
+    <div>[MAINAPP] activePn={ui.activePaneId ?? '<null>'}</div>
+    <div>[MAINAPP] hostCanvasError={hostCanvasError ?? 'null'}</div>
+    <div>[MAINAPP] wsState={wsState}</div>
+    <div>[MAINAPP] bundle={_bundleName}</div>
+    <div>[MAINAPP] {_glInfo}</div>
+  </div>
 
   {#if ui.sidebarTab !== null && panelAvailability[ui.sidebarTab]}
     <div class="sidebar-overlay" onclick={() => ui.sidebarTab = null} role="presentation"></div>

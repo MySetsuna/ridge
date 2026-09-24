@@ -9,8 +9,8 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket};
@@ -74,6 +74,30 @@ pub fn log_kernel_transport_mode() {
 
 fn select_endpoint(initial: KernelEndpoint, refreshed: Option<KernelEndpoint>) -> KernelEndpoint {
     refreshed.unwrap_or(initial)
+}
+
+/// CHG-050 §2.2 toggleable host trace. Off by default — when off,
+/// every caller of `host_trace_*!` reduces to a single OnceLock read
+/// plus a branch (sub-microsecond on hot paths). Enable with
+/// `RIDGE_HOST_TRACE=1|true|yes|on` to emit `tracing::info!` lines
+/// under target `ridge_cli::trace`.
+pub fn host_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("RIDGE_HOST_TRACE").ok().as_deref(),
+            Some("1" | "true" | "yes" | "on")
+        )
+    })
+}
+
+#[macro_export]
+macro_rules! host_trace {
+    ($($arg:tt)+) => {{
+        if $crate::kernel_host_impl::host_trace_enabled() {
+            tracing::info!(target: "ridge_cli::trace", $($arg)+);
+        }
+    }};
 }
 
 pub struct KernelHost {
@@ -416,7 +440,34 @@ impl KernelHost {
     }
 
     fn pane_id(&self, args: &Value, snapshot: &KernelSnapshot) -> Result<Uuid, String> {
-        Self::resolve_pane_id(args, snapshot)
+        Self::resolve_pane_id_with_refresh(args, snapshot, || self.snapshot())
+    }
+
+    /// Resolve pane_id from the dispatcher-captured snapshot. On failure, if a
+    /// workspace was explicitly requested, re-query the kernel once (stale
+    /// snapshot race right after `create_pane`). The cross-workspace check
+    /// stays strict in both passes.
+    fn resolve_pane_id_with_refresh<F>(
+        args: &Value,
+        snapshot: &KernelSnapshot,
+        refresh: F,
+    ) -> Result<Uuid, String>
+    where
+        F: FnOnce() -> KernelSnapshot,
+    {
+        match Self::resolve_pane_id(args, snapshot) {
+            Ok(id) => Ok(id),
+            Err(initial) => {
+                let has_workspace = args
+                    .get("workspaceId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty());
+                if !has_workspace {
+                    return Err(initial);
+                }
+                Self::resolve_pane_id(args, &refresh())
+            }
+        }
     }
 
     fn resolve_pane_id(args: &Value, snapshot: &KernelSnapshot) -> Result<Uuid, String> {
@@ -632,6 +683,7 @@ fn collect_pane_metadata(
     Ok(())
 }
 
+#[derive(Clone)]
 struct KernelSnapshot {
     ids: Vec<Uuid>,
     active: Option<Uuid>,
@@ -1104,7 +1156,24 @@ fn dispatch(
                 .map_err(|error| format!("invalid pane id: {raw_pane_id}: {error}"))?;
             let data = args.get("data").and_then(Value::as_str).unwrap_or("");
             let endpoint = host.current_endpoint();
-            write_domain_pty(&endpoint, pane_id, data.as_bytes())?;
+            // CHG-050 §2.2: fast-path write; mirror the same recv /
+            // after instrumentation as the snapshot-projection path so
+            // the trace correlates both branches.
+            let t0 = Instant::now();
+            crate::host_trace!(
+                ev = "recv_input",
+                pane_id = %pane_id,
+                bytes = data.len()
+            );
+            let result = write_domain_pty(&endpoint, pane_id, data.as_bytes());
+            crate::host_trace!(
+                ev = "after_write",
+                pane_id = %pane_id,
+                bytes = data.len(),
+                ok = result.is_ok(),
+                dt_us = t0.elapsed().as_micros() as u64
+            );
+            result.map_err(|e| e)?;
             return Ok(Value::Null);
         }
     }
@@ -1190,7 +1259,25 @@ fn dispatch(
             let id = host.pane_id(args, &snapshot)?;
             let data = args.get("data").and_then(Value::as_str).unwrap_or("");
             let endpoint = host.current_endpoint();
-            write_domain_pty(&endpoint, id, data.as_bytes())?;
+            // CHG-050 §2.2: host-side `recv_input` trace records when
+            // the host first sees a write request; `after_write` fires
+            // after `write_domain_pty` returns so the dt_us covers the
+            // snapshot projection + the kernel HTTP POST roundtrip.
+            let t0 = Instant::now();
+            crate::host_trace!(
+                ev = "recv_input",
+                pane_id = %id,
+                bytes = data.len()
+            );
+            let result = write_domain_pty(&endpoint, id, data.as_bytes());
+            crate::host_trace!(
+                ev = "after_write",
+                pane_id = %id,
+                bytes = data.len(),
+                ok = result.is_ok(),
+                dt_us = t0.elapsed().as_micros() as u64
+            );
+            result.map_err(|e| e)?;
             Ok(Value::Null)
         }
         "resize_pane" | "resize_pty" => {
@@ -1607,6 +1694,15 @@ fn start_subscription(
         .ok()
         .and_then(Result::ok)
         .unwrap_or_default();
+        // CHG-050 §2.2: time the first blocking hop. The `bytes`
+        // value is the actual scrollback length returned (0 if the
+        // kernel rejected or returned an error); the `dt_us` covers
+        // spawn_blocking + std TcpStream I/O + JSON parse.
+        crate::host_trace!(
+            ev = "scroll",
+            pane_id = %pane_id,
+            bytes = scrollback.len()
+        );
         let after_seq = tokio::task::spawn_blocking({
             let endpoint = endpoint.clone();
             move || {
@@ -1620,6 +1716,11 @@ fn start_subscription(
         .await
         .ok()
         .flatten();
+        crate::host_trace!(
+            ev = "list_seq",
+            pane_id = %pane_id,
+            next_seq = after_seq.unwrap_or(0)
+        );
         let lease = match tokio::task::spawn_blocking({
             let endpoint = endpoint.clone();
             move || attach_domain_pty_output(&endpoint, pane_id, after_seq)
@@ -1629,6 +1730,11 @@ fn start_subscription(
             Ok(Ok(lease)) => lease,
             _ => return,
         };
+        crate::host_trace!(
+            ev = "attach",
+            pane_id = %pane_id,
+            lease_id = %lease
+        );
         // Hand the lease to the guard so Drop will detach it.
         guard.lease = Some(lease);
         // P3-D9 (audit D9 surface layer): the bytes emitted to the
@@ -1652,13 +1758,27 @@ fn start_subscription(
         }
         let mut metadata_buffer = Vec::new();
         loop {
+            let poll_t0 = Instant::now();
             let result = tokio::task::spawn_blocking({
                 let endpoint = endpoint.clone();
                 move || poll_domain_pty_output(&endpoint, pane_id, lease, 1000, 64)
             })
             .await;
+            let poll_dt_us = poll_t0.elapsed().as_micros() as u64;
             match result {
                 Ok(Ok(KernelPtyOutput::Data(bytes))) => {
+                    // CHG-050 §2.2: emit `poll_out` once per delivery
+                    // so the trace can correlate the kernel-side
+                    // `lease_deliver` (under `ridge_kernel::trace`)
+                    // with the host-side frame emit.
+                    crate::host_trace!(
+                        ev = "poll_out",
+                        pane_id = %pane_id,
+                        lease_id = %lease,
+                        frames = 1u64,
+                        bytes = bytes.len() as u64,
+                        dt_us = poll_dt_us
+                    );
                     if !send_subscription_data(
                         workspace_id,
                         pane_id,
@@ -1672,7 +1792,17 @@ fn start_subscription(
                 Ok(Ok(KernelPtyOutput::Lagged)) => {
                     let _ = resync_domain_pty_output(&endpoint, pane_id, lease);
                 }
-                Ok(Ok(KernelPtyOutput::Timeout)) => {}
+                Ok(Ok(KernelPtyOutput::Timeout)) => {
+                    // CHG-050 §2.2: surface the long-poll ceiling so
+                    // we can tell whether idle polls reach the 1000ms
+                    // timeout or wake early via `notify_waiters`.
+                    crate::host_trace!(
+                        ev = "poll_timeout",
+                        pane_id = %pane_id,
+                        lease_id = %lease,
+                        dt_us = poll_dt_us
+                    );
+                }
                 _ => break,
             }
         }
@@ -2144,6 +2274,133 @@ mod tests {
                 .unwrap_err()
                 .contains("invalid pane id")
         );
+    }
+
+    #[test]
+    fn pane_id_refresh_resolves_when_kernel_registered_pane_after_snapshot_capture() {
+        let workspace = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let stale = KernelSnapshot {
+            ids: vec![workspace],
+            active: Some(workspace),
+            ptys: Vec::new(),
+            errors: Vec::new(),
+        };
+        let fresh = KernelSnapshot {
+            ids: vec![workspace],
+            active: Some(workspace),
+            ptys: vec![test_pty(pane, workspace)],
+            errors: Vec::new(),
+        };
+
+        assert_eq!(
+            KernelHost::resolve_pane_id_with_refresh(
+                &json!({"paneId": pane, "workspaceId": workspace}),
+                &stale,
+                || fresh.clone(),
+            ),
+            Ok(pane)
+        );
+    }
+
+    #[test]
+    fn pane_id_refresh_still_rejects_cross_workspace_even_after_snapshot_update() {
+        let workspace_a = Uuid::new_v4();
+        let workspace_b = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let stale = KernelSnapshot {
+            ids: vec![workspace_a, workspace_b],
+            active: Some(workspace_a),
+            ptys: Vec::new(),
+            errors: Vec::new(),
+        };
+        let fresh = KernelSnapshot {
+            ids: vec![workspace_a, workspace_b],
+            active: Some(workspace_a),
+            ptys: vec![test_pty(pane, workspace_a)],
+            errors: Vec::new(),
+        };
+
+        let error = KernelHost::resolve_pane_id_with_refresh(
+            &json!({"paneId": pane, "workspaceId": workspace_b}),
+            &stale,
+            || fresh.clone(),
+        )
+        .unwrap_err();
+        assert!(error.contains("does not belong"));
+    }
+
+    #[test]
+    fn pane_id_refresh_skipped_when_no_workspace_requested() {
+        let workspace = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let stale = KernelSnapshot {
+            ids: vec![workspace],
+            active: Some(workspace),
+            ptys: vec![test_pty(pane, workspace)],
+            errors: Vec::new(),
+        };
+        let mut refresh_calls = 0;
+        let result = KernelHost::resolve_pane_id_with_refresh(
+            &json!({"paneId": pane}),
+            &stale,
+            || {
+                refresh_calls += 1;
+                stale.clone()
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(refresh_calls, 0, "no workspace requested → no refresh");
+    }
+
+    #[test]
+    fn pane_id_refresh_then_ab_workspace_replay_keeps_correct_owner() {
+        let workspace_a = Uuid::new_v4();
+        let workspace_b = Uuid::new_v4();
+        let pane_a = Uuid::new_v4();
+        let pane_b = Uuid::new_v4();
+        let stale = KernelSnapshot {
+            ids: vec![workspace_a, workspace_b],
+            active: Some(workspace_a),
+            ptys: vec![test_pty(pane_a, workspace_a)],
+            errors: Vec::new(),
+        };
+        let fresh = KernelSnapshot {
+            ids: vec![workspace_a, workspace_b],
+            active: Some(workspace_b),
+            ptys: vec![
+                test_pty(pane_a, workspace_a),
+                test_pty(pane_b, workspace_b),
+            ],
+            errors: Vec::new(),
+        };
+
+        // First refresh resolves A; second refresh resolves B; third refresh
+        // resolves A again — none cross-resolves.
+        let r1 = KernelHost::resolve_pane_id_with_refresh(
+            &json!({"paneId": pane_a, "workspaceId": workspace_a}),
+            &stale,
+            || fresh.clone(),
+        );
+        let r2 = KernelHost::resolve_pane_id_with_refresh(
+            &json!({"paneId": pane_b, "workspaceId": workspace_b}),
+            &stale,
+            || fresh.clone(),
+        );
+        let r3 = KernelHost::resolve_pane_id_with_refresh(
+            &json!({"paneId": pane_a, "workspaceId": workspace_a}),
+            &stale,
+            || fresh.clone(),
+        );
+        let cross = KernelHost::resolve_pane_id_with_refresh(
+            &json!({"paneId": pane_a, "workspaceId": workspace_b}),
+            &stale,
+            || fresh.clone(),
+        );
+        assert_eq!(r1, Ok(pane_a));
+        assert_eq!(r2, Ok(pane_b));
+        assert_eq!(r3, Ok(pane_a));
+        assert!(cross.unwrap_err().contains("does not belong"));
     }
 
     #[test]

@@ -874,6 +874,17 @@ pub async fn domain_pty_create(
     headers: HeaderMap,
     Json(request): Json<PtyCreateRequest>,
 ) -> Result<Json<Value>, StatusCode> {
+    tracing::info!(target: "ridge_kernel::domain_pty",
+        pty_id = ?request.pty_id,
+        workspace_id = ?request.workspace_id,
+        program = ?request.program,
+        shell = ?request.shell,
+        args = ?request.args,
+        cwd = ?request.cwd,
+        role = ?request.role,
+        cols = ?request.cols,
+        rows = ?request.rows,
+        "domain_pty_create ENTER");
     if !auth_ok(&headers, &st.token) {
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -881,12 +892,16 @@ pub async fn domain_pty_create(
     let role = request.role.as_deref().unwrap_or("shell");
     let program = request.program.as_deref().or(request.shell.as_deref());
     if let Some(error) = validate_pty_create(&request) {
+        tracing::warn!(target: "ridge_kernel::domain_pty", "validate_pty_create returned bad_request: {}", error);
         return Ok(bad_request(error));
     }
     // A desktop shell may create the first PTY before it has persisted the
     // corresponding graph entry.  Seed that stable workspace identity here so
     // a detached LAN/WebRTC host can expose a real layout after a hard kill.
     let inserted_workspace = seed_workspace_for_pty(&st, &request, pty_id)?;
+    tracing::info!(target: "ridge_kernel::domain_pty",
+        pty_id = %pty_id, inserted_workspace = ?inserted_workspace,
+        "domain_pty_create seed_workspace_for_pty DONE");
     match st.ptys.spawn_command_for_with_env(PtyLaunch {
         id: pty_id,
         program,
@@ -899,6 +914,8 @@ pub async fn domain_pty_create(
         initial_size: request.cols.zip(request.rows),
     }) {
         Ok(pty_id) => {
+            tracing::info!(target: "ridge_kernel::domain_pty",
+                pty_id = %pty_id, "domain_pty_create spawn OK; ptys_count={}", st.ptys.list().len());
             let executable = request
                 .program
                 .as_deref()
@@ -907,6 +924,9 @@ pub async fn domain_pty_create(
             if let Err(error) =
                 commit_agent_identity_for_pty(&st, pty_id, role, executable, request.args.clone())
             {
+                tracing::warn!(target: "ridge_kernel::domain_pty",
+                    pty_id = %pty_id, error = %error,
+                    "commit_agent_identity FAILED; destroying pty and rolling back");
                 let _ = st.ptys.destroy(pty_id);
                 rollback_seeded_workspace(&st, inserted_workspace);
                 return Ok(bad_request(error));
@@ -916,6 +936,10 @@ pub async fn domain_pty_create(
             ))
         }
         Err(error) => {
+            tracing::warn!(target: "ridge_kernel::domain_pty",
+                pty_id = %pty_id, error = %error,
+                inserted_workspace = ?inserted_workspace,
+                "domain_pty_create spawn FAILED; rolling back");
             rollback_seeded_workspace(&st, inserted_workspace);
             Ok(bad_request(error.to_string()))
         }

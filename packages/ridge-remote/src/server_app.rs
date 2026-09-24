@@ -150,6 +150,12 @@ pub fn router(host: Arc<dyn RemoteHost>) -> Router<()> {
         .route("/workspace/switch", post(workspace_switch_handler))
         .route("/workspace/create", post(workspace_create_handler))
         .route("/workspace/close", post(workspace_close_handler))
+        // §debug-pane-state (opt-in via RIDGE_HOST_DEBUG): SPA POSTs its live
+        // activeWorkspaceId / activePaneId / hostCanvasError here when the page
+        // is loaded with `?debug=pane=1`. Used by AVD acceptance scripts to
+        // observe the SPA's view without enabling Chrome DevTools. NO-OP when
+        // env unset.
+        .route("/debug/pane-state", post(debug_pane_state))
         // 前端 serve 路由（`/`、`/assets/*`、CA 下载、PWA + SPA fallback）。
         .merge(crate::serve::serve_router::<AppCtx>())
         // 安全头 + 压缩层：最外层 .layer，覆盖含 fallback 的全部路由。
@@ -234,6 +240,26 @@ fn host_err_response(e: HostError) -> (StatusCode, Json<serde_json::Value>) {
 
 async fn health_handler() -> &'static str {
     "ok"
+}
+
+async fn debug_pane_state(
+    State(ctx): State<AppCtx>,
+    body: axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    // Only enabled when RIDGE_HOST_DEBUG=1 — never compiled out so the route
+    // exists, but the handler refuses silently otherwise. Driver sets the env.
+    if std::env::var("RIDGE_HOST_DEBUG").as_deref() != Ok("1") {
+        return (StatusCode::NOT_FOUND, Json(json!({ "ok": false })));
+    }
+    let body_str = serde_json::to_string(&body.0).unwrap_or_else(|_| "<unprintable>".into());
+    tracing::info!(
+        target: "ridge_remote::debug",
+        ev = "pane_state",
+        body = %body_str,
+        "SPA debug pane-state POST"
+    );
+    let _ = ctx;
+    (StatusCode::OK, Json(json!({ "ok": true })))
 }
 
 async fn info_handler(State(ctx): State<AppCtx>) -> impl IntoResponse {

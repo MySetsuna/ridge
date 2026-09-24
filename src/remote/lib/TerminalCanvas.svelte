@@ -168,6 +168,54 @@
   let attached = $state(false);
   let attachError = $state<string | null>(null);
   const webgpuError = $derived(attachError ?? hostError);
+  // §debug-pane-state: visible overlay that prints the actual props this mount
+  // received + the current attachError/hostError/attached state. Lets AVD scripts
+  // read SPA state from screenshots without DevTools. Always on — gated by the
+  // build rather than a runtime URL flag because the previous `?debug=pane=1`
+  // query gate was unreliable after Chrome Service Worker caching reshuffled
+  // route state across HMR reloads.
+  const debugPaneState = true;
+  // §debug-pane-model: sample the live terminal model + canvas size every 500ms
+  // into debugState so an AVD screenshot distinguishes "model empty (feed dead)"
+  // from "model full but pixels black (renderer dead)" without DevTools/CDP.
+  let debugState = $state<string>('…');
+  $effect(() => {
+    if (!debugPaneState || !attached) return;
+    const sample = () => {
+      try {
+        const g = (manager.debugGeometry() as Array<Record<string, unknown>>)
+          .find((e) => e.paneId === paneId);
+        if (!g) { debugState = 'model=<no pane entry>'; return; }
+        const vt = (g.visibleText as string[] | undefined) ?? [];
+        const last = vt[vt.length - 1] ?? '';
+        const ker = g.kernel as { rows?: number; cols?: number } | undefined;
+        const sc = g.scrollback as { total?: number } | undefined;
+        const back = g.backing as { width?: number; height?: number } | undefined;
+        const css = g.canvas as { width?: number; height?: number } | undefined;
+        const cur = g.cursor as { row?: number; col?: number } | undefined;
+        debugState =
+          `lines=${vt.length} sb=${sc?.total ?? '?'} grid=${ker?.rows ?? '?'}x${ker?.cols ?? '?'}` +
+          ` backing=${back?.width ?? '?'}x${back?.height ?? '?'} css=${Math.round(css?.width ?? 0)}x${Math.round(css?.height ?? 0)}` +
+          ` cur=${cur?.row ?? '?'}x${cur?.col ?? '?'} last=${JSON.stringify(last.slice(0, 18))}`;
+      } catch (err) {
+        debugState = `model probe err=${String(err).slice(0, 60)}`;
+      }
+    };
+    sample();
+    const timer = setInterval(sample, 500);
+    return () => clearInterval(timer);
+  });
+  // §debug-pane-error: mirror attachError/hostError changes through
+  // console.log so logcat captures which canvas mount actually set
+  // REMOTE_RESIZE_FAILED and with which paneId/workspaceId. Always on.
+  $effect(() => {
+    if (attachError) {
+      console.log(`[pane-debug] canvas attachError paneId=${remotePaneId} workspaceId=${workspaceId} err=${attachError.slice(0, 200)}`);
+    }
+    if (hostError) {
+      console.log(`[pane-debug] canvas hostError paneId=${remotePaneId} workspaceId=${workspaceId} err=${hostError.slice(0, 200)}`);
+    }
+  });
   const MAX_PENDING_STDIN_BYTES = 64 * 1024;
   const pendingStdin: string[] = [];
   let pendingStdinBytes = 0;
@@ -290,6 +338,16 @@
   }
 
   async function attachTerminal(): Promise<void> {
+    // §stale-pane-guard: on cold boot `remotePaneId`/`workspaceId` may carry
+    // localStorage-restored ids from a prior host session that no longer exists
+    // on this kernel. Mounting with such an id makes `fitPaneNow` invoke
+    // `resize_pane` over the bridge and the host's strict cross-workspace
+    // ownership check rejects with `REMOTE_RESIZE_FAILED: pane … does not
+    // belong to workspace …`. Bail out before any attach/fit happens and let
+    // the SPA re-mount once the host's `panes-frame` reports a valid id.
+    if (!remotePaneId || !workspaceId) {
+      return;
+    }
     attachError = null;
     try {
       await manager.ready();
@@ -1462,7 +1520,35 @@
     <div class="webgpu-error" role="alert" aria-live="assertive">
       <span>{webgpuError}</span>
     </div>
-  {:else if !attached}
+  {/if}
+  <!-- §debug-pane-state: visible overlay showing the actual props this mount
+       received + the current attachError/hostError/attached state. Lets AVD
+       scripts read SPA state from screenshots without DevTools. Always on. -->
+  {#if debugPaneState}
+    <div
+      data-pane-debug
+      style:position="absolute"
+      style:top="4px"
+      style:left="4px"
+      style:right="4px"
+      style:z-index="30"
+      style:font="11px/1.3 ui-monospace,monospace"
+      style:color="#7fff7f"
+      style:background="rgba(0,0,0,0.92)"
+      style:padding="6px 8px"
+      style:border-radius="4px"
+      style:pointer-events="none"
+      style:word-break="break-all"
+    >
+      <div>prop paneId={remotePaneId || '<null>'}</div>
+      <div>prop wsId={workspaceId || '<null>'}</div>
+      <div>attached={String(attached)} backend={backendName || '<null>'}</div>
+      <div>attachError={attachError ?? 'null'}</div>
+      <div>hostError={hostError ?? 'null'}</div>
+      <div data-pane-debug-model>{debugState}</div>
+    </div>
+  {/if}
+  {#if !webgpuError && !attached}
     <div class="loading">{$t('mobile.initializingTerminal')}</div>
   {/if}
 

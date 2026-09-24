@@ -475,7 +475,35 @@ impl SurfaceHost {
         };
         {
             let ctx_b = ctx.borrow();
-            surface.configure(&ctx_b.device, &config);
+            // §A.8 AVD fix: `surface.configure` on a wgpu Surface can
+            // raise a Validation Error that — when the validation
+            // handler is fatal — escalates to a Rust panic
+            // ("Surface does not support the adapter's queue family"
+            // on the AVD software-GPU stack). `catch_unwind` traps the
+            // panic at the wasm boundary so the JS side gets a real
+            // `Err` instead of an unrecoverable `unreachable`
+            // (`__rust_panic` → `__rust_abort`). SurfaceHost is then
+            // reported as uninitializable, the workspace switches to a
+            // graceful error state, and the per-canvas GpuContext
+            // (built freshly against THIS canvas's compatible
+            // surface) drops on the floor — not silently reused for
+            // the next host.
+            let configure_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                surface.configure(&ctx_b.device, &config);
+            }));
+            if let Err(payload) = configure_result {
+                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown wgpu surface.configure panic".to_string()
+                };
+                return Err(format!(
+                    "WEBGPU_INIT_FAILED: surface.configure panicked for backend {}: {msg}",
+                    ctx_b.backend_name
+                ));
+            }
         }
         let (
             frame_store,
@@ -571,8 +599,35 @@ impl SurfaceHost {
             .map_err(|error| format!("WEBGPU_INIT_FAILED: {backend_name} {error}"))?;
         self.config.width = backing_w;
         self.config.height = backing_h;
-        self.surface
-            .configure(&self.ctx.borrow().device, &self.config);
+        // §A.8 AVD fix: same panic-trap as the init-time configure — if
+        // the canvas dimensions a JS ResizeObserver reports produce a
+        // surface the device's queue family cannot handle, surface
+        // reconfiguration will panic and must not propagate past the
+        // wasm boundary. Convert it to the same structured
+        // `WEBGPU_INIT_FAILED` error the init path uses. Same raw-
+        // pointer trick as `begin_frame`: `Ref<Device>` isn't
+        // `UnwindSafe` and the closure outlives the temporary Ref.
+        {
+            let device_ptr: *const wgpu::Device =
+                &self.ctx.borrow().device as *const _;
+            let configure_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.surface
+                    .configure(unsafe { &*device_ptr }, &self.config);
+            }));
+            if let Err(payload) = configure_result {
+                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown wgpu surface.configure panic".to_string()
+                };
+                let backend = self.ctx.borrow().backend_name;
+                return Err(format!(
+                    "WEBGPU_INIT_FAILED: surface.configure panicked for backend {backend} during resize: {msg}"
+                ));
+            }
+        }
         let (frame_store, frame_store_view, frame_scroll_scratch) = {
             let ctx = self.ctx.borrow();
             let (frame_store, frame_store_view) =
@@ -691,8 +746,35 @@ impl SurfaceHost {
                 // WebView2 can invalidate the swap chain without emitting a
                 // ResizeObserver event. Reconfigure immediately so the next
                 // RAF can acquire a fresh texture instead of staying blank.
-                self.surface
-                    .configure(&self.ctx.borrow().device, &self.config);
+                // §A.8 AVD fix: same panic-trap pattern — a stale surface
+                // whose queue family shifted (rare, but observed during
+                // compositor recovery on software backends) must not
+                // propagate a panic past the wasm boundary. `Ref<Device>`
+                // isn't `UnwindSafe`, so we extract a raw pointer to
+                // the device BEFORE entering the panic trap; the device
+                // is owned by `Rc<RefCell<GpuContext>>` whose inner
+                // box outlives this stack frame, so the pointer is
+                // valid for the duration of the closure. The borrow
+                // is released as soon as the `let device_ref` line
+                // completes — the closure dereferences the raw
+                // pointer, not the `Ref`.
+                let device_ptr: *const wgpu::Device =
+                    &self.ctx.borrow().device as *const _;
+                let configure_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // SAFETY: `device_ptr` points into the
+                    // `GpuContext::device` field, which is owned by
+                    // the shared Rc held by `self.ctx`. The
+                    // SurfaceHost's own `ctx` keeps the GpuContext
+                    // alive for its full lifetime, and this stack
+                    // frame is shorter than that — no aliasing or
+                    // use-after-free possible.
+                    self.surface
+                        .configure(unsafe { &*device_ptr }, &self.config);
+                }));
+                if configure_result.is_err() {
+                    self.needs_full_seed = true;
+                    return false;
+                }
                 self.needs_full_seed = true;
                 return false;
             }

@@ -66,8 +66,27 @@ describe('remote Agent attention monitor', () => {
     expect(source).toContain('const activationId = nextTerminalActivation(subscriptionKey);');
     expect(source).toContain('activationId,');
     expect(source).not.toContain('ws.subscribePane(pane, { active: false });');
-    expect(source).toContain('if (!active || key !== paneRefKey(active)) return;');
     expect(source).toContain('ui.navigate(workspaceId, remembered);');
+  });
+
+  it('cold boot: buffers every pane frame into its own queue before the active binding lands, never drops pre-active bytes, never cross-pane bleeds', () => {
+    // 冷启动时 ui.activeWorkspaceId/activePaneId 都未确定，host 先推的 binary
+    // PTY bytes 必须进对应 pane 的 PaneFeedScheduler 队列；active binding 一旦
+    // 由 refreshWorkspaces / panes handler 落定，queue 自动 drain 到 active canvas。
+    // active 已确立且 key 不匹配 → drop straggler（行为不变）。
+    expect(source).toContain('paneFeedScheduler.enqueue(key, data);');
+    // 新 gate：active 未设时不再 return，frames 入 own pane queue。
+    expect(source).toContain('if (active && key !== paneRefKey(active)) return;');
+    // refreshWorkspaces 是 activeWorkspaceId+activePaneId 的唯一 owner。
+    expect(source).toContain('async function refreshWorkspaces()');
+    expect(source).toContain('ui.navigate(restoredWorkspaceId, restoredPaneId);');
+    expect(source).toContain('bootRestoreDone = true;');
+    // savedActiveWs 不再独立 pre-seed（消除双写）。restore 决策全在 refreshWorkspaces。
+    expect(source).not.toMatch(/if\s*\(\s*savedActiveWs\s*\)\s*\{\s*\n\s*ui\.navigate\(savedActiveWs,/);
+    // gate 不再用"activeWorkspaceId 为空就放宽"的写法。
+    expect(source).not.toMatch(/workspaceId\s*!==\s*ui\.activeWorkspaceId\s*\)\s*return;\s*\n\s*\/\/\s*放宽冷启动/);
+    // panes handler 决策不因 activeWorkspaceId 为空而短路（cold boot 时仍是 active binding 的 source of truth）。
+    expect(source).not.toMatch(/activeWorkspaceId\s*===\s*''\s*\?\s*null\s*:/);
   });
 
   it('scopes lightweight navigation preferences to the connected host', () => {

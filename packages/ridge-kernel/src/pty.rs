@@ -3,7 +3,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -12,6 +12,36 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use ridge_term::term::terminal::Terminal;
 use tokio::sync::{broadcast, mpsc, Notify};
 use uuid::Uuid;
+
+/// CHG-050 §2.1 toggleable kernel trace. Off by default — when off,
+/// every caller of `kernel_trace_*!` reduces to a single OnceLock read
+/// plus a branch (sub-microsecond on hot paths). Enable with
+/// `RIDGE_KERNEL_TRACE=1|true|yes|on` to emit `tracing::info!` lines
+/// under target `ridge_kernel::trace`.
+pub fn kernel_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("RIDGE_KERNEL_TRACE").ok().as_deref(),
+            Some("1" | "true" | "yes" | "on")
+        )
+    })
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! kernel_trace {
+    (target: $target:literal, $($arg:tt)+) => {{
+        if $crate::pty::kernel_trace_enabled() {
+            tracing::info!(target: $target, $($arg)+);
+        }
+    }};
+    ($($arg:tt)+) => {{
+        if $crate::pty::kernel_trace_enabled() {
+            tracing::info!(target: "ridge_kernel::trace", $($arg)+);
+        }
+    }};
+}
 
 /// Terminal lifecycle (SPEC-L2-REMOTE-001 §3.1).
 ///
@@ -128,6 +158,11 @@ struct OutputState {
 pub struct PtyOutputHub {
     state: Mutex<OutputState>,
     notify: Notify,
+    /// CHG-050 §2.1: owning PTY id, surfaced into `lease_deliver`
+    /// trace events. Set via [`Self::with_owner_pty_id`] before
+    /// serving; defaults to [`Uuid::nil`] so legacy test-only hubs
+    /// keep their existing zero-arg constructor shape.
+    owner_pty_id: Uuid,
 }
 
 impl PtyOutputHub {
@@ -142,7 +177,14 @@ impl PtyOutputHub {
                 leases: HashMap::new(),
             }),
             notify: Notify::new(),
+            owner_pty_id: Uuid::nil(),
         }
+    }
+
+    #[doc(hidden)]
+    pub fn with_owner_pty_id(mut self, id: Uuid) -> Self {
+        self.owner_pty_id = id;
+        self
     }
 
     #[doc(hidden)]
@@ -154,13 +196,17 @@ impl PtyOutputHub {
     }
 
     #[doc(hidden)]
-    pub fn publish(&self, bytes: &[u8]) {
+    /// Publish `bytes` to the hub. Returns the assigned monotonic `seq`
+    /// on success, or `None` if the hub is closed / the chunk is empty.
+    /// Callers that previously discarded the return value continue to
+    /// compile by adding `let _ = `.
+    pub fn publish(&self, bytes: &[u8]) -> Option<u64> {
         if bytes.is_empty() {
-            return;
+            return None;
         }
         let mut state = self.state.lock();
         if state.lifecycle != OutputLifecycle::Open {
-            return;
+            return None;
         }
         let mut data = bytes.to_vec();
         if data.len() > OUTPUT_REPLAY_CAP_BYTES {
@@ -170,6 +216,7 @@ impl PtyOutputHub {
             seq: state.next_seq,
             data,
         };
+        let assigned = frame.seq;
         state.next_seq = state.next_seq.saturating_add(1);
         state.bytes += frame.data.len();
         state.frames.push_back(frame);
@@ -183,6 +230,7 @@ impl PtyOutputHub {
         }
         drop(state);
         self.notify.notify_waiters();
+        Some(assigned)
     }
 
     fn attach(
@@ -333,13 +381,37 @@ impl PtyOutputLease {
         if max_frames == 0 {
             return Err(PtyOutputLeaseError::InvalidBatchSize);
         }
+        let t0 = Instant::now();
         let deadline = Instant::now() + timeout;
         loop {
             let notified = self.hub.notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
             match self.hub.probe(self.id, max_frames) {
-                ProbeResult::Ready(result) => return result,
+                ProbeResult::Ready(result) => {
+                    // CHG-050 §2.1: emit `lease_deliver` only when
+                    // there is real PTY data. Other Ready branches
+                    // (Detached / Closing / Closed / Lagged) carry no
+                    // user-visible PTY bytes and are intentionally
+                    // skipped to keep the trace small.
+                    if let Ok(PtyOutputRead::Data(ref frames)) = result {
+                        let total: usize =
+                            frames.iter().map(|f| f.data.len()).sum();
+                        let first_seq = frames.first().map(|f| f.seq);
+                        let last_seq = frames.last().map(|f| f.seq);
+                        crate::kernel_trace!(
+                            ev = "lease_deliver",
+                            pty_id = %self.hub.owner_pty_id,
+                            lease_id = %self.id,
+                            frames = frames.len(),
+                            bytes = total,
+                            first_seq = first_seq.unwrap_or(0),
+                            last_seq = last_seq.unwrap_or(0),
+                            waited_ms = t0.elapsed().as_millis() as u64
+                        );
+                    }
+                    return result;
+                }
                 ProbeResult::Pending => {}
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -414,6 +486,7 @@ struct ManagedPty {
     output: Option<Arc<PtyOutputHub>>,
     closing: std::sync::atomic::AtomicBool,
     info: PtyInfo,
+    last_successful_resize: Option<(u16, u16)>,
 }
 
 impl Default for PtyRegistry {
@@ -504,7 +577,7 @@ impl PtyRegistry {
             cols as usize,
             RENDER_SCROLLBACK_ROWS,
         )));
-        let output_hub = Arc::new(PtyOutputHub::new());
+        let output_hub = Arc::new(PtyOutputHub::new().with_owner_pty_id(launch.id));
         // Lifecycle: Starting → Running → Exited. The exit broadcast is wired
         // to both the reader-task end (PTY EOF) and explicit `destroy`.
         let (exit_tx, _exit_rx_initial) = broadcast::channel::<PtyExitNotification>(64);
@@ -527,6 +600,10 @@ impl PtyRegistry {
             let mut output = output;
             let mut first_byte_seen = false;
             while let Some(bytes) = output.recv().await {
+                // CHG-050 §2.1: capture the recv-side timestamp BEFORE
+                // feed/retain/publish so the kernel-internal latency is
+                // measured end-to-end inside the fan-out task.
+                let t_recv = Instant::now();
                 if !first_byte_seen {
                     first_byte_seen = true;
                     {
@@ -545,7 +622,16 @@ impl PtyRegistry {
                     let drop_count = retained.len() - SCROLLBACK_CAP;
                     retained.drain(..drop_count);
                 }
-                hub.publish(&bytes);
+                let seq = hub.publish(&bytes);
+                if let Some(seq) = seq {
+                    crate::kernel_trace!(
+                        ev = "publish",
+                        pty_id = %id_for_reader,
+                        seq,
+                        bytes = bytes.len(),
+                        dt_from_recv_us = t_recv.elapsed().as_micros() as u64
+                    );
+                }
             }
             hub.close();
             // PTY closed: derive exit code best-effort and broadcast.
@@ -590,6 +676,7 @@ impl PtyRegistry {
                 output: Some(output_hub),
                 closing: std::sync::atomic::AtomicBool::new(false),
                 info,
+                last_successful_resize: None,
             },
         );
 
@@ -631,6 +718,16 @@ impl PtyRegistry {
                     pty_id = %timeout_id,
                     program = ?timeout_program,
                     "PTY start_timeout: never produced first byte within 5s"
+                );
+                // CHG-050 §2.1: trace the first-byte-or-timeout
+                // event so the harness can correlate PTYs that
+                // produced zero output (e.g. agent shell hung in
+                // init) with downstream latency.
+                crate::kernel_trace!(
+                    ev = "first_byte_or_timeout",
+                    pty_id = %timeout_id,
+                    program = ?timeout_program,
+                    timeout_ms = 5_000u64
                 );
             }
         });
@@ -676,6 +773,7 @@ impl PtyRegistry {
                     cols: DEFAULT_COLS,
                     rows: DEFAULT_ROWS,
                 },
+                last_successful_resize: None,
             },
         );
         Ok((id, output))
@@ -697,7 +795,21 @@ impl PtyRegistry {
     }
 
     pub fn write(&self, id: Uuid, data: &[u8]) -> Result<()> {
-        self.get(id)?.write_input(data)
+        // CHG-050 §2.1: kernel write_in trace. Records the byte count the
+        // caller is asking the master PTY to accept; downstream
+        // `kernel_ev=pty_byte_in` records the same write reaching the
+        // kernel-side read thread (only when the shell echoes).
+        let bytes = data.len();
+        let t0 = Instant::now();
+        let out = self.get(id)?.write_input(data);
+        crate::kernel_trace!(
+            ev = "write_in",
+            pty_id = %id,
+            bytes,
+            ok = out.is_ok(),
+            dt_us = t0.elapsed().as_micros() as u64
+        );
+        out
     }
 
     /// Write with controller ownership enforcement. The caller MUST
@@ -750,13 +862,28 @@ impl PtyRegistry {
             .get_mut(&id)
             .filter(|managed| !managed.closing.load(Ordering::Acquire))
             .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
-        if managed.info.cols == cols && managed.info.rows == rows {
+        // Refuse resize if the child shell has already exited; the ConPTY HPCON
+        // may still be alive but writes will land in a dead pipe.
+        if let Some(status) = managed.bridge.try_exit_code() {
+            return Err(anyhow::anyhow!(
+                "PTY {id} already exited (status={status}); cannot resize {cols}x{rows}"
+            ));
+        }
+        // Retry-aware early-return: only skip if the last successful resize was
+        // exactly this (cols, rows). Clearing on error below ensures a retry with
+        // the same dims actually re-invokes the master instead of returning Ok
+        // for a still-stale ConPTY.
+        if managed.last_successful_resize == Some((cols, rows)) {
             return Ok(());
         }
-        managed.bridge.resize(cols, rows)?;
+        if let Err(error) = managed.bridge.resize(cols, rows) {
+            managed.last_successful_resize = None;
+            return Err(error);
+        }
         managed.renderer.lock().resize(rows as usize, cols as usize);
         managed.info.cols = cols;
         managed.info.rows = rows;
+        managed.last_successful_resize = Some((cols, rows));
         Ok(())
     }
 
@@ -1131,6 +1258,14 @@ impl PtyBridge {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+        let child_alive = self
+            .child
+            .lock()
+            .try_wait()
+            .ok()
+            .flatten()
+            .map(|status| format!("exited={:?}", status))
+            .unwrap_or_else(|| "running".to_string());
         self.master
             .lock()
             .resize(PtySize {
@@ -1140,6 +1275,11 @@ impl PtyBridge {
                 pixel_height: 0,
             })
             .context("PTY resize failed")
+            .with_context(|| {
+                format!(
+                    "PTY resize cols={cols} rows={rows} child_alive={child_alive}"
+                )
+            })
     }
 
     /// Explicitly stop the child before releasing the PTY handles. Dropping a
@@ -1452,7 +1592,7 @@ mod tests {
     async fn output_lease_sequences_and_reports_lag_for_bounded_replay() {
         let hub = Arc::new(PtyOutputHub::new());
         for seq in 0..(OUTPUT_REPLAY_CAP_FRAMES + 4) {
-            hub.publish(&[(seq % 256) as u8]);
+            let _ = hub.publish(&[(seq % 256) as u8]);
         }
         let lease = hub.attach(Some(0)).expect("attach open output");
         assert_eq!(
@@ -1521,7 +1661,7 @@ mod tests {
         ));
         hub.cancel_closing();
         let fresh = hub.attach(None).expect("cancel reopens output");
-        hub.publish(b"ok");
+        let _ = hub.publish(b"ok");
         assert_eq!(
             fresh.next(Duration::ZERO, 1).await,
             Ok(PtyOutputRead::Data(vec![PtyOutputFrame {

@@ -625,6 +625,75 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(manager.lastPreeditCall('missing')).toBeNull();
 	});
 
+	it('feed marker: grid model receives bytes, renderPending flips, linkSpans.markDirty fires, and the next host RAF tick requests a paint', () => {
+		// §diag-feed-marker: prove the cold-boot PTY-bytes path lands in the
+		// kernel grid, sets renderPending, calls linkSpans.markDirty(), and
+		// requests a handle.render() within the host RAF loop. If this test
+		// fails, the marker never reached the model — investigate manager.feed
+		// / kernel / parse path. If this test passes but the live AVD canvas
+		// still renders black, the fault is downstream of the manager (in
+		// SurfaceHost / WebGL2 draw pipeline) and is tracked separately.
+		const { manager, fixture, internal } = makeManager();
+		const marker = 'RIDGE_DIAG_MARK_42';
+		// grid mock: cellsAt returns 'M' in row 0 col 0 once kernel was fed.
+		(fixture.kernel as any).cellsAt = vi.fn((_row: number, col: number) => [
+			{ col, ch: col < marker.length ? marker[col] : ' ', codepoint: marker.charCodeAt(col) || 0x20, width: 1, attrId: 0 },
+		]);
+		// Feed bytes: VTE stream that places the marker on row 0 (no movement).
+		const vte = `\x1b[H\x1b[2J${marker}`;
+		(fixture.kernel.feed as any).mockImplementation(() => undefined);
+		(fixture.handle as any).render.mockClear();
+		(fixture.handle as any).invalidateAll.mockClear();
+		(fixture.pane.linkSpans.markDirty as any).mockClear();
+
+		manager.feed(PANE, vte);
+
+		// grid assertions: manager exposes the model.
+		expect(manager.rows(PANE)).toBe(24);
+		expect(manager.cols(PANE)).toBe(80);
+		// The mock kernel is intentionally a stub; we only assert that
+		// feed() reached it, that the manager surfaced renderPending, and that
+		// the invalidation + RAF paint path is engaged. The grid-dump assertion
+		// is intentionally omitted here — the kernel mock doesn't run a VTE
+		// parser, so dumping the grid would only assert the stub. The live
+		// canvas-render verification is the host-side counterpart that proves
+		// the marker survives end-to-end.
+		expect(fixture.kernel.feed).toHaveBeenCalled();
+		expect(fixture.pane.renderPending).toBe(true);
+		expect(fixture.pane.linkSpans.markDirty as any).toHaveBeenCalled();
+
+		// Now run the host RAF tick and confirm handle.render() is called once
+		// the active host binds this pane's canvas (we set globalHost to the
+		// pane canvas so _isHostMode returns true).
+		internal.globalHost = {
+			canvas: fixture.pane.canvas,
+			host: {
+				beginFrame: vi.fn(() => true),
+				endFrame: vi.fn(),
+				setWallpaper: vi.fn(),
+				clearWallpaper: vi.fn(),
+				invalidate: vi.fn(),
+			},
+		};
+		internal._activeWorkspaceId = fixture.pane.workspaceId;
+		const state: any = {
+			frameOrder: [fixture.pane],
+			dateNow: Date.now(),
+			perfNow: 10,
+			anyRendered: false,
+			minDeadlineMs: Infinity,
+			surfaceJustWiped: false,
+			dirtyByPane: new Map([[PANE, true]]),
+			activeWsId: fixture.pane.workspaceId,
+			activeHost: internal._globalHostHandle(),
+			hostFrameOpen: false,
+			frameFailed: false,
+			renderDeferred: false,
+		};
+		internal._renderFrameEntry(fixture.pane, state);
+		expect((fixture.handle as any).render).toHaveBeenCalled();
+	});
+
 	it('freezes a raw PTY cursor only when the parser reports repaint activity', () => {
 		const { manager, fixture, internal } = makeManager();
 		fixture.kernel.feed.mockReturnValueOnce(true);
