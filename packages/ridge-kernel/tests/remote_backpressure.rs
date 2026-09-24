@@ -944,7 +944,7 @@ fn lagged_recovery_terminal_state_correct() {
                 tokio::time::timeout(Duration::from_millis(100), mrx.recv()).await
             });
             match res {
-                Ok(Some(chunk)) => hub_f.publish(&chunk),
+                Ok(Some(chunk)) => { hub_f.publish(&chunk); },
                 _ => break,
             }
         }
@@ -1041,7 +1041,7 @@ fn pause_host_drawing_does_not_stall_kernel_reader() {
                 tokio::time::timeout(Duration::from_millis(100), mrx.recv()).await
             });
             match res {
-                Ok(Some(c)) => hub_f.publish(&c),
+                Ok(Some(c)) => { hub_f.publish(&c); },
                 _ => break,
             }
         }
