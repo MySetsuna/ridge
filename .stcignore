@@ -28,3 +28,30 @@ obsidian-vault/
 
 # Local browser/CDP state.
 .webview2-dev-cdp/
+
+# AVD/devtools/diagnostic scripts and spec migrations (not in spectree graph)
+scripts/avd-*.mjs
+scripts/avd-*.ps1
+scripts/bench-*.mjs
+scripts/devtools-*.mjs
+scripts/diag-*.mjs
+scripts/export-diagnostics.mjs
+scripts/headed-desktop-e2e.mjs
+scripts/security-totp-*.mjs
+scripts/tmp-pty-dump.mjs
+scripts/browser-ui-e2e.mjs
+specs/migration/L4-OBS-SCRIPTS-*.md
+specs/migration/L3-OBS-REMOTE-RESUME-MD-*.md
+static/diag/
+apps/
+specs/migration/
+src/remote/
+packages/remote/src/shared/terminal/manager.test.ts
+src/
+packages/remote/
+packages/ridge-cli/src/
+packages/ridge-kernel/
+packages/ridge-remote/
+packages/ridge-term/
+docs/
+changes/
