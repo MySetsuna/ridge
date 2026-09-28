@@ -2191,11 +2191,16 @@ export class TerminalManager {
 				// Rust producer vs wasm consumer pipeline end-to-end.
 				// feedPty short-circuits to kernel.feed and is therefore
 				// useless for backend comparison.
-				writePty: (paneId, data) => invoke('write_to_pty', {
-					workspaceId: this.panes.get(paneId)?.workspaceId,
-					paneId,
-					data,
-				}),
+				writePty: (paneId, data) => {
+					// Composite key is `workspaceId:paneId`; Tauri command
+					// expects bare UUID. Extract the pane portion.
+					const bare = paneId.includes(':') ? paneId.slice(paneId.indexOf(':') + 1) : paneId;
+					return invoke('write_to_pty', {
+						workspaceId: this.panes.get(paneId)?.workspaceId,
+						paneId: bare,
+						data,
+					});
+				},
 				visibleText: (paneId) => {
 					const e = this.panes.get(paneId);
 					if (!e) return [];

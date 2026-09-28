@@ -1,9 +1,932 @@
 {
   "version": 1,
-  "changeId": "CHG-045",
-  "specHash": "d9098a5c6fa6ad931733b73306bd1fa6f3dbd9fd30930a63418d256a122b2c83",
-  "units": [],
-  "allowedPaths": [],
+  "changeId": "CHG-052",
+  "specHash": "1c5b6efe2aa1435105f77543862c8213aa82e354967e01a4752f51ce41ebcb9c",
+  "units": [
+    {
+      "id": "L2-REMOTE-MOBILE-SEMANTIC-V2",
+      "level": "L2",
+      "nodeHash": "0fa6bb10cfee81736ecfc2d40f801c288b504b6c46f32c41ba7cdee4a04f98a6",
+      "codeTargets": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "package.json",
+        "packages/ridge-term/**",
+        "packages/ridge-kernel/**",
+        "packages/ridge-cli/**",
+        "packages/remote/**",
+        "src-tauri/**",
+        "src/remote/**",
+        "scripts/sync-signaling.mjs",
+        "archive/remote-v1/**"
+      ],
+      "testTargets": [
+        "packages/ridge-term/**",
+        "scripts/browser-ui-e2e.mjs",
+        "packages/ridge-kernel/**",
+        "packages/ridge-cli/**",
+        "packages/remote/**",
+        "src-tauri/**",
+        "src/remote/**",
+        "scripts/**/*.test.*",
+        "tests/**"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L3-OBS-REMOTE-RESUME-MD-12c0a4d8",
+      "level": "L3",
+      "nodeHash": "a7a5bf6a4a3329f973440fbce2a561c1be12dd5e1adc258ec36041a0db46bb14",
+      "codeTargets": [
+        "REMOTE-RESUME.md",
+        "docs/architecture/notes/AVD-WEBGL-ENVIRONMENT-NOTE.md",
+        "docs/architecture/notes/DEVICE-ACCEPTANCE-RUNBOOK.md",
+        "docs/architecture/notes/DEVICE-ACCEPTANCE-STATUS.md",
+        "FINAL-REPORT-A8.md"
+      ],
+      "testTargets": [],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-CLAUDE-SETTINGS-LOCAL-JSON-fca16cae",
+      "level": "L4",
+      "nodeHash": "4cbbe2456ad088371e82d41399e7eb53c43a463ad8dbb624e737ba9ba66f13a0",
+      "codeTargets": [
+        ".claude/settings.local.json",
+        ".stcignore",
+        ".gitignore"
+      ],
+      "testTargets": [],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MANAGER-TS-8c721fa3",
+      "level": "L4",
+      "nodeHash": "8474b5b3c842ac0ad7793bd696d70e1779ca3e5f761fe6cf10b329176e962b85",
+      "codeTargets": [
+        "packages/remote/src/shared/terminal/manager.ts"
+      ],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/manager.test.ts",
+        "packages/remote/src/shared/terminal/manager.attach.test.ts"
+      ],
+      "status": "LOCKED",
+      "interfaceSignatures": [
+        "export class TerminalManager",
+        "export interface ManagerOptions",
+        "export type KernelEvent"
+      ]
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-CLI-SRC-KERNEL-HOST-IMPL-RS-43a5848d",
+      "level": "L4",
+      "nodeHash": "7279175f4f9933eff5b03bc6310e31307519e1c29e0174b81555953284e614ed",
+      "codeTargets": [
+        "packages/ridge-cli/src/kernel_host_impl.rs"
+      ],
+      "testTargets": [],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-KERNEL-SRC-DOMAIN-RS-9461f5b6",
+      "level": "L4",
+      "nodeHash": "c41e13e1b1f94e63717cd24bff96ea57d43a5b7e254aab4a92b1182c645788b8",
+      "codeTargets": [
+        "packages/ridge-kernel/src/domain.rs"
+      ],
+      "testTargets": [],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-KERNEL-SRC-PTY-RS-7a2cf18e",
+      "level": "L4",
+      "nodeHash": "7773947da1e62cb8ed3b5c540af043b95525ed0ce30864945812e78fa733b45e",
+      "codeTargets": [
+        "packages/ridge-kernel/src/pty.rs"
+      ],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/ptyBridge.test.ts",
+        "scripts/cdp-pty-state.test.mjs",
+        "src/lib/terminal/ptyRuntimeSnapshot.test.ts",
+        "src/lib/terminal/ptyWriteQueue.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-REMOTE-SRC-SERVER-APP-RS-dbd13eed",
+      "level": "L4",
+      "nodeHash": "e74e9d5f9159eab01596184f90291505f3c154b6f000d4362e7c1baee47f0358",
+      "codeTargets": [
+        "packages/ridge-remote/src/server_app.rs"
+      ],
+      "testTargets": [],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-TERM-SRC-RENDER-GPU-CONTEXT-RS-ec881063",
+      "level": "L4",
+      "nodeHash": "1a1875331ccc1639ad5de3a18dd95f2d38b684cdbc8ee8abe4e6ff34c6586cd0",
+      "codeTargets": [
+        "packages/ridge-term/src/render/gpu_context.rs"
+      ],
+      "testTargets": [],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-TERM-SRC-RENDER-MOD-RS-4db86e3f",
+      "level": "L4",
+      "nodeHash": "0f38e205684bb3ac655abb990cb6b5a1b1637ce421c759921a81bf3b20150b45",
+      "codeTargets": [
+        "packages/ridge-term/src/render/mod.rs"
+      ],
+      "testTargets": [
+        "packages/ridge-term/tests/common/mod.rs",
+        "scripts/lib/cdpModuleUrl.test.mjs",
+        "src/lib/remote/remoteBootMode.test.ts",
+        "src/lib/teammate/agentCommuneModel.test.ts",
+        "src/lib/teammate/teammateModel.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-TERM-SRC-RENDER-SURFACE-HOST-RS-86f837d2",
+      "level": "L4",
+      "nodeHash": "9995c87017534224fbb64000eaceaef89b9a3bc476bb19ca255a802ae46d7e66",
+      "codeTargets": [
+        "packages/ridge-term/src/render/surface_host.rs"
+      ],
+      "testTargets": [],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-SRC-REMOTE-LIB-TERMINALCANVAS-SVELTE-7a29f415",
+      "level": "L4",
+      "nodeHash": "8e7fd50aa16e59df5369e216683022713e9e8a7b2522dccfa2e1c4d3d68a721c",
+      "codeTargets": [
+        "src/remote/lib/TerminalCanvas.svelte"
+      ],
+      "testTargets": [
+        "src/remote/lib/TerminalCanvas.test.ts"
+      ],
+      "status": "LOCKED",
+      "interfaceSignatures": [
+        "export function applyRemoteFrameForPane( targetPaneId: string, bytes: Uint8Array, pane: PaneRef, activationId: number, )",
+        "export function applyTheme(theme: Record<string, string>)",
+        "export function claimPaneSize(): Promise<void>",
+        "export function clearPendingFeed(targetPaneId: string)",
+        "export function feedPane(targetPaneId: string, bytes: Uint8Array)",
+        "export function feedUtf8(bytes: Uint8Array)",
+        "export function fitPaneNow()",
+        "export function getDims()",
+        "export function handleVirtualKey(key: string, ctrlKey: boolean, alt: boolean, shift: boolean)",
+        "export function openSystemKeyboard()",
+        "export function pasteClipboard()",
+        "export function pasteText(text: string)",
+        "export function prependScrollback(bytes: Uint8Array)",
+        "export function prependScrollbackForPane(targetPaneId: string, bytes: Uint8Array)",
+        "export function resizeKernel(rows: number, cols: number)"
+      ]
+    },
+    {
+      "id": "L4-OBS-SRC-REMOTE-MAINAPP-SVELTE-578650c7",
+      "level": "L4",
+      "nodeHash": "bdd24ce3c5ef12f3e052712f9524a425984e671e7c365007e5535d2a43af3883",
+      "codeTargets": [
+        "src/remote/MainApp.svelte"
+      ],
+      "testTargets": [
+        "src/remote/MainApp.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-CLIPBOARDIMAGE-TEST-TS-53411e31",
+      "level": "TEST",
+      "nodeHash": "0280d415df614461dd4768ba8e589f9be9bd3ed01d26c1ef88df253510977538",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/clipboardImage.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-DROPPASTE-TEST-TS-510e73ab",
+      "level": "TEST",
+      "nodeHash": "21c4ff1bf37ef9d28faa9c7fe68ed794fe10debdfe79bc2d0ec38ff47eafdb10",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/dropPaste.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-FONTDATASERVICE-TEST-TS-a11e69bb",
+      "level": "TEST",
+      "nodeHash": "7f7a81d0b1cd16c6d61f98b993635f7e6cc81391f311b3470a66c8b8d528f83e",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/fontDataService.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-FONTSTACK-TEST-TS-65f97da6",
+      "level": "TEST",
+      "nodeHash": "377386780982d14b9aab67d2224231fb1c63bc75c9558489b1b99b6d7b4802d0",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/fontStack.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-HOSTREMOUNTPOLICY-TEST-TS-117c2a90",
+      "level": "TEST",
+      "nodeHash": "c040fb50e2f21e43c0e677615585bc3a9df03b01026bbead00ecc0fef895bb0e",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/hostRemountPolicy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-IMEANCHOR-TEST-TS-105d9abf",
+      "level": "TEST",
+      "nodeHash": "3c8a08f4932bf8bdecdd58d38fbde4186389cec2465dc7adcf0d82977db231ac",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/imeAnchor.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-IMEDELTA-TEST-TS-67f86c2c",
+      "level": "TEST",
+      "nodeHash": "062c6394a7aaba4c929040f94ff865de6fb9a8f8f825b19857c4303bad7d7fee",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/imeDelta.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-INITIALPANEFIT-TEST-TS-fe5c49cf",
+      "level": "TEST",
+      "nodeHash": "815204105087f4c95b272f3ac5ab01e7486d7ec90a902a9dc9d0469bcd9773d0",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/initialPaneFit.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKAFFORDANCE-TEST-TS-d1be43bc",
+      "level": "TEST",
+      "nodeHash": "43945b7ee00df5e5d67b580cec9030b7296398ea192d369dc142d0fda3c1e9dd",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/linkAffordance.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKOPENHOST-TEST-TS-19b69752",
+      "level": "TEST",
+      "nodeHash": "19b0c61467eac874e4ca5f729192f35b79c0d7302543af8ddb36233e97809aea",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/linkOpenHost.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKSPANS-TEST-TS-8d7f240f",
+      "level": "TEST",
+      "nodeHash": "a3f1a3ea6302761d6a2a40d0b85115afc994cdb73925e2f795e4549bb5386225",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/linkSpans.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MANAGER-ATTACH-TEST-TS-35aae100",
+      "level": "TEST",
+      "nodeHash": "a364ce056834f7716c240e18976657c66d7365551d1e37983b0098d2360b12c4",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/manager.attach.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MANAGER-TEST-TS-290fe11f",
+      "level": "TEST",
+      "nodeHash": "6f4cb830255b081a0fd593212c3950d7c0be3fd0220275d5a794ba4306a672f1",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/manager.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MOBILECOPY-TEST-TS-4906f450",
+      "level": "TEST",
+      "nodeHash": "2e1d6c41e8ac5915a32982ba9325344e1b4b014cd8a34794da56d0f54baf16be",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/mobileCopy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MOBILETOUCHSCROLL-TEST-TS-ddb6edb0",
+      "level": "TEST",
+      "nodeHash": "750cf5e7e16cdd2b515024e069351721a4411b7f2bc014414f80c94fc443886d",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MOUSEFORWARDPOLICY-TEST-TS-ddc8b0dc",
+      "level": "TEST",
+      "nodeHash": "ad4b5312c1125f36cc5083145abdfea616d45d78d6a91f5e4648900b145de279",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/mouseForwardPolicy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANEDOCKRESOLVE-TEST-TS-4fdcb558",
+      "level": "TEST",
+      "nodeHash": "9f31fc5458dfae7813a97e08d962522c88c9ecba759a45ecd57299cf16c1949e",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/paneDockResolve.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANEGEOMETRY-TEST-TS-ad29e3d7",
+      "level": "TEST",
+      "nodeHash": "b2928d71c525300be95ed4786965afccd7567ec171df309c2f867195659aecbf",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/paneGeometry.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANEINPUTGATE-TEST-TS-06a1530b",
+      "level": "TEST",
+      "nodeHash": "a024c32dfafa315680a55489489194c99e251c9355bc9aec46d7c68efe6ee79d",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/paneInputGate.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANEORIGIN-TEST-TS-6d99d562",
+      "level": "TEST",
+      "nodeHash": "e7cdc73d3273c740bb0aaf386858e64f23910c96dddb26344932576c9c550e80",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/paneOrigin.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PANESHELL-TEST-TS-e9209065",
+      "level": "TEST",
+      "nodeHash": "2d2f4afc861d0ef1a6f1ca240241f5fdca5fe03c094a5152ba4b2846b9cee2a8",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/paneShell.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PTYBRIDGE-TEST-TS-3f30eb8e",
+      "level": "TEST",
+      "nodeHash": "93960c5d77444d4db6649c4328a75bc28cd6938382ff2f3e273745d5e17b4c86",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/ptyBridge.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-SENTENCEBUFFER-TEST-TS-4bcd3337",
+      "level": "TEST",
+      "nodeHash": "a19a8625ea634b5f9e283a78958d9ba4c419bc24a32bab8dbb273bfecc675491",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/sentenceBuffer.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-SHELLINPUTSNAPSHOT-TEST-TS-9e6558fc",
+      "level": "TEST",
+      "nodeHash": "043a740c0e8c26e7e784f7e128778a7f6693bb414a3bb60bec281f3b49709949",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/shellInputSnapshot.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-TERMINALFEEDPOLICY-TEST-TS-a929e750",
+      "level": "TEST",
+      "nodeHash": "ccef66d8333fcf982cf0a812ceb590d94841a642c546725f04c45be9d8e4dbd2",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-TERMINALFOCUS-TEST-TS-ff98409c",
+      "level": "TEST",
+      "nodeHash": "ca87414f13147358063cff93b4acc0e06d6424b94b2c995e9a668d9720e86a4a",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/terminalFocus.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-TERMINALMEMORYPOLICY-TEST-TS-19d7b4ce",
+      "level": "TEST",
+      "nodeHash": "6246f8c0609b0acb8f0f8e619c5e0b3c37655ea0658233f965ed63b4952aef6d",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/terminalMemoryPolicy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-THEMEBRIDGE-TEST-TS-4fb837c0",
+      "level": "TEST",
+      "nodeHash": "b384e418090a3391a1005c6f33c33bc29fc2618faeaead987934edf0fd53a6fd",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/themeBridge.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-TUIGATE-TEST-TS-146c1508",
+      "level": "TEST",
+      "nodeHash": "f4c7bca0e0673f30fa3d7fb1f62ba87a836c33ac81a8e43da567214eb32ddbdd",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/remote/src/shared/terminal/tuiGate.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-PACKAGES-RIDGE-TERM-TESTS-COMMON-MOD-RS-23bc0a12",
+      "level": "TEST",
+      "nodeHash": "73538b08c9230536d32706b70bd486ce241af342e6ec4958a781f9ed2d9f8786",
+      "codeTargets": [],
+      "testTargets": [
+        "packages/ridge-term/tests/common/mod.rs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-CDP-PTY-STATE-TEST-MJS-462b9d95",
+      "level": "TEST",
+      "nodeHash": "fed2a13491c28ad536215ddf5d832fa5f49c342c7493a11eb0f264c5b892d2fb",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/cdp-pty-state.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-LIB-CDPMODULEURL-TEST-MJS-2cfe59e9",
+      "level": "TEST",
+      "nodeHash": "8326224200c067d2cb8ad1e8c5339f41356f4e928cdbd4458191c227396f681b",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/lib/cdpModuleUrl.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-REMOTE-REMOTEBOOTMODE-TEST-TS-0c3742d1",
+      "level": "TEST",
+      "nodeHash": "962781babc9377ee7bab33b0353ec6cde258e41be57011104c058d4274a26e87",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/remote/remoteBootMode.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TEAMMATE-AGENTCOMMUNEMODEL-TEST-TS-313d1942",
+      "level": "TEST",
+      "nodeHash": "f24446487660065024fb96a9060b4d92b5492ef25dbf3ebc2baa14076dc9e656",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/teammate/agentCommuneModel.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TEAMMATE-TEAMMATEMODEL-TEST-TS-99fea951",
+      "level": "TEST",
+      "nodeHash": "d5264fe1c008e594e13d496ff03aa96adda0f2063c2fc8d1b3348f9621c28e49",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/teammate/teammateModel.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TERMINAL-PTYRUNTIMESNAPSHOT-TEST-TS-a223e946",
+      "level": "TEST",
+      "nodeHash": "8f65c13b285ffce271a6816fa0f5dfb20e5c3fbc6b0687018d3662423b2cb1f6",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/terminal/ptyRuntimeSnapshot.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-TERMINAL-PTYWRITEQUEUE-TEST-TS-b49b9e91",
+      "level": "TEST",
+      "nodeHash": "e8de58266b91ef3366f8a181a8efebb4072682c32dc2533198fc9b641d3d2b5c",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/terminal/ptyWriteQueue.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-BOTTOMTABBAR-TEST-TS-fad01c6a",
+      "level": "TEST",
+      "nodeHash": "eb2ae2a7fa3bebfa204062bf932dac36a9f92ffa9d5e5a6062dfce96fbf6f7e5",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/BottomTabBar.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-CLIPBOARD-TEST-TS-acf18327",
+      "level": "TEST",
+      "nodeHash": "a897bfb17608d9e402233c60254afc42be71562966f7238b95560d6d6d495d50",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/clipboard.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-CLOUDREMOTE-TEST-TS-8f8cb6d4",
+      "level": "TEST",
+      "nodeHash": "8f33e2d0bef043da7631615ea6e92b3b3d5a4e76e21b7ea2a1ff6b3a491f5321",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/cloudRemote.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-GENERATIONGUARD-TEST-TS-954c7584",
+      "level": "TEST",
+      "nodeHash": "c293e7d8219f14f97da0cc897934272674a42449d2ac3359777b4ca53227fea9",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/generationGuard.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-KEYBOARDOFFSET-TEST-TS-aa391cba",
+      "level": "TEST",
+      "nodeHash": "415a874fe44e8a453400b54bdc6850f363e37874b729250116fe72872c84eb30",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/keyboardOffset.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-LISTENERCLEANUP-TEST-TS-b750577c",
+      "level": "TEST",
+      "nodeHash": "ab776b6fe82e9765f51ac36476d55e8fae6ca33662311b7ec856f1ad5d7a5e5c",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/listenerCleanup.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-PANEFEEDSCHEDULER-TEST-TS-6040ce95",
+      "level": "TEST",
+      "nodeHash": "5205de16ac952d5de1017aca28691ebb5e57ed2a0478b9ae45d1e68b14c5203c",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/paneFeedScheduler.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-PANELIFECYCLE-TEST-TS-b323d4f0",
+      "level": "TEST",
+      "nodeHash": "1329c0e119d2d7accf3ed65d54049743246861d162cf03fd238373309fe7622c",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/paneLifecycle.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-PANESWITCHBUFFER-TEST-TS-8eee2043",
+      "level": "TEST",
+      "nodeHash": "d289fffe1861008638060eeb22f2624e88731608597db65d709246ffd2e569ac",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/paneSwitchBuffer.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-REMOTEGITACTIONS-TEST-TS-e28d50f2",
+      "level": "TEST",
+      "nodeHash": "9fca5561312519a8eb8dd29dffa355755783c1d5bea93c149befbfd48e88081e",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/remoteGitActions.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-REMOTEGITPANEL-TEST-TS-40e79e76",
+      "level": "TEST",
+      "nodeHash": "238baf633b86283f2cb0da7170a280d7a5c485f0fa0d7a20083e42ad2c0d8ff6",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/RemoteGitPanel.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-REMOTEQUERIES-TEST-TS-42897c52",
+      "level": "TEST",
+      "nodeHash": "7d571df679873b413c98627a3444fe63c888c1977d2569f3299134efd7d151ee",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/remoteQueries.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-REMOTESIDEBAR-TEST-TS-743bbf5b",
+      "level": "TEST",
+      "nodeHash": "5671711d7d055edeb3b4299a5dd42a9d6eef5af5600f3a9a153d751aa7f15d1d",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/RemoteSidebar.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-SCROLLBACKWORKER-TEST-TS-a458774b",
+      "level": "TEST",
+      "nodeHash": "ea650846b28645c33de1c768d5058fec5143e0d2b7ee037b0365401e04f6dbe4",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/scrollbackWorker.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-SIDEBARPROVIDER-TEST-TS-3032da1a",
+      "level": "TEST",
+      "nodeHash": "2761f154fd84f6b2b880fc132120ff74a61a5ad8982ea1a32dc71d8bdf9d1a37",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/sidebarProvider.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-SIDEBARTEAMROSTER-TEST-TS-65740552",
+      "level": "TEST",
+      "nodeHash": "baf7ebb219e855d6efc7f2e92190020c37ab8680090aa72febdf1bf763f59f93",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/SidebarTeamRoster.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-TEAMROSTERSCOPE-TEST-TS-a407e9aa",
+      "level": "TEST",
+      "nodeHash": "f0fc48161225d604adf8870cd948b19a827a5eaf14dbce1b70cd7deaa6877741",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/teamRosterScope.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-TERMINALCANVAS-TEST-TS-e83a9e51",
+      "level": "TEST",
+      "nodeHash": "95e6663d5350a6b9830bcd3d6dd44963bafe5c3929940b6caa7d73dbfeba74ac",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/TerminalCanvas.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-THEME-TEST-TS-74f6feb0",
+      "level": "TEST",
+      "nodeHash": "69056526b0a7707759481a60e79fc76992b8ff421de4d4698382d97ac6560785",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/theme.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-TREESTATE-TEST-TS-bcbf35f8",
+      "level": "TEST",
+      "nodeHash": "c1943006a93287140ad806cf71796f34a88fb548cb08e2a200263dfad0f42fde",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/treeState.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-LIB-WORKSPACETREE-TEST-TS-9753d5fd",
+      "level": "TEST",
+      "nodeHash": "086189279e05e90a497d27c04cffd59a16be1a862ccf863dc7540a06e44e42e2",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/lib/WorkspaceTree.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-MAIN-TEST-TS-d14db7b1",
+      "level": "TEST",
+      "nodeHash": "2e8a5f9263c0b2ca24fd346fa20d75c15eade52c28e3c75689e09109c8b4ce88",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/main.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-MAINAPP-TEST-TS-5cd570fc",
+      "level": "TEST",
+      "nodeHash": "be946fae2530cb7eb153df3d45b5dacdaa040b35ddac5f5a5de3c67fcf9a2fda",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/MainApp.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-PWAINSTALLSCOPE-TEST-TS-e8d7abb5",
+      "level": "TEST",
+      "nodeHash": "b77633470d7a2b56be0e9b8be161db486a60ea078f79035d25408c2e78124109",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/pwaInstallScope.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-QUERYPOLICY-TEST-TS-a5d8de80",
+      "level": "TEST",
+      "nodeHash": "bde7e001df89003f4f6de890f5bfc113451c99874f2ecce1c9ff2b2fe34a78b3",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/queryPolicy.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-REMOTE-RUNTIMEMESSAGINGSCOPE-TEST-TS-e4055737",
+      "level": "TEST",
+      "nodeHash": "d247d1f73a1c16a9a6b5429b26cf54da57e1f5ecc44e1c45d08376984183eb9c",
+      "codeTargets": [],
+      "testTargets": [
+        "src/remote/runtimeMessagingScope.test.ts"
+      ],
+      "status": "LOCKED"
+    }
+  ],
+  "allowedPaths": [
+    ".claude/settings.local.json",
+    ".gitignore",
+    ".stcignore",
+    "Cargo.lock",
+    "Cargo.toml",
+    "FINAL-REPORT-A8.md",
+    "REMOTE-RESUME.md",
+    "archive/remote-v1/**",
+    "docs/architecture/notes/AVD-WEBGL-ENVIRONMENT-NOTE.md",
+    "docs/architecture/notes/DEVICE-ACCEPTANCE-RUNBOOK.md",
+    "docs/architecture/notes/DEVICE-ACCEPTANCE-STATUS.md",
+    "package.json",
+    "packages/remote/**",
+    "packages/remote/src/shared/terminal/clipboardImage.test.ts",
+    "packages/remote/src/shared/terminal/dropPaste.test.ts",
+    "packages/remote/src/shared/terminal/fontDataService.test.ts",
+    "packages/remote/src/shared/terminal/fontStack.test.ts",
+    "packages/remote/src/shared/terminal/hostRemountPolicy.test.ts",
+    "packages/remote/src/shared/terminal/imeAnchor.test.ts",
+    "packages/remote/src/shared/terminal/imeDelta.test.ts",
+    "packages/remote/src/shared/terminal/initialPaneFit.test.ts",
+    "packages/remote/src/shared/terminal/linkAffordance.test.ts",
+    "packages/remote/src/shared/terminal/linkOpenHost.test.ts",
+    "packages/remote/src/shared/terminal/linkSpans.test.ts",
+    "packages/remote/src/shared/terminal/manager.attach.test.ts",
+    "packages/remote/src/shared/terminal/manager.test.ts",
+    "packages/remote/src/shared/terminal/manager.ts",
+    "packages/remote/src/shared/terminal/mobileCopy.test.ts",
+    "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts",
+    "packages/remote/src/shared/terminal/mouseForwardPolicy.test.ts",
+    "packages/remote/src/shared/terminal/paneDockResolve.test.ts",
+    "packages/remote/src/shared/terminal/paneGeometry.test.ts",
+    "packages/remote/src/shared/terminal/paneInputGate.test.ts",
+    "packages/remote/src/shared/terminal/paneOrigin.test.ts",
+    "packages/remote/src/shared/terminal/paneShell.test.ts",
+    "packages/remote/src/shared/terminal/ptyBridge.test.ts",
+    "packages/remote/src/shared/terminal/sentenceBuffer.test.ts",
+    "packages/remote/src/shared/terminal/shellInputSnapshot.test.ts",
+    "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts",
+    "packages/remote/src/shared/terminal/terminalFocus.test.ts",
+    "packages/remote/src/shared/terminal/terminalMemoryPolicy.test.ts",
+    "packages/remote/src/shared/terminal/themeBridge.test.ts",
+    "packages/remote/src/shared/terminal/tuiGate.test.ts",
+    "packages/ridge-cli/**",
+    "packages/ridge-cli/src/kernel_host_impl.rs",
+    "packages/ridge-kernel/**",
+    "packages/ridge-kernel/src/domain.rs",
+    "packages/ridge-kernel/src/pty.rs",
+    "packages/ridge-remote/src/server_app.rs",
+    "packages/ridge-term/**",
+    "packages/ridge-term/src/render/gpu_context.rs",
+    "packages/ridge-term/src/render/mod.rs",
+    "packages/ridge-term/src/render/surface_host.rs",
+    "packages/ridge-term/tests/common/mod.rs",
+    "scripts/**/*.test.*",
+    "scripts/browser-ui-e2e.mjs",
+    "scripts/cdp-pty-state.test.mjs",
+    "scripts/lib/cdpModuleUrl.test.mjs",
+    "scripts/sync-signaling.mjs",
+    "src-tauri/**",
+    "src/lib/remote/remoteBootMode.test.ts",
+    "src/lib/teammate/agentCommuneModel.test.ts",
+    "src/lib/teammate/teammateModel.test.ts",
+    "src/lib/terminal/ptyRuntimeSnapshot.test.ts",
+    "src/lib/terminal/ptyWriteQueue.test.ts",
+    "src/remote/**",
+    "src/remote/BottomTabBar.test.ts",
+    "src/remote/MainApp.svelte",
+    "src/remote/MainApp.test.ts",
+    "src/remote/lib/RemoteGitPanel.test.ts",
+    "src/remote/lib/RemoteSidebar.test.ts",
+    "src/remote/lib/SidebarTeamRoster.test.ts",
+    "src/remote/lib/TerminalCanvas.svelte",
+    "src/remote/lib/TerminalCanvas.test.ts",
+    "src/remote/lib/WorkspaceTree.test.ts",
+    "src/remote/lib/clipboard.test.ts",
+    "src/remote/lib/cloudRemote.test.ts",
+    "src/remote/lib/generationGuard.test.ts",
+    "src/remote/lib/keyboardOffset.test.ts",
+    "src/remote/lib/listenerCleanup.test.ts",
+    "src/remote/lib/paneFeedScheduler.test.ts",
+    "src/remote/lib/paneLifecycle.test.ts",
+    "src/remote/lib/paneSwitchBuffer.test.ts",
+    "src/remote/lib/remoteGitActions.test.ts",
+    "src/remote/lib/remoteQueries.test.ts",
+    "src/remote/lib/scrollbackWorker.test.ts",
+    "src/remote/lib/sidebarProvider.test.ts",
+    "src/remote/lib/teamRosterScope.test.ts",
+    "src/remote/lib/theme.test.ts",
+    "src/remote/lib/treeState.test.ts",
+    "src/remote/main.test.ts",
+    "src/remote/pwaInstallScope.test.ts",
+    "src/remote/queryPolicy.test.ts",
+    "src/remote/runtimeMessagingScope.test.ts",
+    "tests/**"
+  ],
   "testCommand": [
     "npm",
     "test"
@@ -19,13 +942,14 @@
     ".github/workflows/publish-remote.yml": "68aa2f6f3a2d57c14d39e657e10c06717e0e2de6f6b4d1b845e706108ca395f0",
     ".github/workflows/release.yml": "810ff615280cb4e0aa5c6da4dcaba2cef019075c22f144b1e8fb451d846b804a",
     ".github/workflows/rtp1-kernel-e2e.yml": "2f4a7a2047a8fc0450a3fd2067435c8dfc8d953a345acaa2f7e92d9f81afbc69",
-    ".gitignore": "0134a6271ab4612cc7582b992b203007ceaa2f981934edf6e6270303bd4107fb",
+    ".gitignore": "c208e50c2b238ee01dff629848344f3ff0026784af1107174fa42832e8d2276e",
     ".mcp.json": "9094342c1182357eebb9e98dedaa94efc96fffdecd2b31e92b84ecba09c9ea01",
     ".npmrc": "03d8c2004616576994a079ab45a218ffe758d646b7197907edcbbf671c2248b1",
     ".opencode/.gitignore": "663a068e76d264d0bc6740f5450b6c4193c7b41ecf5e0dc222485b8a17404d95",
     ".opencode/opencode.json": "d22a4e077bede638ca180486cb20df967cdae0b7f8f39552cbcd41a2bfc0402a",
     ".opencode/package-lock.json": "9b1265e028aeef5440f1de140afa559272c820440e587622c96a0f3b49e623bd",
     ".opencode/package.json": "2d036aa9b15c658f0411aefbd13b9a6cfa0cc1ff5d508dd49fef5a46eda852e3",
+    ".stcignore": "1edb356fded70a89bfd8f2eaa836406302791cdff2ad28ee07de58b1fba18897",
     ".vscode/extensions.json": "926925a0d7f8b5e0e9e84667ac901095f7ffdb83afb54de65662d6e4cfb78ad1",
     ".vscode/settings.json": "54224dc29195ac0e0ae6a3ce38d5cd7aeb390357259a37c860a28a3f1087ef71",
     "AGENTS.md": "e1d607be3c46e5473c2a7aa6d43c8a8faf25f992aa7a1ce170ab8bfac04d88e9",
@@ -77,6 +1001,12 @@
     "changes/CHG-043.md": "95a559ca3fb33a36c5ce2270f54c801943ef77492d90cae440f8a6c523a7e9b5",
     "changes/CHG-044.md": "e2b625b69832e26ec9637d48c8650ae3dfb9449e116b4cf9d1d0560fa3867f2d",
     "changes/CHG-045.md": "3c1d0d50a87893b0d837f1c9d9fa5048e46872076608a99c15812a1931d35edb",
+    "changes/CHG-047.md": "b9f3ef8eee3724a102308d423c528189a0c56662650f489aac6ea8a891a567c5",
+    "changes/CHG-048.md": "cb1b03718b1933ad7ff069e6f2c487ba28ad5834ec635769aae93e5a77cbe732",
+    "changes/CHG-049.md": "f8a0fec948719493640cf64381710d52cb97b629c9b94927a4ca9961f105555f",
+    "changes/CHG-050.md": "54530547e06e4f3ac38696be0c5f4242f4bbe1a40e4043516c23e8632232ab5a",
+    "changes/CHG-051.md": "44e094f55d4aba37f6c8fad217db70da4f3b6b8ac475277cbfc345546ea24f0e",
+    "changes/CHG-052.md": "8e010c9e87a0cb3d9f659eda367d139d0fd63b27463511cdf989d780a74a94c3",
     "docs/architecture/00-overview.md": "d88523e187eac1aef5a85939639722f38b3cbac41a55327cfe1c28a9bb87d682",
     "docs/architecture/10-kernel.md": "80f773ffecdaafac0b64dfb99a3ddb8c05f801d39c9d2533397b4e905bb5e4f9",
     "docs/architecture/20-rtp1-wire.md": "f32223c6d43ccf048f06176cb288baf46156477a72e24f1a4389a88756ca1a1c",
@@ -91,6 +1021,9 @@
     "docs/architecture/images/20-rtp1-frame.svg": "c4eaf6499258c75f393cd0abd6282c594f1eeab8e333e494e6f69f33a6834820",
     "docs/architecture/images/30-attachment-lifecycle.svg": "64fe173892e5a0eced6d308a696269e0805ba95e16573cbd7de3752f39747595",
     "docs/architecture/images/30-terminal-lifecycle.svg": "661eab2b0c630f46f44de8cab5e4f8327071d88c60273e8ad89c7cca5eec297d",
+    "docs/architecture/notes/AVD-WEBGL-ENVIRONMENT-NOTE.md": "423efdf55d540d120c24b321e8ca368505cc0f1d8f133abfd4994973450fb161",
+    "docs/architecture/notes/DEVICE-ACCEPTANCE-RUNBOOK.md": "1b9766a2ac36b4792f17ad6f5abbdd3e11da4105055d1389f7023c21367af3b1",
+    "docs/architecture/notes/DEVICE-ACCEPTANCE-STATUS.md": "f9fd36b07e4cd29b85f99e26d86519d9c261a6cc64af6323d57356dba1ca2ebd",
     "docs/architecture/notes/IMPLEMENTATION-ACCEPTANCE.md": "2f37f9b4846693e549620f103776c192b26bc6b5dd5ceda7722403539108fd70",
     "docs/architecture/notes/PHASE-A-FINAL-ACCEPTANCE.md": "1840c8caeb20ea23507cb4490d6e63e3abebe2372fc619e25a7f8dae5960a3c9",
     "docs/architecture/notes/PHASE-A6-LIVE-VALIDATION.md": "6e93ef78fa40b36062b14b2af64655a4a4abddb7e8118d52f72594ca0b59fd2e",
@@ -104,6 +1037,7 @@
     "docs/iterations/README.md": "d0cae0b0d6966497a3e7d2d06c28a79aefc8e9b3d05b2446a00556512c466626",
     "docs/operations/remote-cloud-release.md": "e0b484baf2f88db3e081468a53c4ea5be290152ddb5557a2573f15ef344c3430",
     "docs/README_CN.md": "8932531370504d2820f207f6cd3f5d92852066c9a5ae696c4a065ae256fa889a",
+    "FINAL-REPORT-A8.md": "7f7df82021cea93d3ab23a88e39bda0d60c1df7b531d79972b3556f5e74d6d08",
     "IMPLEMENTATION-ACCEPTANCE.md": "2f37f9b4846693e549620f103776c192b26bc6b5dd5ceda7722403539108fd70",
     "package.json": "62efb1f3dc57362779c8f12cb515fb1f510981a44fc46691989240ef4ae318f2",
     "packages/remote/package.json": "3c9d355179aefeaf12877e4e44bc5b41ba8812fc23825024f01da3b082f6b1db",
@@ -211,9 +1145,9 @@
     "packages/remote/src/shared/terminal/linkOpenHost.ts": "a2631a504e021a4a5db6efe489fac8511ca6b28883bf44ef3343f24d27bf9664",
     "packages/remote/src/shared/terminal/linkSpans.test.ts": "3b896b33f56ccb35d6607e0829757fdac28cd1ea7275d87296966cad0f93073b",
     "packages/remote/src/shared/terminal/linkSpans.ts": "1a8e36eaf756b6f809e732eebca8f0cfb905d157a9dbd6edcf2bf274ec075d57",
-    "packages/remote/src/shared/terminal/manager.attach.test.ts": "a307d6eeb268d00250f3ec62be13ae26dc8c624552296b990bd4c943a080e88c",
-    "packages/remote/src/shared/terminal/manager.test.ts": "f135a44372d12127d973fa3188a4d92183702a74854f212cf613c5dff2d551ce",
-    "packages/remote/src/shared/terminal/manager.ts": "04e021620265f5d6485d3262aa433dda23fcbd547fdf350da964bd21964025c3",
+    "packages/remote/src/shared/terminal/manager.attach.test.ts": "559810a4803c40780517994248646bdebb3bd8ae5734196ef8e58e7436803555",
+    "packages/remote/src/shared/terminal/manager.test.ts": "778892c047d084be795f7935fb6644f0bd67f26fb22287f2f4c5a391091942d5",
+    "packages/remote/src/shared/terminal/manager.ts": "d6e14c7ad6a01b2616b824980d9a0307c7b545edb77078080d1dc3c519ce4953",
     "packages/remote/src/shared/terminal/managerPerfBaseline.test.ts": "e9c283f517409b377258748ee2285a8a16baf3694119d9aa132582d8c9f93283",
     "packages/remote/src/shared/terminal/mobileCopy.test.ts": "b23fbcedeb74e00efcbc21b521a45328cec76af32ef4d7db351cd37c86d1a143",
     "packages/remote/src/shared/terminal/mobileCopy.ts": "53d24a89916d6599a2433aa031370c0c020d8a8abafdc7fe0e4ef0bdf1a79f88",
@@ -335,7 +1269,7 @@
     "packages/ridge-cli/src/host.rs": "89f27743d871020ad5b6df4dd2db2555c027e9bda676a55264eac3d2d99f3855",
     "packages/ridge-cli/src/ice.rs": "c47f5b006863a248524d13ed00c5904a73c9af4582bc55867a89bf08574f496c",
     "packages/ridge-cli/src/kernel_ctl.rs": "f7854b76ba3962a5e30581f4f991c425f39b81958a794e0b7bbed10a8cf632a1",
-    "packages/ridge-cli/src/kernel_host_impl.rs": "08e1c31422343c2dde4606e3234bca9f426f3d0f870a25b10d03968e5b103947",
+    "packages/ridge-cli/src/kernel_host_impl.rs": "a68d77b42508564cbb3aac6864971b59d89f41545a3f4028a788d2f280352f88",
     "packages/ridge-cli/src/key_binding.rs": "8ab85a23b514c35471a085430e7cee5101ad6a484fb87ff07d4f3b6ffebfe7f6",
     "packages/ridge-cli/src/login_flow.rs": "14d79bc790eff64fa2fa1a070c6234c4712f3072e551aa7ef40b27110174f18c",
     "packages/ridge-cli/src/main.rs": "5019f1b92dcaae037c06ddf7f60024fe3b11135c591f657765096bf101bb0163",
@@ -414,12 +1348,12 @@
     "packages/ridge-kernel/Cargo.toml": "050730e6c7646307718389bcad6406c94770af3537fdf0b3542d3a80925ca81b",
     "packages/ridge-kernel/src/agent_profiles.rs": "b10ea428e8e489fa2e34160f2d5c20399f000f875760f75b07653fdf9bf58b28",
     "packages/ridge-kernel/src/client.rs": "42a46010528b02d10163ef76d6db480c3ca59a2bc4ffdb357a018ad4ae09ab63",
-    "packages/ridge-kernel/src/domain.rs": "aa75d3e19ae720262015ecd2940c7829b1a49d63252b0a4bb138030ee770ae76",
+    "packages/ridge-kernel/src/domain.rs": "16fa169f7c29ad10528709c3093b7328e4174e7af2ff9f76fa86aab0a265e18c",
     "packages/ridge-kernel/src/kernel_backed_handle.rs": "5de55fbb1811032d19a65cbccf0ed7d42122879a237521dcf6502174edd97ca7",
     "packages/ridge-kernel/src/kernel_mcp.rs": "4a2f6a5595db55872cd7cb1c23ecce067edbcb41f9d3050e566b2f90df9a58aa",
     "packages/ridge-kernel/src/lib.rs": "2c431e1c2980785b3cb4bdf623d36be17397bcf1935a8534bfb240c41833a175",
     "packages/ridge-kernel/src/main.rs": "0d9e64630dbfeb5324720f2b3a0076087e2b669d98dbdf5c6638725227dd095b",
-    "packages/ridge-kernel/src/pty.rs": "8358c2d9c345f8805efdb72b0a8ba905d12ac664262326c5a7b2c96b27429ee2",
+    "packages/ridge-kernel/src/pty.rs": "0404dd28a36cfcea112a4c92bc7a7ff82d882ae1af066de5c24fecf2a4b01890",
     "packages/ridge-kernel/src/registry.rs": "7f911b81caa8f4c110b47ee75e7153a143df5750b76f11c2b1be47cc5ca53ce9",
     "packages/ridge-kernel/src/rtp1_session.rs": "eb2ccf5a0ded98adb7cadb97b230636ce831ef84b2d4e2ef844b39860a466358",
     "packages/ridge-kernel/src/rtp1_ws.rs": "512faefb0a72b1d8c6e163396a07942101cb2d285c7d764436733a82a85dd84b",
@@ -433,9 +1367,9 @@
     "packages/ridge-kernel/tests/foundation_conformance.rs": "b5a3088805fb6a0e2dffcbaa3bd2708183af4755320ffc79615098afca9e0e7e",
     "packages/ridge-kernel/tests/kernel_backend_waterfall.rs": "4bdaca416060ca1ee859ee1747ff4abd498c37f7c9da253a1fc23c95587348cc",
     "packages/ridge-kernel/tests/performance_baseline.rs": "7b78605e029d993eac744f6019acca57429fe56035107c1e0e915546168ed761",
-    "packages/ridge-kernel/tests/remote_backpressure.rs": "c30fe77d9d3d74c01841119d9ffc3cdf33ec67a1466faf935ef052d234830d9a",
+    "packages/ridge-kernel/tests/remote_backpressure.rs": "8e11c61723f3cc10d1150dbf497772725f0e326f46ba35d15ff1bc3243450c24",
     "packages/ridge-kernel/tests/stability_fault.rs": "6d10b3997b74ecf5e5ca8f40b28dca8f69c9fc9e88db3629178c1beb70c74b46",
-    "packages/ridge-kernel/tests/terminal_live.rs": "b39968b4eba324083b073b3bb58adecbcebd28c9a6b7bdedcc7943024fd8d05b",
+    "packages/ridge-kernel/tests/terminal_live.rs": "5af5ce0d5f627de78fdaf65c96be62f43419019091e120ff6f6441a41f227bf4",
     "packages/ridge-mcp/Cargo.toml": "b73549275b0b487a78a1f95a0009158a04772f88bcf392836f8b7038b7b82135",
     "packages/ridge-mcp/src/a2a.rs": "425cc305f165b0c5b9ebcf88553fe7863a78bf85dc0fdcb146edd691e5bce057",
     "packages/ridge-mcp/src/addressing.rs": "cf2099d8fdcfa3585bc686be44b8787d36e98b6b41c46eae6810111ab8b850a7",
@@ -461,7 +1395,7 @@
     "packages/ridge-remote/src/net.rs": "9e0a00bc4971a0613c1420ed139e0e56702c25c2c8bf2f1039546b09da0e9da7",
     "packages/ridge-remote/src/pane.rs": "8d853285e2a558c85fb6779c88baea807f4deb34883e214b759adff18737980a",
     "packages/ridge-remote/src/serve.rs": "03079add6dbb9e6f88126e5557ca2c8ec74a7c3ad499d8941f8c003efd2e6a20",
-    "packages/ridge-remote/src/server_app.rs": "f44ba5d11292f91eca0625fdc1a28afeb9de57bbf3ae0263d8dfa6fd3df92c73",
+    "packages/ridge-remote/src/server_app.rs": "74f61ba1d644111357afd9bf6bf978348ced7a2d3a1c9d96c1a555d6dfda9954",
     "packages/ridge-remote/src/server.rs": "43c90aa3e75c1f638c78ea6c3e336d8579fdbc52990450050b56445648464518",
     "packages/ridge-remote/src/tls.rs": "16f86973e8962ace89dfb359d2edf152154120ed417bd2755d7c6442cacc12d4",
     "packages/ridge-remote/src/ua.rs": "2f5556aea6f2082eca389c40f806a3d30f7b472d075322854c2b8cff2aaa24b6",
@@ -479,13 +1413,13 @@
     "packages/ridge-term/src/render/backend.rs": "94138c8e8de85f56226487b880332e0dc689245fd71ab68b8144dff7f0af602c",
     "packages/ridge-term/src/render/glyph_atlas.rs": "0e5f92c13942558098f2f7c1024c8f56eaca15f9cbf36a1a332ff9c41e2d228b",
     "packages/ridge-term/src/render/glyph_rasterizer.rs": "1a5a9275b26457a7057e6d308a76a077f00818ffddce9fdc93c6e6ccf7859b41",
-    "packages/ridge-term/src/render/gpu_context.rs": "e716648542f0860190a9bd6634644e68bf9cabcc8d8d3ee7ed9ca6e4352bc9e7",
+    "packages/ridge-term/src/render/gpu_context.rs": "f6958e69f9e76066b424747b89b45dd7656eba2dc311087dc11b953f80b87ec1",
     "packages/ridge-term/src/render/gpu_limits.rs": "d4c363bea59de071255d580d92f3f7f93526314baa329f3e49d380eef64cc93e",
-    "packages/ridge-term/src/render/mod.rs": "dd268fbabd9b85dcd08a7917bf62089d41db3129e353c11af0eff1a98a0df658",
+    "packages/ridge-term/src/render/mod.rs": "bf2ad607c3a0fecc151462d87397bca218aee0ba92fb469eaa13fea999413b6a",
     "packages/ridge-term/src/render/renderer.rs": "fd95ad473e0ac53e37fcd991cd48c74d1753aff63df44fb205ea311130bff4b4",
     "packages/ridge-term/src/render/shaders/cell.wgsl": "0b173eb2f3eb4d071203ea85b217bddf40be99d7e850cef324055dc4f949d1e0",
     "packages/ridge-term/src/render/shaders/wallpaper.wgsl": "0bbeff392870654082ddaee0cc67e77695e5bd498737b6f8ba7baba85fdb9208",
-    "packages/ridge-term/src/render/surface_host.rs": "50eb0bfdaf56165a68b7108853fa11c28cd08997811833d9373d7f2ff6795efa",
+    "packages/ridge-term/src/render/surface_host.rs": "3fded3a8afd12e70d9a75fe3f620be8f883ff1bfe7b86ed840059a8e096383da",
     "packages/ridge-term/src/render/wallpaper.rs": "1a2ed3eeee5fed42ca98cca868be91d404610b893ad4150b68606ad278f03a2c",
     "packages/ridge-term/src/render/webgpu.rs": "2775cef60e41f79a150627e05baf6375ac9ac12a281e1cdefa3621e96da6de8d",
     "packages/ridge-term/src/search.rs": "3999337e00727ff988cfecb1786ff02598a1007b6d06f4fcd1e3d387e46fcbb3",
@@ -522,14 +1456,14 @@
     "REMOTE-FOUR-ISSUES.md": "ac7ecd04409ebdff0a1eb1233fa6c8b48aca511dad22335e7a81ed3eb0591f4d",
     "REMOTE-INTEGRATION-EVIDENCE.md": "c57cd4625c1086743fbbb641aba6c728992901d0bfe2bff9bf567026e470dffa",
     "REMOTE-RELEASE-READINESS.md": "bc4081ac0f033df0fbc40e786b12f7b2a75b7d60faec50ad768ac147266b373d",
-    "REMOTE-RESUME.md": "5bdc3effedf9b659a7fe79708f1da42efa24f6ed829d1e72a66f13ef126ca389",
+    "REMOTE-RESUME.md": "2f9edc968ddf4125aee6b345946a61e405ac7d07c0df23054f28287c5e9d9eb3",
     "RIDGE-CURRENT-STATE.md": "6d113b1de638b1141c722541532dae1e6bc798c890e2a1f2274568be93d3ed9e",
     "RIDGE-DESKTOP-REMOTE-CLOSEOUT.md": "908e29ad5a287235702ba6d109d3bdfca185d710e8ac5db03b76d3914b2b6c3e",
     "RIDGE-RUNTIME-FOUNDATION-FINAL.md": "c7258806d396944178fe92e4c09006a84b3a2a48fe6e73c2e84e371060f9ede4",
     "ridge.theme": "092e095921335cd31a677c644dc681e6168fad4198bc67c1a4a7eaafefce4d0d",
     "scripts/api-integration.mjs": "2dbd10d16cfbebadbb1b42222ebd487ba73e5d7e807db6b497a2c06eb0d4a521",
     "scripts/app-csp.test.mjs": "e95d7961512fd7d1ae09c6fbd5cfea3a8a065c423cc4772d5f840985fa1b9c4a",
-    "scripts/browser-ui-e2e.mjs": "499487262b9ee20e3010356d043075a65da387ea5d77bef9fd437ae5dc976e5c",
+    "scripts/browser-ui-e2e.mjs": "7b417ba29f4d7796eb798f9ba77bb892c91092d954e53bc7caec354de6f22920",
     "scripts/build-remote-desktop.mjs": "ef2d84022c894db6c8e4525d21ca553c04b917d4e964d9b63c587b128bf691f0",
     "scripts/build-ridge-mcp-sidecar.mjs": "7c91eb3f973186e51586fe6dbb760e43ff9b1257c8df243bfda67cbc2d0fa447",
     "scripts/build-ridge-mcp-sidecar.test.mjs": "9bbdbcd926fe7c7d7c0cd5ba446b1e1ba3af350e3bde7b6e0d98e9aef3b0f3e5",
@@ -670,7 +1604,7 @@
     "specs/L2-PERF-001.md": "35475465878dcd50b5662edbbe1502e5096a0f93710330fac6bb5f6ffb71190e",
     "specs/L2-PROTO-001.md": "d06767a2d7c3b0b40d9a222f3c3828492375777e6d3d4390dffa4f903902cd8e",
     "specs/L2-REMOTE-001.md": "80c8a803eca379cf87350318cc8f7c32693798955690f3e81fc33051023cb91e",
-    "specs/l2-remote-mobile-semantic-v2.md": "bf682b64a55828c7f19be8f9edbbade8b128b12b53a0704ac773dd24295ff60b",
+    "specs/l2-remote-mobile-semantic-v2.md": "9e3d16335789ccd246fc9eb5729cdef3a4baaa874a51b40ade1805d907b13c28",
     "specs/l2-remote-rendering-parity.md": "8bdbff19144b6dcc67a5297c9c2d605684038e3f55e3475d02713216141a9530",
     "specs/L2-TERM-001.md": "002070a33eead0ed44791865454f3dd9cc39bd20487e2969ea8258f510cc8e0d",
     "specs/l2-tui-mobile-pty-lifecycle.md": "e7510ac0599b74da9f2ddbb17cf24d094ecd04500714bdbe65d5d03b2b443673",
@@ -750,6 +1684,7 @@
     "specs/migration/L3-OBS-PACKAGES-RIDGE-TMUX-SRC-e76e65e2.md": "2bfa8664fa878df85251704221b50a14246aee6b587e25c8c8d29ff1cf032424",
     "specs/migration/L3-OBS-PLAYWRIGHT-CONFIG-TS-f679bf1e.md": "d6d288dbcae95f5fa54463526dde50d36c7eb3f97bae11c4fec9305b651212ca",
     "specs/migration/L3-OBS-PNPM-WORKSPACE-YAML-18ae0a0f.md": "af89163a1f37f6fdb856f9c7baf2adeca760526f72739cd843dab30101ed6f9a",
+    "specs/migration/L3-OBS-REMOTE-RESUME-MD-12c0a4d8.md": "00c964d28883c5b603296440f213bcfcdc3527d4bba448d16d7b22c6f7c9b3d2",
     "specs/migration/L3-OBS-SCRIPTS-8c5967fd.md": "14ff95f4d155c89499faa901b78ad3df68a4c8712109106e7f8f86ecad24dd13",
     "specs/migration/L3-OBS-SCRIPTS-LIB-68e4790e.md": "78ded5deb5b9fb1f9861116e9dd422230551f980e45e52119ee87bde3fb5c911",
     "specs/migration/L3-OBS-SITE-fbae041b.md": "60778c2eb4b6eecbd90adca8b054cac738d9e01e855f30172d6e2e5701531f78",
@@ -810,7 +1745,7 @@
     "specs/migration/L3-OBS-WDIO-PERF-CONF-TS-cfedf6e3.md": "fc557139b22177b8e644cea6980841171e4269f4fe211abcdb2725bd6c104876",
     "specs/migration/L4-OBS-CARGO-TOML-2e9d962a.md": "e6d3aca7ac1b8a0b6b4430c927c825e9f8f8344f76e1c6c4ed0047803f59d00d",
     "specs/migration/L4-OBS-CLAUDE-SETTINGS-JSON-f27ac6f3.md": "189851d29965e076935d1c924c08b4f4c54f12876131a1fb230be8659fc3b429",
-    "specs/migration/L4-OBS-CLAUDE-SETTINGS-LOCAL-JSON-fca16cae.md": "78bff3c3a47e4c8b42386958f4f72aa2446133232847d70ef5f01a6e5e161a81",
+    "specs/migration/L4-OBS-CLAUDE-SETTINGS-LOCAL-JSON-fca16cae.md": "4c52062c9562b5c95d31b4b5542e0cf0ef7abcbfe16ac916cccd7112b8807095",
     "specs/migration/L4-OBS-CLAUDE-WORKFLOWS-RDG-REMOTE-CONT-JS-fceb9f5f.md": "45ec333f49d436262ea368c265a49154e80e67773d674eaeec95ee8bcfbfb324",
     "specs/migration/L4-OBS-CLAUDE-WORKFLOWS-RDG-REMOTE-UNIFY-JS-64f950cf.md": "2edf133b5a1d40b625a05c23ab76b64db84814a77dd74826a1e844a6dfd4e623",
     "specs/migration/L4-OBS-GITHUB-WORKFLOWS-DEPLOY-PAGES-YML-0f132b09.md": "bff2591c39b0ae6409433f5c343249d17498672d995ff629cf09b9e5d9c387de",
@@ -1100,6 +2035,10 @@
     "specs/migration/L4-OBS-PACKAGES-RIDGE-TMUX-SRC-MCP-RS-0f6397f7.md": "2bd4512244e6ecd2b5e9216bdd3eebf6067ff80ed4ec8ea29596d65756f93d84",
     "specs/migration/L4-OBS-PLAYWRIGHT-CONFIG-TS-f679bf1e.md": "8c995e7f7b99fe8ef278675cb74fd55bc9faf78aea07c0cf743d31c9a1d0f286",
     "specs/migration/L4-OBS-PNPM-WORKSPACE-YAML-18ae0a0f.md": "97ae7add51ca73991d22fdca0f727e8e8243a0c129b4da2298e91844b3cef529",
+    "specs/migration/L4-OBS-SCRIPTS-AVD-ACCEPTANCE-MJS-7f9d2b58.md": "6ba3a1a7e1fb18a213143938cf28fc48ab496e6c25e68e2aee30701ea46eac60",
+    "specs/migration/L4-OBS-SCRIPTS-AVD-ADB-PS1-9d2b6c41.md": "afd2f40a81516e0089908f8e6df7a6bd75dee3f74b112efda17f62311f6d1620",
+    "specs/migration/L4-OBS-SCRIPTS-AVD-AUTH-AND-PROBE-MJS-b1a8c4f6.md": "c635662d2239dbb75467a42f33a4f7eb012e702dd52a4e4de3f02e91fcd7564c",
+    "specs/migration/L4-OBS-SCRIPTS-AVD-CATS-MJS-2c8e3f01.md": "441b1ba1f0ae388e6d8ecc89c9a834c604184a7386ec77e18224ca81b0bd7264",
     "specs/migration/L4-OBS-SCRIPTS-BUILD-REMOTE-DESKTOP-MJS-c783e715.md": "9a2491778b029bb705f903a58ed11738194c91774591cc4d7a71f00ddc48d7c7",
     "specs/migration/L4-OBS-SCRIPTS-BUILD-RIDGE-MCP-SIDECAR-MJS-d7336a4c.md": "8a809c3952c106ffc0f2c0f2c932c08d7cc978305dc0b1cbc8fbfc5ab7909ff1",
     "specs/migration/L4-OBS-SCRIPTS-BUILD-RIDGE-MJS-8272ad77.md": "52fd6560a8e10e73b99a700d2d074dc48547c7a8501c1af55048eb338c85dc9e",
@@ -1368,7 +2307,7 @@
     "specs/migration/L4-OBS-SRC-REMOTE-LIB-SIDEBARPROVIDER-TS-7ec9bf31.md": "0f423a88ae84390d21fe11862be67d70142d4ff27825bc8f131814c4855e4fe4",
     "specs/migration/L4-OBS-SRC-REMOTE-LIB-SIDEBARTEAMROSTER-SVELTE-12be4b8d.md": "dc477ebf240a9492972a7b964d39b56f0103228cbd3442ae50d57be1a9208929",
     "specs/migration/L4-OBS-SRC-REMOTE-LIB-TEAMROSTERSCOPE-TS-7f69b034.md": "58a1d4bbfe9ba96c98ceff85263b0fd87ca250825580e162533f62d6305aae48",
-    "specs/migration/L4-OBS-SRC-REMOTE-LIB-TERMINALCANVAS-SVELTE-7a29f415.md": "85725c0c84b112c6c6baf29834b6b6ad9ebe64a40713c6adf1f369353c018d83",
+    "specs/migration/L4-OBS-SRC-REMOTE-LIB-TERMINALCANVAS-SVELTE-7a29f415.md": "3c9619f9995297604a4e2579c023a94a37ed740b6f77a4b19b399624d21297d2",
     "specs/migration/L4-OBS-SRC-REMOTE-LIB-THEME-TS-8d9c60f3.md": "42946032cf4eeb6be97bbb1955db6fa60d38462db8b9c8dac935e5d816f65149",
     "specs/migration/L4-OBS-SRC-REMOTE-LIB-TREESTATE-SVELTE-TS-2ebf9ef5.md": "943c70104375707882c2e4a8fb6fb5c59914bc1a05889fda3116fb62aacb9101",
     "specs/migration/L4-OBS-SRC-REMOTE-LIB-VIRTUALKEYBOARD-SVELTE-32890537.md": "2514af7140cd9ae27ce28c853758ae66edbe9f78132b13e961945d206d7a79e4",
@@ -2023,7 +2962,7 @@
     "src/remote/lib/SidebarTeamRoster.test.ts": "fe7764e5389d6a80cb6cba363e86ff708e82d844afba0987c5dfca0e7edb9f6b",
     "src/remote/lib/teamRosterScope.test.ts": "3e92991e10a3c39f2733132f86834555f0ce41cc0e6f324fd1bd75a389479582",
     "src/remote/lib/teamRosterScope.ts": "fee9ffda95569021e91a9a04338e0ad43b767d9eafe8eaca41ca262c8efd691b",
-    "src/remote/lib/TerminalCanvas.svelte": "931b4a350f146adfdde73eb9e1b1970097151784b754b43e2880b3e996d57e6d",
+    "src/remote/lib/TerminalCanvas.svelte": "f8599972d6ab4b43125a31e53f0832b91fd7c29cca5b84d87870634c2e3101ea",
     "src/remote/lib/TerminalCanvas.test.ts": "98138f033602f861e402524d72a4633aedf9ebcf77a89bd5b31af399b7894be8",
     "src/remote/lib/theme.test.ts": "e263c8426d8e7644a7df7b3f34ed15f192efc37a062b9ca4f25de28976ab375b",
     "src/remote/lib/theme.ts": "98173950d59022d6daa450fa3a723a1678332f792f252c421a0499d193d53d03",
@@ -2034,8 +2973,8 @@
     "src/remote/lib/WorkspaceTree.test.ts": "6aa202064211325e9c65e13b52128cdcfd0b7837f07b0fa6ec8a74da1b18dd4b",
     "src/remote/main.test.ts": "d289a24d6edd97681a6c6a19c99e4c624a5a25c86bb3a6011000883bd0bdc029",
     "src/remote/main.ts": "f16545e499e65c52b5b44939a1a295895eb88b8931f76209b04e6dcef95b0888",
-    "src/remote/MainApp.svelte": "124c2954c106cd7024933d81f11179efc19b970a79ae2cf5091703e78f5962e3",
-    "src/remote/MainApp.test.ts": "42e6e24e580bdc24b9972a385ded7cc4cb1812d382b64fe2e9cda6546fa78539",
+    "src/remote/MainApp.svelte": "a80cde43ef21feb54c991b03143d41ec6c2f09e04449687a7ee05e71bf399a87",
+    "src/remote/MainApp.test.ts": "c5fd98027620181698c2a984c50b620f0d314fb4f2bc7ca978f790982d248877",
     "src/remote/public/apple-touch-icon.png": "fcf04070e1ae0e72599b39cf3c118a81c57d01dbb98b894b6ba988bda26cc01e",
     "src/remote/public/favicon.png": "7b0d863efa5a660174ce0242b3b356c70cd952eceda2589da50819aa82cc02ac",
     "src/remote/public/fonts/flags.woff2": "85c0857c03f3bfa9971b5bccdafd4337bade1f76accc74002c0f1de466cf4702",
@@ -2207,6 +3146,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-5500e2be168a",
-  "manifestHash": "5500e2be168a63dd1f66858cc607854bf4f76adfa7f63481a523fd1dbd4f367b"
+  "buildId": "BUILD-6422e6c3871f",
+  "manifestHash": "6422e6c3871f5433f5d1f75f08acf14912735fd0eb99c09d78b9b2ca45afa2f6"
 }

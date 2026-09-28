@@ -13,21 +13,20 @@ code_targets:
 test_targets:
   - src/remote/lib/TerminalCanvas.test.ts
 public_interface:
+  - "export function applyRemoteFrameForPane( targetPaneId: string, bytes: Uint8Array, pane: PaneRef, activationId: number, )"
   - "export function applyTheme(theme: Record<string, string>)"
-  - export function claimPaneSize()
+  - "export function claimPaneSize(): Promise<void>"
   - "export function clearPendingFeed(targetPaneId: string)"
   - "export function feedPane(targetPaneId: string, bytes: Uint8Array)"
   - "export function feedUtf8(bytes: Uint8Array)"
-  - export function fitPaneNow()
-  - export function getDims()
-  - "export function handleVirtualKey(key: string, ctrlKey: boolean, alt:
-    boolean, shift: boolean)"
-  - export function openSystemKeyboard()
-  - export function pasteClipboard()
+  - "export function fitPaneNow()"
+  - "export function getDims()"
+  - "export function handleVirtualKey(key: string, ctrlKey: boolean, alt: boolean, shift: boolean)"
+  - "export function openSystemKeyboard()"
+  - "export function pasteClipboard()"
   - "export function pasteText(text: string)"
   - "export function prependScrollback(bytes: Uint8Array)"
-  - "export function prependScrollbackForPane(targetPaneId: string, bytes:
-    Uint8Array)"
+  - "export function prependScrollbackForPane(targetPaneId: string, bytes: Uint8Array)"
   - "export function resizeKernel(rows: number, cols: number)"
 verified_by:
   - TEST-OBS-SRC-REMOTE-LIB-CLIPBOARD-TEST-TS-acf18327

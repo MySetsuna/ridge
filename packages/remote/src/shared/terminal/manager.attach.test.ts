@@ -465,4 +465,39 @@ describe('TerminalManager attach lifecycle', () => {
 		expect(hooks.ptyWriteLog('pane-a')).toEqual([]);
 		manager.detach('pane-a');
 	});
+
+	it('writePty strips composite key to bare pane UUID for write_to_pty', async () => {
+		// Regression: manager panes map keys are `workspaceId:paneId` (73 chars)
+		// but Tauri `write_to_pty` parses pane_id as a bare UUID (36 chars).
+		const manager = TerminalManager.instance({
+			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200,
+		});
+		(manager as any).wasmReady = true;
+		const workspaceId = '11111111-2222-3333-4444-555555555555';
+		const paneUuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+		const composite = `${workspaceId}:${paneUuid}`;
+		const container = makeContainer();
+		await manager.attach(composite, container as unknown as HTMLElement, workspaceId);
+		const hooks = (window as unknown as { __windE2E?: Record<string, any> }).__windE2E;
+		expect(hooks).toBeDefined();
+		if (!hooks) return;
+
+		tauri.invoke.mockClear();
+		await hooks.writePty(composite, 'echo hi');
+		expect(tauri.invoke).toHaveBeenCalledWith('write_to_pty', {
+			workspaceId,
+			paneId: paneUuid,
+			data: 'echo hi',
+		});
+
+		// Bare keys pass through unchanged.
+		tauri.invoke.mockClear();
+		await hooks.writePty(composite, 'again');
+		expect(tauri.invoke).toHaveBeenCalledWith('write_to_pty', {
+			workspaceId,
+			paneId: paneUuid,
+			data: 'again',
+		});
+		manager.detach(composite);
+	});
 });

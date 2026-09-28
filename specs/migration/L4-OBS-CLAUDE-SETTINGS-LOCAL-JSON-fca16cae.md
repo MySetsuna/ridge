@@ -11,6 +11,8 @@ observed_source_hash: 818be4df993b9bce2ea80f7e8c6e71eff235432927f95f50ff567a75e0
 code_targets:
   - .claude/settings.local.json
   - .stcignore
+  - .gitignore
+
 ---
 
 # settings.local.json

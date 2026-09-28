@@ -10,6 +10,10 @@ confidence: INFERRED
 observed_source_hash: 471cab8aeabc96e835faf408442578dd25b1d4e7
 code_targets:
   - REMOTE-RESUME.md
+  - docs/architecture/notes/AVD-WEBGL-ENVIRONMENT-NOTE.md
+  - docs/architecture/notes/DEVICE-ACCEPTANCE-RUNBOOK.md
+  - docs/architecture/notes/DEVICE-ACCEPTANCE-STATUS.md
+  - FINAL-REPORT-A8.md
 ---
 
 # REMOTE-RESUME.md

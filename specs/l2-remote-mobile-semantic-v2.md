@@ -19,6 +19,8 @@ code_targets:
   - archive/remote-v1/**
 test_targets:
   - packages/ridge-term/**
+  - scripts/browser-ui-e2e.mjs
+
   - packages/ridge-kernel/**
   - packages/ridge-cli/**
   - packages/remote/**

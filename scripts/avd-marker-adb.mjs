@@ -214,22 +214,21 @@ await sleep(800);
 // Wipe any leftover prompt-line garbage (harmless on an empty prompt).
 for (let i = 0; i < 20; i++) key(67);
 await sleep(200);
-// Type: echo <space> MARKER <enter>  (space via KEYCODE_SPACE=62).
-text("echo");
-await sleep(200);
-key(62); // SPACE
-await sleep(150);
-text(MARKER);
+// Type: echo <space> MARKER
+// input text uses %s for space (bypasses IME). Then send Enter via shell
+// variable trick: printf builds "\nX", ${TXT%X} strips X leaving a real
+// newline — input text injects KEYCODE_ENTER through InputManager, bypassing
+// IME key event interception.
+text(`echo%s${MARKER}`);
 await sleep(400);
 screencap("05-echo-typed");
-key(66); // ENTER
+// Send Enter via real newline byte embedded in input text argument.
+adb(["shell", "sh", "-c", `TXT=$(printf '\\nX'); input text "\${TXT%X}"`]);
 await sleep(4000);
 screencap("06-after-enter");
 
-// Hide IME (ESC — BACK can navigate away/close the tab) and capture the clean
-// shell output. Re-check Chrome is foreground before the money shot.
-key(111); // ESCAPE
-await sleep(1500);
+// Capture the clean shell output. Re-check Chrome is foreground before the
+// money shot.
 {
   const focus = adb(["shell", "dumpsys", "window", "displays"]).stdout || "";
   if (!/mCurrentFocus=.*com\.android\.chrome/.test(focus)) {
