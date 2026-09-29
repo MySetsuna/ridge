@@ -26,6 +26,8 @@
   // §redirect-loop 止血（与 +layout.svelte 同源）：租户子域无有效会话→回主域登录的
   // per-tab 计数，防 apex⇄子域死循环。
   const TENANT_BOUNCE_KEY = 'ridge_tenant_login_bounce';
+  // §totp-cache: sessionStorage 缓存已验证 TOTP，刷新后自动重提（同 desktop 模式）。
+  const TOTP_CACHE_KEY = 'ridge_totp_code';
 
   let phase = $state<'connecting' | 'need-totp' | 'error'>('connecting');
   let code = $state('');
@@ -100,19 +102,38 @@
               return;
             }
             // §7.4 信任授权优先：受信设备静默握手通过即跳过 TOTP（host 端经握手已开 §4 门）。
-            // 旧 host 不识别 totp-trust-hello → 10s 超时 resolve(false) → 退化到 TOTP 输入。
-            // 无缓存码（mobile 不缓存），故信任授权失败直接进 need-totp 手输。
+            // 旧 host 不识别 totp-trust-hello → 10s 超时 resolve(false) → 退化到缓存码/手输。
+            const fallbackToTotp = () => {
+              // §totp-cache: 先试 sessionStorage 中的已验证 code（页面刷新后自动重提）。
+              let cached: string | null = null;
+              try { cached = sessionStorage.getItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
+              if (cached && handle) {
+                handle.verifyTotp(cached).then(async (ok) => {
+                  if (ok) {
+                    await finishConnected(cached);
+                  } else {
+                    try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
+                    promptTotp();
+                  }
+                }).catch(() => {
+                  try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
+                  promptTotp();
+                });
+              } else {
+                promptTotp();
+              }
+            };
             if (handle) {
               handle.tryTrustGrant().then((trusted) => {
                 if (cloudConn) return; // 竞态保护：已被其它路径完成
                 if (trusted) {
                   void finishConnected(null);
                 } else {
-                  promptTotp();
+                  fallbackToTotp();
                 }
-              }).catch(() => promptTotp());
+              }).catch(() => fallbackToTotp());
             } else {
-              promptTotp();
+              fallbackToTotp();
             }
           } else if (s === 'error') {
             phase = 'error';
@@ -225,15 +246,18 @@
         if (!ok) {
           loading = false;
           code = '';
+          try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
           error = tr('main.totpGateErrInvalid');
           return;
         }
         // Zero-trust TOTP passed → finish + cache the code for reconnect re-auth.
+        try { sessionStorage.setItem(TOTP_CACHE_KEY, numeric); } catch { /* ignore */ }
         await finishConnected(numeric);
       })
       .catch(() => {
         loading = false;
         code = '';
+        try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
         error = tr('main.totpGateErrNetwork');
       });
   }

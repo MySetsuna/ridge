@@ -13,6 +13,7 @@
 //   --dry-run        只打包不上传，落 build/remote-artifact-<ver>.bundle
 //   --rollback [ver] 回滚 current 到上一个（或指定）release
 import { execSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +41,33 @@ function gitSha() {
     return sh('git rev-parse --short HEAD');
   } catch {
     return 'nogit';
+  }
+}
+
+function reportDuplicates(files) {
+  // §perf P3 阶段 1：sha256 重复字节报告。跨 bundle 重复资产（wasm/fonts/CSS）
+  // 可在阶段 2 加 {path,size,ref} 条目去重，但 wire format 兼容需 ridge-cloud 侧配合。
+  const hashMap = new Map();
+  for (const f of files) {
+    const bytes = fs.readFileSync(f.abs);
+    const hash = crypto.createHash('sha256').update(bytes).digest('hex');
+    const entry = hashMap.get(hash) ?? { size: bytes.length, paths: [] };
+    entry.paths.push(f.path);
+    hashMap.set(hash, entry);
+  }
+  let dupBytes = 0;
+  let dupCount = 0;
+  for (const { size, paths } of hashMap.values()) {
+    if (paths.length > 1) {
+      dupBytes += size * (paths.length - 1);
+      dupCount += paths.length;
+      console.log(`  dup ×${paths.length} (${(size / 1024).toFixed(0)} KB): ${paths.slice(0, 4).join(', ')}${paths.length > 4 ? ' …' : ''}`);
+    }
+  }
+  if (dupCount > 0) {
+    console.log(`· 重复字节：${(dupBytes / 1048576).toFixed(2)} MiB（${dupCount} 文件跨 ${hashMap.size} 个唯一 hash）`);
+  } else {
+    console.log('· 重复字节：0（无跨 bundle 重复）');
   }
 }
 
@@ -124,6 +152,7 @@ export async function main({ env = process.env, args = process.argv.slice(2) } =
   const roots = ['desktop', 'mobile'].map((kind) => path.join(REMOTE_DIST, kind));
   const manifest = prepareManifest(cfg, roots);
   const files = collectFiles(REMOTE_DIST, 'remote-app');
+  reportDuplicates(files);
   const bundle = packBundle(manifest, files);
   const ver = `${manifest.version}+g${manifest.gitSha}`;
   console.log(

@@ -75,6 +75,7 @@ export const zh: Record<string, string> = {
   connectRejected: '连接被拒绝，请检查验证码是否有效',
   connectingTo: '正在连接 {target}…',
   connectingWithToken: '使用已保存的 token 连接 {target}…',
+  connectRetry: '连接失败，正在重试（第 {attempt} 次）…',
   noSavedToken: '未找到保存的 token，请输入验证码',
   connErrorHint: '请检查：TLS 证书是否已信任、网络是否通畅、远控是否已启用',
 
@@ -207,6 +208,7 @@ export const en: Record<string, string> = {
   connectRejected: 'Connection rejected — check that your code is valid',
   connectingTo: 'Connecting to {target}…',
   connectingWithToken: 'Connecting with the saved token to {target}…',
+  connectRetry: 'Connection failed — retrying (attempt {attempt})…',
   noSavedToken: 'No saved token — enter the code',
   connErrorHint: 'Check: the TLS certificate is trusted, the network is reachable, and remote control is enabled',
 

@@ -227,6 +227,8 @@ export class CloudHostBridge {
   private readonly log: (level: 'warn' | 'error', message: string, detail?: unknown) => void;
   /** §7.4 正在进行的 trust 握手：临时存放对端 ctrlPub（totp-trust-hello 时写入）。 */
   private trustCtrlPub: Uint8Array | null = null;
+  // §B2: TOTP 成功但 trust-hello 尚未到达时，标记待补记 trust grant。
+  private pendingTrustRecord = false;
   /** §7.4 正在进行的 trust 握手：一次性 nonce（totp-trust-challenge 时写入，proof 时消耗）。 */
   private trustNonce: Uint8Array | null = null;
 
@@ -395,6 +397,11 @@ export class CloudHostBridge {
       return;
     }
     this.trustCtrlPub = pub;
+    // §B2: TOTP 已成功但 trust-hello 迟到 → 现在补记 trust grant。
+    if (this.pendingTrustRecord) {
+      this.pendingTrustRecord = false;
+      this.recordTrustedController();
+    }
     const nonce = new Uint8Array(32);
     crypto.getRandomValues(nonce);
     this.trustNonce = nonce;
@@ -484,7 +491,13 @@ export class CloudHostBridge {
     const ok = await this.verifyTotpFrame(frame);
     if (ok) {
       this.verified = true;
-      this.recordTrustedController();
+      if (this.trustCtrlPub) {
+        this.recordTrustedController();
+      } else {
+        // §B2: trust-hello 尚未到达 → 标记待补记，handleTrustHello 到时再记。
+        this.pendingTrustRecord = true;
+        this.log('info', 'TOTP verified but trustCtrlPub not yet available; deferring grant record');
+      }
     } else {
       this.totpFailures += 1;
     }

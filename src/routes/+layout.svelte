@@ -3,7 +3,6 @@
   import '../app.css';
   import { browser, dev } from '$app/environment';
   import DevIssueDialog from '$lib/components/DevIssueDialog.svelte';
-  import EditorWindow from '$lib/components/EditorWindow.svelte';
   import HitlApprovalModal from '$lib/teammate/HitlApprovalModal.svelte';
   import { setTransport } from '$lib/transport';
   import { TauriDataProvider } from '$lib/transport/tauri';
@@ -29,6 +28,18 @@
   // （= 铺满窗口的文件编辑器），不跑主应用（+page）的终端/工作区重型初始化。
   const editorWindow =
     browser && new URLSearchParams(window.location.search).get('win') === 'editor';
+
+  // §perf 懒挂载 EditorWindow：
+  // EditorWindow → FileEditor → monaco-editor (~3.77 MB)，原随顶层 import 进入
+  // layout 首屏 eager chunk。改为 ?win=editor 时动态 import，正常主窗口永不加载 monaco。
+  let EditorWindowComp = $state<import('svelte').Component<Record<string, never>> | null>(null);
+  $effect(() => {
+    if (editorWindow && !EditorWindowComp) {
+      void import('$lib/components/EditorWindow.svelte').then((m) => {
+        EditorWindowComp = m.default;
+      });
+    }
+  });
 
   // §redirect-loop 止血：租户子域 boot 失败回主域登录的「已回跳」计数（per-tab，
   // sessionStorage 跨子域↔主域同标签往返保留）。第二次仍失败即停在子域显式报错，
@@ -302,7 +313,7 @@
       }
     };
 
-    const connectWith = (token: string) => {
+    const connectWith = (token: string, retryCount = 0) => {
       const attempt = ++connectAttempt;
       loading = true;
       errorMsg = '';
@@ -314,6 +325,18 @@
           void finish(attempt);
         } else if (s === 'error') {
           if (attempt !== connectAttempt) return;
+          // §B3: 非用户类失败 → backoff 重试，不立即清 token。
+          const failure = conn.lastFailure();
+          const cat = failure?.category;
+          if (cat !== 'user' && retryCount < 3) {
+            const delay = 1000 * Math.pow(2, retryCount); // 1s / 2s / 4s
+            errorMsg = tr('main.remoteGateRetry', { attempt: retryCount + 1 });
+            setTimeout(() => {
+              if (attempt !== connectAttempt) return;
+              connectWith(token, retryCount + 1);
+            }, delay);
+            return;
+          }
           loading = false;
           unsub();
           try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
@@ -420,7 +443,11 @@
 {#if ready}
   <div class="min-h-screen min-h-[100dvh] bg-[var(--rg-bg)] text-[var(--rg-fg)] antialiased">
     {#if editorWindow}
-      <EditorWindow />
+      {#if EditorWindowComp}
+        <EditorWindowComp />
+      {:else}
+        <div class="flex items-center justify-center min-h-[100dvh] text-[var(--rg-fg-muted)]">加载编辑器…</div>
+      {/if}
     {:else}
       {@render children()}
     {/if}

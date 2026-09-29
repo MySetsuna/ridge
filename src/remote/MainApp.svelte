@@ -1489,35 +1489,6 @@
     </div>
   {/if}
 
-  <!-- §debug-pane-overlay: ALWAYS visible (no URL gate). Sits OUTSIDE term-stage
-       at fixed position with z-index 10000 so it cannot be hidden by any
-       canvas chrome. Renders the actual props that MainApp hands to
-       TerminalCanvas + the latest hostCanvasError, so AVD screenshots prove
-       what the SPA saw at render time. -->
-  <div
-    data-pane-debug-main
-    style:position="fixed"
-    style:top="6px"
-    style:left="6px"
-    style:right="6px"
-    style:z-index="10000"
-    style:font="10px/1.4 ui-monospace,monospace"
-    style:color="#7fff7f"
-    style:background="rgba(0,0,0,0.92)"
-    style:padding="6px 8px"
-    style:border-radius="4px"
-    style:border="1px solid #7fff7f"
-    style:pointer-events="none"
-    style:word-break="break-all"
-  >
-    <div>[MAINAPP] activeWs={ui.activeWorkspaceId ?? '<null>'}</div>
-    <div>[MAINAPP] activePn={ui.activePaneId ?? '<null>'}</div>
-    <div>[MAINAPP] hostCanvasError={hostCanvasError ?? 'null'}</div>
-    <div>[MAINAPP] wsState={wsState}</div>
-    <div>[MAINAPP] bundle={_bundleName}</div>
-    <div>[MAINAPP] {_glInfo}</div>
-  </div>
-
   {#if ui.sidebarTab !== null && panelAvailability[ui.sidebarTab]}
     <div class="sidebar-overlay" onclick={() => ui.sidebarTab = null} role="presentation"></div>
     {#if remoteSidebarPromise}

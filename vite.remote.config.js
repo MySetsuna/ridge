@@ -99,19 +99,24 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Precache the complete emitted shell rather than a list of optional
-        // extensions. Workbox warns (and exits non-zero) when an optional glob
-        // matches no files; a new build commonly has no media/font assets. A
-        // single catch-all keeps future asset types offline-capable.
         globPatterns: ['**/*'],
-        // The term-wasm bundle is large and bundled media (mp4/webm/ogg) can be
-        // larger still; raise the precache size ceiling so big assets are not
-        // silently skipped (the default 2 MiB would drop wasm + any video).
+        // §perf: exclude wasm from precache (6 MB = 96% of install cost).
+        // Runtime caching below makes it offline-capable after first use.
+        globIgnores: ['**/*.wasm'],
         maximumFileSizeToCacheInBytes: 32 * 1024 * 1024,
         cleanupOutdatedCaches: true,
-        // Inline the Workbox runtime into sw.js so there is no extra hashed
-        // workbox-*.js root file for the server to special-case.
         inlineWorkboxRuntime: true,
+        // Runtime cache wasm so first online use makes it offline-capable.
+        runtimeCaching: [
+          {
+            urlPattern: /\.wasm$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'ridge-wasm',
+              expiration: { maxEntries: 4, maxAgeSeconds: 30 * 24 * 60 * 60 },
+            },
+          },
+        ],
         // Offline SPA navigations fall back to the cached shell, EXCEPT for the
         // API / WS / cert / download routes which must always hit the network.
         //   * `?ui=desktop` 永远走网络 → Rust 端 serve.rs 根据 ua.rs prefer_desktop_ui
@@ -146,26 +151,12 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'esnext',
     modulePreload: false,
-    // Better code splitting: split by feature/vendor
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (id.includes('ridge-term')) return 'term-wasm';
-          if (id.includes('node_modules/lucide-svelte')) return 'icons';
-          // Split heavy editor/terminal components
-          if (id.includes('monaco-editor')) return 'monaco-editor';
-          if (id.includes('mermaid')) return 'mermaid';
-          // Split virtual keyboard and touch-specific code
-          if (id.includes('/remote/lib/VirtualKeyboard') || id.includes('/remote/lib/modState')) return 'virtual-keyboard';
-          // Split terminal canvas (heavy WASM-dependent). P4: TerminalCanvas now
-          // pulls the shared @ridge/remote TerminalManager (multi-kernel) — the
-          // retired single-kernel terminalController is gone.
-          if (id.includes('/remote/lib/TerminalCanvas')) return 'terminal-canvas';
-          // Split workspace tree
-          if (id.includes('/remote/lib/WorkspaceTree')) return 'workspace-tree';
-        },
-      },
-    },
+    // §perf: 不用 manualChunks 强制成块。粗粒度规则会让 rollup 把 __vitePreload
+    // helper co-locate 进大块，entry 静态 import helper 反把 terminal-canvas /
+    // workspace-tree / icons / term-wasm / virtual-keyboard 全拖进 eager graph。
+    // 同 vite.config.js:122-133 §perf 已修复的 bug，此处曾复现，现已删除。
+    // 让 Rollup 自然检测 async chunk — MainApp 的 5 个 gated dynamic import 才真正生效。
+    rollupOptions: {},
   },
   worker: {
     format: 'es',

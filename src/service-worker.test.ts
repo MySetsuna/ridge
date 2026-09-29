@@ -6,6 +6,7 @@ vi.mock('$service-worker', () => ({
 }));
 
 type CacheMock = {
+  add: ReturnType<typeof vi.fn>;
   addAll: ReturnType<typeof vi.fn>;
   match: ReturnType<typeof vi.fn>;
   put: ReturnType<typeof vi.fn>;
@@ -23,6 +24,7 @@ function cacheFor(name: string): CacheMock {
   let cache = state.cacheEntries.get(name);
   if (!cache) {
     cache = {
+      add: vi.fn(async () => {}),
       addAll: vi.fn(async () => {}),
       match: vi.fn(async (request: RequestInfo) => (
         request === 'version' ? null : undefined

@@ -16,9 +16,12 @@ import { build, version } from '$service-worker';
 
 const CACHE = `ridge-web-remote-${version}`;
 const HTML_CACHE = `ridge-html-${version}`;
-// Precache the content-hashed `_app` bundle (immutable). We intentionally skip
-// `files` (favicon, 1.jpg/2.jpg, the nested mobile build) to keep install light.
-const PRECACHE = build;
+// §perf: precache only shell-critical chunks on install; warm the rest on activate.
+// Monaco language workers (9.4 MB) and wasm (6 MB) are excluded from install —
+// they load on demand and are cached by the fetch handler after first use.
+const SHELL_PATTERN = /\/(entry|nodes)\//;
+const PRECACHE_SHELL = build.filter((f) => SHELL_PATTERN.test(f) || f.endsWith('.css'));
+const PRECACHE_WARM = build.filter((f) => !PRECACHE_SHELL.includes(f) && !f.endsWith('.wasm'));
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
 
@@ -49,9 +52,8 @@ sw.addEventListener('install', (event) => {
   event.waitUntil(
     checkVersionAndNukeIfNeeded()
       .then(() => caches.open(CACHE))
-      .then((cache) => cache.addAll(PRECACHE))
+      .then((cache) => cache.addAll(PRECACHE_SHELL))
       .then(() => {
-        // Store the current version as a marker cache.
         return caches.open(`ridge-version-${version}`).then(c => c.put('version', new Response(version)));
       })
       .then(() => sw.skipWaiting()),
@@ -63,7 +65,14 @@ sw.addEventListener('activate', (event) => {
     checkVersionAndNukeIfNeeded()
       .then(() => caches.keys())
       .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== HTML_CACHE && !k.startsWith('ridge-version-')).map((k) => caches.delete(k))))
-      .then(() => sw.clients.claim()),
+      .then(() => sw.clients.claim())
+      .then(() => {
+        // §perf warm: cache remaining shell assets in background after activate.
+        // Per-file catch so one failure doesn't abort the whole warm batch.
+        return caches.open(CACHE).then((cache) =>
+          Promise.allSettled(PRECACHE_WARM.map((f) => cache.add(f).catch(() => {}))),
+        );
+      }),
   );
 });
 

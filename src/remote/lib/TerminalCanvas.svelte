@@ -168,13 +168,6 @@
   let attached = $state(false);
   let attachError = $state<string | null>(null);
   const webgpuError = $derived(attachError ?? hostError);
-  // §debug-pane-state: visible overlay that prints the actual props this mount
-  // received + the current attachError/hostError/attached state. Lets AVD scripts
-  // read SPA state from screenshots without DevTools. Always on — gated by the
-  // build rather than a runtime URL flag because the previous `?debug=pane=1`
-  // query gate was unreliable after Chrome Service Worker caching reshuffled
-  // route state across HMR reloads.
-  const debugPaneState = true;
   // §debug-pane-model: sample the live terminal model + canvas size every 500ms
   // into debugState so an AVD screenshot distinguishes "model empty (feed dead)"
   // from "model full but pixels black (renderer dead)" without DevTools/CDP.
@@ -1519,33 +1512,6 @@
   {#if webgpuError}
     <div class="webgpu-error" role="alert" aria-live="assertive">
       <span>{webgpuError}</span>
-    </div>
-  {/if}
-  <!-- §debug-pane-state: visible overlay showing the actual props this mount
-       received + the current attachError/hostError/attached state. Lets AVD
-       scripts read SPA state from screenshots without DevTools. Always on. -->
-  {#if debugPaneState}
-    <div
-      data-pane-debug
-      style:position="absolute"
-      style:top="4px"
-      style:left="4px"
-      style:right="4px"
-      style:z-index="30"
-      style:font="11px/1.3 ui-monospace,monospace"
-      style:color="#7fff7f"
-      style:background="rgba(0,0,0,0.92)"
-      style:padding="6px 8px"
-      style:border-radius="4px"
-      style:pointer-events="none"
-      style:word-break="break-all"
-    >
-      <div>prop paneId={remotePaneId || '<null>'}</div>
-      <div>prop wsId={workspaceId || '<null>'}</div>
-      <div>attached={String(attached)} backend={backendName || '<null>'}</div>
-      <div>attachError={attachError ?? 'null'}</div>
-      <div>hostError={hostError ?? 'null'}</div>
-      <div data-pane-debug-model>{debugState}</div>
     </div>
   {/if}
   {#if !webgpuError && !attached}

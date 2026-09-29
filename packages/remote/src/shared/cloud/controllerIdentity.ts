@@ -13,6 +13,8 @@ const IDB_NAME = 'ridge-cloud';
 const IDB_STORE = 'identity';
 const IDB_KEY = 'controller-ed25519-priv';
 const IDB_VERSION = 1;
+// §B2: IndexedDB 不可用时 localStorage fallback，防 key 每次刷新重新生成。
+const LS_KEY = 'ridge_ctrl_identity';
 
 function asError(value: unknown, fallback: string): Error {
   if (value instanceof Error) return value;
@@ -86,6 +88,36 @@ function hasIdb(): boolean {
   return typeof indexedDB !== 'undefined' && indexedDB !== null;
 }
 
+// ── localStorage fallback（§B2） ─────────────────────────────────────────────
+
+function lsLoad(): Uint8Array | null {
+  try {
+    const b64 = localStorage.getItem(LS_KEY);
+    if (!b64) return null;
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    return bytes.length === 32 ? bytes : null;
+  } catch {
+    return null;
+  }
+}
+
+function lsSave(priv: Uint8Array): void {
+  try {
+    const b64 = btoa(String.fromCharCode(...priv));
+    localStorage.setItem(LS_KEY, b64);
+  } catch {
+    /* ignore */
+  }
+}
+
+function lsDelete(): void {
+  try {
+    localStorage.removeItem(LS_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 // ── 核心：懒加载 + 记忆化私钥 ───────────────────────────────────────────────
 
 /**
@@ -99,9 +131,13 @@ async function getOrCreatePrivKey(): Promise<Uint8Array> {
   if (cachedPriv !== null) return cachedPriv;
 
   if (!hasIdb()) {
-    // SSR / Node 降级：生成一次性内存密钥，重载后会重新生成（可接受）
-    console.warn('[controllerIdentity] IndexedDB 不可用，使用仅内存临时密钥（重载后失效）');
-    cachedPriv = ed25519.utils.randomSecretKey();
+    // §B2: IndexedDB 不可用 → localStorage fallback（防刷新后 key 重生成）
+    let priv = lsLoad();
+    if (!priv) {
+      priv = ed25519.utils.randomSecretKey();
+      lsSave(priv);
+    }
+    cachedPriv = priv;
     return cachedPriv;
   }
 
@@ -116,9 +152,14 @@ async function getOrCreatePrivKey(): Promise<Uint8Array> {
     cachedPriv = priv;
     return cachedPriv;
   } catch (err) {
-    // IndexedDB 打开/读写失败 → 内存降级
-    console.warn('[controllerIdentity] IndexedDB 访问失败，使用仅内存临时密钥：', err);
-    cachedPriv ??= ed25519.utils.randomSecretKey();
+    // §B2: IndexedDB 访问失败 → localStorage fallback
+    console.warn('[controllerIdentity] IndexedDB 访问失败，使用 localStorage fallback：', err);
+    let priv = lsLoad();
+    if (!priv) {
+      priv = ed25519.utils.randomSecretKey();
+      lsSave(priv);
+    }
+    cachedPriv = priv;
     return cachedPriv;
   }
 }
@@ -149,6 +190,7 @@ export async function signTrust(message: Uint8Array): Promise<Uint8Array> {
  */
 export async function clearControllerIdentity(): Promise<void> {
   cachedPriv = null;
+  lsDelete(); // §B2: 清除 localStorage fallback
   if (!hasIdb()) return;
   try {
     await idbDelete();

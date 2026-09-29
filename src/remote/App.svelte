@@ -1,7 +1,7 @@
 <script lang="ts">
-  import AuthScreen from './AuthScreen.svelte';
-  import CloudAuthScreen from './CloudAuthScreen.svelte';
-  import MainApp from './MainApp.svelte';
+  // §perf 按 mode 懒加载：AuthScreen / CloudAuthScreen / MainApp 原随顶层 import
+  // 全进 eager graph。改为 mode 决定哪个 auth screen 动态 import，verified 后才 load
+  // MainApp。LAN 用户不下载 cloud 门，cloud 用户不下载 LAN 门。
   import { RemoteConnection, createLanWsTransport, type RemoteLink } from '@ridge/remote';
   import { setTransport } from '$lib/transport';
   import { WsDataProvider } from '$lib/transport/ws';
@@ -47,6 +47,23 @@
   let ws = $state<RemoteLink | null>(initialLan);
   let verified = $state(false);
   let transportSet = $state(false);
+
+  // §perf 懒加载 auth screen 和 MainApp
+  let AuthScreenComp = $state<import('svelte').Component<{ ws: RemoteConnection; onverified: () => void }> | null>(null);
+  let CloudAuthScreenComp = $state<import('svelte').Component<{ onready: (conn: RemoteLink) => void; onfallbacklan: () => void }> | null>(null);
+  let MainAppComp = $state<import('svelte').Component<{ ws: RemoteLink }> | null>(null);
+
+  $effect(() => {
+    if (mode === 'cloud' && !verified && !CloudAuthScreenComp) {
+      void import('./CloudAuthScreen.svelte').then((m) => { CloudAuthScreenComp = m.default; });
+    } else if (mode === 'lan' && !verified && !AuthScreenComp) {
+      void import('./AuthScreen.svelte').then((m) => { AuthScreenComp = m.default; });
+    }
+    if (verified && ws && !MainAppComp) {
+      void import('./MainApp.svelte').then((m) => { MainAppComp = m.default; });
+    }
+  });
+
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -86,16 +103,28 @@
 <QueryClientProvider client={queryClient}>
   {#if mode === 'cloud'}
     {#if !verified}
-      <CloudAuthScreen
-        onready={(conn) => { ws = conn; verified = true; }}
-        onfallbacklan={fallbackToLan}
-      />
+      {#if CloudAuthScreenComp}
+        <CloudAuthScreenComp
+          onready={(conn) => { ws = conn; verified = true; }}
+          onfallbacklan={fallbackToLan}
+        />
+      {:else}
+        <div class="flex items-center justify-center min-h-[100dvh]">…</div>
+      {/if}
+    {:else if ws && MainAppComp}
+      <MainAppComp {ws} />
     {:else if ws}
-      <MainApp {ws} />
+      <div class="flex items-center justify-center min-h-[100dvh]">…</div>
     {/if}
   {:else if !verified}
-    <AuthScreen ws={lanWs!} onverified={handleLanVerified} />
+    {#if AuthScreenComp}
+      <AuthScreenComp ws={lanWs!} onverified={handleLanVerified} />
+    {:else}
+      <div class="flex items-center justify-center min-h-[100dvh]">…</div>
+    {/if}
+  {:else if ws && MainAppComp}
+    <MainAppComp {ws} />
   {:else if ws}
-    <MainApp {ws} />
+    <div class="flex items-center justify-center min-h-[100dvh]">…</div>
   {/if}
 </QueryClientProvider>

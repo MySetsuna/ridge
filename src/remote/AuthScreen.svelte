@@ -120,7 +120,7 @@
     }
   }
 
-  function connectWithToken(host: string, port: number, token: string) {
+  function connectWithToken(host: string, port: number, token: string, retryCount = 0) {
     unsubState?.();
     if (connectTimer) clearTimeout(connectTimer);
     let sawConnected = false;
@@ -143,14 +143,33 @@
         unsubState?.();
         onverified();
       } else if (s === 'error') {
-        // fallbackToManual 会据 ws.lastFailure() 统一算出可见提示与诊断细节；
-        // 这里不再重复赋值（原先那批 connectionDetail 都会被它覆盖，是死代码）。
+        // §B3: 非用户类失败（网络/通道抖动）→ backoff 重试，不立即退 manual。
+        const failure = ws.lastFailure();
+        const cat = failure?.category;
+        if (cat !== 'user' && retryCount < 3) {
+          const delay = 1000 * Math.pow(2, retryCount); // 1s / 2s / 4s
+          connectionDetail = tr('mobile.connectRetry', { attempt: retryCount + 1 });
+          connectTimer = setTimeout(() => {
+            connectWithToken(host, port, token, retryCount + 1);
+          }, delay);
+          return;
+        }
         fallbackToManual();
       } else if (s === 'disconnected' && !sawConnected) {
-        // The token auth keeps dropping before ever connecting (server rejected
-        // the upgrade → wsRemote silently retries). Bail after a couple of tries
-        // instead of spinning forever.
-        if (++disconnects >= 2) fallbackToManual(tr('mobile.connectRejected'));
+        // §B3: 非用户类断连也走重试。
+        if (++disconnects >= 2) {
+          const failure = ws.lastFailure();
+          const cat = failure?.category;
+          if (cat !== 'user' && retryCount < 3) {
+            const delay = 1000 * Math.pow(2, retryCount);
+            connectionDetail = tr('mobile.connectRetry', { attempt: retryCount + 1 });
+            connectTimer = setTimeout(() => {
+              connectWithToken(host, port, token, retryCount + 1);
+            }, delay);
+            return;
+          }
+          fallbackToManual(tr('mobile.connectRejected'));
+        }
       }
     });
     ws.connect(host, port, token, 'token');
