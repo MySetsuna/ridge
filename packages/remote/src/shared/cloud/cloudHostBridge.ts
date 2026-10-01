@@ -188,7 +188,7 @@ export interface CloudHostBridgeConfig {
    */
   bindTranscript?: Uint8Array | null;
   /** 可选：诊断日志回调（默认 console）。 */
-  log?: (level: 'warn' | 'error', message: string, detail?: unknown) => void;
+  log?: (level: 'warn' | 'error' | 'info', message: string, detail?: unknown) => void;
   /**
    * iter-60 G9：host 侧事件源（注入 Tauri `listen` 聚合）。桥把每个 (name,payload)
    * 以 `{type:'event', name, payload}` 控制帧推给 controller（bridge.ts 的 listen()
@@ -224,7 +224,7 @@ export class CloudHostBridge {
   private readonly totpTrustRecord?: TotpTrustRecorder;
   /** §7.4 信道绑定 transcript（来自 config）。 */
   private readonly bindTranscript: Uint8Array | null;
-  private readonly log: (level: 'warn' | 'error', message: string, detail?: unknown) => void;
+  private readonly log: (level: 'warn' | 'error' | 'info', message: string, detail?: unknown) => void;
   /** §7.4 正在进行的 trust 握手：临时存放对端 ctrlPub（totp-trust-hello 时写入）。 */
   private trustCtrlPub: Uint8Array | null = null;
   // §B2: TOTP 成功但 trust-hello 尚未到达时，标记待补记 trust grant。

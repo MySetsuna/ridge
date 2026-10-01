@@ -168,36 +168,6 @@
   let attached = $state(false);
   let attachError = $state<string | null>(null);
   const webgpuError = $derived(attachError ?? hostError);
-  // §debug-pane-model: sample the live terminal model + canvas size every 500ms
-  // into debugState so an AVD screenshot distinguishes "model empty (feed dead)"
-  // from "model full but pixels black (renderer dead)" without DevTools/CDP.
-  let debugState = $state<string>('…');
-  $effect(() => {
-    if (!debugPaneState || !attached) return;
-    const sample = () => {
-      try {
-        const g = (manager.debugGeometry() as Array<Record<string, unknown>>)
-          .find((e) => e.paneId === paneId);
-        if (!g) { debugState = 'model=<no pane entry>'; return; }
-        const vt = (g.visibleText as string[] | undefined) ?? [];
-        const last = vt[vt.length - 1] ?? '';
-        const ker = g.kernel as { rows?: number; cols?: number } | undefined;
-        const sc = g.scrollback as { total?: number } | undefined;
-        const back = g.backing as { width?: number; height?: number } | undefined;
-        const css = g.canvas as { width?: number; height?: number } | undefined;
-        const cur = g.cursor as { row?: number; col?: number } | undefined;
-        debugState =
-          `lines=${vt.length} sb=${sc?.total ?? '?'} grid=${ker?.rows ?? '?'}x${ker?.cols ?? '?'}` +
-          ` backing=${back?.width ?? '?'}x${back?.height ?? '?'} css=${Math.round(css?.width ?? 0)}x${Math.round(css?.height ?? 0)}` +
-          ` cur=${cur?.row ?? '?'}x${cur?.col ?? '?'} last=${JSON.stringify(last.slice(0, 18))}`;
-      } catch (err) {
-        debugState = `model probe err=${String(err).slice(0, 60)}`;
-      }
-    };
-    sample();
-    const timer = setInterval(sample, 500);
-    return () => clearInterval(timer);
-  });
   // §debug-pane-error: mirror attachError/hostError changes through
   // console.log so logcat captures which canvas mount actually set
   // REMOTE_RESIZE_FAILED and with which paneId/workspaceId. Always on.
