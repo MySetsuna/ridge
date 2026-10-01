@@ -5,7 +5,7 @@
 Remote 浏览器端是独立静态产物，使用 `.github/workflows/publish-remote.yml` 发布到
 Cloud 持久卷；它不重新部署 `ridge-cloud`，并保留最近三个 release 供回滚。
 
-Cloud 桌面端使用 `.github/workflows/release.yml` 构建 Tauri 安装包及 `rdg`。该工作流
+Cloud 桌面端使用 `.github/workflows/release.yml` 构建 Tauri 安装包及 `ridge` CLI。该工作流
 必须保持 `releaseDraft: true`：手动发布只生成 GitHub Release 草稿，不得直接转为正式版。
 
 ## 凭据边界
@@ -33,7 +33,7 @@ Actions 将 Secret 注入工作流；本机只检查 Secret 名称是否存在�
 ## Cloud 草稿发布
 
 1. 以本次提交对应版本创建 `v<version>` tag，或手动运行 `release` 并填写 tag。
-2. 等待 test gate 与各平台 build 完成；安装包、`rdg` 和可选签名产物进入同一个 GitHub
+2. 等待 test gate 与各平台 build 完成；安装包、`ridge` CLI 和可选签名产物进入同一个 GitHub
    Release 草稿。
 3. 只做草稿验收：下载资产、检查版本与 SHA、查看构建日志；本轮不得点击“Publish
    release”。

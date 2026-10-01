@@ -161,15 +161,15 @@ jobs:
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build rdg CLI release artifact
+      - name: Build ridge CLI release artifact
         shell: bash
         run: |
           set -euo pipefail
           # vendored-openssl lives on the ridge Tauri crate (matrix.args), not ridge-cli.
           if [ -n "${{ matrix.rust_target }}" ]; then
-            cargo build --release -p ridge-cli --bin rdg --target "${{ matrix.rust_target }}"
+            cargo build --release -p ridge-cli --bin ridge --target "${{ matrix.rust_target }}"
           else
-            cargo build --release -p ridge-cli --bin rdg
+            cargo build --release -p ridge-cli --bin ridge
           fi
 
       - name: Build & publish (Tauri)
@@ -188,7 +188,7 @@ jobs:
             浏览器 Remote：LAN / 公网共用同一产物与终端几何链路；修复 pane、Canvas、PTY 行列不同步及鼠标命中错位，并补远程 git stash 列表能力。
             发布链：移除 web-remote-dist 临时分叉，Remote desktop/mobile 产物统一构建、上传与激活。
 
-            产物：Ridge 桌面安装包 Windows（.exe / .msi）、Linux（.deb / .AppImage）、macOS（.dmg，Apple Silicon + Intel 各一份，未签名）；rdg 为同一 Release 下独立、可选下载的命令行程序（Windows / Linux / macOS-arm64 / macOS-x64）。
+            产物：Ridge 桌面安装包 Windows（.exe / .msi）、Linux（.deb / .AppImage）、macOS（.dmg，Apple Silicon + Intel 各一份，未签名）；ridge 为同一 Release 下独立、可选下载的命令行程序（Windows / Linux / macOS-arm64 / macOS-x64）。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
@@ -235,11 +235,11 @@ jobs:
             throw "ridge-mcp.exe missing from MSI payload $($msi.Name)"
           }
 
-      # rdg 是独立 CLI 产品，不进入 Ridge 桌面安装包；这里按平台重命名并上传
+      # ridge CLI 是独立产物，不进入 Ridge 桌面安装包；这里按平台重命名并上传
       # 为同一 Release 下的可选独立下载资产（草稿）。
       # Intel macOS now builds the CLI for x86_64 explicitly, so the binary
       # is uploaded alongside the cross-compiled application assets.
-      - name: Upload rdg CLI to release
+      - name: Upload ridge CLI to release
         if: matrix.rust_target == '' || matrix.label == 'macos-x64'
         shell: bash
         env:
@@ -253,17 +253,17 @@ jobs:
             linux-x64)   OS=linux;   ARCH=x86_64;  EXT= ;;
             macos-arm64) OS=macos;   ARCH=aarch64; EXT= ;;
             macos-x64)   OS=macos;   ARCH=x86_64;  EXT= ;;
-            *) echo "label ${{ matrix.label }} 无需上传 rdg，跳过"; exit 0 ;;
+            *) echo "label ${{ matrix.label }} 无需上传 ridge CLI，跳过"; exit 0 ;;
           esac
           SRC=""
-          for c in "target/${{ matrix.rust_target }}/release/rdg$EXT" "target/release/rdg$EXT" "src-tauri/target/release/rdg$EXT"; do
+          for c in "target/${{ matrix.rust_target }}/release/ridge$EXT" "target/release/ridge$EXT" "src-tauri/target/release/ridge$EXT"; do
             if [ -f "$c" ]; then SRC="$c"; break; fi
           done
           if [ -z "$SRC" ]; then
-            echo "找不到 rdg 二进制（已查 target/release 与 src-tauri/target/release）" >&2
+            echo "找不到 ridge 二进制（已查 target/release 与 src-tauri/target/release）" >&2
             exit 1
           fi
-          DST="rdg-${VER}-${ARCH}-${OS}${EXT}"
+          DST="ridge-${VER}-${ARCH}-${OS}${EXT}"
           cp "$SRC" "$DST"
           gh release upload "$REL_TAG" "$DST" --clobber
           echo "已上传 $DST（源 $SRC）"
