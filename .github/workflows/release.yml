@@ -183,12 +183,12 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: 'Ridge __VERSION__'
           releaseBody: |
-            接入资源统一：新增三层远程资源树；桌面端可分享单工作区，资源管理器、Git 与 Agent 资源按授权范围接入，末个外部 pane 删除后正确断开源 host。
-            已保存工作区：修复关闭后重开失败，补删除能力并统一弹层滚动条。
-            浏览器 Remote：LAN / 公网共用同一产物与终端几何链路；修复 pane、Canvas、PTY 行列不同步及鼠标命中错位，并补远程 git stash 列表能力。
-            发布链：移除 web-remote-dist 临时分叉，Remote desktop/mobile 产物统一构建、上传与激活。
+            TOTP 信任 grant：headless ridge CLI 被控端（云 + LAN）实现 §7.4 trust-grant，桌面 SPA
+            控制器无需改动。云腿经 0x12 CONTROL 通道 4 帧握手，LAN 腿经 POST /trust-grant 与
+            /trust-grant/proof 两步；同一签名 Ed25519 公式 `prefix ‖ nonce ‖ transcript?`，24h 信任窗
+            落 ridge_core::grant_store；HostAuth trait 抽象缝，KernelHost 复用 ?code= 同款节流。
 
-            产物：Ridge 桌面安装包 Windows（.exe / .msi）、Linux（.deb / .AppImage）、macOS（.dmg，Apple Silicon + Intel 各一份，未签名）；ridge 为同一 Release 下独立、可选下载的命令行程序（Windows / Linux / macOS-arm64 / macOS-x64）。
+            产物：Ridge 桌面安装包 Windows（.exe / .msi）、Linux（.deb / .AppImage）、macOS（.dmg，Apple Silicon + Intel 各一份，未签名）；ridge 为同一 Release 下独立、可选下载的命令行程序（Windows / Linux / macos-arm64 / macos-x64）。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
