@@ -65,8 +65,15 @@ pub async fn run(
         remote_enabled: Arc::new(AtomicBool::new(true)),
     });
 
-    let actual_port =
-        ridge_remote::server_app::run(host, std_listener, tls_config, shutdown_rx, true).await?;
+    let actual_port = ridge_remote::server_app::run(
+        host,
+        Arc::new(ridge_remote::lan_trust::LanTrustState::new()),
+        std_listener,
+        tls_config,
+        shutdown_rx,
+        true,
+    )
+    .await?;
 
     tracing::info!(target: "ridge_cli::lan_host", port = actual_port, "LAN remote service stopped");
     Ok(())

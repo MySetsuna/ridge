@@ -39,13 +39,13 @@ use crate::fs_reuse;
 use crate::ice::IceServerConfig;
 use crate::key_binding::{decide_key_binding, KeyBindingDecision, KeyBindingMode};
 use crate::mux::{self, Inbound};
-use crate::protocol::SessionControl;
 use crate::pty::PtyBridge;
 use crate::rpc::{
     self, Envelope, Method, RpcError, CANCEL_METHOD, HELLO_METHOD, JSON_RPC_INVALID_REQUEST,
     JSON_RPC_METHOD_NOT_FOUND,
 };
 use crate::rtc::{HostPeer, PeerInbound, PeerOutbound};
+use crate::session_control::{self as ctrl, TrustState};
 use crate::signaling::{SignalMsg, SignalSender};
 use crate::totp::RemoteTotp;
 use ridge_core::DeviceIdentity;
@@ -206,6 +206,10 @@ impl RemoteSession {
         //     被门控（见 gate_envelope）。
         let totp = RemoteTotp::load_or_create(&crate::config::totp_identity());
         let mut verified = false;
+        // §7.4 trust-grant 信道状态（一次会话一份，断连即弃）：trust-hello 写入 ctrl_pub、
+        // trust-challenge 写入 nonce、trust-proof 消费 nonce + 落 grant。与业务信道共用 5 击
+        // 失败计数（`TrustState::totp_failures`，见 session_control.rs）。
+        let mut trust_state = TrustState::default();
         // controller 经 `subscribe-pane` / `register_pane_delta_channel` 订阅后才推 PTY 流
         //（桌面同款语义）。订阅 + 验证前 PTY 输出暂存于攒批缓冲，不丢失初始提示符。
         let mut subscribed = false;
@@ -403,6 +407,7 @@ impl RemoteSession {
                                     &frame, crypto_ref, &pty, &dc_io.tx, &roots,
                                     &totp, &mut verified, &mut subscribed,
                                     bind_transcript.as_deref(),
+                                    &mut trust_state,
                                 ).await {
                                     Ok(effect) => effect,
                                     Err(e) => {
@@ -620,7 +625,8 @@ impl RemoteSession {
     ///   - 0x10 PANE   → controller 一般不发；忽略。
     ///
     /// 门控（契约 §4）：`verified` 为 false 时业务帧被拒（见 gate_envelope），只处理
-    /// `$/hello` 与 `totp-verify`。
+    /// `$/hello` 与 `totp-verify`。trust-grant 信道状态由 `trust_state` 承载（见
+    /// session_control.rs）。
     #[allow(clippy::too_many_arguments)]
     async fn handle_inbound(
         frame: &[u8],
@@ -632,12 +638,24 @@ impl RemoteSession {
         verified: &mut bool,
         subscribed: &mut bool,
         bind_transcript: Option<&[u8]>,
+        trust_state: &mut TrustState,
     ) -> Result<Option<InboundEffect>> {
         let plaintext = crypto.open(frame)?;
+        let identity = totp.identity();
 
         match mux::demux(&plaintext) {
             Inbound::Control(body) => {
-                Self::handle_control(&body, crypto, tx, totp, verified, bind_transcript).await?;
+                ctrl::handle_control(
+                    &body,
+                    crypto,
+                    tx,
+                    totp,
+                    &identity,
+                    verified,
+                    trust_state,
+                    bind_transcript,
+                )
+                .await?;
                 Ok(None)
             }
             Inbound::Json(body) => {
@@ -673,57 +691,6 @@ impl RemoteSession {
                 Ok(None)
             }
             Inbound::Empty => Ok(None),
-        }
-    }
-
-    /// 处理一帧 0x12 CONTROL（契约 §4 TOTP 握手 + 零信任 #1 信道绑定）。
-    /// `bind_transcript` 为本会话握手派生的绑定 transcript（host 发 0x02 后为 Some），用于
-    /// 校验 controller 的 totp-bind；握手未完成/未发 0x02 时为 None（totp-bind 一律判失败）。
-    async fn handle_control(
-        body: &[u8],
-        crypto: &mut CryptoSession,
-        tx: &mpsc::Sender<Vec<u8>>,
-        totp: &RemoteTotp,
-        verified: &mut bool,
-        bind_transcript: Option<&[u8]>,
-    ) -> Result<()> {
-        let ctrl: SessionControl = match serde_json::from_slice(body) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(target: "ridge_cli::session", error = %e, "bad CONTROL frame; ignored");
-                return Ok(());
-            }
-        };
-        match ctrl {
-            SessionControl::TotpVerify { code } => {
-                let ok = totp.verify(&code);
-                if ok {
-                    *verified = true;
-                    tracing::info!(target: "ridge_cli::session", "controller passed TOTP; control channel unlocked");
-                } else {
-                    tracing::warn!(target: "ridge_cli::session", "controller submitted an invalid TOTP code");
-                }
-                Self::send_control(crypto, tx, &SessionControl::TotpResult { ok }).await
-            }
-            SessionControl::TotpBind { tag } => {
-                // 零信任 #1：信道绑定 HMAC tag（明文码不上线）。用本机种子 + 本会话 transcript
-                // 在 ±1 时间窗重算比对（恒定时间）。坏 base64 / 未派生 transcript ⇒ 判失败。
-                let ok = match (b64_decode(&tag), bind_transcript) {
-                    (Some(tag_bytes), Some(transcript)) => {
-                        totp.verify_bind_tag(transcript, &tag_bytes)
-                    }
-                    _ => false,
-                };
-                if ok {
-                    *verified = true;
-                    tracing::info!(target: "ridge_cli::session", "controller passed totp-bind; control channel unlocked");
-                } else {
-                    tracing::warn!(target: "ridge_cli::session", "controller submitted an invalid totp-bind tag");
-                }
-                Self::send_control(crypto, tx, &SessionControl::TotpResult { ok }).await
-            }
-            // host 不应收到 totp-result；忽略。
-            SessionControl::TotpResult { .. } => Ok(()),
         }
     }
 
@@ -913,32 +880,14 @@ impl RemoteSession {
         tx.send(sealed).await.ok();
         Ok(())
     }
-
-    /// seal 并发出一帧 0x12 CONTROL。
-    async fn send_control(
-        crypto: &mut CryptoSession,
-        tx: &mpsc::Sender<Vec<u8>>,
-        ctrl: &SessionControl,
-    ) -> Result<()> {
-        let plaintext = mux::encode_control(ctrl);
-        let sealed = crypto.seal(&plaintext)?;
-        tx.send(sealed).await.ok();
-        Ok(())
-    }
 }
 
 /// 标准 base64（含 `=` 填充）编码 —— 与桌面 `e2ee.ts::bytesToBase64`(btoa) 字节一致，
 /// 供信令旁路上报临时公钥用（B3）。
+///（`totp-bind` 的 HMAC tag 编码/解析见 `session_control::{b64_encode, b64_decode}` —— 该路径已迁出本文件。）
 fn b64_encode(bytes: &[u8]) -> String {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-/// 解析标准 base64 为字节（零信任 #1：totp-bind 的 HMAC tag）。非法 base64 返回 `None`
-/// （长度由 `RemoteTotp::verify_bind_tag` 自行校验）。与桌面 `e2ee.ts::base64ToBytes` 同口径。
-fn b64_decode(s: &str) -> Option<Vec<u8>> {
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.decode(s).ok()
 }
 
 /// 解析标准 base64 为 32 字节临时公钥；base64 非法或长度不符返回 `None`（调用方忽略坏帧，
@@ -1204,6 +1153,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
         let totp = RemoteTotp::new();
         let mut verified = false;
+        let mut trust_state = TrustState::default();
         let mut subscribed = false;
 
         // serving root = 一个临时目录（让 search/tree 能命中且受沙箱约束）。
@@ -1231,6 +1181,7 @@ mod tests {
             &mut verified,
             &mut subscribed,
             None,
+            &mut trust_state,
         )
         .await
         .unwrap();
@@ -1261,6 +1212,7 @@ mod tests {
             &mut verified,
             &mut subscribed,
             None,
+            &mut trust_state,
         )
         .await
         .unwrap();
@@ -1289,6 +1241,7 @@ mod tests {
             &mut verified,
             &mut subscribed,
             None,
+            &mut trust_state,
         )
         .await
         .unwrap();
@@ -1318,6 +1271,7 @@ mod tests {
             &mut verified,
             &mut subscribed,
             None,
+            &mut trust_state,
         )
         .await
         .unwrap();
@@ -1343,6 +1297,7 @@ mod tests {
             &mut verified,
             &mut subscribed,
             None,
+            &mut trust_state,
         )
         .await
         .unwrap();
@@ -1369,6 +1324,7 @@ mod tests {
             &mut verified,
             &mut subscribed,
             None,
+            &mut trust_state,
         )
         .await
         .unwrap();
@@ -1395,6 +1351,7 @@ mod tests {
             &mut verified,
             &mut subscribed,
             None,
+            &mut trust_state,
         )
         .await
         .unwrap();
@@ -1422,6 +1379,7 @@ mod tests {
             &mut verified,
             &mut subscribed,
             None,
+            &mut trust_state,
         )
         .await
         .unwrap();
@@ -1452,6 +1410,7 @@ mod tests {
         let totp = RemoteTotp::new();
         // 业务门控已开：boot 在 TOTP 通过后才装配工作区，故这两个请求到达时 verified=true。
         let mut verified = true;
+        let mut trust_state = TrustState::default();
         let mut subscribed = false;
         let roots: Vec<PathBuf> = vec![];
         let seal = |ctrl: &mut CryptoSession, plaintext: Vec<u8>| ctrl.seal(&plaintext).unwrap();
@@ -1469,6 +1428,7 @@ mod tests {
             &mut verified,
             &mut subscribed,
             None,
+            &mut trust_state,
         )
         .await
         .unwrap();
@@ -1499,6 +1459,7 @@ mod tests {
             &mut verified,
             &mut subscribed,
             None,
+            &mut trust_state,
         )
         .await
         .unwrap();
@@ -1512,78 +1473,6 @@ mod tests {
         assert_eq!(gl_resp["result"]["id"], CLI_PANE_ID);
     }
 
-    // ── 零信任 #1：totp-bind 信道绑定校验（概念 4-cli）──────────────────────────────
-    // 直接驱动 handle_control（不需 PTY）：用 host 本机 current_bind_tag 当 controller 发来的
-    // tag（两端同种子 + 同 transcript → 同 tag），断言有效 tag 解门控、坏 tag 拒绝。
-    #[tokio::test]
-    async fn totp_bind_unlocks_with_valid_tag_and_rejects_bad_tag() {
-        let (mut host_crypto, mut ctrl_crypto) = crypto_pair();
-        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
-        let totp = RemoteTotp::new();
-        // 本会话信道绑定 transcript（host 握手层算出；测试直接构造一个固定值）。
-        let transcript = build_bind_transcript(&[0x11u8; 32], &[0x22u8; 32]);
-
-        // 1) 有效 tag → verified + totp-result{ok:true}。
-        let good_tag = totp.current_bind_tag(&transcript);
-        let good_b64 = b64_encode(&good_tag);
-        let body = serde_json::to_vec(&SessionControl::TotpBind { tag: good_b64 }).unwrap();
-        let mut verified = false;
-        RemoteSession::handle_control(
-            &body,
-            &mut host_crypto,
-            &tx,
-            &totp,
-            &mut verified,
-            Some(&transcript),
-        )
-        .await
-        .unwrap();
-        assert!(
-            verified,
-            "valid totp-bind tag must unlock the control channel"
-        );
-        let out = drain(&mut rx);
-        assert_eq!(out.len(), 1);
-        match demux(&ctrl_crypto.open(&out[0]).unwrap()) {
-            Inbound::Control(b) => {
-                let sc: SessionControl = serde_json::from_slice(&b).unwrap();
-                assert_eq!(sc, SessionControl::TotpResult { ok: true });
-            }
-            other => panic!("expected Control totp-result, got {other:?}"),
-        }
-
-        // 2) 坏 tag（全 0）→ 仍未 verified + totp-result{ok:false}。
-        let bad_b64 = b64_encode(&[0u8; 32]);
-        let body = serde_json::to_vec(&SessionControl::TotpBind { tag: bad_b64 }).unwrap();
-        let mut verified2 = false;
-        RemoteSession::handle_control(
-            &body,
-            &mut host_crypto,
-            &tx,
-            &totp,
-            &mut verified2,
-            Some(&transcript),
-        )
-        .await
-        .unwrap();
-        assert!(!verified2, "invalid totp-bind tag must NOT unlock");
-        let out = drain(&mut rx);
-        assert_eq!(out.len(), 1);
-        match demux(&ctrl_crypto.open(&out[0]).unwrap()) {
-            Inbound::Control(b) => {
-                let sc: SessionControl = serde_json::from_slice(&b).unwrap();
-                assert_eq!(sc, SessionControl::TotpResult { ok: false });
-            }
-            other => panic!("expected Control totp-result, got {other:?}"),
-        }
-
-        // 3) transcript 缺失（None）→ 即便 tag 形式合法也判失败（防未握手即解门控）。
-        let good_b64 = b64_encode(&totp.current_bind_tag(&transcript));
-        let body = serde_json::to_vec(&SessionControl::TotpBind { tag: good_b64 }).unwrap();
-        let mut verified3 = false;
-        RemoteSession::handle_control(&body, &mut host_crypto, &tx, &totp, &mut verified3, None)
-            .await
-            .unwrap();
-        assert!(!verified3, "totp-bind without a bind transcript must fail");
-    }
+    // 注：totp-bind + trust-grant 13 个测试已迁至 `session_control::tests`（同一路径的
+    // 集中测试，本文件瘦身）。详细约束见那里。
 }

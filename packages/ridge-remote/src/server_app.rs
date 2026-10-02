@@ -34,11 +34,13 @@ use tokio::sync::oneshot;
 use crate::host::{HostError, RemoteHost, WsConn};
 use crate::serve::ServeState;
 
-/// 主路由 State：仅持有 `Arc<dyn RemoteHost>`。serve 的 handler 经
-/// `FromRef<AppCtx> for ServeState` 子状态提取拿到 serve 配置。
+/// 主路由 State：持有 `Arc<dyn RemoteHost>` + LAN trust-grant 缓存。serve 的 handler
+/// 经 `FromRef<AppCtx> for ServeState` 子状态提取拿到 serve 配置；LAN trust
+/// handler 经 `FromRef<AppCtx> for LanTrustCtx` 拿到完整 trust-grant 上下文。
 #[derive(Clone)]
-struct AppCtx {
-    host: Arc<dyn RemoteHost>,
+pub struct AppCtx {
+    pub host: Arc<dyn RemoteHost>,
+    pub lan_trust: Arc<crate::lan_trust::LanTrustState>,
 }
 
 impl FromRef<AppCtx> for ServeState {
@@ -47,6 +49,15 @@ impl FromRef<AppCtx> for ServeState {
             cfg: ctx.host.serve_cfg(),
             tls_enabled: ctx.host.tls_enabled(),
             enabled: ctx.host.remote_enabled(),
+        }
+    }
+}
+
+impl FromRef<AppCtx> for crate::lan_trust::LanTrustCtx {
+    fn from_ref(ctx: &AppCtx) -> Self {
+        crate::lan_trust::LanTrustCtx {
+            host: ctx.host.clone(),
+            state: ctx.lan_trust.clone(),
         }
     }
 }
@@ -134,8 +145,11 @@ const VERIFY_FAIL_MSG: &str = "验证失败，请稍后重试 / Verification fai
 
 /// 组装完整远控应用路由（泛型于宿主，State 已 apply）。调用方拿到 `Router<()>`
 /// 后可直接交 [`crate::server::serve_on`]。
-pub fn router(host: Arc<dyn RemoteHost>) -> Router<()> {
-    let ctx = AppCtx { host };
+///
+/// `lan_trust` 由调用方传入（生产 = `Arc::new(LanTrustState::new())`，每进程单例）；
+/// 测试可注入独立状态避免与其它测试并行干扰。
+pub fn router(host: Arc<dyn RemoteHost>, lan_trust: Arc<crate::lan_trust::LanTrustState>) -> Router<()> {
+    let ctx = AppCtx { host, lan_trust };
     let serve_state = ServeState::from_ref(&ctx);
 
     Router::new()
@@ -146,6 +160,17 @@ pub fn router(host: Arc<dyn RemoteHost>) -> Router<()> {
         .route("/verify", get(verify_handler_get).post(verify_handler_post))
         .route("/session", get(session_handler))
         .route("/file", get(file_handler))
+        // §7.4 LAN trust-grant（与云 0x12 CONTROL 腿同 grant_store 落点）：
+        //   /trust-grant     —— hello: 缓存 ctrl_pub + OsRng nonce
+        //   /trust-grant/proof —— 验签 prefix||nonce，签过即落 24h 信任窗
+        .route(
+            "/trust-grant",
+            post(crate::lan_trust::trust_hello_handler),
+        )
+        .route(
+            "/trust-grant/proof",
+            post(crate::lan_trust::trust_proof_handler),
+        )
         .route("/workspace/list", get(workspace_list_handler))
         .route("/workspace/switch", post(workspace_switch_handler))
         .route("/workspace/create", post(workspace_create_handler))
@@ -174,14 +199,17 @@ pub fn router(host: Arc<dyn RemoteHost>) -> Router<()> {
 
 /// 共享服务入口：装配路由并在调用方提供的（已绑定、非阻塞）listener 上 serve。
 /// TLS/bind 的多网卡证书与 fail-closed 决策留给调用方（桌面/rdg 各自不同）。
+///
+/// `lan_trust` 由调用方持有（每进程单例）；`router` 内部经 `Arc` clone 不耗资源。
 pub async fn run(
     host: Arc<dyn RemoteHost>,
+    lan_trust: Arc<crate::lan_trust::LanTrustState>,
     std_listener: std::net::TcpListener,
     tls_config: Option<RustlsConfig>,
     shutdown_rx: oneshot::Receiver<()>,
     require_tls: bool,
 ) -> Result<u16> {
-    let app = router(host);
+    let app = router(host, lan_trust);
     crate::server::serve_on(std_listener, app, tls_config, shutdown_rx, require_tls).await
 }
 

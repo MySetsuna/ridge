@@ -81,6 +81,7 @@ pub async fn run(requested_port: u16) -> Result<()> {
     let host: Arc<dyn RemoteHost> = Arc::new(KernelHost {
         endpoint,
         totp: totp.clone(),
+        totp_throttle: Arc::new(ridge_remote::auth::VerifyThrottle::new()),
         sessions: SessionStore::new(),
         port: actual_port,
         lan_ip: lan_ip.clone(),
@@ -116,7 +117,14 @@ pub async fn run(requested_port: u16) -> Result<()> {
         );
     }
 
-    let server = ridge_remote::server_app::run(host, listener, tls_config, shutdown_rx, true);
+    let server = ridge_remote::server_app::run(
+        host,
+        Arc::new(ridge_remote::lan_trust::LanTrustState::new()),
+        listener,
+        tls_config,
+        shutdown_rx,
+        true,
+    );
     tokio::pin!(server);
     let result = tokio::select! {
         result = &mut server => result.map(|_| ()),

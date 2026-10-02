@@ -39,6 +39,7 @@ mod rpc;
 mod rtc;
 mod rtp1_kernel_client;
 mod session;
+mod session_control;
 mod signaling;
 mod totp;
 mod tui;

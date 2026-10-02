@@ -17,7 +17,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::{Signer, Signature, SigningKey, Verifier, VerifyingKey};
 
 /// Ed25519 私钥种子长度（32 字节）。
 pub const SEED_LEN: usize = 32;
@@ -86,6 +86,21 @@ impl DeviceIdentity {
     pub fn fingerprint(&self) -> String {
         fingerprint_of(&self.public_bytes())
     }
+}
+
+/// 验签 Ed25519 消息（controller 信任端用，或 headless host 在 trust-grant 协议里
+/// 校验对端 proof）。`false` 包裹所有内部错（`VerifyingKey::from_bytes` 失败 / 签名
+/// 长度错），调用方免捕获。常量时间语义由 `ed25519-dalek::Verifier::verify` 提供。
+pub fn verify(
+    pub_bytes: &[u8; PUBLIC_KEY_LEN],
+    msg: &[u8],
+    sig_bytes: &[u8; SIGNATURE_LEN],
+) -> bool {
+    let Ok(vk) = VerifyingKey::from_bytes(pub_bytes) else {
+        return false;
+    };
+    let sig = Signature::from_bytes(sig_bytes);
+    vk.verify(msg, &sig).is_ok()
 }
 
 /// 32 字节公钥 → 指纹串（与 `DeviceIdentity::fingerprint` 同一算法；独立函数便于
@@ -382,6 +397,40 @@ mod tests {
         std::fs::write(&path, b"\x00\x01\x02").unwrap();
         assert!(load_seed_at(&path).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── verify() 助手（trust-grant 协议 §7.4 验签用）─────────────────────
+
+    #[test]
+    fn verify_accepts_valid_signature() {
+        let id = DeviceIdentity::from_seed(&[10u8; SEED_LEN]);
+        let msg = b"ridge-totp-trust-v1\x00nonce-bytes-here";
+        let sig = id.sign(msg);
+        assert!(
+            verify(&id.public_bytes(), msg, &sig),
+            "valid sig must verify"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_tampered_message() {
+        let id = DeviceIdentity::from_seed(&[11u8; SEED_LEN]);
+        let sig = id.sign(b"original");
+        assert!(
+            !verify(&id.public_bytes(), b"tampered", &sig),
+            "msg 变更必拒"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_wrong_pubkey() {
+        let id = DeviceIdentity::from_seed(&[12u8; SEED_LEN]);
+        let other = DeviceIdentity::from_seed(&[13u8; SEED_LEN]);
+        let sig = id.sign(b"msg");
+        assert!(
+            !verify(&other.public_bytes(), b"msg", &sig),
+            "它设备公钥不得验过本设备签名"
+        );
     }
 
     #[cfg(windows)]

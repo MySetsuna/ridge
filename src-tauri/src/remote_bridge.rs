@@ -453,8 +453,15 @@ async fn run_remote_server(
     let _ = port_tx.send(Some(port));
     // §sessions: serve_on captures each client's real peer IP via ConnectInfo (for
     // the session list + blacklist). TLS/bind fail-closed already decided above.
-    if let Err(e) =
-        ridge_remote::server_app::run(host, std_listener, tls_config, shutdown_rx, true).await
+    if let Err(e) = ridge_remote::server_app::run(
+        host,
+        Arc::new(ridge_remote::lan_trust::LanTrustState::new()),
+        std_listener,
+        tls_config,
+        shutdown_rx,
+        true,
+    )
+    .await
     {
         tracing::error!(target: "ridge::remote", error = %e, "remote server stopped");
     }

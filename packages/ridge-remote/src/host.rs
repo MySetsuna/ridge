@@ -106,6 +106,22 @@ pub trait HostAuth {
     /// 令牌是否有效且严格满足 设备绑定：设备绑定令牌必须出示同一设备 id，
     /// 空设备不能把设备绑定令牌降级为 IP 绑定（控制面用，审计 L-3）。
     fn validate_token_device_strict(&self, token: &str, device_id: &str, ip: &str) -> bool;
+
+    // ── §7.4 trust-grant（默认 no-op；CLI/KernelHost 在 [host.rs::HostAuth] 下实现，
+    //   桌面 `RemoteAuth` 直接转发到 `grant_store`，共享同一存储与 TTL）──────────
+
+    /// 该 32B Ed25519 controller pub 是否在 24h 信任窗内（§7.4 trust-grant）。
+    /// 默认 `false`（无 grant 存储的宿主如老桌面实现）。
+    fn totp_trust_check(&self, ctrl_pub: &[u8]) -> bool {
+        let _ = ctrl_pub;
+        false
+    }
+
+    /// 记录/刷新 `(this_ctrl_pub)` 信任时间戳为「当前时刻」（幂等）。
+    /// 默认 no-op。
+    fn totp_trust_record(&self, ctrl_pub: &[u8]) {
+        let _ = ctrl_pub;
+    }
 }
 
 /// 工作区控制面操作（`/workspace/*` HTTP 路由）+ `/file` 允许根。

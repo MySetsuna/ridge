@@ -30,6 +30,10 @@ pub mod server;
 /// 泛型于 `Arc<dyn RemoteHost>`。从桌面 `server.rs` 下沉，供三形态共用。
 pub mod server_app;
 pub mod tls;
+/// LAN §7.4 trust-grant HTTP 路由（POST /trust-grant + POST /trust-grant/proof）：
+/// 与云 0x12 CONTROL 腿同 `grant_store` 落点（24h 窗），LAN 无 bindTranscript，
+/// 签名消息退化为 `prefix || nonce`。
+pub mod lan_trust;
 /// UA→UI 分叉判定（桌面 SPA vs 移动 SPA）的 SSOT，供局域网远控服务端与公网远控
 /// 中继共用，避免分叉规则漂移。
 pub mod ua;

@@ -55,6 +55,8 @@ rust-embed = { version = "8", optional = true, default-features = false, feature
 # 端到端 serve 钉（tests/ua_fork_serve.rs）需要多线程 runtime + `#[tokio::test]`；
 # HTTP 请求是手写的 TCP，不引第三方 client。
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "net", "io-util"] }
+# `tower::ServiceExt::oneshot` —— 单测驱动 axum Router 无需 bind 真端口
+tower = { version = "0.5", features = ["util"] }
 
 [features]
 default = []

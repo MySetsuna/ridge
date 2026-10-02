@@ -26,6 +26,17 @@ pub enum SessionControl {
     TotpBind { tag: String },
     /// host 回二次验证结果。
     TotpResult { ok: bool },
+    /// §7.4 trust-grant 第 1 帧：controller 上报 Ed25519 公钥（base64 32B）。
+    /// Rust 字段名 `r#pub`（`pub` 是关键字）；JSON 字段名为 `"pub"`（serde tag 枚举下字段
+    /// 名直出，加 raw ident 即可保住线形与桌面 cloudHostBridge.ts 字节对齐）。
+    TotpTrustHello { r#pub: String },
+    /// §7.4 trust-grant 第 2 帧：host 下发 32B nonce（base64）。
+    TotpTrustChallenge { nonce: String },
+    /// §7.4 trust-grant 第 3 帧：controller 上发 Ed25519 签名（base64 64B），
+    /// 签名消息 `utf8("ridge-totp-trust-v1") || nonce(32B) || bindTranscript?`。
+    TotpTrustProof { sig: String },
+    /// §7.4 trust-grant 第 4 帧：host 回报 grant 查询结果。
+    TotpTrustResult { trusted: bool },
 }
 
 #[cfg(test)]
@@ -60,5 +71,48 @@ mod tests {
         let back: SessionControl =
             serde_json::from_str(r#"{"t":"totp-result","ok":false}"#).unwrap();
         assert_eq!(back, SessionControl::TotpResult { ok: false });
+    }
+
+    // ── §7.4 trust-grant 4 帧契约锁（与桌面 cloudHostBridge.ts 字节对齐）──
+
+    #[test]
+    fn trust_hello_parses_contract_shape() {
+        let m: SessionControl =
+            serde_json::from_str(r#"{"t":"totp-trust-hello","pub":"AAAA"}"#).unwrap();
+        assert_eq!(
+            m,
+            SessionControl::TotpTrustHello {
+                r#pub: "AAAA".into()
+            }
+        );
+    }
+
+    #[test]
+    fn trust_challenge_serializes_contract_shape() {
+        let json = serde_json::to_string(&SessionControl::TotpTrustChallenge {
+            nonce: "BBBB".into(),
+        })
+        .unwrap();
+        assert!(json.contains("\"t\":\"totp-trust-challenge\""), "got: {json}");
+        assert!(json.contains("\"nonce\":\"BBBB\""), "got: {json}");
+    }
+
+    #[test]
+    fn trust_proof_roundtrips() {
+        let back: SessionControl =
+            serde_json::from_str(r#"{"t":"totp-trust-proof","sig":"CCCC"}"#).unwrap();
+        assert_eq!(
+            back,
+            SessionControl::TotpTrustProof {
+                sig: "CCCC".into()
+            }
+        );
+    }
+
+    #[test]
+    fn trust_result_roundtrips() {
+        let back: SessionControl =
+            serde_json::from_str(r#"{"t":"totp-trust-result","trusted":true}"#).unwrap();
+        assert_eq!(back, SessionControl::TotpTrustResult { trusted: true });
     }
 }

@@ -46,10 +46,46 @@ fn decrypt(blob: &[u8]) -> Option<Vec<u8>> {
 
 // ── 路径与文件名 ─────────────────────────────────────────────────────────────
 
+/// 跨函数共享的 grants 目录覆盖值（见 [`grants_dir`] 与 [`set_grants_dir_for_tests`]）。
+static GRANTS_DIR_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<std::path::PathBuf>>> =
+    std::sync::OnceLock::new();
+
 /// grants 目录（不保证已创建；`write_grants` 会 `create_dir_all`）。
+///
+/// **优先级**（自上而下）：
+/// 1. 运行时通过 `set_grants_dir_for_tests(dir)` 注入的 `OnceLock<PathBuf>`——跨线程
+///    共享、tokio `#[tokio::test]` 多线程 runtime 下亦可见，专门给单测隔离用。
+/// 2. 环境变量 `RIDGE_GRANTS_DIR`（非空时）——保留兼容 shell 注入场景。
+/// 3. 默认 `ProjectDirs("ridge").config_dir().join("grants")`。
 fn grants_dir() -> Option<std::path::PathBuf> {
+    if let Some(p) = GRANTS_DIR_OVERRIDE
+        .get()
+        .and_then(|m| m.lock().ok())
+        .and_then(|g| g.clone())
+    {
+        return Some(p);
+    }
+    if let Ok(custom) = std::env::var("RIDGE_GRANTS_DIR") {
+        if !custom.is_empty() {
+            return Some(std::path::PathBuf::from(custom));
+        }
+    }
     let dirs = directories::ProjectDirs::from("", "", "ridge")?;
     Some(dirs.config_dir().join("grants"))
+}
+
+/// **测试/注入专用**：把全局 grants 目录覆盖到指定路径。后续所有 `check / record /
+/// revoke_all` 都走该路径而不触 `ProjectDirs("ridge")` 真实配置。**仅供单测调用**。
+///
+/// 返回旧 override（若有）以便恢复；首次注入返回 `None`。
+pub fn set_grants_dir_for_tests(
+    dir: std::path::PathBuf,
+) -> Option<std::path::PathBuf> {
+    let cell = GRANTS_DIR_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None));
+    let mut g = cell.lock().ok()?;
+    let prev = g.take();
+    *g = Some(dir);
+    prev
 }
 
 /// 身份 → 文件名：`hex(sha256(identity)[..8])` + `.grants`。
@@ -165,6 +201,22 @@ pub fn record(identity: &str, ctrl_pub: &[u8]) {
 pub fn revoke_all(identity: &str) {
     let Some(dir) = grants_dir() else { return };
     revoke_all_in(&dir, identity);
+}
+
+/// **测试/注入专用**：在指定目录上跑 check / record / revoke_all，不写默认
+/// `ProjectDirs("ridge")/grants/`。常用于单测隔离（不污染真实配置目录、不被其它
+/// 测试并行干扰）。三个公开的 `*_in_dir` 名字暴露内部 `_in` 实现，调用方应只
+/// 用于测试或自定义路径需求；正常路径请用无后缀的 `check/record/revoke_all`。
+pub fn check_in_dir(dir: &Path, identity: &str, ctrl_pub: &[u8]) -> bool {
+    check_in(dir, identity, ctrl_pub)
+}
+
+pub fn record_in_dir(dir: &Path, identity: &str, ctrl_pub: &[u8]) {
+    record_in(dir, identity, ctrl_pub);
+}
+
+pub fn revoke_all_in_dir(dir: &Path, identity: &str) {
+    revoke_all_in(dir, identity);
 }
 
 // ── 可注入目录的实现（供单测隔离）──────────────────────────────────────────────

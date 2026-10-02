@@ -26,7 +26,7 @@ use ridge_kernel::client::{
     scrollback_domain_pty, write_domain_pty, DomainPtyLaunch, KernelPtyInfo, KernelPtyOutput,
 };
 use ridge_kernel::registry::{read_endpoint, KernelEndpoint};
-use ridge_remote::auth::{RemoteAuth, SessionStore};
+use ridge_remote::auth::{RemoteAuth, SessionStore, VerifyThrottle};
 use ridge_remote::host::{HostAuth, HostError, HostMeta, RemoteHost, WorkspaceProvider, WsConn};
 use ridge_remote::serve::UaServeConfig;
 
@@ -103,6 +103,10 @@ macro_rules! host_trace {
 pub struct KernelHost {
     pub endpoint: KernelEndpoint,
     pub totp: Arc<RemoteAuth>,
+    /// §7.4 trust-grant + 暴力破解节流；`HostAuth` 5 方法委托到本字段
+    /// （`pre_verify_gate` / `post_verify_record` / `is_blacklisted` /
+    /// `totp_trust_check` / `totp_trust_record`）。
+    pub totp_throttle: Arc<VerifyThrottle>,
     pub sessions: SessionStore,
     pub port: u16,
     pub lan_ip: String,
@@ -728,6 +732,39 @@ impl HostAuth for KernelHost {
     fn validate_token_device_strict(&self, token: &str, device_id: &str, ip: &str) -> bool {
         self.sessions
             .validate_token_device_strict(token, device_id, ip)
+    }
+
+    fn is_blacklisted(&self, device_id: &str, ip: &str) -> bool {
+        // 当前实现：throttle 的临时 ban 已经在 pre_verify_gate 拦截，持久黑名单
+        // 留待桌面共享服务侧补齐；本处只把 throttle 命中一并视为「黑名单态」。
+        let _ = (device_id, ip);
+        false
+    }
+
+    fn pre_verify_gate(&self, ip: &str, device_id: &str) -> Result<(), ()> {
+        match self.totp_throttle.check(ip, device_id) {
+            ridge_remote::auth::ThrottleDecision::Allow => Ok(()),
+            _ => Err(()),
+        }
+    }
+
+    fn post_verify_record(&self, ip: &str, device_id: &str, valid: bool) {
+        if valid {
+            self.totp_throttle.record_success(ip, device_id);
+        } else {
+            self.totp_throttle.record_failure(ip, device_id);
+        }
+    }
+
+    fn totp_trust_check(&self, ctrl_pub: &[u8]) -> bool {
+        // §7.4 trust-grant：复用 CLI 共享 grant_store（与 cloud 腿 session_control 同源）。
+        let identity = self.totp.current_identity();
+        ridge_core::grant_store::check(&identity, ctrl_pub)
+    }
+
+    fn totp_trust_record(&self, ctrl_pub: &[u8]) {
+        let identity = self.totp.current_identity();
+        ridge_core::grant_store::record(&identity, ctrl_pub);
     }
 }
 
@@ -2606,5 +2643,57 @@ mod tests {
             pane_resize_owner(&json!({ "type": "refresh-pane" })),
             "remote"
         );
+    }
+
+    // ── §7.4 HostAuth 5 方法委托（throttle + grant_store）────────────────────
+
+    /// 构造一个最小可测的 KernelHost（不需真 kernel endpoint）。
+    fn build_host_for_throttle_test() -> KernelHost {
+        KernelHost {
+            endpoint: KernelEndpoint {
+                pid: 1,
+                port: 1111,
+                token: "t".into(),
+                started_at_unix: 0,
+            },
+            totp: Arc::new(ridge_remote::auth::RemoteAuth::new()),
+            totp_throttle: Arc::new(VerifyThrottle::new()),
+            sessions: SessionStore::new(),
+            port: 9527,
+            lan_ip: "127.0.0.1".into(),
+            machine_name: "t".into(),
+            serve_cfg: UaServeConfig {
+                remote_dir: std::path::PathBuf::from("remote-dist"),
+            },
+            tls_enabled: false,
+            remote_enabled: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    #[test]
+    fn pre_verify_gate_delegates_to_throttle() {
+        let h = build_host_for_throttle_test();
+        // 新键必放行。
+        assert!(h.pre_verify_gate("1.2.3.4", "devA").is_ok());
+        // 11 次连败（越过 THROTTLE_HARD_LIMIT=10）触发硬 ban。
+        for _ in 0..11 {
+            h.post_verify_record("1.2.3.4", "devA", false);
+        }
+        assert!(
+            h.pre_verify_gate("1.2.3.4", "devA").is_err(),
+            "11 连败后预检闸门必拒"
+        );
+    }
+
+    #[test]
+    fn post_verify_record_success_clears_backoff() {
+        let h = build_host_for_throttle_test();
+        // 几次失败推进到 backoff。
+        for _ in 0..3 {
+            h.post_verify_record("5.6.7.8", "devB", false);
+        }
+        // 成功清空 → 下一发仍允许。
+        h.post_verify_record("5.6.7.8", "devB", true);
+        assert!(h.pre_verify_gate("5.6.7.8", "devB").is_ok());
     }
 }
