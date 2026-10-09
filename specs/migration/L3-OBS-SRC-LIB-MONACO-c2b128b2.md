@@ -10,9 +10,11 @@ confidence: INFERRED
 observed_source_hash: 818be4df993b9bce2ea80f7e8c6e71eff235432927f95f50ff567a75e0538727
 code_targets:
   - src/lib/monaco/ridgeTheme.ts
+  - src/lib/monaco/workers.ts
 public_interface:
-  - "export function applyRidgeMonacoTheme(themeId: string): void"
   - "export function ridgeMonacoThemeId(themeId: string): string"
+  - "export function applyRidgeMonacoTheme(themeId: string, themeType?: 'dark' | 'light'): void"
+  - "export function setupMonacoWorkers(): void"
 ---
 
 # src/lib/monaco module

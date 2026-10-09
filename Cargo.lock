@@ -5591,6 +5591,7 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest 0.12.28",
+ "ridge-acp",
  "ridge-core",
  "ridge-kernel",
  "ridge-mcp",
@@ -5622,6 +5623,20 @@ dependencies = [
  "uuid",
  "walkdir",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "ridge-acp"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "ridge-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

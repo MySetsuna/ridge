@@ -10,35 +10,15 @@ confidence: INFERRED
 observed_source_hash: 818be4df993b9bce2ea80f7e8c6e71eff235432927f95f50ff567a75e0538727
 code_targets:
   - src/remote/lib/remoteQueries.ts
-test_targets:
-  - src/remote/lib/clipboard.test.ts
-  - src/remote/lib/cloudRemote.test.ts
-  - src/remote/lib/generationGuard.test.ts
-  - src/remote/lib/keyboardOffset.test.ts
-  - src/remote/lib/listenerCleanup.test.ts
-  - src/remote/lib/paneFeedScheduler.test.ts
-  - src/remote/lib/paneLifecycle.test.ts
-  - src/remote/lib/paneSwitchBuffer.test.ts
-  - src/remote/lib/remoteGitActions.test.ts
-  - src/remote/lib/RemoteGitPanel.test.ts
-  - src/remote/lib/remoteQueries.test.ts
-  - src/remote/lib/RemoteSidebar.test.ts
-  - src/remote/lib/scrollbackWorker.test.ts
-  - src/remote/lib/sidebarProvider.test.ts
-  - src/remote/lib/SidebarTeamRoster.test.ts
-  - src/remote/lib/teamRosterScope.test.ts
-  - src/remote/lib/TerminalCanvas.test.ts
-  - src/remote/lib/theme.test.ts
-  - src/remote/lib/treeState.test.ts
-  - src/remote/lib/WorkspaceTree.test.ts
 public_interface:
   - "export async function confirmedWorkspaceTarget( switchWorkspace:
     (workspaceId: string)"
   - "export const remoteSidebarQueryPrefix = (sessionId: number, scope?:
     RemoteSidebarScope) =>"
   - "export function fetchRemoteAgentHistory( link: RemoteLink, queryClient:
-    RemoteQueryClientLike | undefined, sessionId: number, limit = 24, signal?:
-    AbortSignal, offset = 0, query = '', ): Promise<AgentHistoryReply[]>"
+    RemoteQueryClientLike | undefined, sessionId: number, workspaceId: string,
+    projectPaths: readonly string[], limit = 24, signal?: AbortSignal, offset =
+    0, query = '', ): Promise<AgentHistoryReply[]>"
   - "export function fetchRemoteTeamRoster( link: RemoteLink, queryClient:
     RemoteQueryClientLike | undefined, sessionId: number, workspaceId?: string,
     signal?: AbortSignal, ): Promise<RemoteTeamRosterSnapshot>"
@@ -50,6 +30,10 @@ public_interface:
   - "export function requestWorkspaceSnapshot( link: RemoteLink, signal?:
     AbortSignal, timeoutMs = REMOTE_QUERY_TIMEOUT_MS, ):
     Promise<WorkspaceInfo[]>"
+  - export interface RemoteQueryClientLike
+  - export interface RemoteSidebarScope
+  - export interface RemoteTeamRosterSnapshot
+  - export type RemoteCapabilities
   - export interface RemoteQueryClientLike
   - export interface RemoteSidebarScope
   - export interface RemoteTeamRosterSnapshot

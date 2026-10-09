@@ -1,0 +1,19 @@
+[package]
+name = "soak-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "soak-harness"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util", "net", "time", "sync"] }
+ureq = { version = "2", default-features = false, features = ["json"] }
+uuid = { version = "1", features = ["v4"] }

@@ -193,6 +193,159 @@ async fn post_json(
 
 // ── 7 个测试 ────────────────────────────────────────────────────────────────
 
+/// 第 8 测试（v0.1.91 harden）：错误签名不消耗 nonce —— peek→verify→take 顺序保证
+/// 合法重试不被同一 nonce 拒。lan_trust_proof_with_bad_sig_returns_false_and_no_record
+/// 单独跑时验证 sig=false + 不 record，但本测试进一步断言缓存条目仍在。
+#[tokio::test]
+async fn lan_trust_proof_bad_sig_does_not_consume_nonce_for_retry() {
+    let host = Arc::new(MockHost::new());
+    let state = Arc::new(LanTrustState::new());
+    let app = simple_router(host.clone(), state.clone());
+    let id = DeviceIdentity::from_seed(&[10u8; 32]);
+    let pub_bytes = id.public_bytes();
+
+    let (_, hello) = post_json(
+        app.clone(),
+        "/trust-grant",
+        json!({ "pubKey": pub_b64(&pub_bytes) }),
+        true,
+    )
+    .await;
+    let nonce: [u8; NONCE_LEN] = base64::engine::general_purpose::STANDARD
+        .decode(hello.get("nonce").and_then(Value::as_str).unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+
+    // 错签 —— 不应消耗 nonce。
+    let other = DeviceIdentity::from_seed(&[11u8; 32]);
+    let mut msg = Vec::with_capacity(TRUST_SIGN_PREFIX.len() + NONCE_LEN);
+    msg.extend_from_slice(TRUST_SIGN_PREFIX);
+    msg.extend_from_slice(&nonce);
+    let bad_sig = other.sign(&msg);
+
+    let (_, body_bad) = post_json(
+        app.clone(),
+        "/trust-grant/proof",
+        json!({ "sig": sig_b64(&bad_sig) }),
+        true,
+    )
+    .await;
+    assert_eq!(body_bad.get("trusted").and_then(Value::as_bool), Some(false));
+    // 缓存条目仍在 → 可被合法 retry 复用
+    assert_eq!(state.len(), 1);
+    assert_eq!(host.trust_record_calls.load(Ordering::Relaxed), 0);
+
+    // 用正确的密钥重试同一 nonce —— 必须 trusted:true
+    let good_sig = id.sign(&msg);
+    let (_, body_good) = post_json(
+        app,
+        "/trust-grant/proof",
+        json!({ "sig": sig_b64(&good_sig) }),
+        true,
+    )
+    .await;
+    assert_eq!(body_good.get("trusted").and_then(Value::as_bool), Some(true));
+    assert_eq!(host.trust_record_calls.load(Ordering::Relaxed), 1);
+    // 合法 proof 后 nonce 才被消费
+    assert_eq!(state.len(), 0);
+}
+
+/// 第 9 测试（v0.1.91 harden）：错误 device（不匹配 hello 时写入的 (device_id, ip)）
+/// 不命中缓存 → 400 "no pending hello"。
+#[tokio::test]
+async fn lan_trust_proof_with_wrong_device_returns_400() {
+    let host = Arc::new(MockHost::new());
+    let state = Arc::new(LanTrustState::new());
+    let app = simple_router(host, state);
+    let id = DeviceIdentity::from_seed(&[20u8; 32]);
+    let pub_bytes = id.public_bytes();
+
+    // hello 用 TEST_DEVICE 写入
+    let (_, hello) = post_json(
+        app.clone(),
+        "/trust-grant",
+        json!({ "pubKey": pub_b64(&pub_bytes) }),
+        true,
+    )
+    .await;
+    let nonce: [u8; NONCE_LEN] = base64::engine::general_purpose::STANDARD
+        .decode(hello.get("nonce").and_then(Value::as_str).unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+
+    // proof 用错 device 头：lookup ("", ip) 必 miss
+    let builder = Request::builder()
+        .method("POST")
+        .uri("/trust-grant/proof")
+        .header("content-type", "application/json")
+        .header(AUTHORIZATION, HeaderValue::from_static("Bearer test-token"))
+        // 故意不发 x-ridge-device → device_id=""
+        .extension(ConnectInfo(test_ip()));
+    let mut msg = Vec::with_capacity(TRUST_SIGN_PREFIX.len() + NONCE_LEN);
+    msg.extend_from_slice(TRUST_SIGN_PREFIX);
+    msg.extend_from_slice(&nonce);
+    let sig = id.sign(&msg);
+    let req = builder
+        .body(Body::from(
+            serde_json::to_vec(&json!({ "sig": sig_b64(&sig) })).unwrap(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+/// 第 10 测试（v0.1.91 harden）：hello/proof 60s TTL —— 老 entry 在新请求中被 cleanup_expired
+/// 清掉，致后续 proof 视作 "no pending hello"。
+#[tokio::test]
+async fn lan_trust_proof_after_61s_returns_400() {
+    let host = Arc::new(MockHost::new());
+    let state = Arc::new(LanTrustState::new());
+    let app = simple_router(host, state.clone());
+    let id = DeviceIdentity::from_seed(&[30u8; 32]);
+    let pub_bytes = id.public_bytes();
+
+    let (_, hello) = post_json(
+        app.clone(),
+        "/trust-grant",
+        json!({ "pubKey": pub_b64(&pub_bytes) }),
+        true,
+    )
+    .await;
+    let nonce: [u8; NONCE_LEN] = base64::engine::general_purpose::STANDARD
+        .decode(hello.get("nonce").and_then(Value::as_str).unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+
+    // 直接插一条 created=0 的"老" entry —— 下次 peek/take 触发 cleanup_expired(>60s) 必清。
+    use crate::lan_trust::LanTrustEntry;
+    let stale_entry = LanTrustEntry {
+        ctrl_pub: pub_bytes,
+        nonce,
+        created: 0,
+    };
+    let mut inner = state.inner.lock();
+    let key = (TEST_DEVICE.to_string(), "10.0.0.42".to_string());
+    inner.insert(key, stale_entry);
+    drop(inner);
+
+    // 再做 proof → 缓存必已被 cleanup_expired 清掉
+    let mut msg = Vec::with_capacity(TRUST_SIGN_PREFIX.len() + NONCE_LEN);
+    msg.extend_from_slice(TRUST_SIGN_PREFIX);
+    msg.extend_from_slice(&nonce);
+    let sig = id.sign(&msg);
+    let (status, _) = post_json(
+        app,
+        "/trust-grant/proof",
+        json!({ "sig": sig_b64(&sig) }),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn lan_trust_grant_returns_anon_pub() {
     let host = Arc::new(MockHost::new());

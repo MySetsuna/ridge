@@ -3,6 +3,9 @@
   import '../app.css';
   import { browser, dev } from '$app/environment';
   import DevIssueDialog from '$lib/components/DevIssueDialog.svelte';
+  import DefaultWiredAgentChat from '$lib/agent-chat/DefaultWiredAgentChat.svelte';
+  let communionOpen = $state(false);
+  let communionMounted = $state(false);
   import HitlApprovalModal from '$lib/teammate/HitlApprovalModal.svelte';
   import { setTransport } from '$lib/transport';
   import { TauriDataProvider } from '$lib/transport/tauri';
@@ -45,7 +48,6 @@
   // sessionStorage 跨子域↔主域同标签往返保留）。第二次仍失败即停在子域显式报错，
   // 不再无限回跳（apex⇄子域死循环的客户端一端）。connected 时清零。
   const TENANT_BOUNCE_KEY = 'ridge_tenant_login_bounce';
-  const TOTP_CACHE_KEY = 'ridge_totp_code';
   const WEB_REMOTE_READY_TIMEOUT_MS = 10_000;
 
   // Auth/connect state for the web-remote gate. `ready` blocks the page outlet
@@ -176,43 +178,27 @@
           errorMsg = '';
           loading = false;
           // §7.4 信任授权优先：若 host 已记录本机控制器公钥（受信设备），静默握手通过即
-          // 跳过 TOTP（host 端经握手已打开 §4 verified 门）。优先级：信任授权 → 缓存码 → 手输。
-          // 旧 host 不识别 totp-trust-hello → 永不回 challenge → 10s 超时 resolve(false)，
-          // 无缝退化到下面的缓存码/手输流程（不会卡死）。
-          const fallbackToTotp = () => {
-            // §totp-cache: 先试 sessionStorage 中的已验证 code（页面刷新后自动重提，
-            // 免用户再次输入）。验证失败/过期则清缓存、显示门控输入框。
-            let cached: string | null = null;
-            try { cached = sessionStorage.getItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
-            if (cached && handle) {
-              handle.verifyTotp(cached).then((ok) => {
-                if (ok) {
-                  ready = true;
-                } else {
-                  try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
-                  ready = false;
-                  phase = 'need-totp';
-                }
-              }).catch(() => {
-                try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
-                ready = false;
-                phase = 'need-totp';
-              });
-            } else {
-              ready = false;
-              phase = 'need-totp';
-            }
-          };
+          // 跳过 TOTP（host 端经握手已打开 §4 verified 门）。trust-grant 不可用 → 直接
+          // 提示手输 TOTP；不再缓存 6 位 code（§v0.1.91：TOTP 仅首次认证 / grant 失效
+          // 后重新认证，sessionStorage 6 位 OTP 是把 RFC 6238 30s 寿命延伸到跨刷新）。
           if (handle) {
             handle.tryTrustGrant().then((trusted) => {
               if (trusted) {
                 ready = true;
               } else {
-                fallbackToTotp();
+                // trust-grant 不可用 → 落到手动 TOTP 门控。host 不识别 trust-grant
+                // 或 grant 已撤销都会到这里。
+                ready = false;
+                phase = 'need-totp';
               }
-            }).catch(() => fallbackToTotp());
+            }).catch(() => {
+              // trust-grant 异常 → 同样落到手动 TOTP。
+              ready = false;
+              phase = 'need-totp';
+            });
           } else {
-            fallbackToTotp();
+            ready = false;
+            phase = 'need-totp';
           }
         } else if (s === 'error') {
           phase = 'error';
@@ -405,6 +391,10 @@
 
   // §4 controller 端 TOTP 提交：把 6 位 code 经 CONTROL 通道发给 host 验证；
   // ok → 标记 ready（放行桌面 UI）；fail/超时 → 错误提示 + 允许重试。
+  // §v0.1.91：成功路径不再写 sessionStorage —— 信任授权是主恢复路径，TOTP 仅
+  // 用于首次认证或 grant 失效后的重新认证；缓存 6 位 code 等于把 RFC 6238 30s
+  // 寿命延长到跨刷新，破坏 zero-trust 边界。grant 重新建立后会回到 trust-grant
+  // 静默握手，无需此缓存。
   function submitTotp() {
     const numeric = code.replace(/\D/g, '').slice(0, 6);
     if (numeric.length < 6 || loading || !cloudHandle) return;
@@ -417,17 +407,14 @@
         if (ok) {
           code = '';
           ready = true;
-          try { sessionStorage.setItem(TOTP_CACHE_KEY, numeric); } catch { /* ignore */ }
         } else {
           code = '';
-          try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
           errorMsg = tr('main.totpGateErrInvalid');
         }
       })
       .catch(() => {
         loading = false;
         code = '';
-        try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
         errorMsg = tr('main.totpGateErrNetwork');
       });
   }
@@ -508,11 +495,17 @@
 
 <!-- Domain Zero / D2：HITL 人类中间审批模态（全局高优先级覆盖层）。无待审批时不渲染。 -->
 {#if browser && !WEB_REMOTE && !editorWindow}
+  <button class="communion-toggle" onclick={() => { communionMounted = true; communionOpen = !communionOpen; }} aria-expanded={communionOpen}>Agent Communion</button>
+  {#if communionMounted}<aside class="communion-sidebar" class:hidden={!communionOpen} aria-label="Agent Communion"><button class="communion-close" onclick={() => communionOpen = false} aria-label="Close Agent Communion">×</button><DefaultWiredAgentChat /></aside>{/if}
   <HitlApprovalModal />
 {/if}
 </QueryClientProvider>
 
 <style>
+  .communion-toggle { position:fixed; bottom:12px; right:12px; z-index:90; padding:7px 10px; border:1px solid var(--rg-border); border-radius:6px; background:var(--rg-surface); }
+  .communion-sidebar { position:fixed; right:0; top:0; bottom:0; width:min(460px, 96vw); z-index:100; border-left:1px solid var(--rg-border); box-shadow:-8px 0 24px #0003; padding-top:28px; background:var(--rg-bg); }
+  .communion-sidebar.hidden { display:none; }
+  .communion-close { position:absolute; right:10px; top:2px; font-size:20px; }
   .wr-gate { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; background: var(--rg-bg, #0d1117); color: var(--rg-fg, #e6edf3); }
   .wr-gate h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
   .wr-sub { color: var(--rg-fg-muted, #8b949e); font-size: 14px; margin-bottom: 24px; text-align: center; }

@@ -1,3 +1,4 @@
+mod bridge;
 mod commands;
 mod db;
 mod deep_root;
@@ -323,6 +324,12 @@ pub fn run() {
         // 进程退出前可能跑不完。
         .on_window_event(handle_window_event)
         .manage(app_state)
+        // M2.1 §2 NS-2: the ACP bridge state — holds at most one
+        // `Arc<AgentSession>` + one forwarder task handle. Bridge holds no
+        // business state; AgentSession is the single source of truth.
+        .manage(bridge::acp_bridge::AcpBridgeState::default())
+        // M5: PlanStoreState — single source of truth for plan/task state
+        .manage(bridge::acp_bridge::PlanStoreState::default())
         .setup(move |app| setup_app(app, teammate_state, event_rx))
         .invoke_handler(tauri::generate_handler![
             git::get_git_graph,
@@ -594,6 +601,38 @@ pub fn run() {
             deep_root::enter_deep_root_mode,
             deep_root::restore_from_deep_root,
             deep_root::set_cloud_remote_active,
+            // M2.1 §2 NS-2 Tauri bridge — ridge-acp ↔ Desktop renderer.
+            bridge::acp_bridge::acp_open_session,
+            bridge::acp_bridge::acp_prompt,
+            bridge::acp_bridge::acp_approve_tool,
+            bridge::acp_bridge::acp_cancel,
+            bridge::acp_bridge::acp_close_session,
+            bridge::acp_bridge::acp_session_status,
+            bridge::acp_bridge::acp_session_snapshot,
+            bridge::acp_bridge::acp_session_save,
+            bridge::acp_bridge::acp_session_load,
+            bridge::acp_bridge::commutation_open,
+            bridge::acp_bridge::commutation_snapshot,
+            bridge::acp_bridge::commutation_prompt_lead,
+            // M5 — Plan/Task workflow
+            bridge::acp_bridge::plan_scaffold,
+            bridge::acp_bridge::plan_add_story,
+            bridge::acp_bridge::plan_add_task,
+            bridge::acp_bridge::plan_set_task_status,
+            bridge::acp_bridge::plan_get,
+            bridge::acp_bridge::plan_save,
+            bridge::acp_bridge::plan_load,
+            bridge::acp_bridge::plan_list,
+            bridge::acp_bridge::workflow_cwd,
+            bridge::acp_bridge::workflow_restore,
+            bridge::acp_bridge::workflow_propose,
+            bridge::acp_bridge::plan_edit_task,
+            bridge::acp_bridge::plan_set_staff,
+            bridge::acp_bridge::workflow_confirm,
+            bridge::acp_bridge::workflow_resume,
+            bridge::acp_bridge::workflow_approve,
+            bridge::acp_bridge::workflow_cancel,
+            bridge::acp_bridge::workflow_cancel_review,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

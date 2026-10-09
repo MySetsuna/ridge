@@ -13,7 +13,7 @@ code_targets:
 test_targets:
   - src/lib/monaco/ridgeTheme.test.ts
 public_interface:
-  - "export function applyRidgeMonacoTheme(themeId: string): void"
+  - "export function applyRidgeMonacoTheme(themeId: string, themeType?: 'dark' | 'light'): void"
   - "export function ridgeMonacoThemeId(themeId: string): string"
 verified_by:
   - TEST-OBS-SRC-LIB-MONACO-RIDGETHEME-TEST-TS-3b597c0b

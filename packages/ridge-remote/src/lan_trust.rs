@@ -83,7 +83,16 @@ impl LanTrustState {
         self.inner.lock().insert((device_id.to_string(), ip.to_string()), entry);
     }
 
-    /// 取出并移除 hello 缓存（一次性消费：防重放）。
+    /// 仅读取 hello 缓存（不消费；用于 proof-handler 在验签前先看 nonce 是否存在），
+    /// 返回的是快照：调用方必须紧随其后用 [`Self::take`] 在验签通过后真正消费。
+    /// 60s TTL 懒清在 read 路径同样生效——过期 entry 一律视作 no-pending-hello。
+    fn peek(&self, device_id: &str, ip: &str) -> Option<LanTrustEntry> {
+        let now = now_unix();
+        self.cleanup_expired(now);
+        self.inner.lock().get(&(device_id.to_string(), ip.to_string())).cloned()
+    }
+
+    /// 取出并移除 hello 缓存（一次性消费：防重放；只在验签通过后调用）。
     fn take(&self, device_id: &str, ip: &str) -> Option<LanTrustEntry> {
         let now = now_unix();
         self.cleanup_expired(now);
@@ -206,8 +215,10 @@ pub async fn trust_proof_handler(
         return (StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
     }
 
-    // (2) hello 缓存查找 + 一次性消费。
-    let Some(entry) = ctx.state.take(&device_id, &ip) else {
+    // (2) hello 缓存查找（不消费）→ 验签 → 仅通过后 take（防重放）。
+    //     必须 peek → verify → take：先 take 会让"签名错误"的失败路径吃掉 nonce，
+    //     致合法重试被拒（DoS-by-bug）。nonce 单次消费语义由 take 保证。
+    let Some(entry) = ctx.state.peek(&device_id, &ip) else {
         return (StatusCode::BAD_REQUEST, "no pending hello").into_response();
     };
 
@@ -234,11 +245,14 @@ pub async fn trust_proof_handler(
     ctx.host.post_verify_record(&ip, &device_id, trusted);
 
     if !trusted {
+        // 验签失败：缓存不动，nonce 仍可被合法重试消耗；不消耗 ⇒ 不算一次 nonce 使用。
         return (StatusCode::OK, Json(ProofResponse { trusted: false })).into_response();
     }
 
-    // (6) 签名通过 → 落 grant 24h 窗（LAN 退化面等价于云 deferred grant 路径，
-    //     proof 即 TOTP 验证后的落点）；下次 hello 由 controller 发起即可复用。
+    // (6) 签名通过：此刻才真正消费 nonce（防重放），并落 grant 24h 窗。
+    //     LAN 退化面等价于云 deferred grant 路径，proof 即 TOTP 验证后的落点；
+    //     下次 hello 由 controller 发起即可复用。
+    ctx.state.take(&device_id, &ip);
     ctx.host.totp_trust_record(&entry.ctrl_pub);
     (StatusCode::OK, Json(ProofResponse { trusted: true })).into_response()
 }

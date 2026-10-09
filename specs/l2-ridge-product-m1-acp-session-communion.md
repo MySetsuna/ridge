@@ -1,0 +1,20 @@
+---
+id: L2-RIDGE-PRODUCT-M1
+level: L2
+title: ACP Session + Agent Communion MVP — Ridge Product Layer M1+M2
+status: LOCKED
+parent: L1-PROJECT-001
+code_targets:
+  - Cargo.toml
+  - Cargo.lock
+  - packages/ridge-acp/**
+  - src/lib/agent-chat/**
+  - docs/architecture/notes/PRODUCT-LAYER-M2-ACCEPTANCE.md
+  - docs/architecture/notes/PRODUCT-LAYER-M21-AUTHORIZATION-REQUEST.md
+  - specs/l2-ridge-product-m1-acp-session-communion.md
+  - changes/CHG-053-ridge-product-m1.md
+test_targets:
+  - packages/ridge-acp/**
+---
+
+Ridge unified Agent product layer. One AgentSession per concept (Lead, Staff, solo) with single canonical event stream (AgentSessionEvent tagged enum, camelCase + kind tag). Commutation coordinator (Lead + N Staff) subscribes to AgentSession events without transporting ACP frames. ACP adapter speaks stdio JSON-RPC 2.0 with Content-Length framing against any ACP-compatible agent (initialize, session/new, session/prompt, session/cancel, session/approve extension). MOCK_FIXTURE fake_acp_agent binary provides deterministic E2E. M1 ships as standalone crate; M2 promotes packages/ridge-acp into workspace members and adds dedicated reader task with bounded channel, real ACP agent E2E, session/approval semantics (starting/running/waiting_approval/completed/failed/cancelled), Desktop chat projection (no state ownership), and minimal Mobile consumer over AgentSessionSnapshot + AgentSessionEvent stream. Frozen Runtime (ridge-kernel/RTP1/PTY/Remote/replay) is not modified.

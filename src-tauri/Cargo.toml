@@ -148,6 +148,13 @@ ridge-tmux = { path = "../packages/ridge-tmux", features = ["http"] }
 # Shared remote-control server infrastructure (TLS + HTTP/WS server lifecycle)
 ridge-remote = { path = "../packages/ridge-remote" }
 
+# M2.1 §2 NS-2: the AgentSession product layer. The Tauri bridge is a thin
+# pass-through — every command just calls into AgentSession / AgentSession
+# commands (prompt, approve_tool, cancel) and every event flows back to the
+# renderer as `AgentSessionEvent` JSON via `app.emit`. No business state is
+# held in the bridge — AgentSession is the single source of truth.
+ridge-acp = { path = "../packages/ridge-acp" }
+
 # P3.5 (2026-05-20): same postcard codec the ridge-term crate uses for
 # the GridDelta wire format. The native PaneParser (`engine::parser`)
 # encodes frames to Vec<u8>, emits via Tauri events; the wasm consumer

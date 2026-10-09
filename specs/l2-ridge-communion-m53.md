@@ -1,0 +1,418 @@
+---
+id: L2-RIDGE-COMMUNION-M53
+level: L2
+title: Agent Communion M5.3 acceptance and semantic hardening
+status: DRAFT
+lifecycle: PLANNED
+parent: L1-PROJECT-001
+---
+
+# Goal：M5.3 — Agent Communion Product Acceptance & Semantic Hardening
+
+M5.2 已完成 Agent Communion 核心产品结构。
+
+本轮禁止新增：
+- scheduler framework
+- model router
+- cost optimizer
+- Staff autoscaling
+- workflow DSL
+- 新 Task abstraction
+- 新 ACP protocol
+
+只修真实语义问题 + 做产品验收。
+
+==================================================
+1. 修正 WaitingApproval restore 语义
+==================================================
+
+运行中的正常语义：
+
+AgentSession turn
+→ ApprovalRequested
+→ Task WaitingApproval
+→ user approve
+→ SAME turn continues
+
+保持不变。
+
+但应用/host 重启后：
+
+ACP transport / provider subprocess 不持久化，
+原 turn 无法继续。
+
+因此 restore 时不得留下一个看似可直接 approve 的 zombie WaitingApproval。
+
+明确恢复规则：
+
+Running
+→ Interrupted
+
+WaitingApproval with lost live turn
+→ Interrupted / equivalent recoverable state
+
+Completed
+→ Completed
+
+Failed / Cancelled
+→ 保持终态
+
+Queued
+→ 保持 Queued
+
+Blocked
+→ 根据 dependency 状态重新判断或保留可解释状态
+
+UI 必须知道：
+该 Task 需要 Resume，
+而不是继续显示一个无效 Approve 按钮。
+
+补测试：
+
+WAITING_APPROVAL_LIVE_CONTINUES_SAME_TURN
+WAITING_APPROVAL_AFTER_RESTART_REQUIRES_RESUME
+
+必须证明：
+- live approval 不产生第二个 prompt；
+- restart 后不会向已经不存在的 turn 发送 approve。
+
+==================================================
+2. 消除所有 timing-flaky Worker tests
+==================================================
+
+禁止：
+
+1ms timeout
+sleep race
+"Completed 或 Failed 都算 PASS"
+
+改 fake ACP agent / test harness，
+提供 deterministic control，例如：
+
+pause_before_event
+emit_event_on_signal
+delay_policy via injected clock
+manual terminal event
+
+测试必须严格确定：
+
+A.
+task running
+→ no terminal event
+→ timeout 尚未触发
+→ 仍 Running
+
+B.
+terminal event arrives first
+→ Completed
+
+C.
+policy timeout arrives first
+→ Failed(timeout)
+
+D.
+ApprovalRequested
+→ WaitingApproval
+→ approve
+→ same turn
+→ Completed
+
+所有 worker tests 必须稳定重复运行。
+
+至少循环执行相关测试 50 次，
+0 flaky 才算通过。
+
+==================================================
+3. Interrupted completion semantics
+==================================================
+
+审查所有：
+
+is_terminal()
+is_execution_stopped()
+is_success_terminal()
+is_recoverable()
+
+caller。
+
+禁止 workflow 使用模糊的：
+
+all(task.is_terminal())
+
+来判断成功完成。
+
+明确 workflow outcome：
+
+Completed
+= success
+
+Failed / Cancelled
+= unsuccessful terminal
+
+Blocked
+= unresolved because upstream failed/config
+
+Interrupted
+= stopped + recoverable
+
+WaitingApproval
+= active but paused
+
+WorkflowCoordinator 必须区分：
+
+workflow_success
+workflow_finished_with_failure
+workflow_recoverable
+workflow_active
+
+补测试：
+
+INTERRUPTED_NOT_SUCCESS
+INTERRUPTED_VISIBLE_IN_LEAD_OUTCOME
+WAITING_APPROVAL_NOT_FINISHED
+BLOCKED_NOT_SUCCESS
+
+==================================================
+4. Plan Review 真正产品化验收
+==================================================
+
+验证真实产品流程，而不只是 reducer/types：
+
+complex request
+→ Lead proposes Plan
+→ UI inline 展示 Story/Task
+→ 用户可以在执行前修改：
+
+title
+point
+dependency
+assignee
+
+→ Confirm
+→ canonical PlanStore 更新
+→ run_plan
+
+UI 不维护 Plan 副本。
+
+Cancel review
+→ 不运行 Staff。
+
+Simple Chat 不得进入该路径。
+
+必须证明：
+
+SIMPLE_CHAT_NO_PLAN
+COMMUNION_REQUIRES_CONFIRM_BEFORE_RUN
+
+除非产品已经有明确 Auto Run 开关，
+否则禁止 Lead 生成 Plan 后立即执行。
+
+==================================================
+5. Communion Sidebar 产品验收
+==================================================
+
+检查实际 UI，而不是只检查 reducer。
+
+保持：
+
+Header
+- Agent / Communion mode
+- Provider
+- Model
+- Effort
+- New Chat
+
+Body
+- single continuous chat
+
+Composer
+- input
+- Send
+- Cancel
+
+Communion inline 展示：
+
+Lead
+Plan
+Task
+Staff
+Tool
+Approval
+Artifact/Diff
+Handoff
+LeadFinal
+
+不要引入：
+- Staff Tabs
+- Jira board
+- workflow designer
+- 独立 Task management page
+
+==================================================
+6. Structured LeadFinal 产品路径
+==================================================
+
+产品主路径必须使用：
+
+LeadFinalOutcome {
+  task_outcomes[]
+  failed_or_blocked[]
+  summary
+}
+
+不要让 UI 主路径最终退化成只消费：
+
+CommutationCompleted { summary: String }
+
+string event 可以保留 compatibility。
+
+UI 至少可以展示：
+
+Task
+Staff
+status
+summary
+artifacts
+diff/check
+
+默认紧凑，
+需要时展开详情。
+
+==================================================
+7. Resume UX
+==================================================
+
+真实恢复场景：
+
+A Completed
+B Completed
+C Running
+D Queued
+
+restart
+
+→ A Completed
+→ B Completed
+→ C Interrupted
+→ D 仍不允许越过 dependency
+→ UI 显示 Resume C
+
+用户 Resume C：
+
+same Task ID
+new execution attempt
+fresh AgentSession
+fresh transport
+
+A/B 不得重新执行。
+
+建议明确 execution attempt identity，
+如果当前已经有等价机制则复用，
+不要再造复杂 runtime。
+
+==================================================
+8. Headed Tauri acceptance
+==================================================
+
+如果当前环境能够运行 GUI：
+
+必须实际启动 Ridge Desktop。
+
+Scenario A — Simple Chat
+
+open Agent Communion
+→ single Agent
+→ prompt
+→ streaming
+→ tool
+→ approval
+→ final
+
+Scenario B — Communion
+
+complex task
+→ Lead Plan
+→ review
+→ confirm
+→ A
+→ B/C parallel Staff
+→ approval on one Staff
+→ same-turn continue
+→ Handoff
+→ D
+→ structured LeadFinal
+
+Scenario C — Restore
+
+workflow running
+→ restart
+→ Interrupted shown
+→ Resume
+→ workflow continues
+→ no completed Task repeated
+
+如果环境没有 headed WebView：
+明确 HEADED_UI=NOT_RUN。
+不要用 reducer/unit tests 写成 UI PASS。
+
+==================================================
+9. Provider live E2E
+
+如果存在 OpenAI/Anthropic 凭据：
+顺带跑真实 ACP provider acceptance。
+
+如果不存在：
+继续 NOT_RUN。
+
+不要为了验收引入 direct OpenAI / Anthropic SDK。
+
+==================================================
+10. Ridge Core boundary
+
+重新确认本轮没有：
+
+Kernel → Plan
+PTY → Staff
+Remote → Workflow
+RTP1 → Communion
+
+Agent Communion 继续完全位于产品层。
+
+==================================================
+最终输出
+
+WAITING_APPROVAL_RUNTIME
+WAITING_APPROVAL_RESTORE
+
+WORKER_DETERMINISM
+FLAKY_TESTS
+
+INTERRUPTED_SEMANTICS
+WORKFLOW_COMPLETION_SEMANTICS
+
+SIMPLE_CHAT
+PLAN_REVIEW
+COMMUNION_EXECUTION
+
+STRUCTURED_LEAD_FINAL
+RESUME_FLOW
+
+HEADED_TAURI_ACCEPTANCE
+LIVE_PROVIDER_ACCEPTANCE
+
+RIDGE_CORE_BOUNDARY
+
+REMAINING_GAPS
+COMMUNION_PRODUCT_READY
+
+`COMMUNION_PRODUCT_READY=YES`
+只能在没有已知产品语义 bug，
+且测试不再存在 timing flake 时给出。
+
+若 headed GUI/provider credential 缺失，
+可单独 NOT_RUN，
+不得伪造。
+
+普通实现问题自行修复继续。
+
+未经授权不 push/tag/release/deploy。

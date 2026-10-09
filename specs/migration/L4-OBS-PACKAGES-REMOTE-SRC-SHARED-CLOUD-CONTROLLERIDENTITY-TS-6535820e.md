@@ -2,7 +2,7 @@
 id: L4-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CONTROLLERIDENTITY-TS-6535820e
 level: L4
 parent: L3-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-52c9de8f
-title: controllerIdentity.ts
+title: controllerIdentity.ts (M3 orphan mapping)
 status: LOCKED
 origin: observed
 migration_state: CONFIRMED
@@ -10,27 +10,8 @@ confidence: INFERRED
 observed_source_hash: 818be4df993b9bce2ea80f7e8c6e71eff235432927f95f50ff567a75e0538727
 code_targets:
   - packages/remote/src/shared/cloud/controllerIdentity.ts
-test_targets:
-  - packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts
-  - packages/remote/src/shared/cloud/apiClient.refresh.test.ts
-  - packages/remote/src/shared/cloud/apiClient.test.ts
-  - packages/remote/src/shared/cloud/auth.test.ts
-  - packages/remote/src/shared/cloud/cloudHostBridge.test.ts
-  - packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts
-  - packages/remote/src/shared/cloud/controllerCloudProvider.test.ts
   - packages/remote/src/shared/cloud/controllerIdentity.test.ts
-  - packages/remote/src/shared/cloud/controllerInstanceId.test.ts
-  - packages/remote/src/shared/cloud/deviceTrust.test.ts
-  - packages/remote/src/shared/cloud/e2ee.test.ts
-  - packages/remote/src/shared/cloud/faultInjection.test.ts
-  - packages/remote/src/shared/cloud/keyBinding.test.ts
-  - packages/remote/src/shared/cloud/priorityFrameQueue.test.ts
-  - packages/remote/src/shared/cloud/remoteAllowlist.test.ts
-  - packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts
-  - packages/remote/src/shared/cloud/signaling/conformance.test.ts
-  - packages/remote/src/shared/cloud/signaling/drift.test.ts
-  - packages/remote/src/shared/cloud/weakNetLab.test.ts
-  - packages/remote/src/shared/cloud/workspaceScope.test.ts
+test_targets: []
 public_interface:
   - "export async function clearControllerIdentity(): Promise<void>"
   - "export async function getControllerPub(): Promise<Uint8Array>"
@@ -59,6 +40,4 @@ verified_by:
   - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-WORKSPACESCOPE-TEST-TS-184beaf5
 ---
 
-# controllerIdentity.ts
-
-Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+Promotes controllerIdentity.test.ts to code_targets so it counts as evidence at L1/L2 OBS levels. No product change.

@@ -26,8 +26,6 @@
   // §redirect-loop 止血（与 +layout.svelte 同源）：租户子域无有效会话→回主域登录的
   // per-tab 计数，防 apex⇄子域死循环。
   const TENANT_BOUNCE_KEY = 'ridge_tenant_login_bounce';
-  // §totp-cache: sessionStorage 缓存已验证 TOTP，刷新后自动重提（同 desktop 模式）。
-  const TOTP_CACHE_KEY = 'ridge_totp_code';
 
   let phase = $state<'connecting' | 'need-totp' | 'error'>('connecting');
   let code = $state('');
@@ -102,38 +100,20 @@
               return;
             }
             // §7.4 信任授权优先：受信设备静默握手通过即跳过 TOTP（host 端经握手已开 §4 门）。
-            // 旧 host 不识别 totp-trust-hello → 10s 超时 resolve(false) → 退化到缓存码/手输。
-            const fallbackToTotp = () => {
-              // §totp-cache: 先试 sessionStorage 中的已验证 code（页面刷新后自动重提）。
-              let cached: string | null = null;
-              try { cached = sessionStorage.getItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
-              if (cached && handle) {
-                handle.verifyTotp(cached).then(async (ok) => {
-                  if (ok) {
-                    await finishConnected(cached);
-                  } else {
-                    try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
-                    promptTotp();
-                  }
-                }).catch(() => {
-                  try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
-                  promptTotp();
-                });
-              } else {
-                promptTotp();
-              }
-            };
+            // 旧 host 不识别 totp-trust-hello → 10s 超时 resolve(false) → 退化到手输。
+            // §v0.1.91：trust-grant 不可用直接落到手动 TOTP 门控，不再读 sessionStorage
+            // 里的 6 位 code —— 那是把 RFC 6238 30s OTP 寿命延长到跨刷新。
             if (handle) {
               handle.tryTrustGrant().then((trusted) => {
                 if (cloudConn) return; // 竞态保护：已被其它路径完成
                 if (trusted) {
                   void finishConnected(null);
                 } else {
-                  fallbackToTotp();
+                  promptTotp();
                 }
-              }).catch(() => fallbackToTotp());
+              }).catch(() => promptTotp());
             } else {
-              fallbackToTotp();
+              promptTotp();
             }
           } else if (s === 'error') {
             phase = 'error';
@@ -220,14 +200,15 @@
   }
 
   // 授权通过（TOTP 手输 ok 或 §7.4 信任授权）→ 建立 live transport 并 onready。
-  // verifiedCode 为 null 表示走信任授权（无缓存码）：full re-handshake 重连时由
-  // cloudRemote 回退到 tryTrustGrant 重新静默授权。
+  // verifiedCode 非 null 表示刚走完 TOTP 路径：把 6 位 code 注入 _verifiedCode 内存
+  // 字段，供同 session 内 full reconnect 在 tryTrustGrant 不可用时回退（老 host）。
+  // 不持久化到 sessionStorage —— §v0.1.91：TOTP 不跨刷新，信任授权是主恢复路径。
   async function finishConnected(verifiedCode: string | null): Promise<void> {
     // 云会话已完全授权。boot 已为 FS/git/search 接好 TauriDataProvider；
     // 防御性重置（幂等），让侧栏沿用同一 shimmed invoke。
     setTransport(new TauriDataProvider());
     const conn = new CloudRemoteConnection(handle!);
-    if (verifiedCode) conn.setVerifiedCode(verifiedCode); // 缓存以便 full reconnect 透明 re-auth
+    if (verifiedCode) conn.setVerifiedCode(verifiedCode);
     cloudConn = conn; // route ongoing provider state (drop/reconnect) to the transport
     await conn.init();
     loading = false;
@@ -246,18 +227,17 @@
         if (!ok) {
           loading = false;
           code = '';
-          try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
           error = tr('main.totpGateErrInvalid');
           return;
         }
-        // Zero-trust TOTP passed → finish + cache the code for reconnect re-auth.
-        try { sessionStorage.setItem(TOTP_CACHE_KEY, numeric); } catch { /* ignore */ }
+        // §v0.1.91: TOTP 通过不再写 sessionStorage；信任授权已优先尝试。
+        // grant 在 host 端落 grant_store；下次连 trust-grant 静默通过。
+        // 同 session 内 full reconnect 仍用 _verifiedCode 内存字段兜底（老 host）。
         await finishConnected(numeric);
       })
       .catch(() => {
         loading = false;
         code = '';
-        try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
         error = tr('main.totpGateErrNetwork');
       });
   }

@@ -33,10 +33,11 @@ test_targets:
   - src/remote/lib/WorkspaceTree.test.ts
 public_interface:
   - "export function isWsExpanded(id: string): boolean"
-  - "export function pruneExpanded(liveIds: Set<string>): void"
-  - "export function seedActiveWorkspace(id: string): void"
   - "export function setWsExpanded(id: string, expanded: boolean): void"
   - "export function toggleWsExpanded(id: string): boolean"
+  - "export function seedActiveWorkspace(id: string): void"
+  - "export function pruneExpanded(liveIds: Set<string>): void"
+  - "export function setTreeStorageScope(scope: string): void"
 verified_by:
   - TEST-OBS-SRC-REMOTE-LIB-CLIPBOARD-TEST-TS-acf18327
   - TEST-OBS-SRC-REMOTE-LIB-CLOUDREMOTE-TEST-TS-8f8cb6d4

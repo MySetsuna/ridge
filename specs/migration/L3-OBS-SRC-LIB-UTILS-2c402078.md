@@ -27,6 +27,9 @@ public_interface:
   - "export async function openTerminalLink( request: TerminalLinkOpenRequest,
     dependencies: TerminalLinkDependencies = {}, ):
     Promise<TerminalLinkOpenResult>"
+  - "export async function validateTerminalLink( request:
+    TerminalLinkOpenRequest, dependencies: TerminalLinkDependencies = {}, ):
+    Promise<TerminalLinkValidationResult>"
   - "export async function renderMermaidBlocks(container: HTMLElement):
     Promise<void>"
   - "export function _resetTrustedHosts_forTests(): void"

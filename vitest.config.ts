@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { resolve } from 'path';
 
 const stripNodeShebangForModuleRunner = () => ({
@@ -12,7 +13,7 @@ const stripNodeShebangForModuleRunner = () => ({
 });
 
 export default defineConfig({
-  plugins: [stripNodeShebangForModuleRunner()],
+  plugins: [stripNodeShebangForModuleRunner(), svelte({ hot: false })],
   resolve: {
     alias: {
       '$lib': resolve(__dirname, 'src/lib'),

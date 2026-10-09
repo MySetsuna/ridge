@@ -308,6 +308,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
     let app = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/status", get(status))
+        .route("/v1/metrics", get(crate::metrics::metrics_handler))
         .route("/v1/shutdown", post(shutdown))
         .route("/v1/domain", get(domain::domain_meta))
         .route("/v1/domain/agents", get(domain::domain_agents))

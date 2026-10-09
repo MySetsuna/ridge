@@ -8,6 +8,7 @@ pub mod client;
 mod domain;
 pub mod kernel_backed_handle;
 mod kernel_mcp;
+pub mod metrics;
 pub mod pty;
 pub mod registry;
 pub mod rtp1;

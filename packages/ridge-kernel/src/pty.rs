@@ -1016,6 +1016,18 @@ impl PtyRegistry {
         self.ptys.lock().contains_key(&id)
     }
 
+    /// Count of controllers currently attached as input owners (SPEC-L2-
+    /// PROTO-001 §3.4.2). Used by the v0.1.92 closeout metrics endpoint
+    /// to track attach/detach symmetry across reconnect loops.
+    pub fn subscriber_count(&self, id: Uuid) -> Result<usize> {
+        Ok(self
+            .attached_controllers
+            .lock()
+            .get(&id)
+            .map(|set| set.len())
+            .unwrap_or(0))
+    }
+
     pub fn len(&self) -> usize {
         self.ptys.lock().len()
     }

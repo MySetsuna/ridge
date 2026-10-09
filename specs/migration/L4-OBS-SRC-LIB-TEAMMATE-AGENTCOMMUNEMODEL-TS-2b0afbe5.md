@@ -41,6 +41,8 @@ public_interface:
   - "export function normalizeAgentIdentity(agent: string): string"
   - "export function shouldRefreshAgentHistory(lastLoadedAt: number, now =
     Date.now()"
+  - "export function workspaceTranscriptScope( workspaceFilePath: string | null
+    | undefined, candidateCwds: readonly string[], ): string[]"
   - export interface AgentHistoryGroup
   - export interface AgentHistoryReplyLike
   - export interface AgentReplyLookupProfile

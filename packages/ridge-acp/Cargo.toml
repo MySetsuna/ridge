@@ -1,0 +1,55 @@
+[package]
+name = "ridge-acp"
+version = "0.1.0"
+edition = "2021"
+description = "Ridge Agent product layer — AgentSession + ACP adapter + Commutation coordinator. Boundary between any ACP-compatible agent and the frozen Runtime/Remote stack."
+license = "MIT"
+
+# M2.1 NS-1 satisfied: ridge-acp is now a workspace member of C:\code\wind.
+# The M1 standalone `[workspace]` declaration was the degradation marker.
+# CHG-053 promoted the crate into the wind workspace under L2-RIDGE-PRODUCT-M1.
+
+[lib]
+name = "ridge_acp"
+
+[dependencies]
+# Protocol framing: serde-only; no external ACP SDK dependency.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Async runtime: same version the rest of the wind workspace uses.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
+# Error type.
+thiserror = "1"
+# Tracing.
+tracing = "0.1"
+# Session/Turn id generation.
+uuid = { version = "1", features = ["v4"] }
+# Sync primitives for inner state.
+parking_lot = "0.12"
+# Reuse: AgentLifecycle, AgentRole, AgentTier from teammate domain. No fork.
+ridge-core = { path = "../ridge-core" }
+
+[dev-dependencies]
+# E2E tests use tokio multi-thread.
+tokio = { version = "1", features = ["full", "test-util"] }
+
+# `fake_acp_agent` is the MOCK_FIXTURE binary used by the E2E suite. It is
+# always built so `env!("CARGO_BIN_EXE_fake_acp_agent")` resolves in tests.
+[[bin]]
+name = "fake_acp_agent"
+path = "src/bin/fake_acp_agent.rs"
+
+# `broken_acp_agent` is the MOCK_FIXTURE binary used by reader-lifecycle
+# tests (malformed frames, duplicate responses, no-response mode).
+[[bin]]
+name = "broken_acp_agent"
+path = "src/bin/broken_acp_agent.rs"
+
+# `live_acp_agent` is the MOCK_FIXTURE binary used by REAL_ACP_E2E acceptance
+# tests. It exercises the full protocol surface (capability negotiation,
+# cancel mid-stream, approval gate, capability gaps). It is NOT a real LLM-
+# backed agent — the wire shape is what would be produced by a real ACP
+# implementation such as codex-acp.
+[[bin]]
+name = "live_acp_agent"
+path = "src/bin/live_acp_agent.rs"

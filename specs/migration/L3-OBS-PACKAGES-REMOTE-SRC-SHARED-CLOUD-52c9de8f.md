@@ -26,6 +26,28 @@ code_targets:
   - packages/remote/src/shared/cloud/remoteAllowlist.ts
   - packages/remote/src/shared/cloud/ridgeCloudProvider.ts
   - packages/remote/src/shared/cloud/workspaceScope.ts
+  - packages/remote/src/shared/cloud/controllerIdentity.test.ts
+  - packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts
+  - packages/remote/src/shared/cloud/apiClient.refresh.test.ts
+  - packages/remote/src/shared/cloud/apiClient.test.ts
+  - packages/remote/src/shared/cloud/auth.test.ts
+  - packages/remote/src/shared/cloud/cloudHostBridge.test.ts
+  - packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts
+  - packages/remote/src/shared/cloud/controllerCloudProvider.test.ts
+  - packages/remote/src/shared/cloud/controllerInstanceId.test.ts
+  - packages/remote/src/shared/cloud/deviceTrust.test.ts
+  - packages/remote/src/shared/cloud/e2ee.test.ts
+  - packages/remote/src/shared/cloud/faultInjection.test.ts
+  - packages/remote/src/shared/cloud/keyBinding.test.ts
+  - packages/remote/src/shared/cloud/priorityFrameQueue.test.ts
+  - packages/remote/src/shared/cloud/remoteAllowlist.test.ts
+  - packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts
+  - packages/remote/src/shared/cloud/signaling/conformance.test.ts
+  - packages/remote/src/shared/cloud/signaling/drift.test.ts
+  - packages/remote/src/shared/cloud/weakNetLab.test.ts
+  - packages/remote/src/shared/cloud/workspaceScope.test.ts
+test_targets:
+  - packages/remote/src/shared/cloud/controllerIdentity.test.ts
 public_interface:
   - "export async function activateKey(key: string, username?: string):
     Promise<CloudAuthState>"

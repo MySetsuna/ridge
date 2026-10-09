@@ -102,7 +102,6 @@ public_interface:
   - "export function enqueuePaneInput( key: string, operation: ()"
   - "export function ensurePtyBridge(paneId: string, workspaceId: string):
     Promise<void>"
-  - "export function fileUrlToPath(href: string): string | null"
   - "export function focusActiveTerminal(): boolean"
   - "export function focusTerminalPane(paneId: string): boolean"
   - "export function formatDroppedPathsForPaste(paths: string[]): string"
@@ -123,6 +122,7 @@ public_interface:
     undefined, ): boolean"
   - "export function isProbablyDirectory(path: string): boolean"
   - "export function isSafeHttpUrl(href: string): boolean"
+  - "export function isStrictWebUrl(href: string): boolean"
   - "export function isTuiActive(s: TuiSnapshot): boolean"
   - "export function loadTerminalFonts(stack: string, install:
     FontDataInstaller): Promise<number>"
@@ -224,6 +224,7 @@ public_interface:
   - export interface TermSettingsPort
   - export interface TerminalLinkOpenRequest
   - export interface TerminalLinkOpenResult
+  - export interface TerminalLinkValidationResult
   - export interface TerminalMemoryCandidate
   - export interface TerminalMemoryPlan
   - export interface TerminalPathOrigin
