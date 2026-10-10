@@ -82,5 +82,20 @@
       ],
       "reason": "Associate the approved diagnosis spec with its owning change so lock can authorize real implementation."
     }
-  ]
+  ],
+  "application": {
+    "authorizedBy": "user",
+    "authorizationText": "允许",
+    "scope": "Only affects/implementation amendments from stored candidates; status advanced by stc complete.",
+    "historicalClosed": [
+      "CHG-047",
+      "CHG-049",
+      "CHG-050",
+      "CHG-051",
+      "CHG-052",
+      "CHG-064",
+      "CHG-065"
+    ],
+    "remainingImplementation": "CHG-067"
+  }
 }
