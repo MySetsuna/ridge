@@ -67,21 +67,23 @@ struct CursorSnap {
 fn coalesce_scroll_ops(ops: Vec<ScrollOp>) -> Vec<ScrollOp> {
     let mut compact: Vec<ScrollOp> = Vec::with_capacity(ops.len().min(4));
     for op in ops {
-        let height = op.bottom.saturating_sub(op.top).saturating_add(1);
-        if height == 0 || op.count == 0 {
+        if op.top > op.bottom || op.count == 0 {
             continue;
         }
-        let merge_with_previous = compact.last().is_some_and(|previous| {
-            previous.top == op.top && previous.bottom == op.bottom && previous.up == op.up
-        });
-        if merge_with_previous {
-            let previous = compact.last_mut().expect("checked above");
-            previous.count = previous.count.saturating_add(op.count).min(height);
-        } else {
-            compact.push(ScrollOp {
-                count: op.count.min(height),
-                ..op
-            });
+        let mut remaining = op.count;
+        while remaining > 0 {
+            if let Some(previous) = compact.last_mut().filter(|previous| {
+                previous.top == op.top && previous.bottom == op.bottom && previous.up == op.up
+                    && previous.count < u16::MAX as usize
+            }) {
+                let added = remaining.min(u16::MAX as usize - previous.count);
+                previous.count += added;
+                remaining -= added;
+            } else {
+                let count = remaining.min(u16::MAX as usize);
+                compact.push(ScrollOp { count, ..op });
+                remaining -= count;
+            }
         }
     }
     compact
@@ -131,6 +133,7 @@ pub struct PaneParser {
     /// per flipped field. Excludes cursor visibility / blink / shape
     /// because those flow through `GridDelta::Cursor` already.
     last_modes: Option<Modes>,
+    last_tui_keyboard_lease: Option<bool>,
     /// Monotonic per-pane sequence; bumped on every emitted frame.
     /// Frontend logs a warning on gaps. Resets to 0 on `new`.
     pane_seq: u64,
@@ -164,6 +167,7 @@ impl PaneParser {
             last_scrollback_evictions: 0,
             last_scrollback_clears: 0,
             last_modes: None,
+            last_tui_keyboard_lease: None,
             pane_seq: 0,
             last_title: None,
             last_cwd: None,
@@ -615,6 +619,14 @@ impl PaneParser {
     }
 
     fn append_modes(&mut self, deltas: &mut Vec<GridDelta>) {
+        let lease = self.terminal.grid().is_inline_tui_sticky();
+        if self.last_modes.is_none() || self.last_tui_keyboard_lease != Some(lease) {
+            deltas.push(GridDelta::ModeChange {
+                mode: ridge_term::term::delta::TUI_KEYBOARD_LEASE_MODE,
+                on: lease,
+            });
+            self.last_tui_keyboard_lease = Some(lease);
+        }
         let current = *self.terminal.modes();
         let previous = self.last_modes.unwrap_or_default();
         deltas.extend(
@@ -952,6 +964,135 @@ fn kernel_shape_to_delta(s: KernelCursorShape) -> DeltaCursorShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "spawns a bounded real PowerShell ConPTY for multiline rendering acceptance"]
+    fn powershell_multiline_input_preserves_display_order() {
+        use std::io::{Read, Write};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+        struct ChildGuard(Box<dyn portable_pty::Child + Send + Sync>);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) { let _ = self.0.kill(); }
+        }
+        let pair = native_pty_system().openpty(PtySize {
+            rows: 12, cols: 60, pixel_width: 0, pixel_height: 0,
+        }).unwrap();
+        let mut command = CommandBuilder::new("pwsh.exe");
+        command.args(["-NoLogo", "-NoProfile"]);
+        command.env("TERM", "xterm-256color");
+        let _child = ChildGuard(pair.slave.spawn_command(command).unwrap());
+        drop(pair.slave);
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let mut writer = pair.master.take_writer().unwrap();
+        let (send, receive) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buffer = [0; 8192];
+            while let Ok(size) = reader.read(&mut buffer) {
+                if size == 0 || send.send(buffer[..size].to_vec()).is_err() { break; }
+            }
+        });
+        let mut producer = PaneParser::new(12, 60, 1000);
+        let mut mirror = Terminal::new(12, 60, 1000);
+        let mut raw = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while Instant::now() < deadline {
+            let bytes = receive.recv_timeout(Duration::from_millis(100)).unwrap_or_default();
+            raw.extend_from_slice(&bytes);
+            mirror.apply_frame(&producer.feed_and_diff(&bytes)).unwrap();
+            let reply = producer.take_pending_response();
+            if !reply.is_empty() { writer.write_all(&reply).unwrap(); writer.flush().unwrap(); }
+            if String::from_utf8_lossy(&raw).contains("> ") { break; }
+        }
+        assert!(String::from_utf8_lossy(&raw).contains("> "), "PowerShell prompt ready");
+        let mut input = "$ridge_lines = @(\n".to_owned();
+        for line in 1..=24 {
+            input.push_str(&format!("    'RIDGE_LINE_{line:02}_C:\\long-folder\\long-folder\\long-folder\\long-folder'\n"));
+        }
+        input.push(')');
+        let paste = ridge_term::input::wrap_paste(&input, producer.terminal.modes().bracketed_paste);
+        println!("Real paste: bracketed={}, bytes={}", producer.terminal.modes().bracketed_paste, paste.len());
+        writer.write_all(&paste).unwrap();
+        writer.flush().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut quiet_since = Instant::now();
+        while Instant::now() < deadline {
+            match receive.recv_timeout(Duration::from_millis(100)) {
+                Ok(bytes) => {
+                    raw.extend_from_slice(&bytes);
+                    mirror.apply_frame(&producer.feed_and_diff(&bytes)).unwrap();
+                    let reply = producer.take_pending_response();
+                    if !reply.is_empty() { writer.write_all(&reply).unwrap(); writer.flush().unwrap(); }
+                    quiet_since = Instant::now();
+                }
+                Err(_) if quiet_since.elapsed() > Duration::from_secs(1) => break,
+                Err(_) => {}
+            }
+        }
+        let dump = |terminal: &Terminal| {
+            let mut rows = Vec::new();
+            for index in 0..terminal.scrollback_len() {
+                let row = terminal.grid().scrollback.get(index).unwrap();
+                rows.push(row.cells.iter().filter(|cell| cell.width != 0)
+                    .map(|cell| cell.ch).collect::<String>());
+            }
+            rows.extend(terminal.dump_visible_text());
+            rows.join("\n")
+        };
+        let native = dump(&producer.terminal);
+        let artifacts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().join("artifacts/terminal-five-fixes");
+        std::fs::create_dir_all(&artifacts).unwrap();
+        std::fs::write(artifacts.join("powershell-raw.bin"), &raw).unwrap();
+        std::fs::write(artifacts.join("powershell-native.txt"), &native).unwrap();
+        println!("PowerShell capture: {} bytes, {} ESC controls", raw.len(),
+            raw.iter().filter(|byte| **byte == 27).count());
+        assert_eq!(dump(&mirror), native, "native delta mirror retains the real PTY rows");
+        let mut direct = Terminal::new(12, 60, 1000);
+        direct.feed(&raw);
+        assert_eq!(dump(&direct), native, "raw and native parsing agree");
+        let mut previous = 0;
+        for line in 1..=24 {
+            let marker = format!("RIDGE_LINE_{line:02}");
+            let position = native.find(&marker).unwrap_or_else(|| panic!("missing {marker}: {native}"));
+            assert!(position >= previous, "multiline display reversed at {marker}: {native}");
+            previous = position;
+        }
+    }
+
+    #[test]
+    fn native_delta_keeps_tui_lease_after_a_visible_cursor_repaint() {
+        let mut producer = PaneParser::new(24, 80, 200);
+        let mut mirror = Terminal::new(24, 80, 200);
+        mirror.apply_frame(&producer.feed_and_diff(b"\x1b[?25l\x1b[?25h")).unwrap();
+        assert!(mirror.modes().cursor_visible);
+        assert!(mirror.grid().is_inline_tui_sticky());
+        mirror.apply_frame(&producer.feed_and_diff(b"\x1b]633;A\x07")).unwrap();
+        assert!(!mirror.grid().is_inline_tui_sticky());
+    }
+
+    #[test]
+    fn wide_wrap_gap_keeps_empty_text_override_through_native_delta() {
+        let mut producer = PaneParser::new(2, 17, 200);
+        let frame = producer.feed_and_diff("https://x/a/中文档".as_bytes());
+        let bytes = ridge_term::term::delta::encode_frame(&frame).unwrap();
+        let mut mirror = Terminal::new(2, 17, 200);
+        mirror.apply_frame(&ridge_term::term::delta::decode_frame(&bytes).unwrap()).unwrap();
+        assert_eq!(mirror.wrapped_link_rows().iter().map(|row| row.1.as_str()).collect::<String>(),
+            "https://x/a/中文档");
+    }
+
+    #[test]
+    fn scroll_compaction_preserves_movement_and_splits_at_the_wire_limit() {
+        let op = ScrollOp { top: 0, bottom: 2, count: 3, up: true };
+        assert_eq!(coalesce_scroll_ops(vec![op; 10])[0].count, 30);
+        let large = ScrollOp { count: u16::MAX as usize, ..op };
+        let compact = coalesce_scroll_ops(vec![large, op]);
+        assert_eq!(compact.iter().map(|op| op.count).sum::<usize>(), u16::MAX as usize + 3);
+        assert!(compact.iter().all(|op| op.count <= u16::MAX as usize));
+    }
 
     fn make_parser(rows: u16, cols: u16) -> PaneParser {
         PaneParser::new(rows, cols, 1_000)
