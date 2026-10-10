@@ -307,7 +307,9 @@ pub fn wrap_paste(text: &str, bracketed_paste: bool) -> Vec<u8> {
         out.extend_from_slice(b"\x1b[201~");
         out
     } else {
-        text.as_bytes().to_vec()
+        // LF is a control chord to an unbracketed shell line editor. Paste
+        // logical newlines as Enter; a CRLF pair must not produce two keys.
+        text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
     }
 }
 
@@ -609,6 +611,12 @@ mod tests {
     #[test]
     fn paste_passthrough_when_bracketed_off() {
         assert_eq!(wrap_paste("hi", false), b"hi");
+    }
+
+    #[test]
+    fn unbracketed_paste_encodes_one_enter_per_logical_newline() {
+        assert_eq!(wrap_paste("one\ntwo\r\nthree\rfour", false), b"one\rtwo\rthree\rfour");
+        assert_eq!(wrap_paste("中文\n😀\n", false), "中文\r😀\r".as_bytes());
     }
 
     /// V-PASTE: multi-line paste must preserve source order (numbered lines).

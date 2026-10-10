@@ -29,6 +29,11 @@ import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { loadHostCa, hostCertSpkiSha256 } from "./tls-host.mjs";
 
+if (process.argv.includes("--help")) {
+  console.log("Usage: RIDGE_BENCH_LABEL=default RIDGE_BENCH_SAMPLES=100 RIDGE_BENCH_SCENES=idle,heavy,firstopen,switchback node scripts/bench-latency-4scenes.mjs\nOptional: RIDGE_BIN, RIDGE_BENCH_HOST_PORT, RIDGE_KERNEL_TRACE, RIDGE_HOST_TRACE, RIDGE_RTP1_KERNEL.");
+  process.exit(0);
+}
+
 const ROOT = resolve(".");
 const BIN = process.env.RIDGE_BIN ?? "target/debug/ridge.exe";
 const HOST_PORT = Number(process.env.RIDGE_BENCH_HOST_PORT ?? "5121");

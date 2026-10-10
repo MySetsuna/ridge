@@ -1,0 +1,15 @@
+{
+  "changeId": "CHG-043",
+  "patch": {
+    "changeId": "CHG-043",
+    "nodes": [
+      {
+        "id": "L4-OBS-SRC-LIB-TERMINAL-PTYWRITEQUEUE-TS-0440e203",
+        "level": "L4",
+        "title": "ptyWriteQueue.ts",
+        "parent": "L3-OBS-SRC-LIB-TERMINAL-033d05be"
+      }
+    ]
+  },
+  "createdAt": "2026-09-19T00:00:00.000Z"
+}

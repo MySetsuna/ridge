@@ -96,7 +96,7 @@ pub enum RenderPath {
 /// The function is deliberately lightweight — no allocations, no lookups,
 /// just a linear scan with early exit on the first non-trivial character.
 pub fn scan_line_path(cells: &[Cell], clusters: &[ClusterSpan]) -> RenderPath {
-    if !clusters.is_empty() {
+    if clusters.iter().any(|cluster| !cluster.text.is_empty()) {
         return RenderPath::Slow;
     }
     for cell in cells {
@@ -243,6 +243,7 @@ impl Row {
     /// replaced. Single-codepoint "clusters" should NOT come through
     /// here — caller should put the codepoint in `Cell::ch` directly
     /// and skip the sidecar overhead.
+    /// An empty override denotes a physical wide-wrap gap with no text.
     pub fn set_cluster(&mut self, col: usize, text: Box<str>) {
         let col_u16 = col.min(u16::MAX as usize) as u16;
         match self

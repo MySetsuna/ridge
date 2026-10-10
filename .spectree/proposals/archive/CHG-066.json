@@ -1,0 +1,22 @@
+{
+  "changeId": "CHG-066",
+  "nodes": [
+    {
+      "id": "L3-RIDGE-COMMUNION-M53-PRODUCT",
+      "level": "L3",
+      "title": "Communion sidebar and review product path",
+      "parent": "L2-RIDGE-COMMUNION-M53",
+      "codeTargets": [
+        "src/lib/agent-chat/AgentChatPanel.svelte",
+        "src/lib/agent-chat/DefaultWiredAgentChat.svelte",
+        "src/lib/agent-chat/AgentSessionPicker.svelte",
+        "src/lib/agent-chat/agentEvents.ts",
+        "src-tauri/src/bridge/acp_bridge.rs",
+        "src-tauri/src/lib.rs",
+        "src/routes/+layout.svelte",
+        "src/lib/agent-chat/providerRestore.ts",
+        "src-tauri/Cargo.toml"
+      ]
+    }
+  ]
+}

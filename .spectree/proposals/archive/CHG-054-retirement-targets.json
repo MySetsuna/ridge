@@ -1,0 +1,23 @@
+{
+  "changeId": "CHG-054",
+  "nodes": [
+    {
+      "id": "L4-OBS-STATIC-MOBILE-ASSETS-INDEX-BPFF1VZX-CSS-77c42f58",
+      "level": "L4",
+      "parent": "L3-OBS-STATIC-MOBILE-ASSETS-5cc42e7a",
+      "title": "index-BPfF1vzx.css",
+      "codeTargets": [
+        "static/mobile/assets/index-BPfF1vzx.css"
+      ]
+    },
+    {
+      "id": "L4-OBS-STATIC-MOBILE-ASSETS-INDEX-CM2SAWTC-JS-6cebe785",
+      "level": "L4",
+      "parent": "L3-OBS-STATIC-MOBILE-ASSETS-5cc42e7a",
+      "title": "index-Cm2sAwTC.js",
+      "codeTargets": [
+        "static/mobile/assets/index-Cm2sAwTC.js"
+      ]
+    }
+  ]
+}

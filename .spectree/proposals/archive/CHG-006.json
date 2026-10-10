@@ -1,0 +1,15 @@
+{
+  "changeId": "CHG-006",
+  "nodes": [
+    {
+      "id": "L4-OBS-SRC-TAURI-TAURI-CONF-JSON-fa09f1da",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-TAURI-6056d0ef",
+      "title": "tauri.conf.json",
+      "codeTargets": [
+        "src-tauri/tauri.conf.json"
+      ],
+      "body": "桌面 bundle 從已納版控的 ../docs 讀取文檔，映射到包內 static/docs；不得依賴不存在的 ../static/docs。"
+    }
+  ]
+}

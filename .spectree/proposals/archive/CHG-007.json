@@ -1,0 +1,109 @@
+{
+  "changeId": "CHG-007",
+  "nodes": [
+    {
+      "id": "L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKSPANS-TS-9a94cb0a",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-b1abe747",
+      "title": "linkSpans.ts",
+      "codeTargets": ["packages/remote/src/shared/terminal/linkSpans.ts"],
+      "body": "Terminal plain-text link scanning exposes only two actionable classes: structurally valid HTTP(S) web URLs and file-path candidates. Matching uses strict token boundaries, excludes file URLs and non-web schemes, trims sentence delimiters from the visual range, and remains a lazy visible-row scan with no filesystem IO. A path candidate is not actionable until the origin filesystem proves that the CWD/workspace-resolved target is an existing file."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKAFFORDANCE-TS-6447eb98",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-b1abe747",
+      "title": "linkAffordance.ts",
+      "codeTargets": ["packages/remote/src/shared/terminal/linkAffordance.ts"],
+      "body": "Terminal link affordances classify only web URLs and file paths. Unsafe or unsupported OSC-8 URIs never receive pointer affordances; path targets resolve against pane CWD/workspace context before validation."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-LINKOPENHOST-TS-660b7093",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-b1abe747",
+      "title": "linkOpenHost.ts",
+      "codeTargets": ["packages/remote/src/shared/terminal/linkOpenHost.ts"],
+      "body": "Opening accepts only credential-free HTTP(S) URLs or existing files inside the pane CWD/workspace scope. File proof is origin-bound, timeout-limited, deduplicated, negatively cached, and size-bounded; directories, missing paths, and out-of-scope paths remain inert."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PORTS-TS-c735d638",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-b1abe747",
+      "title": "ports.ts",
+      "codeTargets": ["packages/remote/src/shared/terminal/ports.ts"],
+      "body": "Host ports provide an optional asynchronous, origin-aware file validation capability used only for a hovered path candidate. Validation shares the same request shape and cache as opening, keeping TerminalManager portable and free of filesystem dependencies."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MANAGER-TS-8c721fa3",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-b1abe747",
+      "title": "manager.ts",
+      "codeTargets": ["packages/remote/src/shared/terminal/manager.ts"],
+      "body": "TerminalManager paints link affordance only for validated HTTP(S) links or origin-proven workspace files. Path validation starts only on modifier-hover, ignores stale async results, and reuses bounded probe caches. DOM hover underlines use one CSS-pixel thickness and device-aligned continuous geometry."
+    },
+    {
+      "id": "L4-OBS-SRC-LIB-TERMINAL-HOSTPORTS-TS-86368fac",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-TERMINAL-033d05be",
+      "title": "hostPorts.ts",
+      "codeTargets": ["src/lib/terminal/hostPorts.ts"],
+      "body": "Desktop terminal host ports resolve the captured pane origin once and expose the same origin-bound file proof to hover validation and click opening."
+    },
+    {
+      "id": "L4-OBS-SRC-LIB-UTILS-LINKRESOLVER-TS-c376fe90",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-UTILS-2c402078",
+      "title": "linkResolver.ts",
+      "codeTargets": ["src/lib/utils/linkResolver.ts"],
+      "body": "Terminal file proof is reusable without opening. It accepts only existing non-directory files within the request CWD/workspace boundary and shares the bounded origin-aware cache used by the final open operation."
+    },
+    {
+      "id": "L4-OBS-SRC-REMOTE-MAIN-TS-bc93d0e5",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-REMOTE-2674e0ea",
+      "title": "main.ts",
+      "codeTargets": ["src/remote/main.ts"],
+      "body": "The Remote terminal host bridge supports non-opening file validation through the connected origin while preserving URL opening in the browser."
+    },
+    {
+      "id": "L4-OBS-SRC-REMOTE-MAINAPP-SVELTE-578650c7",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-REMOTE-2674e0ea",
+      "title": "MainApp.svelte",
+      "codeTargets": ["src/remote/MainApp.svelte"],
+      "body": "Remote file-link validation probes the connected workspace origin, distinguishes files from directories, returns a boolean without navigation, and shares bounded proof results with click opening."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-TERM-SRC-RENDER-RENDERER-RS-ccf553de",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-TERM-SRC-RENDER-0f92aefb",
+      "title": "renderer.rs",
+      "codeTargets": ["packages/ridge-term/src/render/renderer.rs"],
+      "body": "The native hyperlink pass draws only structurally safe HTTP(S) OSC-8 spans; unsupported schemes and malformed targets retain text but no hyperlink underline."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-TERM-SRC-RENDER-WEBGPU-RS-2cc18745",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-TERM-SRC-RENDER-0f92aefb",
+      "title": "webgpu.rs",
+      "codeTargets": ["packages/ridge-term/src/render/webgpu.rs"],
+      "body": "WebGPU hyperlink underlines are one CSS pixel thick and use device-pixel-aligned continuous rectangles. Active wallpaper is viewport-fixed: wallpaper mode disables composited scroll-copy, repairs every repainted row from the global wallpaper coordinate system, and leaves default TUI cells transparent while preserving explicit TUI cell backgrounds."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-REMOTE-SRC-NET-RS-6412510e",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-REMOTE-SRC-e755ff2a",
+      "title": "net.rs",
+      "codeTargets": ["packages/ridge-remote/src/net.rs"],
+      "body": "LAN address discovery returns every usable local IPv4 in deterministic reachability priority, preferring conventional physical-LAN ranges over overlay and virtual-network ranges while retaining all candidates for explicit selection and TLS SAN generation."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-REMOTE-SRC-MDNS-RS-6f4472a5",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-REMOTE-SRC-e755ff2a",
+      "title": "mdns.rs",
+      "codeTargets": ["packages/ridge-remote/src/mdns.rs"],
+      "body": "During the bounded pairing window, DNS-SD announcements are sent on every discovered LAN IPv4 to the RFC 6762 multicast group. Each announcement carries an SRV target and matching A record for that interface so clients on Ethernet, Wi-Fi, VPN, or overlay interfaces can resolve a reachable endpoint."
+    }
+  ]
+}

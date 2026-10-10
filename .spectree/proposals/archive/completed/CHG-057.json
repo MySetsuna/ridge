@@ -1,0 +1,126 @@
+{
+  "changeId": "CHG-057",
+  "nodes": [
+    {
+      "id": "L4-OBS-SRC-LIB-AGENT-CHAT-DEFAULT-WIRED-SVELTE-M3",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-AGENT-CHAT",
+      "title": "DefaultWiredAgentChat.svelte",
+      "codeTargets": ["src/lib/agent-chat/DefaultWiredAgentChat.svelte"],
+      "body": "Tauri-aware wrapper around AgentChatPanel."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-TESTS-M3-WIRE-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "m3_wire.rs",
+      "testTargets": ["packages/ridge-acp/tests/m3_wire.rs"],
+      "body": "M3 wire-shape tests."
+    },
+    {
+      "id": "L4-OBS-SRC-LIB-AGENT-CHAT-AGENT-EVENTS-TS-M41",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-AGENT-CHAT",
+      "title": "agentEvents.ts (M4.1)",
+      "codeTargets": ["src/lib/agent-chat/agentEvents.ts"],
+      "testTargets": ["src/lib/agent-chat/commutationEvents.test.ts"],
+      "body": "M4.1 CommutationEvent reducer."
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-BRIDGE-ACP-BRIDGE-RS-a1b2c3d4",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-TAURI-SRC-COMMANDS-7ed73efa",
+      "title": "acp_bridge.rs (M3+M4)",
+      "codeTargets": ["src-tauri/src/bridge/acp_bridge.rs"],
+      "body": "Bridge + commutation + provider adapter wiring."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-PROVIDER-ADAPTER-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "provider_adapter.rs",
+      "codeTargets": ["packages/ridge-acp/src/provider_adapter.rs"],
+      "body": "M4 provider routing."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-PROVIDER-RS-M3",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "provider.rs (M3 Effort + M4 OpencodeAcp)",
+      "codeTargets": ["packages/ridge-acp/src/provider.rs"],
+      "body": "Adds Effort enum + ProviderKind::OpencodeAcp."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-SESSION-RS-M3",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "session.rs (M3 provider getter)",
+      "codeTargets": ["packages/ridge-acp/src/session.rs"],
+      "body": "Adds AgentSession::provider() getter."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-SPAWN-RS-M3",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "spawn.rs (M3 Framing field)",
+      "codeTargets": ["packages/ridge-acp/src/spawn.rs"],
+      "body": "Adds framing field to SpawnSpec."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-LIB-RS-M3",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "lib.rs (M3 closeout)",
+      "codeTargets": ["packages/ridge-acp/src/lib.rs"],
+      "body": "lib.rs mod declaration."
+    },
+    {
+      "id": "L4-OBS-SRC-LIB-AGENT-CHAT-PICKER-SVELTE",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-AGENT-CHAT",
+      "title": "AgentSessionPicker.svelte",
+      "codeTargets": ["src/lib/agent-chat/AgentSessionPicker.svelte"],
+      "body": "M4 Desktop provider/model/effort picker."
+    },
+    {
+      "id": "L4-OBS-TESTS-M21-LIFECYCLE-ACCEPTANCE-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "m21_lifecycle_acceptance.rs",
+      "testTargets": ["packages/ridge-acp/tests/m21_lifecycle_acceptance.rs"],
+      "body": "Test fixture claims."
+    },
+    {
+      "id": "L4-OBS-TESTS-REAL-ACP-E2E-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "real_acp_e2e.rs",
+      "testTargets": ["packages/ridge-acp/tests/real_acp_e2e.rs"],
+      "body": "Test fixture claims."
+    },
+    {
+      "id": "L4-OBS-TESTS-TRANSPORT-LIFECYCLE-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "transport_lifecycle.rs",
+      "testTargets": ["packages/ridge-acp/tests/transport_lifecycle.rs"],
+      "body": "Test fixture claims."
+    },
+    {
+      "id": "L4-OBS-TESTS-COMMON-MOD-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "common/mod.rs",
+      "testTargets": ["packages/ridge-acp/tests/common/mod.rs"],
+      "body": "Test fixture claims."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-COMMUNION-RS-M41",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "communion.rs (M4.1)",
+      "codeTargets": ["packages/ridge-acp/src/communion.rs"],
+      "body": "M4.1 LeadFinal aggregation."
+    }
+  ]
+}

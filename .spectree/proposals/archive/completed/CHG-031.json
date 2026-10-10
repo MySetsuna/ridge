@@ -1,0 +1,33 @@
+{
+  "changeId": "CHG-031",
+  "patch": {
+    "changeId": "CHG-031",
+    "nodes": [
+      {
+        "id": "L2-PROTO-001",
+        "level": "L2",
+        "title": "Terminal Wire Protocol v1",
+        "parent": "L1-PROJECT-001"
+      },
+      {
+        "id": "L2-REMOTE-001",
+        "level": "L2",
+        "title": "Remote Session Lifecycle",
+        "parent": "L1-PROJECT-001"
+      },
+      {
+        "id": "L2-TERM-001",
+        "level": "L2",
+        "title": "Terminal Rendering Contract",
+        "parent": "L1-PROJECT-001"
+      },
+      {
+        "id": "L2-PERF-001",
+        "level": "L2",
+        "title": "Terminal / Remote Performance",
+        "parent": "L1-PROJECT-001"
+      }
+    ]
+  },
+  "createdAt": "2026-09-15T16:54:19.655Z"
+}

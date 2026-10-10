@@ -1,0 +1,45 @@
+{
+  "changeId": "CHG-010",
+  "nodes": [
+    {
+      "id": "L4-OBS-SRC-REMOTE-LIB-TERMINALCANVAS-SVELTE-7a29f415",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-REMOTE-LIB-f2853d2d",
+      "title": "TerminalCanvas.svelte",
+      "codeTargets": ["src/remote/lib/TerminalCanvas.svelte"],
+      "body": "Mobile terminal taps cancel the browser's compatibility mouse default before focusing the hidden IME sink, so the synthetic click cannot immediately steal focus and collapse the soft keyboard. Explicit refresh waits for current viewport geometry, force-claims the measured pane grid, resizes the shared host surface, and redraws the active pane. Older scrollback is prepended only through a synchronous cursor-checked transaction."
+    },
+    {
+      "id": "L4-OBS-SRC-REMOTE-MAINAPP-SVELTE-578650c7",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-REMOTE-2674e0ea",
+      "title": "MainApp.svelte",
+      "codeTargets": ["src/remote/MainApp.svelte"],
+      "body": "Remote mobile refresh settles the current VisualViewport before remeasuring and re-rendering the active terminal. Lazy scrollback fetch, validation, prepend, and cursor advancement form one latest-pane transaction: stale pages never mutate a kernel and failed prepends never advance the transport cursor."
+    },
+    {
+      "id": "L4-OBS-SRC-REMOTE-LIB-SCROLLBACKWORKER-TS-bc7989d4",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-REMOTE-LIB-f2853d2d",
+      "title": "scrollbackWorker.ts",
+      "codeTargets": ["src/remote/lib/scrollbackWorker.ts"],
+      "body": "Scrollback worker validation preserves page bytes exactly and transfers their ArrayBuffer back without a UTF-8 decode/re-encode round trip. Replies must match pane and sequence identity before the page can enter the atomic prepend transaction; malformed or stale pages settle independently."
+    },
+    {
+      "id": "L4-OBS-SRC-REMOTE-LIB-CLOUDREMOTE-TS-090ce654",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-REMOTE-LIB-f2853d2d",
+      "title": "cloudRemote.ts",
+      "codeTargets": ["src/remote/lib/cloudRemote.ts"],
+      "body": "Cloud Remote exposes one lazy older-history page per pane at a time. A page advances its sequence cursor only inside a synchronous commit callback after the expected cursor is revalidated and kernel prepend succeeds; discard releases the lane without advancing."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-WSREMOTE-TS-7bf1c73c",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-a4b7a712",
+      "title": "wsRemote.ts",
+      "codeTargets": ["packages/remote/src/shared/transport/wsRemote.ts"],
+      "body": "LAN and cloud links share the PendingScrollbackPage atomic commit contract. Cursor validation, synchronous kernel mutation, cursor advancement, and in-flight release occur as one non-interleavable operation; stale, duplicate, failed, or discarded pages cannot alter cursor state."
+    }
+  ]
+}

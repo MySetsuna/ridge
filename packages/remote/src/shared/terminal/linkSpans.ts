@@ -33,6 +33,8 @@ interface KernelLike {
   /** Authoritative soft-wrap bit from the terminal kernel. Older bundles
    *  omit this method; recompute() keeps a conservative full-row fallback. */
   rowWrapped?: (row: number) => boolean;
+  dumpWrappedText?: () => Array<{ row: number; text: string; wrapped: boolean }>;
+  textOffsetToCell?: (row: number, offset: number) => number;
 }
 
 /** 已知文本扩展名白名单。命中后允许"无分隔符的裸文件名"被识别为路径。
@@ -152,17 +154,6 @@ function scanRow(row: number, line: string): LinkSpan[] {
   return spans;
 }
 
-const URL_CONTINUATION_RE = /^[^\s<>"'`{}|\\^[\]]+/;
-const PATH_CONTINUATION_RE = /^[^\s<>"'`|?*]+/;
-
-/** Return the contiguous continuation at the start of a soft-wrapped row. */
-function continuationPrefix(line: string, kind: LinkSpanKind): string {
-  const match = kind === 'url'
-    ? URL_CONTINUATION_RE.exec(line)
-    : PATH_CONTINUATION_RE.exec(line);
-  return match?.[0] ?? '';
-}
-
 /** Strict, allocation-bounded web target validation shared by scanning/opening. */
 export function isStrictWebUrl(href: string): boolean {
   if (!href || href.length > 2_048 || /[\\\u0000-\u0020\u007f]/.test(href)) return false;
@@ -195,121 +186,32 @@ function rowIsSoftWrapped(
   return cols > 0 && line.length >= cols;
 }
 
-/**
- * Join a plain-text link that crosses one or more terminal soft-wrap rows.
- * Each visual segment keeps its own hit-test coordinates while every segment
- * carries the same complete target text for Ctrl+click/open.
- */
-function mergeWrappedSpan(
-  span: LinkSpan,
-  lines: string[],
-  kernel: KernelLike,
-  limit: number,
-): LinkSpan[] {
-  const segments: LinkSpan[] = [{ ...span }];
-  let full = span.text;
-  let row = span.row;
-  let end = span.c1;
+interface WrappedRow { row: number; text: string; wrapped: boolean; }
 
-  while (row + 1 < limit) {
-    const currentLine = lines[row]!;
-    if (!rowIsSoftWrapped(kernel, row, currentLine)) break;
-    // `pushSpan` trims sentence punctuation from the hit range. If the
-    // terminal wrapped exactly after a valid URL character such as `,` or
-    // `)`, `end` therefore falls one or more cells short of the visual row
-    // edge even though the link continues on the next row. Only treat a
-    // punctuation-only suffix as part of the link; text after a link still
-    // correctly blocks continuation.
-    const trimmedSuffix = currentLine.slice(end);
-    const atVisualEdge = end >= currentLine.length;
-    const punctuationSuffix = /^[.,;:!?)\]}>]+$/.test(trimmedSuffix);
-    if (!atVisualEdge && !punctuationSuffix) break;
-    // The scanner trimmed this suffix from the visual hit range, but it is
-    // still part of the logical target when the next row continues it.
-    if (punctuationSuffix) full += trimmedSuffix;
-    const nextRow = row + 1;
-    const continuation = continuationPrefix(lines[nextRow]!, span.kind);
-    if (!continuation) break;
-    full += continuation;
-    segments.push({
-      row: nextRow,
-      c0: 0,
-      c1: continuation.length,
-      text: '',
-        kind: span.kind,
-        linkId: span.linkId,
-    });
-    row = nextRow;
-    end = continuation.length;
-  }
-
-  const trimmed = trimTrailingPunct(full);
-  if (!trimmed) return [];
-  // A closing punctuation mark may be on the final visual segment. Shrink
-  // only that segment so the underline/click range never includes it.
-  let drop = full.length - trimmed.length;
-  for (let i = segments.length - 1; i >= 0 && drop > 0; i--) {
-    const segment = segments[i]!;
-    const length = segment.c1 - segment.c0;
-    const remove = Math.min(length, drop);
-    segment.c1 -= remove;
-    drop -= remove;
-  }
-  const visible = segments.filter((segment) => segment.c1 > segment.c0);
-  for (const segment of visible) segment.text = trimmed;
-  return visible;
+function wrappedTextRows(kernel: KernelLike): WrappedRow[] {
+  if (kernel.dumpWrappedText) return kernel.dumpWrappedText();
+  return kernel.dumpVisibleText().slice(0, kernel.rows()).map((line, row) => {
+    const text = typeof line === 'string' ? line : '';
+    return { row, text, wrapped: rowIsSoftWrapped(kernel, row, text) };
+  });
 }
 
-function visibleTextLines(kernel: KernelLike): string[] | null {
-  let rowCount: number;
-  let lines: unknown[];
-  try {
-    rowCount = kernel.rows();
-    lines = kernel.dumpVisibleText();
-  } catch {
-    return null;
-  }
-  const limit = Math.min(rowCount, lines.length);
-  return Array.from({ length: limit }, (_, row) =>
-    typeof lines[row] === 'string' ? (lines[row] as string) : '',
-  );
-}
-
-function addIndexedSpan(
-  byRow: Map<number, LinkSpan[]>,
-  coveredByContinuation: Map<number, Array<{ c0: number; c1: number }>>,
-  span: LinkSpan,
-): void {
-  const covered = coveredByContinuation.get(span.row);
-  if (covered?.some((range) => span.c0 < range.c1 && span.c1 > range.c0)) return;
-  const rowSpans = byRow.get(span.row) ?? [];
-  rowSpans.push(span);
-  byRow.set(span.row, rowSpans);
-}
-
-function indexVisibleRow(
-  row: number,
-  textLines: string[],
-  kernel: KernelLike,
-  limit: number,
-  byRow: Map<number, LinkSpan[]>,
-  coveredByContinuation: Map<number, Array<{ c0: number; c1: number }>>,
-): void {
-  const line = textLines[row]!;
-  if (!line) return;
-  for (const span of scanRow(row, line)) {
-    const merged = mergeWrappedSpan(
-      { ...span, linkId: `${span.row}:${span.c0}:${span.kind}` },
-      textLines,
-      kernel,
-      limit,
-    );
-    for (const segment of merged) {
-      addIndexedSpan(byRow, coveredByContinuation, segment);
-      if (segment.row === span.row) continue;
-      const ranges = coveredByContinuation.get(segment.row) ?? [];
-      ranges.push({ c0: segment.c0, c1: segment.c1 });
-      coveredByContinuation.set(segment.row, ranges);
+/** Scan one logical line before projecting its links onto visual segments. */
+function indexLogicalLine(rows: WrappedRow[], visibleRows: number, byRow: Map<number, LinkSpan[]>): void {
+  const text = rows.map((row) => row.text).join('');
+  for (const span of scanRow(rows[0]!.row, text)) {
+    const linkId = `${rows[0]!.row}:${span.c0}:${span.kind}`;
+    let offset = 0;
+    for (const row of rows) {
+      const c0 = Math.max(0, span.c0 - offset);
+      let c1 = Math.min(row.text.length, span.c1 - offset);
+      if (c1 > c0) c1 = c0 + trimTrailingPunct(row.text.slice(c0, c1)).length;
+      if (row.row >= 0 && row.row < visibleRows && c1 > c0) {
+        const segments = byRow.get(row.row) ?? [];
+        segments.push({ ...span, row: row.row, c0, c1, linkId });
+        byRow.set(row.row, segments);
+      }
+      offset += row.text.length;
     }
   }
 }
@@ -334,25 +236,25 @@ export class LinkSpanIndex {
   /** 同步重建可见区索引。kernel.dumpVisibleText 返回 rows() 行数组。 */
   recompute(kernel: KernelLike): void {
     this.byRow.clear();
-    const textLines = visibleTextLines(kernel);
-    if (!textLines) {
-      this.dirty = false;
-      return;
+    let lines: WrappedRow[];
+    try { lines = wrappedTextRows(kernel); }
+    catch { this.dirty = false; return; }
+    let paragraph: WrappedRow[] = [];
+    for (const line of lines) {
+      paragraph.push(line);
+      if (!line.wrapped) {
+        indexLogicalLine(paragraph, kernel.rows(), this.byRow);
+        paragraph = [];
+      }
     }
-    const limit = textLines.length;
-    const coveredByContinuation = new Map<number, Array<{ c0: number; c1: number }>>();
-
-    for (let row = 0; row < limit; row++) {
-      indexVisibleRow(
-        row,
-        textLines,
-        kernel,
-        limit,
-        this.byRow,
-        coveredByContinuation,
-      );
-    }
-    for (const spans of this.byRow.values()) {
+    if (paragraph.length) indexLogicalLine(paragraph, kernel.rows(), this.byRow);
+    for (const [row, spans] of this.byRow) {
+      if (kernel.textOffsetToCell) {
+        for (const span of spans) {
+          span.c0 = kernel.textOffsetToCell(row, span.c0);
+          span.c1 = kernel.textOffsetToCell(row, span.c1);
+        }
+      }
       spans.sort((a, b) => a.c0 - b.c0);
     }
     this.dirty = false;

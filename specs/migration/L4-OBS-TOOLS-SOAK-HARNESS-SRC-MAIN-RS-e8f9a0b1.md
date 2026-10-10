@@ -3,7 +3,7 @@ id: L4-OBS-TOOLS-SOAK-HARNESS-SRC-MAIN-RS-e8f9a0b1
 level: L4
 parent: L3-OBS-CARGO-TOML-2e9d962a
 title: soak-harness main.rs
-status: DRAFT
+status: LOCKED
 origin: observed
 migration_state: CONFIRMED
 confidence: INFERRED

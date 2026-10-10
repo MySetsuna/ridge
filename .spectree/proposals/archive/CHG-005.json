@@ -1,0 +1,43 @@
+{
+  "changeId": "CHG-005",
+  "nodes": [
+    {
+      "id": "L4-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDHOSTSTORE-TS-86f442a0",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-REMOTE-CLOUD-643692b0",
+      "title": "cloudHostStore.ts",
+      "codeTargets": [
+        "src/lib/remote/cloud/cloudHostStore.ts"
+      ],
+      "testTargets": [
+        "src/lib/remote/cloud/cloudControllerBoot.integration.test.ts",
+        "src/lib/remote/cloud/cloudControllerBoot.test.ts",
+        "src/lib/remote/cloud/cloudHostStore.test.ts",
+        "src/lib/remote/cloud/cloudHostTopologyLink.test.ts",
+        "src/lib/remote/cloud/sharedWorkspaceProjection.behavior.test.ts",
+        "src/lib/remote/cloud/sharedWorkspaceProjection.test.ts"
+      ],
+      "body": "Cloud Host 接收 Remote 內核定義的平鋪 RPC 參數；桌面 WebView 經單一 dispatch_remote_invoke(method, args) shell 端口接回既有 remote dispatcher。unscoped 與 workspace-scoped 路徑一致，不引入 Tauri command 專用參數形狀。"
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-SRC-REMOTE-HOST-IMPL-RS-5d15687d",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-TAURI-SRC-bcb33161",
+      "title": "remote_host_impl.rs",
+      "codeTargets": [
+        "src-tauri/src/remote_host_impl.rs"
+      ],
+      "body": "提供單一桌面 shell 端口 dispatch_remote_invoke(method, args)，復用既有 dispatch_invoke_jsonrpc。core-migrated 命令進 ridge_core::dispatch，legacy 命令仍受同一 remote allowlist 約束。"
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-SRC-LIB-RS-eabcebd0",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-TAURI-SRC-bcb33161",
+      "title": "lib.rs",
+      "codeTargets": [
+        "src-tauri/src/lib.rs"
+      ],
+      "body": "註冊 dispatch_remote_invoke 作桌面 shell 的通用 Remote RPC 入口；不得暴露 host-only command，實際 admission 仍由既有 remote dispatcher 與 ridge-core capability gate 決定。"
+    }
+  ]
+}

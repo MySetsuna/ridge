@@ -1,0 +1,15 @@
+{
+  "changeId": "CHG-048",
+  "patch": {
+    "changeId": "CHG-048",
+    "nodes": [
+      {
+        "id": "L3-OBS-REMOTE-RESUME-MD-12c0a4d8",
+        "level": "L3",
+        "title": "REMOTE-RESUME.md",
+        "parent": "L2-REMOTE-001"
+      }
+    ]
+  },
+  "createdAt": "2026-09-21T08:23:33.803Z"
+}

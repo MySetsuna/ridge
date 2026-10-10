@@ -1,0 +1,54 @@
+{
+  "changeId": "CHG-054",
+  "nodes": [
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-CLI-TESTS-KERNEL-LIFECYCLE-E2E-RS",
+      "level": "L4",
+      "title": "kernel_lifecycle_e2e.rs",
+      "parent": "L3-OBS-PACKAGES-RIDGE-CLI-b39550a8",
+      "codeTargets": [
+        "packages/ridge-cli/tests/kernel_lifecycle_e2e.rs"
+      ]
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-REMOTE-SRC-LAN-TRUST-TESTS-RS",
+      "level": "L4",
+      "title": "lan_trust_tests.rs",
+      "parent": "L3-OBS-PACKAGES-RIDGE-REMOTE-SRC-e755ff2a",
+      "codeTargets": [
+        "packages/ridge-remote/src/lan_trust_tests.rs"
+      ]
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-REMOTE-SRC-LAN-TRUST-TESTS-RS-c7d8e9f0",
+      "level": "L4",
+      "title": "lan_trust_tests.rs",
+      "parent": "L3-OBS-PACKAGES-RIDGE-REMOTE-SRC-e755ff2a",
+      "codeTargets": [
+        "packages/ridge-remote/src/lan_trust_tests.rs"
+      ]
+    },
+    {
+      "id": "L4-OBS-SRC-LIB-AGENT-CHAT-AGENT-EVENTS-TEST-TS",
+      "level": "L4",
+      "title": "agentEvents.test.ts",
+      "parent": "L3-OBS-SRC-LIB-AGENT-CHAT",
+      "codeTargets": [
+        "src/lib/agent-chat/agentEvents.test.ts"
+      ]
+    },
+    {
+      "id": "L4-OBS-SRC-LIB-AGENT-CHAT-LISTENER-LIFECYCLE-TEST-TS-M42",
+      "level": "L4",
+      "title": "listenerLifecycle.test.ts",
+      "parent": "L3-OBS-SRC-LIB-AGENT-CHAT",
+      "codeTargets": [
+        "src/lib/agent-chat/listenerLifecycle.test.ts"
+      ]
+    }
+  ],
+  "remove": [
+    "L4-OBS-STATIC-MOBILE-ASSETS-INDEX-BPFF1VZX-CSS-77c42f58",
+    "L4-OBS-STATIC-MOBILE-ASSETS-INDEX-CM2SAWTC-JS-6cebe785"
+  ]
+}

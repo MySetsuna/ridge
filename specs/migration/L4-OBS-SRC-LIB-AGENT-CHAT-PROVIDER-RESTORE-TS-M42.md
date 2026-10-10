@@ -3,7 +3,7 @@ id: L4-OBS-SRC-LIB-AGENT-CHAT-PROVIDER-RESTORE-TS-M42
 level: L4
 parent: L3-OBS-SRC-LIB-AGENT-CHAT
 title: providerRestore.ts
-status: DRAFT
+status: LOCKED
 origin: observed
 migration_state: CONFIRMED
 confidence: INFERRED

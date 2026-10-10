@@ -381,6 +381,17 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(fixture.pane.feedDeferredBytes).toBe(0);
 	});
 
+	it('removes stale shell history when raw or native output acquires TUI keyboard ownership', () => {
+		const { manager, fixture, internal } = makeManager();
+		Object.assign(fixture.kernel, { isTuiKeyboardLease: () => true });
+		manager.enqueueDeltaFrame(PANE, new Uint8Array([1]));
+		internal._drainQueuedDeltaFrames([fixture.pane]);
+		expect(fixture.handle.clearHistoryOverlay).toHaveBeenCalledOnce();
+		fixture.handle.clearHistoryOverlay.mockClear();
+		manager.feed(PANE, new Uint8Array([2]));
+		expect(fixture.handle.clearHistoryOverlay).toHaveBeenCalledOnce();
+	});
+
 	it('drains native deltas on the frame hub, paints output, and freezes only a hinted TUI cursor', () => {
 		const { manager, fixture, internal } = makeManager();
 		fixture.kernel.applyDeltaFrame.mockReturnValueOnce(true);

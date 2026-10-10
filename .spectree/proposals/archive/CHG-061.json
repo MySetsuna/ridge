@@ -1,0 +1,14 @@
+{
+  "changeId": "CHG-061",
+  "nodes": [
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-TESTS-M3-WIRE-RS",
+      "level": "L4",
+      "title": "m3_wire.rs",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "codeTargets": [
+        "packages/ridge-acp/tests/m3_wire.rs"
+      ]
+    }
+  ]
+}

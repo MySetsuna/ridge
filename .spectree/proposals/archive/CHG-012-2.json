@@ -1,0 +1,21 @@
+{
+  "changeId": "CHG-012",
+  "nodes": [
+    {
+      "id": "L4-OBS-SRC-REMOTE-MAINAPP-SVELTE-578650c7",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-REMOTE-2674e0ea",
+      "title": "MainApp.svelte",
+      "codeTargets": ["src/remote/MainApp.svelte"],
+      "body": "Remote mobile refresh settles and claims current viewport geometry, discards stale queued mirror bytes, then explicitly requests a canonical full-screen resync for the currently active pane. A first-entry switch from a shell to an already-running TUI can therefore recover its complete present screen on demand. Lazy scrollback commits remain atomic and independent."
+    },
+    {
+      "id": "L4-OBS-SRC-LIB-COMPONENTS-RIDGEPANE-SVELTE-c57efa11",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-COMPONENTS-28f39e09",
+      "title": "RidgePane.svelte",
+      "codeTargets": ["src/lib/components/RidgePane.svelte"],
+      "body": "A desktop context menu opened while an inline TUI signal is live grants that pane a bounded host-interaction lease. Choosing a non-terminal-replacing menu action renews the lease and restores pane focus, so a visible TUI cursor or heuristic decay during menu use cannot route subsequent input through shell mode. Plain shell context menus never create the lease."
+    }
+  ]
+}

@@ -3,7 +3,7 @@ id: L3-OBS-SRC-LIB-AGENT-CHAT
 level: L3
 parent: L2-OBS-SRC-25a66342
 title: src/lib/agent-chat module
-status: DRAFT
+status: LOCKED
 origin: observed
 migration_state: CONFIRMED
 confidence: INFERRED

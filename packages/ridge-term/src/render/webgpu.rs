@@ -883,6 +883,7 @@ impl WebGpuPaneBackend {
             // and the per-cell char encoding for the common case of code
             // and log output, keeping the tight loop minimal.
             let cluster_text = Self::cluster_text_for(row, render_path, col);
+            if cluster_text == Some("") { continue; }
             let mut ch_buf = [0u8; 4];
             let glyph_text: &str = match cluster_text {
                 Some(text) => text,

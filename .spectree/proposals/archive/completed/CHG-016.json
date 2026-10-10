@@ -1,0 +1,16 @@
+{
+  "changeId": "CHG-016",
+  "nodes": [
+    {
+      "id": "L4-OBS-CLAUDE-SETTINGS-LOCAL-JSON-fca16cae",
+      "level": "L4",
+      "parent": "L3-OBS-CLAUDE-e026f56c",
+      "title": "settings.local.json",
+      "codeTargets": [
+        ".claude/settings.local.json",
+        ".stcignore"
+      ],
+      "body": "Claude settings.local.json is machine-local permission state rather than product source. SpecTree excludes it through .stcignore so local permission churn cannot block unrelated semantic changes; the one-time transition remains explicitly authorized and traceable."
+    }
+  ]
+}

@@ -1784,6 +1784,8 @@ $effect(() => {
 
 	function onContainerKeyDown(e: KeyboardEvent) {
 		if (!alive || !attached) return;
+		const isTui = isTuiSticky();
+		if (isTui && historyOverlayOpen) closeHistoryOverlay();
 
 		// 1. §1.34 — shell-history overlay (wasm canvas) takes the
 		// highest priority while open. Modifier-free ↑ ↓ Enter → ←
@@ -1839,7 +1841,6 @@ $effect(() => {
 		// can be forwarded to the TUI instead of being intercepted
 		// for host copy/paste. Ctrl+Shift+C/V remain host escape
 		// hatches regardless of TUI state.
-		const isTui = isTuiSticky();
 
 		// 2. Host-priority shortcuts (paste / copy-with-selection /
 		// fullscreen / settings). When isTui is true, plain Ctrl+V

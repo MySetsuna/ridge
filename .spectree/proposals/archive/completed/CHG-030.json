@@ -1,0 +1,27 @@
+{
+  "changeId": "CHG-030",
+  "patch": {
+    "changeId": "CHG-030",
+    "nodes": [
+      {
+        "id": "L4-OBS-PACKAGES-RIDGE-KERNEL-SRC-SERVER-RS-ec65c719",
+        "level": "L4",
+        "title": "kernel server.rs",
+        "parent": "L3-OBS-PACKAGES-RIDGE-KERNEL-SRC-fc45dbfb"
+      },
+      {
+        "id": "L4-OBS-SRC-TAURI-SRC-COMMANDS-PROJECT-RS-e54d0d95",
+        "level": "L4",
+        "title": "src-tauri/src/commands/project.rs",
+        "parent": "L3-OBS-SRC-TAURI-6056d0ef"
+      },
+      {
+        "id": "TEST-OBS-PACKAGES-RIDGE-CLI-TESTS-KERNEL-LIFECYCLE-E2E-RS-e6b6fd06",
+        "level": "TEST",
+        "title": "packages/ridge-cli/tests/kernel_lifecycle_e2e.rs",
+        "parent": "L3-OBS-PACKAGES-RIDGE-CLI-b39550a8"
+      }
+    ]
+  },
+  "createdAt": "2026-09-15T16:14:02.988Z"
+}

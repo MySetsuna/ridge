@@ -1,0 +1,172 @@
+{
+  "changeId": "CHG-001",
+  "nodes": [
+    {
+      "id": "L1-PROJECT-001",
+      "level": "L1",
+      "title": "Ridge",
+      "body": "Ridge is a native terminal workbench built on Tauri v2 with a Rust backend and Svelte 5 frontend. It provides independent PTY panes, recursive split layouts, WebGPU terminal rendering, persistent workspaces, editor and Git tooling, search, and local or remote collaboration. Portable domain, terminal, tmux, MCP, and remote logic lives in Tauri-free workspace packages reused by desktop and headless hosts."
+    },
+    {
+      "id": "L2-OBS-CARGO-TOML-2e9d962a",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Rust Workspace and Build Profiles",
+      "body": "The root Cargo workspace defines Ridge Rust members, dependency resolution, and native versus WASM build profiles."
+    },
+    {
+      "id": "L2-OBS-CLAUDE-e026f56c",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Claude Project Automation",
+      "body": "Project-scoped Claude settings and workflows support repository automation; runtime worktree copies are excluded from the semantic graph."
+    },
+    {
+      "id": "L2-OBS-GITHUB-bdcc6a2a",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Continuous Integration and Releases",
+      "body": "GitHub workflows build, test, publish, and release Ridge artifacts and web surfaces."
+    },
+    {
+      "id": "L2-OBS-MCP-JSON-d5d3368a",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Developer MCP Configuration",
+      "body": "Repository-local MCP configuration declares development integrations without defining Ridge core behavior."
+    },
+    {
+      "id": "L2-OBS-OPENCODE-5e2dd251",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "OpenCode Project Automation",
+      "body": "Project-scoped OpenCode configuration supports repository development workflows."
+    },
+    {
+      "id": "L2-OBS-PACKAGE-JSON-7ae45ad1",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "JavaScript Application and Toolchain",
+      "body": "The root package manifest defines the Ridge application, workspace dependencies, and development, build, test, packaging, and release commands."
+    },
+    {
+      "id": "L2-OBS-PACKAGES-b28b1ed9",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Shared Packages and Portable Cores",
+      "body": "Workspace packages provide portable command, terminal, tmux, MCP, remote, CLI, kernel, and split-layout capabilities shared across desktop and headless hosts."
+    },
+    {
+      "id": "L2-OBS-PLAYWRIGHT-CONFIG-TS-f679bf1e",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Browser End-to-End Test Configuration",
+      "body": "Playwright configuration governs browser-level end-to-end coverage."
+    },
+    {
+      "id": "L2-OBS-PNPM-WORKSPACE-YAML-18ae0a0f",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "pnpm Workspace Boundaries",
+      "body": "The pnpm workspace manifest defines JavaScript package membership and controlled dependency build behavior."
+    },
+    {
+      "id": "L2-OBS-SCRIPTS-8c5967fd",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Build, Test, and Release Automation",
+      "body": "Repository scripts automate development startup, builds, packaging, remote deployment, protocol checks, performance measurement, and end-to-end verification."
+    },
+    {
+      "id": "L2-OBS-SITE-fbae041b",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Product Website",
+      "body": "The static product site documents Ridge, its releases, and its user-facing capabilities."
+    },
+    {
+      "id": "L2-OBS-SRC-25a66342",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Svelte Desktop Frontend",
+      "body": "The Svelte frontend owns workspace and pane presentation, terminal surfaces, editor and Git experiences, search, settings, and remote collaboration interfaces."
+    },
+    {
+      "id": "L2-OBS-SRC-TAURI-6056d0ef",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Tauri Desktop Host",
+      "body": "The Rust Tauri host owns native commands, PTY and pane engines, filesystem and database services, remote transports, teammate services, tray integration, and desktop lifecycle."
+    },
+    {
+      "id": "L2-OBS-STATIC-2053dbbf",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Bundled Static Assets",
+      "body": "Static assets provide application branding, fonts, images, and checked-in client resources; generated remote output is excluded."
+    },
+    {
+      "id": "L2-OBS-SVELTE-CONFIG-JS-6317e218",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "SvelteKit Application Configuration",
+      "body": "SvelteKit configuration defines application compilation and static deployment behavior."
+    },
+    {
+      "id": "L2-OBS-TSCONFIG-JSON-b55cdbef",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "TypeScript Compiler Configuration",
+      "body": "TypeScript configuration defines frontend and tooling type-check boundaries."
+    },
+    {
+      "id": "L2-OBS-VITE-CONFIG-JS-58e6f63d",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Desktop Frontend Build Configuration",
+      "body": "Vite configuration builds and serves the primary Ridge frontend."
+    },
+    {
+      "id": "L2-OBS-VITE-REMOTE-CONFIG-JS-9b1a8a99",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Remote Client Build Configuration",
+      "body": "The remote Vite configuration builds Ridge remote client surfaces."
+    },
+    {
+      "id": "L2-OBS-VITEST-CONFIG-TS-2ee894bf",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Unit Test Configuration",
+      "body": "Vitest configuration governs TypeScript and Svelte unit and integration tests."
+    },
+    {
+      "id": "L2-OBS-VSCODE-27bf0259",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Editor Workspace Configuration",
+      "body": "VS Code workspace settings provide repository-local development defaults."
+    },
+    {
+      "id": "L2-OBS-WDIO-CONF-TS-5210be1c",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Desktop Shell End-to-End Configuration",
+      "body": "WebdriverIO configuration governs native desktop shell end-to-end tests."
+    },
+    {
+      "id": "L2-OBS-WDIO-FRAME-CONF-TS-f2816bb9",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Frame Performance Test Configuration",
+      "body": "WebdriverIO frame configuration governs desktop rendering and frame-time measurements."
+    },
+    {
+      "id": "L2-OBS-WDIO-PERF-CONF-TS-cfedf6e3",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Stress and Performance Test Configuration",
+      "body": "WebdriverIO performance configuration governs stress and responsiveness measurements."
+    }
+  ]
+}

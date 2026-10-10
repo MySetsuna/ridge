@@ -1,0 +1,37 @@
+{
+  "changeId": "CHG-056",
+  "nodes": [
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-PROVIDER-RS-M3",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "provider.rs (M3 Effort)",
+      "codeTargets": ["packages/ridge-acp/src/provider.rs"],
+      "body": "Adds Effort enum + ModelSpec.effort field."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-SESSION-RS-M3",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "session.rs (M3 provider getter)",
+      "codeTargets": ["packages/ridge-acp/src/session.rs"],
+      "body": "Adds AgentSession::provider() getter."
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-BRIDGE-ACP-BRIDGE-RS-a1b2c3d4",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-TAURI-SRC-COMMANDS-7ed73efa",
+      "title": "acp_bridge.rs (M3 additions)",
+      "codeTargets": ["src-tauri/src/bridge/acp_bridge.rs"],
+      "body": "M3: provider_spec arg + Commutation commands + session save/load."
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-SRC-LIB-RS-WIRING-c2d3e4f5",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-TAURI-6056d0ef",
+      "title": "lib.rs (M3 wiring)",
+      "codeTargets": ["src-tauri/src/lib.rs"],
+      "body": "M3: registers 6 new bridge commands (acp_session_save/load, commutation_open/snapshot/prompt_lead)."
+    }
+  ]
+}

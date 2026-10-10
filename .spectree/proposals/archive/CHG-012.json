@@ -1,0 +1,29 @@
+{
+  "changeId": "CHG-012",
+  "nodes": [
+    {
+      "id": "L4-OBS-SRC-SERVICE-WORKER-TS-0aba05b7",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-25a66342",
+      "title": "service-worker.ts",
+      "codeTargets": ["src/service-worker.ts"],
+      "body": "Remote PWA version changes invalidate only versioned application caches. They never request deletion of browser credentials, device identity, controller trust keys, session state, or other user data; LAN and Cloud authorization therefore survive refresh and asset upgrades."
+    },
+    {
+      "id": "L4-OBS-SRC-REMOTE-MAIN-TS-bc93d0e5",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-REMOTE-2674e0ea",
+      "title": "main.ts",
+      "codeTargets": ["src/remote/main.ts"],
+      "body": "The Remote client preserves LAN session tokens and Cloud controller identity across refresh and PWA application updates. Cache lifecycle messages must not clear localStorage, sessionStorage, or IndexedDB; explicit logout and authorization failure remain the only credential-removal paths."
+    },
+    {
+      "id": "L4-OBS-SRC-REMOTE-LIB-TERMINALCANVAS-SVELTE-7a29f415",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-REMOTE-LIB-f2853d2d",
+      "title": "TerminalCanvas.svelte",
+      "codeTargets": ["src/remote/lib/TerminalCanvas.svelte"],
+      "body": "On every explicit mobile keyboard open, including the first pane before any switch, the terminal captures the authoritative IME cursor anchor before focus and recomputes keyboard avoidance after focus and viewport change. The active input cell is shifted above the soft keyboard without relying on prior pane initialization."
+    }
+  ]
+}

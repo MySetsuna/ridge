@@ -1,0 +1,15 @@
+{
+  "changeId": "CHG-040",
+  "patch": {
+    "changeId": "CHG-040",
+    "nodes": [
+      {
+        "id": "L3-OBS-SCRIPTS-8c5967fd",
+        "level": "L3",
+        "title": "scripts module",
+        "parent": "L2-OBS-SCRIPTS-8c5967fd"
+      }
+    ]
+  },
+  "createdAt": "2026-09-19T00:00:00.000Z"
+}

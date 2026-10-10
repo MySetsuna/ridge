@@ -255,7 +255,14 @@ pub fn snapshot(
         alternate,
         scrollback,
         scrollback_start: grid.scrollback.eviction_count(),
-        modes: modes_to_wire(modes),
+        modes: {
+            let mut wire = modes_to_wire(modes);
+            wire.push(ModeState {
+                mode: crate::term::delta::TUI_KEYBOARD_LEASE_MODE as u32,
+                on: grid.is_inline_tui_sticky(),
+            });
+            wire
+        },
         title,
         cwd,
         hyperlinks,
@@ -293,6 +300,11 @@ pub fn install_snapshot(grid: &mut Grid, modes: &mut Modes, snapshot: &TerminalS
         let _ = replacement.scrollback.push(row);
     }
     *grid = replacement;
+    if snapshot.modes.iter().any(|mode| {
+        mode.mode == crate::term::delta::TUI_KEYBOARD_LEASE_MODE as u32 && mode.on
+    }) {
+        grid.mark_inline_tui_sticky();
+    }
     *modes = modes_from_wire(&snapshot.modes);
     let active_cursor = match snapshot.active_screen {
         ScreenKind::Primary => snapshot.primary.cursor,
@@ -700,6 +712,28 @@ fn cursor_shape_from_wire(shape: CursorShape) -> KernelCursorShape {
 mod tests {
     use super::*;
     use crate::term::terminal::Terminal;
+
+    #[test]
+    fn snapshot_keeps_idle_tui_lease_until_a_shell_prompt() {
+        let mut source = Terminal::new(3, 12, 20);
+        source.feed(b"\x1b[?25l\x1b[?25h");
+        let mut mirror = Terminal::new(3, 12, 20);
+        mirror.apply_remote_v2_snapshot(&source.remote_v2_snapshot(1, "".into(), "".into()));
+        assert!(mirror.grid().is_inline_tui_sticky());
+        source.feed(b"\x1b]633;A\x07");
+        mirror.apply_remote_v2_snapshot(&source.remote_v2_snapshot(2, "".into(), "".into()));
+        assert!(!mirror.grid().is_inline_tui_sticky());
+    }
+
+    #[test]
+    fn snapshot_keeps_zero_text_wide_wrap_padding() {
+        let mut source = Terminal::new(2, 17, 20);
+        source.feed("https://x/a/中文档".as_bytes());
+        let mut mirror = Terminal::new(2, 17, 20);
+        mirror.apply_remote_v2_snapshot(&source.remote_v2_snapshot(1, "".into(), "".into()));
+        assert_eq!(mirror.wrapped_link_rows().iter().map(|row| row.1.as_str()).collect::<String>(),
+            "https://x/a/中文档");
+    }
 
     #[test]
     fn exact_snapshot_round_trip_keeps_both_screens_history_modes_and_clusters() {

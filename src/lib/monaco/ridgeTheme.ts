@@ -16,6 +16,7 @@
 // editor and any active diff editor.
 
 import * as monaco from 'monaco-editor';
+import { ensureTrustedMonacoStyles } from './trustedThemeStyles';
 import { hex8, hex8WithAlpha } from '@ridge/remote/shared/terminal/cssColor';
 // ThemeId is now a plain string — themes are loaded dynamically from ridge.theme
 
@@ -54,6 +55,7 @@ export function ridgeMonacoThemeId(themeId: string): string {
  * still renders something reasonable until the next theme application.
  */
 export function applyRidgeMonacoTheme(themeId: string, themeType?: 'dark' | 'light'): void {
+	ensureTrustedMonacoStyles();
 	// Custom themes are runtime data, so their declared type is authoritative.
 	// Keep the built-in id list only as a pre-bootstrap/unknown-theme fallback.
 	const isDark = themeType === 'dark' || (themeType === undefined && THEMES_DARK.has(themeId));

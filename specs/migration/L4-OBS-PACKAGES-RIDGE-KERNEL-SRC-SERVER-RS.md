@@ -3,7 +3,7 @@ id: L4-OBS-PACKAGES-RIDGE-KERNEL-SRC-SERVER-RS
 level: L4
 parent: L3-OBS-PACKAGES-RIDGE-KERNEL-SRC-fc45dbfb
 title: server.rs
-status: DRAFT
+status: LOCKED
 origin: observed
 migration_state: CONFIRMED
 confidence: INFERRED

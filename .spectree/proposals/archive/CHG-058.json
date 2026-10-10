@@ -1,0 +1,16 @@
+{
+  "changeId": "CHG-058",
+  "nodes": [
+    {
+      "id": "L4-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CONTROLLERIDENTITY-TS-6535820e",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-52c9de8f",
+      "title": "controllerIdentity.ts (M3 orphan mapping)",
+      "codeTargets": [
+        "packages/remote/src/shared/cloud/controllerIdentity.ts",
+        "packages/remote/src/shared/cloud/controllerIdentity.test.ts"
+      ],
+      "body": "Promotes controllerIdentity.test.ts to code_targets so it counts as evidence at L1/L2 OBS levels. No product change."
+    }
+  ]
+}

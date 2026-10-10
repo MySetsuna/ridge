@@ -1,0 +1,31 @@
+{
+  "changeId": "CHG-019",
+  "nodes": [
+    {
+      "id": "L4-OBS-PACKAGE-JSON-7ae45ad1",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGE-JSON-7ae45ad1",
+      "title": "package.json",
+      "codeTargets": ["package.json", "Cargo.lock"],
+      "body": "The root package version is the release source of truth. Release v0.1.85 requires Cargo.lock to record the same Ridge package version before tag creation."
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-CARGO-TOML-fe4c6a80",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-TAURI-6056d0ef",
+      "title": "Cargo.toml",
+      "codeTargets": ["src-tauri/Cargo.toml"],
+      "testTargets": ["src-tauri/tests/win_manifest_boot.rs"],
+      "body": "The desktop Ridge crate version is v0.1.85 and matches the root release version exactly before the release tag is created."
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-TAURI-CONF-JSON-fa09f1da",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-TAURI-6056d0ef",
+      "title": "tauri.conf.json",
+      "codeTargets": ["src-tauri/tauri.conf.json"],
+      "testTargets": ["src-tauri/tests/win_manifest_boot.rs"],
+      "body": "Tauri bundle metadata carries v0.1.85, matching package.json, the Ridge crate, Cargo.lock, and the Git tag."
+    }
+  ]
+}

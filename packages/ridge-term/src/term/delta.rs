@@ -94,6 +94,10 @@ pub enum CursorShape {
     Underline,
 }
 
+/// Internal mode metadata, never emitted to a PTY as a DECSET sequence.
+/// Older mirrors ignore unknown mode codes without changing wire framing.
+pub const TUI_KEYBOARD_LEASE_MODE: u32 = u16::MAX as u32;
+
 /// One atomic mutation to the frontend's pane mirror. Variants are
 /// roughly ordered by emission frequency (the common case is a few
 /// `Cells` per frame from a TUI repaint); postcard's tag byte is one

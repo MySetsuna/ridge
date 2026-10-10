@@ -138,8 +138,7 @@ fn append_render_scroll_ops(
             .last_mut()
             .filter(|last| last.top == op.top && last.bottom == op.bottom && last.up == op.up)
         {
-            let height = last.bottom.saturating_sub(last.top).saturating_add(1);
-            last.count = last.count.saturating_add(op.count).min(height);
+            last.count = last.count.saturating_add(op.count);
         } else {
             target.push(op);
         }
@@ -1164,6 +1163,35 @@ impl JsTerminal {
             .unwrap_or(false)
     }
 
+    /// Map dumpVisibleText UTF-16 offsets to visible terminal cell columns.
+    #[wasm_bindgen(js_name = textOffsetToCell)]
+    pub fn text_offset_to_cell(&self, row: usize, offset: usize) -> usize {
+        let Some(row) = self.inner.viewport_row(row) else {
+            return 0;
+        };
+        let mut units = 0;
+        for (col, cell) in row.cells.iter().enumerate() {
+            if cell.width != 0 {
+                if offset == units { return col; }
+                units += row.cluster_at(col).map(|cluster| cluster.text.encode_utf16().count())
+                    .unwrap_or_else(|| cell.ch.len_utf16());
+                if offset < units { return col; }
+            }
+        }
+        row.cells.len()
+    }
+
+    /// Include offscreen soft-wrap fragments so every visible segment opens
+    /// the complete target, even after its scheme scrolls out of view.
+    #[wasm_bindgen(js_name = dumpWrappedText)]
+    pub fn dump_wrapped_text(&self) -> Vec<JsValue> {
+        #[derive(serde::Serialize)]
+        struct LinkRow { row: isize, text: String, wrapped: bool }
+        self.inner.wrapped_link_rows().into_iter().filter_map(|(row, text, wrapped)| {
+            serde_wasm_bindgen::to_value(&LinkRow { row, text, wrapped }).ok()
+        }).collect()
+    }
+
     /// Look up the OSC 8 hyperlink span containing the cell at `(row, col)`
     /// in viewport coordinates. Returns `{ uri, id }` or `null`. Used by
     /// the manager's Ctrl+click handler to decide whether to open a link.
@@ -1208,6 +1236,20 @@ mod delta_selection_tests {
     //! flickers, can't copy text from a refreshing TUI" symptom the user
     //! re-reported on 2026-05-21.
     use super::*;
+    #[test]
+    fn visible_text_offsets_follow_wide_cells_and_history() {
+        let mut kernel = JsTerminal::new(2, 24, 20);
+        kernel.feed("中文 https://example.com".as_bytes());
+        assert_eq!(kernel.text_offset_to_cell(0, 3), 5);
+        assert_eq!(kernel.text_offset_to_cell(0, 22), 24);
+        kernel.feed(b"\r\nsecond\r\nthird");
+        kernel.inner.scroll_up_view(1);
+        assert_eq!(kernel.text_offset_to_cell(0, 3), 5);
+        let mut emoji = JsTerminal::new(2, 40, 20);
+        emoji.feed("👨‍👩‍👧 https://example.com".as_bytes());
+        assert_eq!(emoji.text_offset_to_cell(0, "👨‍👩‍👧 ".encode_utf16().count()), 3);
+        assert_eq!(emoji.inner.dump_visible_text()[0], "👨‍👩‍👧 https://example.com");
+    }
     use crate::term::delta::{
         encode_frame, CursorShape as DeltaCursorShape, DeltaCell, DeltaFrame, DeltaLine, GridDelta,
     };

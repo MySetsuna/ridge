@@ -1,0 +1,41 @@
+{
+  "changeId": "CHG-018",
+  "nodes": [
+    {
+      "id": "L4-OBS-SRC-REMOTE-MAIN-TS-bc93d0e5",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-REMOTE-2674e0ea",
+      "title": "src/remote/main.ts",
+      "codeTargets": ["src/remote/main.ts"],
+      "testTargets": ["src/remote/main.test.ts"],
+      "body": "Remote entry mounts without eagerly loading the terminal manager; host-port configuration is deferred until the authenticated terminal feature is used."
+    },
+    {
+      "id": "L4-OBS-SRC-REMOTE-MAINAPP-SVELTE-578650c7",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-REMOTE-2674e0ea",
+      "title": "src/remote/MainApp.svelte",
+      "codeTargets": ["src/remote/MainApp.svelte"],
+      "testTargets": ["src/remote/MainApp.test.ts"],
+      "body": "Optional remote UI modules are loaded after connection and on feature demand, while pane switching keeps the active canvas identity stable."
+    },
+    {
+      "id": "L4-OBS-SRC-REMOTE-LIB-TERMINALCANVAS-SVELTE-7a29f415",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-REMOTE-LIB-f2853d2d",
+      "title": "src/remote/lib/TerminalCanvas.svelte",
+      "codeTargets": ["src/remote/lib/TerminalCanvas.svelte"],
+      "testTargets": ["src/remote/lib/TerminalCanvas.test.ts"],
+      "body": "Terminal manager host configuration occurs at first authenticated attachment, before manager readiness or pane rendering."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-REMOTE-SRC-AUTH-RS-14780bb8",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-REMOTE-SRC-e755ff2a",
+      "title": "packages/ridge-remote/src/auth.rs",
+      "codeTargets": ["packages/ridge-remote/src/auth.rs"],
+      "testTargets": ["packages/ridge-remote/src/auth.rs"],
+      "body": "LAN session records remain device- and source-IP-bound and expire after 24 hours, so active devices verify at most once per day without weakening strict token validation."
+    }
+  ]
+}

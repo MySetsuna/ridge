@@ -13,6 +13,52 @@ function fakeKernel(lines: string[], wrapped: Set<number> = new Set()) {
 }
 
 describe('LinkSpanIndex', () => {
+  it('opens a URL even when its scheme itself crosses a soft wrap', () => {
+    const kernel = fakeKernel(['see http', 's://exam', 'ple.com/', 'a'], new Set([0, 1, 2]));
+    const index = new LinkSpanIndex();
+    for (const [row, col] of [[0, 4], [1, 0], [2, 0], [3, 0]]) {
+      expect(index.hitTest(kernel, row, col)).toMatchObject({ kind: 'url', text: 'https://example.com/a' });
+    }
+  });
+
+  it('retains the complete target when the scheme has scrolled above the viewport', () => {
+    const kernel = {
+      ...fakeKernel(['com/a']),
+      dumpWrappedText: () => [
+        { row: -2, text: 'https://', wrapped: true },
+        { row: -1, text: 'example.', wrapped: true },
+        { row: 0, text: 'com/a', wrapped: false },
+      ],
+    };
+    expect(new LinkSpanIndex().hitTest(kernel, 0, 0)).toMatchObject({
+      kind: 'url', text: 'https://example.com/a',
+    });
+  });
+
+  it('keeps a real space at the wrap edge outside the URL', () => {
+    const kernel = fakeKernel(['see https://example.com ', 'Press Ctrl+C'], new Set([0]));
+    const index = new LinkSpanIndex();
+    expect(index.hitTest(kernel, 0, 4)?.text).toBe('https://example.com');
+    expect(index.hitTest(kernel, 1, 0)).toBeNull();
+  });
+
+  it('hits a wrapped URL in cell columns after a wide Chinese prefix', () => {
+    const url = 'https://example.com/long/path?value=123456789';
+    const kernel = {
+      ...fakeKernel(['中文 https://example.com', '/long/path?value=1234567', '89'], new Set([0, 1])),
+      cols: () => 24,
+      textOffsetToCell: (row: number, offset: number) => (row === 0
+        ? [0, 2, ...Array.from({ length: 21 }, (_, i) => i + 4)]
+        : Array.from({ length: 25 }, (_, i) => i))[offset] ?? offset,
+    };
+    const index = new LinkSpanIndex();
+    expect(index.hitTest(kernel, 0, 4)).toBeNull();
+    expect(index.hitTest(kernel, 0, 5)).toMatchObject({ c0: 5, c1: 24, text: url });
+    expect(index.hitTest(kernel, 0, 23)?.text).toBe(url);
+    expect(index.hitTest(kernel, 1, 0)?.text).toBe(url);
+    expect(index.hitTest(kernel, 2, 1)?.text).toBe(url);
+  });
+
   it.each([
     ['https://example.com/a', 'https://example.com/a', 'url'],
     ['C:\\repo\\src\\main.ts:12:3', 'C:\\repo\\src\\main.ts:12:3', 'path'],

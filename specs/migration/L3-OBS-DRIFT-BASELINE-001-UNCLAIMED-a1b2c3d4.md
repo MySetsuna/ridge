@@ -3,7 +3,7 @@ id: L3-OBS-DRIFT-BASELINE-001-UNCLAIMED-a1b2c3d4
 level: L3
 parent: L2-OBS-STATIC-2053dbbf
 title: BASELINE-001 unclaimed drift
-status: DRAFT
+status: LOCKED
 origin: drift
 migration_state: CONFIRMED
 confidence: INFERRED

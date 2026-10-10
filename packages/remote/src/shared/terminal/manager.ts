@@ -2980,6 +2980,7 @@ export class TerminalManager {
 		}
 
 		private _drainFeedOutputs(entry: PaneEntry): void {
+			if (this.isTuiKeyboardLease(entry.paneId)) entry.handle?.clearHistoryOverlay();
 			const reply = entry.kernel.takePendingResponse();
 			if (reply.length > 0 && entry.dataHandler) entry.dataHandler(reply);
 			const events = entry.kernel.takePendingEvents() as KernelEvent[];
@@ -3092,6 +3093,7 @@ export class TerminalManager {
 			const requiresRenderSettle = (
 				entry.kernel as unknown as { applyDeltaFrame: (frame: Uint8Array) => boolean | void }
 			).applyDeltaFrame(bytes) === true;
+			if (this.isTuiKeyboardLease(entry.paneId)) entry.handle?.clearHistoryOverlay();
 			if (traceCursor) {
 				const ts = performance.now().toFixed(1);
 				// eslint-disable-next-line no-console

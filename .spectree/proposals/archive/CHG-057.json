@@ -1,0 +1,21 @@
+{
+  "changeId": "CHG-057",
+  "nodes": [
+    {
+      "id": "L4-OBS-SRC-LIB-AGENT-CHAT-DEFAULT-WIRED-SVELTE-M3",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-AGENT-CHAT",
+      "title": "DefaultWiredAgentChat.svelte",
+      "codeTargets": ["src/lib/agent-chat/DefaultWiredAgentChat.svelte"],
+      "body": "Tauri-aware wrapper around AgentChatPanel."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-TESTS-M3-WIRE-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "m3_wire.rs",
+      "testTargets": ["packages/ridge-acp/tests/m3_wire.rs"],
+      "body": "M3 wire-shape tests."
+    }
+  ]
+}

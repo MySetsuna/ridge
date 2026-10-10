@@ -3,7 +3,7 @@ id: L4-OBS-TOOLS-SOAK-HARNESS-CARGO-TOML-d4e5f6a7
 level: L4
 parent: L3-OBS-CARGO-TOML-2e9d962a
 title: soak-harness Cargo.toml
-status: DRAFT
+status: LOCKED
 origin: observed
 migration_state: CONFIRMED
 confidence: INFERRED

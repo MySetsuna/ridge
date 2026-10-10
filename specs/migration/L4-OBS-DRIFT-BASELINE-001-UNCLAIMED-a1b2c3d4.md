@@ -3,7 +3,7 @@ id: L4-OBS-DRIFT-BASELINE-001-UNCLAIMED-a1b2c3d4
 level: L4
 parent: L3-OBS-DRIFT-BASELINE-001-UNCLAIMED-a1b2c3d4
 title: BASELINE-001 unclaimed drift paths
-status: DRAFT
+status: LOCKED
 origin: drift
 migration_state: CONFIRMED
 confidence: INFERRED

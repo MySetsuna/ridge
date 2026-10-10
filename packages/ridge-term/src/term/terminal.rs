@@ -423,6 +423,14 @@ impl Terminal {
                 self.clear_scrollback();
             }
             GridDelta::ModeChange { mode, on } => {
+                if *mode == super::delta::TUI_KEYBOARD_LEASE_MODE {
+                    if *on {
+                        self.grid.mark_inline_tui_sticky();
+                    } else {
+                        self.grid.clear_inline_tui_sticky();
+                    }
+                    return;
+                }
                 // P3.12 — symmetric counterpart to PaneParser's
                 // `Modes::diff` emission. The mode codes are the same
                 // numeric ids an application would use to flip the
@@ -806,16 +814,48 @@ impl Terminal {
             // Reading the live grid here made links drift/disappear after the
             // user scrolled into history even though the canvas looked right.
             let row = self.viewport_row(r).unwrap();
-            let mut s = String::with_capacity(row.cells.len());
-            for cell in &row.cells {
-                if cell.width == 0 {
-                    continue;
-                }
-                s.push(cell.ch);
-            }
-            out.push(s.trim_end_matches(' ').to_string());
+            out.push(Self::row_text(row, true));
         }
         out
+    }
+
+    fn row_text(row: &super::cell::Row, trim: bool) -> String {
+        let mut text = String::with_capacity(row.cells.len());
+        for (col, cell) in row.cells.iter().enumerate() {
+            if cell.width == 0 { continue; }
+            if let Some(cluster) = row.cluster_at(col) {
+                text.push_str(&cluster.text);
+            } else {
+                text.push(cell.ch);
+            }
+        }
+        if trim { text.truncate(text.trim_end_matches(' ').len()); }
+        text
+    }
+
+    /// Read visible rows plus bounded soft-wrap context on either edge.
+    pub fn wrapped_link_rows(&self) -> Vec<(isize, String, bool)> {
+        let visible_start = self.scrollback_len().saturating_sub(self.scroll_offset());
+        let mut start = visible_start;
+        let mut end = visible_start + self.rows().saturating_sub(1);
+        let total = self.scrollback_len() + self.rows();
+        let mut context_cells = 0;
+        while !self.is_alt_screen() && start > 0 && context_cells < 8192 {
+            let Some(previous) = self.row_at_abs(start - 1) else { break; };
+            if !previous.wrapped { break; }
+            context_cells += previous.cells.len();
+            start -= 1;
+        }
+        context_cells = 0;
+        while end + 1 < total && context_cells < 8192 {
+            let Some(current) = self.row_at_abs(end) else { break; };
+            if !current.wrapped { break; }
+            end += 1;
+            context_cells += self.cols();
+        }
+        (start..=end).filter_map(|index| self.row_at_abs(index).map(|row| (
+            index as isize - visible_start as isize, Self::row_text(row, !row.wrapped), row.wrapped,
+        ))).collect()
     }
 }
 
@@ -823,6 +863,38 @@ impl Terminal {
 mod tests {
     use super::*;
     use crate::term::attrs::{Color, Flags};
+
+    #[test]
+    fn wrapped_link_context_survives_both_viewport_edges() {
+        let mut terminal = Terminal::new(2, 8, 100);
+        terminal.feed(b"see https://example.com/a");
+        let rows = terminal.wrapped_link_rows();
+        assert!(rows.first().unwrap().0 < 0);
+        assert_eq!(rows.iter().map(|row| row.1.as_str()).collect::<String>(),
+            "see https://example.com/a");
+        terminal.scroll_up_view(1);
+        let rows = terminal.wrapped_link_rows();
+        assert!(rows.first().unwrap().0 < 0);
+        assert!(rows.last().unwrap().0 >= terminal.rows() as isize);
+        assert_eq!(rows.iter().map(|row| row.1.as_str()).collect::<String>(),
+            "see https://example.com/a");
+        terminal.feed(b"\x1b[?1049halt");
+        assert_eq!(terminal.wrapped_link_rows().first().unwrap().0, 0);
+    }
+
+    #[test]
+    fn logical_wrap_context_preserves_spaces_but_excludes_wide_layout_gaps() {
+        let mut spaces = Terminal::new(2, 24, 100);
+        spaces.feed(b"see https://example.com Press");
+        assert_eq!(spaces.wrapped_link_rows()[0].1, "see https://example.com ");
+        let mut wide = Terminal::new(2, 17, 100);
+        wide.feed("https://x/a/中文档".as_bytes());
+        assert_eq!(wide.wrapped_link_rows().iter().map(|row| row.1.as_str()).collect::<String>(),
+            "https://x/a/中文档");
+        wide.resize(2, 19);
+        assert_eq!(wide.wrapped_link_rows().iter().map(|row| row.1.as_str()).collect::<String>(),
+            "https://x/a/中文档");
+    }
 
     /// V-B6B: PTY/kernel resize must leave grid size equal to the request.
     #[test]

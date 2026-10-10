@@ -43,9 +43,12 @@ pub struct Renderer<B: RenderBackend> {
     /// Grid rows continue painting while this is active; only the cursor's
     /// position/shape stays at the last stable presented state.
     frozen_cursor: Option<CursorDraw>,
+    /// Content row relative to the live grid, possibly negative in history.
+    frozen_cursor_grid_row: Option<isize>,
     /// Last cell that was actually presented, kept across blink-off frames
     /// where `last_cursor` is None so a freeze can still capture that cell.
     last_presented_cursor: Option<CursorDraw>,
+    last_presented_cursor_grid_row: Option<isize>,
     /// Last-seen viewport scroll_offset. When the user scrolls into
     /// history, every row's content mapping changes — we force a full
     /// redraw on offset change rather than trying to be clever.
@@ -363,7 +366,9 @@ impl<B: RenderBackend> Renderer<B> {
             visual_snapshot: Vec::new(),
             last_cursor: None,
             frozen_cursor: None,
+            frozen_cursor_grid_row: None,
             last_presented_cursor: None,
+            last_presented_cursor_grid_row: None,
             last_offset: 0,
             last_selection: None,
             last_blink_phase: true,
@@ -476,7 +481,9 @@ impl<B: RenderBackend> Renderer<B> {
         self.visual_snapshot.clear();
         self.last_cursor = None;
         self.frozen_cursor = None;
+        self.frozen_cursor_grid_row = None;
         self.last_presented_cursor = None;
+        self.last_presented_cursor_grid_row = None;
         self.last_offset = 0;
         self.last_selection = None;
         self.last_blink_phase = true;
@@ -516,17 +523,28 @@ impl<B: RenderBackend> Renderer<B> {
         } else {
             None
         };
+        self.frozen_cursor_grid_row = if suppressed {
+            self.last_cursor.as_ref().map(|cursor| cursor.row as isize - self.last_offset as isize)
+                .or(self.last_presented_cursor_grid_row)
+        } else { None };
         self.presentation_cursor_suppressed = suppressed;
     }
 
     /// Last cell actually presented, including a frozen cursor. Read-only
     /// probe for DEV/e2e; the compositor hot path does not call this.
     pub fn presented_cursor_cell(&self) -> Option<(usize, usize)> {
-        self.last_cursor
+        let cursor = self.last_cursor
             .as_ref()
             .or(self.frozen_cursor.as_ref())
-            .or(self.last_presented_cursor.as_ref())
-            .map(|cursor| (cursor.row, cursor.col))
+            .or(self.last_presented_cursor.as_ref())?;
+        let anchor = if self.presentation_cursor_suppressed {
+            self.frozen_cursor_grid_row
+        } else {
+            self.last_cursor.as_ref().map(|cursor| cursor.row as isize - self.last_offset as isize)
+                .or(self.last_presented_cursor_grid_row)
+        }?;
+        let row = anchor + self.last_offset as isize;
+        (row >= 0 && row < self.snapshot.len() as isize).then_some((row as usize, cursor.col))
     }
 
     pub fn backend_mut(&mut self) -> &mut B {
@@ -651,6 +669,7 @@ impl<B: RenderBackend> Renderer<B> {
         // mapping shifts when the user pages history, so per-row revisions
         // stored against the last mapping aren't valid.
         let offset = terminal.scroll_offset();
+        self.move_frozen_cursor_with_scroll(terminal, scroll_ops);
         self.update_scroll_state(offset);
         /*
         if offset != self.last_offset {
@@ -702,11 +721,10 @@ impl<B: RenderBackend> Renderer<B> {
         } else {
             None
         };
-        if self.presentation_cursor_suppressed {
-            self.refresh_frozen_cursor_cell(terminal);
-        }
+        let frozen_visible = self.presentation_cursor_suppressed
+            && self.refresh_frozen_cursor_cell(terminal);
         let new_cursor = if self.presentation_cursor_suppressed {
-            if cursor_visible {
+            if cursor_visible && frozen_visible {
                 self.frozen_cursor
                     .as_ref()
                     .filter(|cursor| cursor.row < rows_n && cursor.col < terminal.cols())
@@ -1045,6 +1063,9 @@ impl<B: RenderBackend> Renderer<B> {
     }
 
     fn remember_presented_cursor(&mut self) {
+        if let Some(cursor) = self.last_cursor.as_ref() {
+            self.last_presented_cursor_grid_row = Some(cursor.row as isize - self.last_offset as isize);
+        }
         if self.last_cursor.is_none()
             || cursor_refs_eq(
                 self.last_presented_cursor.as_ref(),
@@ -1056,19 +1077,42 @@ impl<B: RenderBackend> Renderer<B> {
         self.last_presented_cursor = self.last_cursor.clone();
     }
 
-    /// Refresh only the cell payload carried by a frozen cursor descriptor.
-    /// Its row/column/style stay fixed; glyph data follows the live grid so a
-    /// rewrite under the stable cursor does not paint stale text. The common
-    /// non-cluster path performs no allocation.
-    fn refresh_frozen_cursor_cell(&mut self, terminal: &Terminal) {
+    fn move_frozen_cursor_with_scroll(&mut self, terminal: &Terminal, ops: &[ScrollOp]) {
+        if ops.is_empty() { return; }
+        for op in ops {
+            let full_primary = !terminal.is_alt_screen() && op.top == 0
+                && op.bottom + 1 == terminal.rows();
+            let count = op.count as isize;
+            for anchor in [&mut self.frozen_cursor_grid_row, &mut self.last_presented_cursor_grid_row] {
+                let Some(row) = anchor.as_mut() else { continue; };
+                if *row < 0 && full_primary && op.up {
+                    *row -= count;
+                } else if *row >= op.top as isize && *row <= op.bottom as isize {
+                    *row += if op.up { -count } else { count };
+                    if *row > op.bottom as isize || (*row < op.top as isize && !full_primary) {
+                        *anchor = None;
+                    }
+                }
+            }
+        }
+        if self.frozen_cursor_grid_row.is_none() { self.frozen_cursor = None; }
+        if self.last_presented_cursor_grid_row.is_none() { self.last_presented_cursor = None; }
+    }
+
+    /// Refresh the anchored content cell; viewport scrolling only remaps it.
+    fn refresh_frozen_cursor_cell(&mut self, terminal: &Terminal) -> bool {
+        let Some(anchor) = self.frozen_cursor_grid_row else { return false; };
+        let visible = anchor + terminal.scroll_offset() as isize;
+        if visible < 0 || visible >= terminal.rows() as isize { return false; }
         let Some(cursor) = self.frozen_cursor.as_mut() else {
-            return;
+            return false;
         };
+        cursor.row = visible as usize;
         let Some(row) = terminal.viewport_row(cursor.row) else {
-            return;
+            return false;
         };
         let Some(cell) = row.cells.get(cursor.col).copied() else {
-            return;
+            return false;
         };
         cursor.ch = cell.ch;
         cursor.ch_attr = cell.attr;
@@ -1080,6 +1124,7 @@ impl<B: RenderBackend> Renderer<B> {
             Some(_) => {}
             None => cursor.cluster_text = None,
         }
+        true
     }
 
     fn add_selection_dirty_rows(
@@ -1164,7 +1209,11 @@ impl<B: RenderBackend> Renderer<B> {
         let cursor_visible =
             self.focused && terminal.modes().cursor_visible && (tui_mode || blink_phase);
         if self.presentation_cursor_suppressed {
-            let new_cursor = if cursor_visible {
+            let anchor_visible = self.frozen_cursor_grid_row.is_some_and(|row| {
+                let row = row + offset as isize;
+                row >= 0 && row < terminal.rows() as isize
+            });
+            let new_cursor = if cursor_visible && anchor_visible {
                 self.frozen_cursor
                     .as_ref()
                     .filter(|cursor| cursor.row < terminal.rows() && cursor.col < terminal.cols())
@@ -2199,6 +2248,108 @@ mod tests {
                 "presented-cursor probe must report the frozen cell"
             );
         }
+    }
+
+    #[test]
+    fn frozen_cursor_follows_content_through_output_and_viewport_scrolls() {
+        let mut term = Terminal::new(3, 12, 20);
+        term.feed(b"A\r\nB\r\nC");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(), metrics(), Theme::default_dark(),
+        );
+        assert!(renderer.tick(&term, None, 500.0));
+        renderer.set_presentation_cursor_suppressed(true);
+        term.feed(b"\r\nD\r\nE");
+        let scrolls = term.take_scroll_ops();
+        assert!(renderer.tick_with_scroll(&term, None, 500.0, &scrolls));
+        assert_eq!(renderer.presented_cursor_cell(), Some((0, 1)));
+        term.scroll_up_view(1);
+        assert!(renderer.tick(&term, None, 500.0));
+        assert_eq!(renderer.presented_cursor_cell(), Some((1, 1)));
+        term.scroll_up_view(1);
+        assert!(renderer.tick(&term, None, 500.0));
+        assert_eq!(renderer.presented_cursor_cell(), Some((2, 1)));
+        term.scroll_to_bottom();
+        assert!(renderer.tick(&term, None, 500.0));
+        assert_eq!(renderer.presented_cursor_cell(), Some((0, 1)));
+        term.feed(b"\r\nF");
+        let scrolls = term.take_scroll_ops();
+        assert!(renderer.tick_with_scroll(&term, None, 500.0, &scrolls));
+        assert_eq!(renderer.presented_cursor_cell(), None);
+        term.scroll_up_view(1);
+        assert!(renderer.tick(&term, None, 500.0));
+        assert_eq!(renderer.presented_cursor_cell(), Some((0, 1)));
+    }
+
+    #[test]
+    fn frozen_cursor_uses_actual_history_movement_for_a_coalesced_scroll() {
+        let mut term = Terminal::new(3, 12, 100);
+        term.feed(b"A\r\nB\r\nC");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(), metrics(), Theme::default_dark(),
+        );
+        renderer.tick(&term, None, 500.0);
+        renderer.set_presentation_cursor_suppressed(true);
+        for _ in 0..30 { term.feed(b"\r\nnext"); }
+        term.take_scroll_ops();
+        let scrolls = [ScrollOp { top: 0, bottom: 2, count: 30, up: true }];
+        renderer.tick_with_scroll(&term, None, 500.0, &scrolls);
+        term.scroll_up_view(1);
+        renderer.tick(&term, None, 500.0);
+        assert_eq!(renderer.presented_cursor_cell(), None);
+        term.scroll_up_view(27);
+        renderer.tick(&term, None, 500.0);
+        assert_eq!(renderer.presented_cursor_cell(), Some((0, 1)));
+        assert_eq!(term.viewport_row(0).unwrap().cells[0].ch, 'C');
+    }
+
+    #[test]
+    fn frozen_cursor_tracks_mixed_regions_without_losing_coalesced_movement() {
+        let mut term = Terminal::new(3, 12, 100);
+        term.feed(b"A\r\nB\r\nC");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(), metrics(), Theme::default_dark(),
+        );
+        renderer.tick(&term, None, 500.0);
+        renderer.set_presentation_cursor_suppressed(true);
+        term.feed(b"\r\nX\x1b[1;2r\x1b[2;1H\n\x1b[r\x1b[3;1H");
+        for _ in 0..30 { term.feed(b"\r\nnext"); }
+        term.take_scroll_ops();
+        let scrolls = [
+            ScrollOp { top: 0, bottom: 2, count: 1, up: true },
+            ScrollOp { top: 0, bottom: 1, count: 1, up: true },
+            ScrollOp { top: 0, bottom: 2, count: 30, up: true },
+        ];
+        renderer.tick_with_scroll(&term, None, 500.0, &scrolls);
+        term.scroll_up_view(29);
+        renderer.tick(&term, None, 500.0);
+        assert_eq!(renderer.presented_cursor_cell(), None);
+        term.scroll_up_view(1);
+        renderer.tick(&term, None, 500.0);
+        assert_eq!(renderer.presented_cursor_cell(), Some((0, 1)));
+        assert_eq!(term.viewport_row(0).unwrap().cells[0].ch, 'C');
+    }
+
+    #[test]
+    fn starting_a_freeze_in_history_never_revives_an_offscreen_cursor() {
+        let mut term = Terminal::new(3, 12, 100);
+        term.feed(b"A\r\nB\r\nC\r\nD\r\nE\r\nF");
+        term.take_scroll_ops();
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(), metrics(), Theme::default_dark(),
+        );
+        renderer.tick(&term, None, 500.0);
+        term.scroll_up_view(3);
+        renderer.tick(&term, None, 500.0);
+        assert_eq!(renderer.presented_cursor_cell(), None);
+        let painted = renderer.backend().cursors;
+        renderer.set_presentation_cursor_suppressed(true);
+        renderer.tick(&term, None, 500.0);
+        assert_eq!(renderer.presented_cursor_cell(), None);
+        assert_eq!(renderer.backend().cursors, painted);
+        term.scroll_to_bottom();
+        renderer.tick(&term, None, 500.0);
+        assert_eq!(renderer.presented_cursor_cell(), Some((2, 1)));
     }
 
     #[test]

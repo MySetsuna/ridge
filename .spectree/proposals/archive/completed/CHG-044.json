@@ -1,0 +1,15 @@
+{
+  "changeId": "CHG-044",
+  "patch": {
+    "changeId": "CHG-044",
+    "nodes": [
+      {
+        "id": "L3-OBS-PACKAGE-JSON-7ae45ad1",
+        "level": "L3",
+        "title": "package.json module",
+        "parent": "L2-OBS-PACKAGE-JSON-7ae45ad1"
+      }
+    ]
+  },
+  "createdAt": "2026-09-19T00:00:00.000Z"
+}

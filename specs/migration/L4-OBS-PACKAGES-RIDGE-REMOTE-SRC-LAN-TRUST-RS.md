@@ -3,7 +3,7 @@ id: L4-OBS-PACKAGES-RIDGE-REMOTE-SRC-LAN-TRUST-RS
 level: L4
 parent: L3-OBS-PACKAGES-RIDGE-REMOTE-SRC-e755ff2a
 title: lan_trust.rs
-status: DRAFT
+status: LOCKED
 origin: observed
 migration_state: CONFIRMED
 confidence: INFERRED

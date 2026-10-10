@@ -3,7 +3,7 @@ id: L4-OBS-DOTENV-d1e2f3a4
 level: L4
 parent: L3-OBS-STATIC-MOBILE-ASSETS-5cc42e7a
 title: .env
-status: DRAFT
+status: LOCKED
 origin: observed
 migration_state: CONFIRMED
 confidence: INFERRED

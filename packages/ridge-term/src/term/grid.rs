@@ -1238,15 +1238,7 @@ impl Grid {
         for (index, row) in rows.iter().enumerate() {
             if index + 1 < rows.len() {
                 let mut take = row.cells.len();
-                let next_starts_wide = rows[index + 1]
-                    .cells
-                    .first()
-                    .is_some_and(|cell| cell.width == 2);
-                if next_starts_wide
-                    && take > 0
-                    && row.cells[take - 1].width == 1
-                    && row.cells[take - 1].is_blank()
-                {
+                if take > 0 && row.cluster_at(take - 1).is_some_and(|cluster| cluster.text.is_empty()) {
                     take -= 1;
                 }
                 flat.extend_from_slice(&row.cells[..take]);
@@ -1286,6 +1278,9 @@ impl Grid {
         out_rows: &mut Vec<Row>,
     ) {
         if *col + 2 > new_cols {
+            if new_cols > 0 && *col == new_cols - 1 {
+                row.set_cluster(*col, "".into());
+            }
             row.wrapped = true;
             out_rows.push(std::mem::replace(row, Row::new(new_cols)));
             *col = 0;
@@ -1398,6 +1393,9 @@ impl Grid {
         let cursor = self.screen().cursor;
         if cursor.col < cols {
             self.screen_mut().rows[cursor.row].cells[cursor.col] = Cell::new(' ', attr_id, 1);
+            // A physical wrap gap adds no text; the existing override travels
+            // with this cell through native deltas, snapshots and history.
+            self.screen_mut().rows[cursor.row].set_cluster(cursor.col, "".into());
         }
         self.screen_mut().rows[cursor.row].wrapped = true;
         self.touch_active_rows(cursor.row, cursor.row.saturating_add(1));
@@ -2144,9 +2142,12 @@ impl Grid {
             return;
         }
         if up {
-            self.scroll_region_up_in(top, bottom, count, false, true, false);
+            self.scroll_region_up_in(top, bottom, count, false, false, false);
         } else {
-            self.scroll_region_down_in(top, bottom, count, true, false);
+            self.scroll_region_down_in(top, bottom, count, false, false);
+        }
+        if count > 0 {
+            self.pending_scroll_ops.push(ScrollOp { top, bottom, count, up });
         }
     }
 

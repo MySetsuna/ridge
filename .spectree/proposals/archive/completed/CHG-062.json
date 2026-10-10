@@ -1,0 +1,255 @@
+{
+  "changeId": "CHG-062",
+  "nodes": [
+    {
+      "id": "L4-OBS-SRC-LIB-AGENT-CHAT-PROVIDER-RESTORE-TS-M42",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-AGENT-CHAT",
+      "title": "providerRestore.ts",
+      "codeTargets": ["src/lib/agent-chat/providerRestore.ts"],
+      "testTargets": ["src/lib/agent-chat/providerRestore.test.ts"],
+      "body": "M4.2 provider restore round-trip guard."
+    },
+    {
+      "id": "L4-OBS-SRC-LIB-AGENT-CHAT-LISTENER-LIFECYCLE-TEST-TS-M42",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-AGENT-CHAT",
+      "title": "listenerLifecycle.test.ts",
+      "testTargets": ["src/lib/agent-chat/listenerLifecycle.test.ts"],
+      "body": "M4.2 listener mount/unmount guard."
+    },
+    {
+      "id": "L4-OBS-SRC-LIB-AGENT-CHAT-AGENT-EVENTS-TS-M41",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-AGENT-CHAT",
+      "title": "agentEvents.ts (M4.1)",
+      "codeTargets": ["src/lib/agent-chat/agentEvents.ts"],
+      "testTargets": ["src/lib/agent-chat/commutationEvents.test.ts"],
+      "body": "CommutationEvent reducer."
+    },
+    {
+      "id": "L4-OBS-SRC-LIB-AGENT-CHAT-DEFAULT-WIRED-SVELTE-M3",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-AGENT-CHAT",
+      "title": "DefaultWiredAgentChat.svelte",
+      "codeTargets": ["src/lib/agent-chat/DefaultWiredAgentChat.svelte"],
+      "body": "Tauri-aware wrapper."
+    },
+    {
+      "id": "L4-OBS-SRC-LIB-AGENT-CHAT-PICKER-SVELTE",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-AGENT-CHAT",
+      "title": "AgentSessionPicker.svelte",
+      "codeTargets": ["src/lib/agent-chat/AgentSessionPicker.svelte"],
+      "body": "M4 picker."
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-BRIDGE-ACP-BRIDGE-RS-a1b2c3d4",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-TAURI-SRC-COMMANDS-7ed73efa",
+      "title": "acp_bridge.rs",
+      "codeTargets": ["src-tauri/src/bridge/acp_bridge.rs"],
+      "body": "M3+M4 bridge."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-COMMUNION-RS-M41",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "communion.rs (M4.1)",
+      "codeTargets": ["packages/ridge-acp/src/communion.rs"],
+      "body": "M4.1 LeadFinal aggregation."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-PROVIDER-ADAPTER-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "provider_adapter.rs",
+      "codeTargets": ["packages/ridge-acp/src/provider_adapter.rs"],
+      "body": "M4 provider routing."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-PROVIDER-RS-M3",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "provider.rs",
+      "codeTargets": ["packages/ridge-acp/src/provider.rs"],
+      "body": "Effort + ProviderKind::OpencodeAcp."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-SESSION-RS-M3",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "session.rs",
+      "codeTargets": ["packages/ridge-acp/src/session.rs"],
+      "body": "AgentSession::provider() getter."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-SPAWN-RS-M3",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "spawn.rs",
+      "codeTargets": ["packages/ridge-acp/src/spawn.rs"],
+      "body": "SpawnSpec.framing."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-LIB-RS-M3",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "lib.rs",
+      "codeTargets": ["packages/ridge-acp/src/lib.rs"],
+      "body": "lib.rs mod decl."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-TESTS-M3-WIRE-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "m3_wire.rs",
+      "testTargets": ["packages/ridge-acp/tests/m3_wire.rs"],
+      "body": "M3 wire-shape tests."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-TESTS-M21-LIFECYCLE-ACCEPTANCE-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "m21_lifecycle_acceptance.rs",
+      "testTargets": ["packages/ridge-acp/tests/m21_lifecycle_acceptance.rs"],
+      "body": "M2.1 lifecycle tests."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-TESTS-REAL-ACP-E2E-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "real_acp_e2e.rs",
+      "testTargets": ["packages/ridge-acp/tests/real_acp_e2e.rs"],
+      "body": "Real ACP E2E tests."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-TESTS-TRANSPORT-LIFECYCLE-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "transport_lifecycle.rs",
+      "testTargets": ["packages/ridge-acp/tests/transport_lifecycle.rs"],
+      "body": "Transport lifecycle tests."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-TESTS-COMMON-MOD-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "common/mod.rs",
+      "testTargets": ["packages/ridge-acp/tests/common/mod.rs"],
+      "body": "Common test fixtures."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CONTROLLERIDENTITY-TS-6535820e",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-52c9de8f",
+      "title": "controllerIdentity.ts",
+      "codeTargets": [
+        "packages/remote/src/shared/cloud/controllerIdentity.ts",
+        "packages/remote/src/shared/cloud/controllerIdentity.test.ts"
+      ],
+      "body": "M3 orphan mapping."
+    },
+    {
+      "id": "L4-OBS-DOTENV-d1e2f3a4",
+      "level": "L4",
+      "parent": "L3-OBS-STATIC-MOBILE-ASSETS-5cc42e7a",
+      "title": ".env",
+      "codeTargets": [".env", ".env.local"],
+      "body": "Local env."
+    },
+    {
+      "id": "L1-PROJECT-001",
+      "level": "L1",
+      "parent": null,
+      "title": "Ridge (M4.2 closeout)",
+      "codeTargets": [
+        "packages/remote/src/shared/cloud/controllerIdentity.test.ts"
+      ],
+      "testTargets": [
+        "packages/remote/src/shared/cloud/controllerIdentity.test.ts"
+      ],
+      "body": "L1 orphan claim."
+    },
+    {
+      "id": "L2-REMOTE-MOBILE-SEMANTIC-V2",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Remote Mobile Semantic V2",
+      "codeTargets": [],
+      "body": "Inherit trace claims."
+    },
+    {
+      "id": "L2-OBS-PACKAGES-b28b1ed9",
+      "level": "L2",
+      "parent": "L1-PROJECT-001",
+      "title": "Shared Packages",
+      "codeTargets": [],
+      "body": "Inherit trace claims."
+    },
+    {
+      "id": "L3-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-52c9de8f",
+      "level": "L3",
+      "parent": "L2-OBS-PACKAGES-b28b1ed9",
+      "title": "Cloud module",
+      "codeTargets": [],
+      "body": "Inherit trace claims."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-CLI-TESTS-KERNEL-LIFECYCLE-E2E-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-CLI",
+      "title": "kernel_lifecycle_e2e.rs",
+      "testTargets": ["packages/ridge-cli/tests/kernel_lifecycle_e2e.rs"],
+      "body": "Pre-existing CLI test file claim."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-KERNEL-SRC-LIB-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-KERNEL",
+      "title": "lib.rs",
+      "codeTargets": ["packages/ridge-kernel/src/lib.rs"],
+      "body": "Pre-existing kernel lib claim."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-KERNEL-SRC-PTY-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-KERNEL",
+      "title": "pty.rs",
+      "codeTargets": ["packages/ridge-kernel/src/pty.rs"],
+      "body": "Pre-existing kernel pty claim."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-KERNEL-SRC-SERVER-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-KERNEL",
+      "title": "server.rs",
+      "codeTargets": ["packages/ridge-kernel/src/server.rs"],
+      "body": "Pre-existing kernel server claim."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-REMOTE-SRC-LAN-TRUST-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-REMOTE",
+      "title": "lan_trust.rs",
+      "codeTargets": ["packages/ridge-remote/src/lan_trust.rs"],
+      "body": "Pre-existing trust claim."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-REMOTE-SRC-LAN-TRUST-TESTS-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-REMOTE",
+      "title": "lan_trust_tests.rs",
+      "testTargets": ["packages/ridge-remote/src/lan_trust_tests.rs"],
+      "body": "Pre-existing trust test claim."
+    },
+    {
+      "id": "L4-OBS-SRC-LIB-AGENT-CHAT-AGENT-EVENTS-TEST-TS",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-AGENT-CHAT",
+      "title": "agentEvents.test.ts",
+      "testTargets": ["src/lib/agent-chat/agentEvents.test.ts"],
+      "body": "M2 agentEvents test."
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "changeId": "CHG-041",
+  "patch": {
+    "changeId": "CHG-041",
+    "nodes": [
+      {
+        "id": "L4-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CLOUDHOSTBRIDGE-TS-c5f763d0",
+        "level": "L4",
+        "title": "cloudHostBridge.ts",
+        "parent": "L3-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-52c9de8f"
+      },
+      {
+        "id": "L4-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-CONTROLLERCLOUDPROVIDER-TS-8684030e",
+        "level": "L4",
+        "title": "controllerCloudProvider.ts",
+        "parent": "L3-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-52c9de8f"
+      },
+      {
+        "id": "L4-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDHOSTSTORE-TS-86f442a0",
+        "level": "L4",
+        "title": "cloudHostStore.ts",
+        "parent": "L3-OBS-SRC-LIB-REMOTE-CLOUD-643692b0"
+      },
+      {
+        "id": "L4-OBS-SRC-REMOTE-LIB-CLOUDREMOTE-TS-090ce654",
+        "level": "L4",
+        "title": "cloudRemote.ts",
+        "parent": "L3-OBS-SRC-REMOTE-LIB-f2853d2d"
+      }
+    ]
+  },
+  "createdAt": "2026-09-19T00:00:00.000Z"
+}

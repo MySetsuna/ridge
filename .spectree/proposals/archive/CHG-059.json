@@ -1,0 +1,37 @@
+{
+  "changeId": "CHG-059",
+  "nodes": [
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-PROVIDER-RS-M3",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "provider.rs (M4 OpencodeAcp kind)",
+      "codeTargets": ["packages/ridge-acp/src/provider.rs"],
+      "body": "Adds ProviderKind::OpencodeAcp variant."
+    },
+    {
+      "id": "L4-OBS-PACKAGES-RIDGE-ACP-SRC-PROVIDER-ADAPTER-RS",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-RIDGE-ACP-SRC-M3",
+      "title": "provider_adapter.rs",
+      "codeTargets": ["packages/ridge-acp/src/provider_adapter.rs"],
+      "body": "M4: ProviderSpec → SpawnSpec resolution. CapabilityGap on missing binary."
+    },
+    {
+      "id": "L4-OBS-SRC-LIB-AGENT-CHAT-PICKER-SVELTE",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-LIB-AGENT-CHAT",
+      "title": "AgentSessionPicker.svelte",
+      "codeTargets": ["src/lib/agent-chat/AgentSessionPicker.svelte"],
+      "body": "M4 Desktop provider/model/effort picker."
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-BRIDGE-ACP-BRIDGE-RS-a1b2c3d4",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-TAURI-SRC-COMMANDS-7ed73efa",
+      "title": "acp_bridge.rs (M4 provider routing)",
+      "codeTargets": ["src-tauri/src/bridge/acp_bridge.rs"],
+      "body": "M4: spawn_one_session uses resolve_provider_launch; supports all ProviderKinds."
+    }
+  ]
+}

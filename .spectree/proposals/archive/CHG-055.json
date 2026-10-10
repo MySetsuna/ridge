@@ -1,0 +1,37 @@
+{
+  "changeId": "CHG-055",
+  "nodes": [
+    {
+      "id": "L4-OBS-SRC-TAURI-BRIDGE-ACP-BRIDGE-RS-a1b2c3d4",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-TAURI-SRC-COMMANDS-7ed73efa",
+      "title": "acp_bridge.rs",
+      "codeTargets": ["src-tauri/src/bridge/acp_bridge.rs"],
+      "body": "Thin bridge between AgentSession and Desktop renderer."
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-BRIDGE-MOD-RS-b1c2d3e4",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-TAURI-SRC-COMMANDS-7ed73efa",
+      "title": "bridge/mod.rs",
+      "codeTargets": ["src-tauri/src/bridge/mod.rs"],
+      "body": "Module declaration."
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-CARGO-TOML-c1d2e3f4",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-TAURI-6056d0ef",
+      "title": "Cargo.toml",
+      "codeTargets": ["src-tauri/Cargo.toml", "Cargo.lock"],
+      "body": "Adds ridge-acp path dep; Cargo.lock refresh."
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-SRC-LIB-RS-WIRING-c2d3e4f5",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-TAURI-6056d0ef",
+      "title": "lib.rs (CHG-055 wiring)",
+      "codeTargets": ["src-tauri/src/lib.rs"],
+      "body": "Wires mod bridge + .manage(AcpBridgeState) + 7 bridge commands in invoke_handler."
+    }
+  ]
+}

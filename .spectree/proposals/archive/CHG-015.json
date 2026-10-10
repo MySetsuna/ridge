@@ -1,0 +1,21 @@
+{
+  "changeId": "CHG-015",
+  "nodes": [
+    {
+      "id": "L4-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-MANAGER-TS-8c721fa3",
+      "level": "L4",
+      "parent": "L3-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-b1abe747",
+      "title": "manager.ts",
+      "codeTargets": ["packages/remote/src/shared/terminal/manager.ts"],
+      "body": "TerminalManager paints link affordance only for validated HTTP(S) links or origin-proven workspace files. Path validation starts only on modifier-hover, ignores stale async results, and reuses bounded probe caches. DOM hover underlines use one CSS-pixel thickness and device-aligned continuous geometry. An explicit pane-size claim returns a promise that settles only after the forced measured fit and its host resize callback settle, while retaining the bounded resize round-trip self-heal."
+    },
+    {
+      "id": "L4-OBS-SRC-REMOTE-LIB-TERMINALCANVAS-SVELTE-7a29f415",
+      "level": "L4",
+      "parent": "L3-OBS-SRC-REMOTE-LIB-f2853d2d",
+      "title": "TerminalCanvas.svelte",
+      "codeTargets": ["src/remote/lib/TerminalCanvas.svelte"],
+      "body": "On every explicit mobile keyboard open, including the first pane before any switch, the terminal captures the authoritative IME cursor anchor before focus and recomputes keyboard avoidance after focus and viewport change. The active input cell is shifted above the soft keyboard without relying on prior pane initialization. The hidden IME textarea never paints a second fixed caret; the focused terminal renderer remains the sole visible cursor owner, so its cursor follows the live TUI row and blink state. Explicit Remote refresh settles the current pane box, awaits the forced host size claim, and only then completes its local redraw step, allowing the caller to request the canonical current screen at the newly acknowledged dimensions."
+    }
+  ]
+}

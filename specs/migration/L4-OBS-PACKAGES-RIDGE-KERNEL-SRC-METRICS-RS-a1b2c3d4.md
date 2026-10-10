@@ -3,7 +3,7 @@ id: L4-OBS-PACKAGES-RIDGE-KERNEL-SRC-METRICS-RS-a1b2c3d4
 level: L4
 parent: L3-OBS-PACKAGES-RIDGE-KERNEL-SRC-fc45dbfb
 title: metrics.rs
-status: DRAFT
+status: LOCKED
 origin: observed
 migration_state: CONFIRMED
 confidence: INFERRED

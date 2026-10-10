@@ -1,0 +1,86 @@
+{
+  "status": "PROPOSED_ONLY",
+  "limitation": "Installed stc apply supports spec nodes/remove, not change metadata amendments. Canonical changes remain untouched.",
+  "records": [
+    {
+      "changeId": "CHG-047",
+      "source": "changes\\CHG-047.md",
+      "sourceSha256": "b9f3ef8eee3724a102308d423c528189a0c56662650f489aac6ea8a891a567c5",
+      "proposal": ".spectree\\proposals\\CHG-047.change.md",
+      "implementation": "NOT_REQUIRED",
+      "affects": "unchanged",
+      "reason": "Already implemented AVD registration; historical supersession recorded in CHG-054. No new device PASS claim."
+    },
+    {
+      "changeId": "CHG-049",
+      "source": "changes\\CHG-049.md",
+      "sourceSha256": "f8a0fec948719493640cf64381710d52cb97b629c9b94927a4ca9961f105555f",
+      "proposal": ".spectree\\proposals\\CHG-049.change.md",
+      "implementation": "NOT_REQUIRED",
+      "affects": [
+        "L4-OBS-SCRIPTS-AVD-ACCEPTANCE-MJS-7f9d2b58"
+      ],
+      "reason": "Historical blocked experiment, recorded as closed by CHG-054. No WebGL acceptance claim."
+    },
+    {
+      "changeId": "CHG-050",
+      "source": "changes\\CHG-050.md",
+      "sourceSha256": "54530547e06e4f3ac38696be0c5f4242f4bbe1a40e4043516c23e8632232ab5a",
+      "proposal": ".spectree\\proposals\\CHG-050.change.md",
+      "implementation": "NOT_REQUIRED",
+      "affects": "unchanged",
+      "reason": "Existing Phase A work reconciled by CHG-054; unfinished production measurements remain open under CHG-067. No latency PASS claim."
+    },
+    {
+      "changeId": "CHG-051",
+      "source": "changes\\CHG-051.md",
+      "sourceSha256": "44e094f55d4aba37f6c8fad217db70da4f3b6b8ac475277cbfc345546ea24f0e",
+      "proposal": ".spectree\\proposals\\CHG-051.change.md",
+      "implementation": "NOT_REQUIRED",
+      "affects": "unchanged",
+      "reason": "Historical release-gate work reconciled by CHG-054. No new release or deployment."
+    },
+    {
+      "changeId": "CHG-052",
+      "source": "changes\\CHG-052.md",
+      "sourceSha256": "8e010c9e87a0cb3d9f659eda367d139d0fd63b27463511cdf989d780a74a94c3",
+      "proposal": ".spectree\\proposals\\CHG-052.change.md",
+      "implementation": "NOT_REQUIRED",
+      "affects": "unchanged",
+      "reason": "Existing composite-key fix and historical drift reconciled by CHG-054. Verify existing code before completion."
+    },
+    {
+      "changeId": "CHG-064",
+      "source": "changes\\CHG-064.md",
+      "sourceSha256": "f13b1694de2d9a5139d47868d8f585abea43a336c58f239fa9cd593b8740231c",
+      "proposal": ".spectree\\proposals\\CHG-064.change.md",
+      "implementation": "NOT_REQUIRED",
+      "affects": [
+        "L3-RIDGE-COMMUNION-M53-RUNTIME"
+      ],
+      "reason": "Conditional on user choosing duplicate/historical closure: persistent Task/Staff implementation accepted under CHG-066."
+    },
+    {
+      "changeId": "CHG-065",
+      "source": "changes\\CHG-065.md",
+      "sourceSha256": "c9f8e1a19b01c603b19e3c854293b4f8d336589c75ff9729b68ecd07a06df4b5",
+      "proposal": ".spectree\\proposals\\CHG-065.change.md",
+      "implementation": "NOT_REQUIRED",
+      "affects": [
+        "L3-RIDGE-COMMUNION-M53-RUNTIME"
+      ],
+      "reason": "Conditional on user choosing duplicate/historical closure: duplicate M5 draft covered by CHG-066."
+    },
+    {
+      "changeId": "CHG-067",
+      "source": "changes\\CHG-067.md",
+      "sourceSha256": "c0d4d53e121ceb343026a3430901f5162f4c7d7e2ebc6d6f42294b58962298d7",
+      "proposal": ".spectree\\proposals\\CHG-067.change.md",
+      "implementation": "REQUIRED",
+      "affects": [
+        "L3-PERF-REMOTE-PRODUCTION-DIAGNOSIS"
+      ],
+      "reason": "Associate the approved diagnosis spec with its owning change so lock can authorize real implementation."
+    }
+  ]
+}
