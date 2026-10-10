@@ -31,6 +31,7 @@ interface InputBatch {
   data: string;
   bytes: number;
   sequence: number;
+  admittedAt?: number;
 }
 
 interface InputLane {
@@ -39,6 +40,7 @@ interface InputLane {
   nextSequence: number;
   queued: string;
   queuedBytes: number;
+  queuedAt?: number;
   active: InputBatch | null;
   inFlight: boolean;
   failures: number;
@@ -232,6 +234,7 @@ export class PaneRpcScheduler {
       this.reportError(new PaneInputQueueFullError(this.maxQueuedInputBytes), 'input', pane);
       return false;
     }
+    if (lane.queuedBytes === 0) lane.queuedAt = remotePerfStart('transport-queue')?.startedAt;
     lane.queued += data;
     lane.queuedBytes += bytes;
     this.counters.inputBytesAccepted += bytes;
@@ -464,9 +467,11 @@ export class PaneRpcScheduler {
         data: lane.queued,
         bytes: lane.queuedBytes,
         sequence: lane.nextSequence,
+        admittedAt: lane.queuedAt,
       };
       lane.queued = '';
       lane.queuedBytes = 0;
+      lane.queuedAt = undefined;
     }
     const batch = lane.active;
     lane.inFlight = true;
@@ -475,9 +480,13 @@ export class PaneRpcScheduler {
     const startedAt = Date.now();
     const trace = remotePerfStart('input-rpc', {
       paneKey: key,
+      sourceId: lane.sourceId,
+      sequence: batch.sequence,
       bytes: batch.bytes,
       queueBytes: lane.queuedBytes + batch.bytes,
+      oldestAgeKnown: batch.admittedAt !== undefined,
     });
+    if (trace && batch.admittedAt !== undefined) trace.meta = { ...trace.meta, oldestAgeMs: Math.max(0, trace.startedAt - batch.admittedAt) };
     void this.rpc.request('write_to_pty', {
       workspaceId: lane.pane.workspaceId,
       paneId: lane.pane.paneId,

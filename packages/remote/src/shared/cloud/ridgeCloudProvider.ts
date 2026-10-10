@@ -541,7 +541,7 @@ export class RidgeCloudHost {
       transport: 'cloud-webrtc-host-wire',
       queueBytes: (lane === 'pane' ? conn.paneDc : conn.dc)?.bufferedAmount ?? 0,
     });
-    void remotePerfSamplePeerConnection(conn.pc);
+    void remotePerfSamplePeerConnection(conn.pc, lane === 'pane' ? conn.paneDc : conn.dc);
     if (!conn.handshakeDone) {
       if (lane === 'control') this.handleHandshake(conn, bytes);
       return;

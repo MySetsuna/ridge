@@ -408,7 +408,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       transport: 'cloud-webrtc-wire',
       queueBytes: (lane === 'pane' ? this.paneDc : this.dc)?.bufferedAmount ?? 0,
     });
-    if (this.pc) void remotePerfSamplePeerConnection(this.pc);
+    if (this.pc) void remotePerfSamplePeerConnection(this.pc, lane === 'pane' ? this.paneDc : this.dc);
     if (!this.handshakeDone) {
       if (lane === 'control') this.handleHandshake(bytes);
       return;

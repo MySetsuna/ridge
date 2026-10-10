@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -89,6 +89,13 @@ pub fn host_trace_enabled() -> bool {
             Some("1" | "true" | "yes" | "on")
         )
     })
+}
+
+fn trace_input_source(args: &Value) -> &str {
+    args.get("inputSourceId").or_else(|| args.get("input_source_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 64 && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte)))
+        .unwrap_or("unavailable")
 }
 
 #[macro_export]
@@ -864,6 +871,27 @@ fn kernel_layout_to_ui(value: Value, snapshot: &KernelSnapshot) -> Value {
     json!({ "type": "leaf", "id": Uuid::nil().to_string() })
 }
 
+struct DispatchCounters { bytes: AtomicUsize, enqueued: AtomicUsize, dequeued: AtomicUsize, started: Instant }
+struct DispatchTrace { at: Instant, bytes: usize, counters: Arc<DispatchCounters> }
+impl DispatchCounters {
+    fn new() -> Self { Self { bytes: AtomicUsize::new(0), enqueued: AtomicUsize::new(0), dequeued: AtomicUsize::new(0), started: Instant::now() } }
+}
+impl DispatchTrace {
+    fn admit(counters: &Arc<DispatchCounters>, bytes: usize) -> Self {
+        counters.bytes.fetch_add(bytes, Ordering::Relaxed);
+        counters.enqueued.fetch_add(1, Ordering::Relaxed);
+        Self { at: Instant::now(), bytes, counters: counters.clone() }
+    }
+    fn rollback(self) { self.counters.bytes.fetch_sub(self.bytes, Ordering::Relaxed); self.counters.enqueued.fetch_sub(1, Ordering::Relaxed); }
+    fn dequeue(self, lane: &'static str, depth: usize) {
+        self.counters.bytes.fetch_sub(self.bytes, Ordering::Relaxed);
+        let dequeued = self.counters.dequeued.fetch_add(1, Ordering::Relaxed) + 1;
+        crate::host_trace!(ev = "dispatch_dequeue", lane, bytes = self.bytes, queue_depth = depth,
+            queue_bytes = self.counters.bytes.load(Ordering::Relaxed), enqueued = self.counters.enqueued.load(Ordering::Relaxed), dequeued,
+            queue_wait_us = self.at.elapsed().as_micros() as u64, queue_lifetime_us = self.counters.started.elapsed().as_micros() as u64);
+    }
+}
+
 async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
     // P2-B8: surface the active kernel transport once per WS upgrade.
     log_kernel_transport_mode();
@@ -871,13 +899,16 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
     let subscriptions = Arc::new(Mutex::new(std::collections::HashSet::<(Uuid, Uuid)>::new()));
     let runtime = tokio::runtime::Handle::current();
-    let (dispatch_tx, mut dispatch_rx) = mpsc::unbounded_channel::<Value>();
+    let dispatch_counters = host_trace_enabled().then(|| Arc::new(DispatchCounters::new()));
+    let input_counters = host_trace_enabled().then(|| Arc::new(DispatchCounters::new()));
+    let (dispatch_tx, mut dispatch_rx) = mpsc::unbounded_channel::<(Value, Option<DispatchTrace>)>();
     let dispatch_out_tx = out_tx.clone();
     let dispatch_host = Arc::clone(&host);
     let dispatch_subscriptions = Arc::clone(&subscriptions);
     let dispatch_runtime = runtime.clone();
     let _dispatch_worker = tokio::task::spawn_blocking(move || {
-        while let Some(value) = dispatch_rx.blocking_recv() {
+        while let Some((value, trace)) = dispatch_rx.blocking_recv() {
+            if let Some(trace) = trace { trace.dequeue("control", dispatch_rx.len()); }
             let Some(reply) = handle_text(
                 &value,
                 &dispatch_host,
@@ -892,13 +923,14 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
             }
         }
     });
-    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Value>();
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<(Value, Option<DispatchTrace>)>();
     let input_out_tx = out_tx.clone();
     let input_host = Arc::clone(&host);
     let input_subscriptions = Arc::clone(&subscriptions);
     let input_runtime = runtime;
     let _input_worker = tokio::task::spawn_blocking(move || {
-        while let Some(value) = input_rx.blocking_recv() {
+        while let Some((value, trace)) = input_rx.blocking_recv() {
+            if let Some(trace) = trace { trace.dequeue("input", input_rx.len()); }
             let Some(reply) = handle_text(
                 &value,
                 &input_host,
@@ -962,12 +994,16 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
             Some(Ok(message)) = rx.next() => match message {
                 Message::Text(text) => {
                     let Ok(value) = serde_json::from_str::<Value>(&text) else { continue; };
-                    let target = if is_latency_sensitive_pty_message(&value) {
-                        &input_tx
+                    let (target, counters) = if is_latency_sensitive_pty_message(&value) {
+                        (&input_tx, &input_counters)
                     } else {
-                        &dispatch_tx
+                        (&dispatch_tx, &dispatch_counters)
                     };
-                    if target.send(value).is_err() { break; }
+                    let trace = counters.as_ref().map(|counters| DispatchTrace::admit(counters, text.len()));
+                    if let Err(mpsc::error::SendError((_, trace))) = target.send((value, trace)) {
+                        if let Some(trace) = trace { trace.rollback(); }
+                        break;
+                    }
                 }
                 Message::Ping(bytes) => { if tx.send(Message::Pong(bytes)).await.is_err() { break; } }
                 Message::Close(_) => break,
@@ -1196,10 +1232,13 @@ fn dispatch(
             // CHG-050 §2.2: fast-path write; mirror the same recv /
             // after instrumentation as the snapshot-projection path so
             // the trace correlates both branches.
-            let t0 = Instant::now();
+            let t0 = host_trace_enabled().then(Instant::now);
             crate::host_trace!(
                 ev = "recv_input",
+                route = "direct",
                 pane_id = %pane_id,
+                source_id = trace_input_source(&args),
+                input_sequence = args.get("inputSequence").or_else(|| args.get("input_sequence")).and_then(serde_json::Value::as_u64).unwrap_or(0),
                 bytes = data.len()
             );
             let result = write_domain_pty(&endpoint, pane_id, data.as_bytes());
@@ -1208,7 +1247,7 @@ fn dispatch(
                 pane_id = %pane_id,
                 bytes = data.len(),
                 ok = result.is_ok(),
-                dt_us = t0.elapsed().as_micros() as u64
+                dt_us = t0.map(|start| start.elapsed().as_micros() as u64).unwrap_or(0)
             );
             result.map_err(|e| e)?;
             return Ok(Value::Null);
@@ -1300,10 +1339,13 @@ fn dispatch(
             // the host first sees a write request; `after_write` fires
             // after `write_domain_pty` returns so the dt_us covers the
             // snapshot projection + the kernel HTTP POST roundtrip.
-            let t0 = Instant::now();
+            let t0 = host_trace_enabled().then(Instant::now);
             crate::host_trace!(
                 ev = "recv_input",
+                route = "snapshot",
                 pane_id = %id,
+                source_id = trace_input_source(&args),
+                input_sequence = args.get("inputSequence").or_else(|| args.get("input_sequence")).and_then(serde_json::Value::as_u64).unwrap_or(0),
                 bytes = data.len()
             );
             let result = write_domain_pty(&endpoint, id, data.as_bytes());
@@ -1312,7 +1354,7 @@ fn dispatch(
                 pane_id = %id,
                 bytes = data.len(),
                 ok = result.is_ok(),
-                dt_us = t0.elapsed().as_micros() as u64
+                dt_us = t0.map(|start| start.elapsed().as_micros() as u64).unwrap_or(0)
             );
             result.map_err(|e| e)?;
             Ok(Value::Null)
@@ -2114,6 +2156,32 @@ fn last_osc_sequence<'a>(bytes: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn dispatch_trace_preserves_fifo_payload_and_rolls_back_failed_admission() {
+        use super::{DispatchCounters, DispatchTrace};
+        let counters = std::sync::Arc::new(DispatchCounters::new());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        for id in [1, 2] { assert!(tx.send((serde_json::json!({"id":id,"data":"unchanged"}), Some(DispatchTrace::admit(&counters,20)))).is_ok()); }
+        for id in [1, 2] {
+            let (value, trace) = rx.recv().await.unwrap();
+            assert_eq!(value, serde_json::json!({"id":id,"data":"unchanged"}));
+            trace.unwrap().dequeue("input", rx.len());
+        }
+        assert_eq!(counters.bytes.load(std::sync::atomic::Ordering::Relaxed),0);
+        assert_eq!(counters.dequeued.load(std::sync::atomic::Ordering::Relaxed),2);
+        drop(rx);
+        if let Err(tokio::sync::mpsc::error::SendError((_, Some(trace)))) = tx.send((serde_json::json!({}),Some(DispatchTrace::admit(&counters,9)))) { trace.rollback(); }
+        assert_eq!(counters.bytes.load(std::sync::atomic::Ordering::Relaxed),0);
+        assert_eq!(counters.enqueued.load(std::sync::atomic::Ordering::Relaxed),2);
+    }
+    #[test]
+    fn input_trace_keeps_bounded_identifiers_only() {
+        assert_eq!(super::trace_input_source(&serde_json::json!({"inputSourceId":"source_1:lane-2"})), "source_1:lane-2");
+        assert_eq!(super::trace_input_source(&serde_json::json!({"input_source_id":"source_2"})), "source_2");
+        for value in ["", "terminal command data", "https://example.invalid", &"x".repeat(65)] {
+            assert_eq!(super::trace_input_source(&serde_json::json!({"inputSourceId":value})), "unavailable");
+        }
+    }
     use super::*;
 
     #[test]

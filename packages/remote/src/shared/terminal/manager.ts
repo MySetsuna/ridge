@@ -2124,6 +2124,8 @@ export class TerminalManager {
 			if (import.meta.env.DEV || processE2e) {
 				(window as unknown as {
 				__windE2E?: {
+					paneKeys: () => string[];
+					applicationEcho: () => Promise<unknown>;
 					feedPty: (paneId: string, data: string) => void;
 					writePty: (paneId: string, data: string) => Promise<void>;
 					visibleText: (paneId: string) => string[];
@@ -2182,6 +2184,8 @@ export class TerminalManager {
 				*/
 				};
 			}).__windE2E = {
+				paneKeys: () => Array.from(this.panes.keys()).slice(0, 512),
+				applicationEcho: () => invoke('get_active_workspace_id'),
 				feedPty: (paneId, data) => this.feed(paneId, data),
 				// P3.14 perf harness (2026-05-20) — writePty drives bytes
 				// INTO the real PTY (same Tauri command the pane's key

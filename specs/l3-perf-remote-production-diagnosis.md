@@ -2,8 +2,8 @@
 id: L3-PERF-REMOTE-PRODUCTION-DIAGNOSIS
 level: L3
 title: Authenticated production latency attribution
-status: DRAFT
-lifecycle: PLANNED
+status: LOCKED
+lifecycle: ACTIVE
 parent: L2-PERF-001
 code_targets:
   - packages/remote/src/shared/transport/remotePerfTrace.ts
@@ -26,6 +26,7 @@ code_targets:
   - packages/ridge-kernel/src/pty.rs
   - packages/ridge-kernel/src/client.rs
   - scripts/bench-latency-4scenes.mjs
+  - packages/ridge-remote/src/tls.rs
 test_targets:
   - packages/remote/src/shared/transport/remotePerfTrace.test.ts
   - packages/remote/src/shared/transport/paneRpcScheduler.test.ts
@@ -57,3 +58,7 @@ For WebRTC resolve the selected candidate pair from transport.selectedCandidateP
 For idle typing, sustained output plus typing, switching, history loading, reconnect and host foreground/background, record attempted/successful sample counts, P50/P95/P99/max, timeouts and raw distributions. Cover accessible localhost/LAN and the actual WAN/cellular route. Mark inaccessible scenarios NOT_COVERED with the precise missing resource. Network emulation is supplementary, isolated and explicitly labeled; no system networking changes or newly exposed ports. Recheck the historical 110–160 ms harness artifact and approximately five-second P95 without assuming HTTP or scheduler blame.
 
 Unit tests validate opt-in behavior, bounded metadata retention, accurate selected-pair resolution, queue counters/age, overflow visibility and unchanged ordering/authentication. They do not prove production responsiveness. Run npm test, npm run lint and npm run typecheck; run relevant Rust checks when Rust probes change. Save one diagnosis report with topology and file:line anchors, reproducible commands, raw evidence paths, coverage gaps, ranked CONFIRMED/HYPOTHESIS findings, measured stall contributions, smallest evidence-justified next change and regression criteria. List executed tests, changed files and uncertainties. Never declare overall performance PASS from partial coverage.
+
+## Isolated fixture admission
+
+The existing benchmark runs only an owned test host and Kernel. A TLS directory override is admitted only with the existing test-fixture permission flag, requires an absolute path and fails closed for malformed configuration. Without that opt-in, the production TLS directory and certificate policy are unchanged. The fixture uses its own auth file and per-browser leaf SPKI pin, without changing system trust or the installed service certificate files. Cleanup uses the authenticated Kernel shutdown endpoint; retained temporary state must be disclosed.

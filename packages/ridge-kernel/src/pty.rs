@@ -800,14 +800,14 @@ impl PtyRegistry {
         // `kernel_ev=pty_byte_in` records the same write reaching the
         // kernel-side read thread (only when the shell echoes).
         let bytes = data.len();
-        let t0 = Instant::now();
-        let out = self.get(id)?.write_input(data);
+        let t0 = kernel_trace_enabled().then(Instant::now);
+        let out = self.get(id)?.write_input_observed(data, Some(id));
         crate::kernel_trace!(
             ev = "write_in",
             pty_id = %id,
             bytes,
             ok = out.is_ok(),
-            dt_us = t0.elapsed().as_micros() as u64
+            dt_us = t0.map(|start| start.elapsed().as_micros() as u64).unwrap_or(0)
         );
         out
     }
@@ -1247,10 +1247,25 @@ impl PtyBridge {
     }
 
     pub fn write_input(&self, data: &[u8]) -> Result<()> {
+        self.write_input_observed(data, None)
+    }
+
+    fn write_input_observed(&self, data: &[u8], trace_id: Option<Uuid>) -> Result<()> {
+        let started = kernel_trace_enabled().then(Instant::now);
         let mut writer = self.writer.lock();
-        writer.write_all(data).context("PTY write failed")?;
-        writer.flush().context("PTY flush failed")?;
-        Ok(())
+        let lock_wait_us = started.map(|start| start.elapsed().as_micros() as u64);
+        let writing = started.map(|_| Instant::now());
+        let result: Result<()> = (|| {
+            writer.write_all(data).context("PTY write failed")?;
+            writer.flush().context("PTY flush failed")?;
+            Ok(())
+        })();
+        let write_us = writing.map(|start| start.elapsed().as_micros() as u64);
+        drop(writer);
+        if let (Some(id), Some(lock_wait_us), Some(write_us)) = (trace_id, lock_wait_us, write_us) {
+            crate::kernel_trace!(ev = "pty_write", pty_id = %id, bytes = data.len(), lock_wait_us, write_us, ok = result.is_ok());
+        }
+        result
     }
 
     pub fn process_id(&self) -> Option<u32> {

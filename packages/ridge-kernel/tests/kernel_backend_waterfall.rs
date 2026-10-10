@@ -1,7 +1,7 @@
 //! Phase A.6 live waterfall measurement: kernel-backed PTY data plane.
 //!
 //! Connects to a live ridge-kernel HTTP API, spawns an interactive
-//! cmd.exe PTY, and measures the round-trip latency from
+//! controlled Python PTY, and measures the round-trip latency from
 //! `write_domain_pty` to observed `output` via `poll_domain_pty_output`.
 //! Reports waterfall numbers for the input→output path used by the
 //! Desktop shell reader.
@@ -51,11 +51,11 @@ fn kernel_reachable(endpoint: &KernelEndpoint) -> bool {
     }
 }
 
-fn spawn_cmd_keep(endpoint: &KernelEndpoint, workspace_id: Uuid, pty_id: Uuid) -> Result<(), String> {
+fn spawn_echo_child(endpoint: &KernelEndpoint, workspace_id: Uuid, pty_id: Uuid) -> Result<(), String> {
     let body = serde_json::json!({
         "pty_id": pty_id,
-        "program": "cmd.exe",
-        "args": ["/K"],
+        "program": "python",
+        "args": ["-u", "-c", "import sys; [print('RM'+line.rstrip(),flush=True) for line in sys.stdin]"],
         "cwd": "C:\\Windows",
         "workspace_id": workspace_id,
         "role": "shell",
@@ -110,10 +110,12 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[ignore]
 fn waterfall_input_to_observed_output() {
     let Some(endpoint) = read_endpoint() else {
+        assert_ne!(std::env::var("RIDGE_REQUIRE_WATERFALL").ok().as_deref(), Some("1"), "required kernel endpoint missing");
         eprintln!("[skip] no kernel endpoint registered");
         return;
     };
     if !kernel_reachable(&endpoint) {
+        assert_ne!(std::env::var("RIDGE_REQUIRE_WATERFALL").ok().as_deref(), Some("1"), "required kernel unreachable");
         eprintln!("[skip] kernel not reachable on port {}", endpoint.port);
         return;
     }
@@ -121,7 +123,8 @@ fn waterfall_input_to_observed_output() {
 
     let workspace_id = Uuid::new_v4();
     let pty_id = Uuid::new_v4();
-    if let Err(e) = spawn_cmd_keep(&endpoint, workspace_id, pty_id) {
+    if let Err(e) = spawn_echo_child(&endpoint, workspace_id, pty_id) {
+        assert_ne!(std::env::var("RIDGE_REQUIRE_WATERFALL").ok().as_deref(), Some("1"), "required echo child failed: {e}");
         eprintln!("[skip] spawn failed: {e}");
         return;
     }
@@ -130,6 +133,7 @@ fn waterfall_input_to_observed_output() {
         Err(e) => {
             eprintln!("[skip] attach lease failed: {e}");
             destroy_pty(&endpoint, pty_id);
+            assert_ne!(std::env::var("RIDGE_REQUIRE_WATERFALL").ok().as_deref(), Some("1"), "required output lease failed: {e}");
             return;
         }
     };
@@ -151,6 +155,7 @@ fn waterfall_input_to_observed_output() {
 
     for i in 0..iterations {
         let marker = format!("WM{}\r\n", i);
+        let expected = format!("RMWM{}", i);
         let body = serde_json::json!({
             "data_b64": base64_encode(marker.as_bytes()),
         });
@@ -172,16 +177,18 @@ fn waterfall_input_to_observed_output() {
         let mut polls = 0u32;
         let mut first_data: Option<u128> = None;
         let mut seen_marker = false;
+        let mut received = Vec::new();
         while Instant::now() < deadline && !seen_marker {
             polls += 1;
-            let t_n = Instant::now();
             let res = poll_domain_pty_output(&endpoint, pty_id, lease, 100, 64);
             match res {
                 Ok(KernelPtyOutput::Data(buf)) => {
                     if first_data.is_none() && !buf.is_empty() {
-                        first_data = Some(t_n.duration_since(t_p0).as_micros() as u128);
+                        first_data = Some(t_p0.elapsed().as_micros());
                     }
-                    if buf.windows(marker.len()).any(|w| w == marker.as_bytes()) {
+                    received.extend(buf);
+                    if received.len() > 1024 { received.drain(..received.len() - 1024); }
+                    if received.windows(expected.len()).any(|w| w == expected.as_bytes()) {
                         seen_marker = true;
                     }
                 }
@@ -191,7 +198,7 @@ fn waterfall_input_to_observed_output() {
             }
         }
         polls_per_iter.push(polls);
-        rt_us.push(t_p0.elapsed().as_micros() as u128);
+        if seen_marker { rt_us.push(t_w0.elapsed().as_micros()); }
         if let Some(us) = first_data {
             first_data_us.push(us);
         }
@@ -234,4 +241,5 @@ fn waterfall_input_to_observed_output() {
     eprintln!("[waterfall] avg polls/iter = {:.2}", avg_polls);
 
     cleanup();
+    assert_eq!(rt_us.len(), iterations, "every sample must contain a real child reply, not terminal-driver echo");
 }

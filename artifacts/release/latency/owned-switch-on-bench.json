@@ -1,0 +1,624 @@
+{
+  "label": "owned-switch-on",
+  "route": "isolated authenticated localhost LAN WebSocket",
+  "clock": "Node performance.now; browser spans separate; no cross-clock subtraction",
+  "binaryHash": "86e13ed2f9d4000ae27e8f50a7639f4ba27887ae508fed75d5f74f54fa3f9456",
+  "sourceHead": "310c57956af7d269aa32e7010a8e5e40b2e976c6",
+  "sourceDirtyFingerprint": "9abcf71f6b2860c090ae35a27acfe882f54d0b61e96067db18f5dd52ba7f9648",
+  "traceEnabled": true,
+  "kernelTransportFlag": "default",
+  "scenes": {
+    "switchback": {
+      "status": "MEASURED",
+      "stats": {
+        "attempted": 4,
+        "successful": 4,
+        "timeouts": 0,
+        "p50": 34.06039999999939,
+        "p95": 44.78950000000077,
+        "p99": 44.78950000000077,
+        "max": 44.78950000000077
+      },
+      "applicationStats": {
+        "attempted": 4,
+        "successful": 4,
+        "timeouts": 0,
+        "p50": 4.111499999999069,
+        "p95": 5.8056999999989785,
+        "p99": 5.8056999999989785,
+        "max": 5.8056999999989785
+      },
+      "applicationSamples": [
+        {
+          "i": 0,
+          "rttMs": 4.845100000000457
+        },
+        {
+          "i": 1,
+          "rttMs": 4.111499999999069
+        },
+        {
+          "i": 2,
+          "rttMs": 3.9492000000009284
+        },
+        {
+          "i": 3,
+          "rttMs": 5.8056999999989785
+        }
+      ],
+      "transitionStats": {
+        "attempted": 4,
+        "successful": 4,
+        "timeouts": 0,
+        "p50": 28.65810000000056,
+        "p95": 30.487200000000485,
+        "p99": 30.487200000000485,
+        "max": 30.487200000000485
+      },
+      "samples": [
+        {
+          "i": 0,
+          "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+          "rttMs": 34.06039999999939,
+          "transitionMs": 30.487200000000485
+        },
+        {
+          "i": 1,
+          "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+          "rttMs": 32.7528999999995,
+          "transitionMs": 28.924300000000585
+        },
+        {
+          "i": 2,
+          "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+          "rttMs": 44.78950000000077,
+          "transitionMs": 28.65810000000056
+        },
+        {
+          "i": 3,
+          "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+          "rttMs": 39.73459999999977,
+          "transitionMs": 27.568299999999
+        }
+      ],
+      "renderBackend": "WebGPU",
+      "trace": {
+        "enabled": true,
+        "samples": [
+          {
+            "stage": "raw-receive",
+            "at": 3083.0999999046326,
+            "bytes": 173,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "resize-rpc",
+            "at": 3139.0999999046326,
+            "durationMs": 8.399999976158142,
+            "queueBytes": 0,
+            "paneKey": "aece19d9-1c21-48b3-b22e-7173c7fc0c1f:4379d28f-3a7e-445c-ae36-b680379a2b40"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3198.899999976158,
+            "bytes": 174,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3269.899999976158,
+            "bytes": 6,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3300,
+            "bytes": 591,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3360,
+            "bytes": 9,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3360.0999999046326,
+            "bytes": 609,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3408.2999999523163,
+            "bytes": 9,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3420.5,
+            "bytes": 602,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3469.6999999284744,
+            "bytes": 599,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3488.899999976158,
+            "bytes": 606,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3508.0999999046326,
+            "bytes": 9,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3508.1999999284744,
+            "bytes": 578,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3528.5,
+            "bytes": 269,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3567.899999976158,
+            "bytes": 273,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3607.399999976158,
+            "bytes": 329,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3627.0999999046326,
+            "bytes": 9,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3646.899999976158,
+            "bytes": 374,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3667.5999999046326,
+            "bytes": 9,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3706.5,
+            "bytes": 472,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3718.0999999046326,
+            "bytes": 489,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3718.899999976158,
+            "bytes": 490,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3719.5,
+            "bytes": 541,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3723.399999976158,
+            "bytes": 9,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3743.0999999046326,
+            "bytes": 570,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 3758.5999999046326,
+            "bytes": 590,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 4571.5,
+            "bytes": 21,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 4592,
+            "bytes": 2,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 5721.799999952316,
+            "bytes": 154,
+            "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "resize-rpc",
+            "at": 5899.599999904633,
+            "durationMs": 30.199999928474426,
+            "queueBytes": 0,
+            "paneKey": "c21a5bbd-987a-4443-97c4-aef03ef51300:bb02f77a-2dfe-4eed-8cb0-a805e22633ff"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 5908.799999952316,
+            "bytes": 155,
+            "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 5959.199999928474,
+            "bytes": 19,
+            "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 6079,
+            "bytes": 6,
+            "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 6096.599999904633,
+            "bytes": 610,
+            "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 6112.399999976158,
+            "bytes": 586,
+            "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 6127.699999928474,
+            "bytes": 590,
+            "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 6507.199999928474,
+            "bytes": 21,
+            "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 6529.799999952316,
+            "bytes": 2,
+            "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 6611.799999952316,
+            "bytes": 13,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 6621.799999952316,
+            "bytes": 19,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 6720.299999952316,
+            "bytes": 13,
+            "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 6729.699999928474,
+            "bytes": 19,
+            "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 6849.899999976158,
+            "bytes": 13,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 6869.899999976158,
+            "bytes": 19,
+            "paneKey": "4379d28f-3a7e-445c-ae36-b680379a2b40",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 6980.099999904633,
+            "bytes": 13,
+            "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+            "transport": "lan-ws"
+          },
+          {
+            "stage": "raw-receive",
+            "at": 6993.699999928474,
+            "bytes": 19,
+            "paneKey": "bb02f77a-2dfe-4eed-8cb0-a805e22633ff",
+            "transport": "lan-ws"
+          }
+        ],
+        "droppedSamples": 0
+      },
+      "clientLoop": null
+    }
+  },
+  "coverage": {
+    "localhost": "MEASURED",
+    "LAN_DEVICE": "NOT_COVERED: no separate controller/device supplied",
+    "WAN_CELLULAR": "NOT_COVERED: no authenticated WAN/cellular controller supplied",
+    "HOST_WEBVIEW_BACKGROUND": "NOT_COVERED: CLI fixture has no host WebView"
+  },
+  "serverTrace": {
+    "samples": [],
+    "droppedSamples": 0,
+    "clock": "receivedAtNodeMs is log receipt, not server event time; dt_us are same-process server spans",
+    "enabled": false
+  },
+  "host": {
+    "pid": 64832,
+    "port": 55244,
+    "tls": true
+  },
+  "clientLoopProbeEnabled": false,
+  "frontend": {
+    "indexHash": "3350634140e19fda53884d23299cce27e0167bb5c67b90cc530e8737f4a64bdc",
+    "resources": [
+      "/_app/immutable/assets/0.DhLrsKyA.css",
+      "/_app/immutable/assets/2.5IQ4CKOb.css",
+      "/_app/immutable/assets/ridge_term_bg.B8-JIEMJ.wasm",
+      "/_app/immutable/assets/window.Bz5vcUzJ.css",
+      "/_app/immutable/chunks/4WfbG93b.js",
+      "/_app/immutable/chunks/B8z_8JoR.js",
+      "/_app/immutable/chunks/BGfeZGEj.js",
+      "/_app/immutable/chunks/BWP_D1dt.js",
+      "/_app/immutable/chunks/Bsjo0eY1.js",
+      "/_app/immutable/chunks/CAzonv6R.js",
+      "/_app/immutable/chunks/COVhPIYY.js",
+      "/_app/immutable/chunks/CWXzugky.js",
+      "/_app/immutable/chunks/CYKIYrf4.js",
+      "/_app/immutable/chunks/Cj3L7DzJ.js",
+      "/_app/immutable/chunks/DJ97Dbk_.js",
+      "/_app/immutable/chunks/DRl6bnjL.js",
+      "/_app/immutable/chunks/DUyMpTiD.js",
+      "/_app/immutable/chunks/DleOQViy.js",
+      "/_app/immutable/chunks/Zuc-EYEM.js",
+      "/_app/immutable/chunks/_YVuK8wc.js",
+      "/_app/immutable/chunks/fsJWJRtQ.js",
+      "/_app/immutable/chunks/rI5oU0Lv.js",
+      "/_app/immutable/entry/app.CeN7KipJ.js",
+      "/_app/immutable/entry/start.B7GYVS7z.js",
+      "/_app/immutable/nodes/0.DO11R2ZS.js",
+      "/_app/immutable/nodes/1.G7khmMM3.js",
+      "/_app/immutable/nodes/2.DAIVTgNX.js",
+      "/fonts/fonts.css"
+    ],
+    "observedDedicatedWorkers": [],
+    "artifacts": [
+      {
+        "resource": "/_app/immutable/assets/0.DhLrsKyA.css",
+        "sha256": "a57e201c91144c6daa2dc2456b49bf4986349d3c3ddba216f4aef3166ace057e"
+      },
+      {
+        "resource": "/_app/immutable/assets/2.5IQ4CKOb.css",
+        "sha256": "8f969e4524358f6084a93dc77569fe8631bcec0b3ff81eb756a82b621f6ffa4b"
+      },
+      {
+        "resource": "/_app/immutable/assets/ridge_term_bg.B8-JIEMJ.wasm",
+        "sha256": "06d13825ac67c0b1f5c9b86c2acd24f5fa6d9ab0ebfdfe9c533ef4d165671116"
+      },
+      {
+        "resource": "/_app/immutable/assets/window.Bz5vcUzJ.css",
+        "sha256": "1d4f298a3e87b50f0d7b0f6d1997ba302b48e6602264f5cf132668851c7fb931"
+      },
+      {
+        "resource": "/_app/immutable/chunks/4WfbG93b.js",
+        "sha256": "1c3db95fe1233728708e73e52d6a89a9396cbc5357212a256891d72a0111aa3c"
+      },
+      {
+        "resource": "/_app/immutable/chunks/B8z_8JoR.js",
+        "sha256": "a4b813e6a8727a1dfd08b826a28a1ef8cb39248661f7e52c2e92e0a821145d54"
+      },
+      {
+        "resource": "/_app/immutable/chunks/BGfeZGEj.js",
+        "sha256": "a5eb5fac1f852b4a0b0d112380879fc96c74f7378d836e3d7496631e5fe72f9d"
+      },
+      {
+        "resource": "/_app/immutable/chunks/BWP_D1dt.js",
+        "sha256": "7f5b72ec1d9191f8d4b737b93657baad8dbb3304cb0349a2c62adf470e9e35dc"
+      },
+      {
+        "resource": "/_app/immutable/chunks/Bsjo0eY1.js",
+        "sha256": "14f0d96c285d8f44fbd8a7ed022f418704cac19efc3f1c3d4c193367ac264e7d"
+      },
+      {
+        "resource": "/_app/immutable/chunks/CAzonv6R.js",
+        "sha256": "94c17ca9a702ed063da51cdf328e9d9f8befbf439817611c6ba5ffe4f2b25307"
+      },
+      {
+        "resource": "/_app/immutable/chunks/COVhPIYY.js",
+        "sha256": "e1b83c97e17d8109eaf56cdbaf383a9a29e6cc0e33802e9d96093e261d26b31d"
+      },
+      {
+        "resource": "/_app/immutable/chunks/CWXzugky.js",
+        "sha256": "f59beb6fbc4f1a90cae7d11c1fceb466b1b2aade3db404717742e051f717434d"
+      },
+      {
+        "resource": "/_app/immutable/chunks/CYKIYrf4.js",
+        "sha256": "fb1b09feef107a86b4426ef91f1330af3fe56515e273a82c60df7e59088c961a"
+      },
+      {
+        "resource": "/_app/immutable/chunks/Cj3L7DzJ.js",
+        "sha256": "fd2889e88bac3ef965c5a8735637ba9dc7b6fbb5d6503cb6622f04acb14e0d83"
+      },
+      {
+        "resource": "/_app/immutable/chunks/DJ97Dbk_.js",
+        "sha256": "f378148e655de8eb5c54bd729a17324f6f6b6aa0a240527c242b552205459735"
+      },
+      {
+        "resource": "/_app/immutable/chunks/DRl6bnjL.js",
+        "sha256": "c683fabcfd2acbd68d09e2afad6950846167c0fac46ef814ba48f9672899ebeb"
+      },
+      {
+        "resource": "/_app/immutable/chunks/DUyMpTiD.js",
+        "sha256": "a1100cc239d89f29627fa8443415029bba31ebc6d437df953d2b6cee9a784254"
+      },
+      {
+        "resource": "/_app/immutable/chunks/DleOQViy.js",
+        "sha256": "231f5f455f7bed858c66028bcb2332426a248f4591d35b6926260b8c12ec7dcc"
+      },
+      {
+        "resource": "/_app/immutable/chunks/Zuc-EYEM.js",
+        "sha256": "96379d9a58ecee5b4e9a51402e8ca3dd26fd1e75aad8cf1221e208b5867db706"
+      },
+      {
+        "resource": "/_app/immutable/chunks/_YVuK8wc.js",
+        "sha256": "679c28e8a5d2306e0a9791fde90c3b62efdb49148fe82940afb3824d058d4323"
+      },
+      {
+        "resource": "/_app/immutable/chunks/fsJWJRtQ.js",
+        "sha256": "d1cde23ba47016fa1fea3088077acf29b7912d24f5d60b1a590f498ca1b71c8a"
+      },
+      {
+        "resource": "/_app/immutable/chunks/rI5oU0Lv.js",
+        "sha256": "930b2dc0121dec816d5fa415e61caae757b0159ab5a46c52d216eda8dce1a5f3"
+      },
+      {
+        "resource": "/_app/immutable/entry/app.CeN7KipJ.js",
+        "sha256": "a503fe08de66bc5f44ef73d62a00276032a66bc4c16abc9bc4f1bd4cc918d571"
+      },
+      {
+        "resource": "/_app/immutable/entry/start.B7GYVS7z.js",
+        "sha256": "983310f4890247b74568eeca2cbf999cd4709d8fad6e4dd121d9ce9c583ba2cc"
+      },
+      {
+        "resource": "/_app/immutable/nodes/0.DO11R2ZS.js",
+        "sha256": "74fba9babd63f6c7726a8ec7107528fa4cadab16645c7e7d0be0ab5ec542bdab"
+      },
+      {
+        "resource": "/_app/immutable/nodes/1.G7khmMM3.js",
+        "sha256": "1a4793b503c3ca98ff94c783597e9ff764a9be95c84708b56d1072f43ecbb6ed"
+      },
+      {
+        "resource": "/_app/immutable/nodes/2.DAIVTgNX.js",
+        "sha256": "ff4c09c0e585c8e8f88f4add33e1360a6bdeb80715cc93c7b3048fe85abf327c"
+      },
+      {
+        "resource": "/fonts/fonts.css",
+        "sha256": "6b3c01a5d93906db329580bf4eca3ebfdc6e36d76936a9a2b17382cae40a15c3"
+      }
+    ],
+    "activeServiceWorkers": [
+      "/service-worker.js"
+    ]
+  },
+  "kernelPty": {
+    "stats": {
+      "attempted": 4,
+      "successful": 4,
+      "timeouts": 0,
+      "p50": 14.831100000000333,
+      "p95": 15.664700000000266,
+      "p99": 15.664700000000266,
+      "max": 15.664700000000266
+    },
+    "samples": [
+      {
+        "i": 0,
+        "rttMs": 15.581999999999425
+      },
+      {
+        "i": 1,
+        "rttMs": 14.472499999999854
+      },
+      {
+        "i": 2,
+        "rttMs": 15.664700000000266
+      },
+      {
+        "i": 3,
+        "rttMs": 14.831100000000333
+      }
+    ]
+  },
+  "trace": {
+    "enabled": true,
+    "samples": [],
+    "droppedSamples": 0
+  },
+  "renderObservation": "visibleText reads the parser/grid after feed; not physical presentation",
+  "applicationEcho": "existing get_active_workspace_id RPC through authenticated business framing; control worker, not the latency-sensitive PTY input worker",
+  "kernelShutdownHttp": 200,
+  "temporaryState": "C:\\Users\\12867\\AppData\\Local\\Temp\\ridge-diag-aBJMV5",
+  "directoryCleanup": "Retained: automated recursive directory deletion is blocked by local approval review."
+}

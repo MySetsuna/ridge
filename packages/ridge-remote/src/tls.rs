@@ -54,10 +54,40 @@ const LEAF_RENEW_DAYS: u64 = 350;
 
 /// Directory holding the remote server's TLS material.
 pub fn tls_dir() -> PathBuf {
+    if let Some(path) = fixture_tls_dir(
+        std::env::var_os("RIDGE_TEST_TLS_DIR").map(PathBuf::from),
+        std::env::var_os("RIDGE_TEST_ALLOW_NON_BREAKAWAY").is_some(),
+    ) { return path; }
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ridge")
         .join("remote-tls")
+}
+
+// Pure resolution lets fixture tests avoid changing process-wide environment.
+fn fixture_tls_dir(path: Option<PathBuf>, allowed: bool) -> Option<PathBuf> {
+    if !allowed { return None; }
+    path.map(|path| { assert!(path.is_absolute(), "RIDGE_TEST_TLS_DIR must be absolute"); path })
+}
+
+#[cfg(test)]
+mod fixture_dir_tests {
+    use super::*;
+    #[test]
+    fn production_ignores_fixture_path_without_opt_in() {
+        assert_eq!(fixture_tls_dir(Some(PathBuf::from("relative")), false), None);
+        assert_eq!(fixture_tls_dir(None, true), None);
+    }
+    #[test]
+    fn opted_in_fixture_uses_absolute_directory() {
+        let path = std::env::temp_dir().join("ridge-tls-fixture");
+        assert_eq!(fixture_tls_dir(Some(path.clone()), true), Some(path));
+    }
+    #[test]
+    #[should_panic(expected = "must be absolute")]
+    fn invalid_fixture_path_fails_before_certificate_writes() {
+        fixture_tls_dir(Some(PathBuf::from("relative")), true);
+    }
 }
 
 /// Root CA certificate in DER form, for the `/ridge-ca.crt` download endpoint

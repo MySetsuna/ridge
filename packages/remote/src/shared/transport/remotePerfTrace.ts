@@ -13,7 +13,8 @@ export type RemotePerfStage =
   | 'raw-receive'
   | 'raw-feed'
   | 'pane-switch'
-  | 'pane-first-paint';
+  | 'pane-first-paint'
+  | 'transport-queue';
 
 export interface RemotePerfSample {
   stage: RemotePerfStage;
@@ -22,8 +23,23 @@ export interface RemotePerfSample {
   bytes?: number;
   queueBytes?: number;
   paneKey?: string;
+  sourceId?: string;
+  sequence?: number;
+  channelId?: number;
   transport?: string;
   candidateType?: string;
+  remoteCandidateType?: string;
+  protocol?: string;
+  relayProtocol?: string;
+  ordered?: boolean;
+  oldestAgeKnown?: boolean;
+  maxRetransmits?: number;
+  maxPacketLifeTime?: number;
+  queueDepth?: number;
+  oldestAgeMs?: number;
+  enqueuedFrames?: number;
+  dequeuedFrames?: number;
+  droppedFrames?: number;
   rttMs?: number;
   availableOutgoingBitrate?: number;
   bytesSent?: number;
@@ -36,6 +52,7 @@ type RemotePerfMeta = Omit<RemotePerfSample, 'stage' | 'at' | 'durationMs'>;
 export interface RemotePerfSnapshot {
   enabled: boolean;
   samples: RemotePerfSample[];
+  droppedSamples: number;
 }
 
 export interface RemotePerfToken {
@@ -47,12 +64,13 @@ export interface RemotePerfToken {
 const MAX_SAMPLES = 256;
 
 function metricNumber(value: unknown): number | undefined {
-  return typeof value === 'number' ? value : undefined;
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 const samples: RemotePerfSample[] = [];
-const lastStatsAt = new WeakMap<object, number>();
+let droppedSamples = 0;
+let lastStatsAt = new WeakMap<object, number>();
 
-function enabled(): boolean {
+export function remotePerfEnabled(): boolean {
   return (globalThis as unknown as { __RIDGE_REMOTE_PERF_TRACE?: boolean })
     .__RIDGE_REMOTE_PERF_TRACE === true;
 }
@@ -62,27 +80,38 @@ function now(): number {
 }
 
 function append(sample: RemotePerfSample): void {
-  if (!enabled()) return;
-  samples.push(sample);
-  if (samples.length > MAX_SAMPLES) samples.splice(0, samples.length - MAX_SAMPLES);
+  if (!remotePerfEnabled()) return;
+  // Runtime allowlist also rejects payload/address fields passed through an unsafe cast.
+  const clean: RemotePerfSample = { stage: sample.stage, at: sample.at };
+  for (const key of ['durationMs', 'bytes', 'queueBytes', 'rttMs', 'availableOutgoingBitrate', 'bytesSent', 'bytesReceived', 'packetsLost', 'maxRetransmits', 'maxPacketLifeTime', 'queueDepth', 'oldestAgeMs', 'enqueuedFrames', 'dequeuedFrames', 'droppedFrames', 'sequence', 'channelId'] as const) {
+    const value = metricNumber(sample[key]);
+    if (value !== undefined) clean[key] = value;
+  }
+  for (const key of ['paneKey', 'sourceId', 'transport', 'candidateType', 'remoteCandidateType', 'protocol', 'relayProtocol'] as const) {
+    if (typeof sample[key] === 'string') clean[key] = sample[key].slice(0, 96);
+  }
+  for (const key of ['ordered', 'oldestAgeKnown'] as const) if (typeof sample[key] === 'boolean') clean[key] = sample[key];
+  samples.push(clean);
+  if (samples.length > MAX_SAMPLES) { droppedSamples += samples.length - MAX_SAMPLES; samples.splice(0, samples.length - MAX_SAMPLES); }
 }
 
 export function remotePerfStart(
   stage: RemotePerfStage,
   meta?: RemotePerfMeta,
 ): RemotePerfToken | null {
-  if (!enabled()) return null;
+  if (!remotePerfEnabled()) return null;
   return { stage, startedAt: now(), meta };
 }
 
 export function remotePerfEnd(token: RemotePerfToken | null, meta?: RemotePerfMeta): void {
-  if (!token || !enabled()) return;
+  if (!token || !remotePerfEnabled()) return;
+  const endedAt = now();
   append({
-    stage: token.stage,
-    at: now(),
-    durationMs: Math.max(0, now() - token.startedAt),
     ...token.meta,
     ...meta,
+    stage: token.stage,
+    at: endedAt,
+    durationMs: Math.max(0, endedAt - token.startedAt),
   });
 }
 
@@ -90,22 +119,25 @@ export function remotePerfMark(
   stage: RemotePerfStage,
   meta?: RemotePerfMeta,
 ): void {
-  append({ stage, at: now(), ...meta });
+  if (remotePerfEnabled()) append({ ...meta, stage, at: now() });
 }
 
 export function remotePerfSnapshot(): RemotePerfSnapshot {
-  return { enabled: enabled(), samples: samples.slice() };
+  return { enabled: remotePerfEnabled(), samples: samples.map(sample => ({ ...sample })), droppedSamples };
 }
 
 export function resetRemotePerfTrace(): void {
   samples.length = 0;
+  droppedSamples = 0;
+  lastStatsAt = new WeakMap();
 }
 
 /** Sample WebRTC path facts without retaining the stats report or payloads. */
 export async function remotePerfSamplePeerConnection(
   pc: Pick<RTCPeerConnection, 'getStats'>,
+  channel?: (Pick<RTCDataChannel, 'ordered' | 'maxRetransmits' | 'maxPacketLifeTime' | 'bufferedAmount'> & Partial<Pick<RTCDataChannel, 'id'>>) | null,
 ): Promise<void> {
-  if (!enabled()) return;
+  if (!remotePerfEnabled()) return;
   const nowMs = now();
   const key = pc as object;
   const previous = lastStatsAt.get(key);
@@ -115,6 +147,7 @@ export async function remotePerfSamplePeerConnection(
     const report = await pc.getStats();
     let selected: Record<string, unknown> | undefined;
     let localCandidate: Record<string, unknown> | undefined;
+    let remoteCandidate: Record<string, unknown> | undefined;
     let inbound: Record<string, unknown> | undefined;
     let outbound: Record<string, unknown> | undefined;
     let dataChannel: Record<string, unknown> | undefined;
@@ -122,21 +155,33 @@ export async function remotePerfSamplePeerConnection(
     report.forEach((raw) => {
       const value = raw as unknown as Record<string, unknown>;
       records.push(value);
-      if (value.type === 'candidate-pair' && (value.selected || value.nominated)) selected = value;
+      if (value.type === 'candidate-pair' && value.selected === true) selected = value;
       if (value.type === 'inbound-rtp' && value.kind === 'application') inbound = value;
       if (value.type === 'outbound-rtp' && value.kind === 'application') outbound = value;
-      if (value.type === 'data-channel') dataChannel = value;
     });
+    const transport = records.find(value => value.type === 'transport' && typeof value.selectedCandidatePairId === 'string');
+    if (transport) selected = records.find(value => value.type === 'candidate-pair' && value.id === transport.selectedCandidatePairId);
+    const channels = records.filter(value => value.type === 'data-channel');
+    dataChannel = channel?.id != null ? channels.find(value => value.dataChannelIdentifier === channel.id) : channels.length === 1 ? channels[0] : undefined;
     if (selected) {
       localCandidate = records.find(
         (value) => value.type === 'local-candidate' && value.id === selected?.localCandidateId,
       );
+      remoteCandidate = records.find(value => value.type === 'remote-candidate' && value.id === selected?.remoteCandidateId);
     }
     append({
       stage: 'transport-stats',
       at: nowMs,
       transport: 'cloud-webrtc',
       candidateType: typeof localCandidate?.candidateType === 'string' ? localCandidate.candidateType : undefined,
+      remoteCandidateType: typeof remoteCandidate?.candidateType === 'string' ? remoteCandidate.candidateType : undefined,
+      protocol: typeof localCandidate?.protocol === 'string' ? localCandidate.protocol : undefined,
+      relayProtocol: typeof localCandidate?.relayProtocol === 'string' ? localCandidate.relayProtocol : undefined,
+      ordered: channel?.ordered,
+      channelId: channel?.id ?? undefined,
+      maxRetransmits: channel?.maxRetransmits ?? undefined,
+      maxPacketLifeTime: channel?.maxPacketLifeTime ?? undefined,
+      queueBytes: channel?.bufferedAmount,
       rttMs: typeof selected?.currentRoundTripTime === 'number' ? selected.currentRoundTripTime * 1000 : undefined,
       availableOutgoingBitrate:
         typeof selected?.availableOutgoingBitrate === 'number' ? selected.availableOutgoingBitrate : undefined,
