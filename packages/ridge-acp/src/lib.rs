@@ -6,6 +6,7 @@
 //! or Mobile consumers can read without parsing shell ANSI or touching Tauri invokes.
 
 pub mod error;
+pub mod existing;
 pub mod events;
 pub mod lifecycle;
 pub mod prompt_loop;

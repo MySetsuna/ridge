@@ -43,6 +43,16 @@ pub struct AcpRequest {
     pub params: Option<Value>,
 }
 
+/// Agent-to-client request IDs are opaque strings or integer JSON-RPC IDs.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AcpPeerRequest {
+    pub jsonrpc: String,
+    pub id: Value,
+    pub method: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcpResponse {
     pub jsonrpc: String,

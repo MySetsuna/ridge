@@ -3,13 +3,9 @@
 //! M2 architecture: single-writer owner + single-reader owner, each in a
 //! dedicated tokio task. The `AcpTransport` handle is `Clone` (Arc-shared).
 //!
-//! Framing is configurable via [`Framing`]. ACP itself does not pin a
-//! single framing — different agents adopt different conventions:
-//!
-//! - **Content-Length** (LSP-style): `Content-Length: N\r\n\r\n<body>`.
-//!   Used by my M1 fixture (`live_acp_agent`) and by codex-acp.
-//! - **NDJSON** (newline-delimited JSON): `<body>\n` per message.
-//!   Used by opencode-acp (verified against opencode 1.18.31 / 2.0.6).
+//! ACP v1 uses newline-delimited JSON-RPC. Content-Length remains only for
+//! legacy regression fixtures. `from_io` accepts an already-established byte
+//! stream; transport never launches or owns an Agent process.
 //!
 //! [`AcpTransport::call`] issues a request and awaits a response via a
 //! per-call `oneshot` channel — no lock-across-await on the response path.
@@ -31,17 +27,19 @@
 //! - **No orphan tasks**: writer exits when its `Receiver` returns `None`;
 //!   reader exits on stdout EOF or shutdown.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::error::AcpErrorWrap;
-use crate::protocol::{decode_frame, locate_header_end, AcpNotification, AcpRequest, AcpResponse};
+use crate::protocol::{
+    decode_frame, locate_header_end, AcpNotification, AcpPeerRequest, AcpRequest, AcpResponse,
+};
 
 const WRITER_CHANNEL_CAPACITY: usize = 32;
 const NOTIFY_BROADCAST_CAPACITY: usize = 256;
@@ -65,6 +63,38 @@ enum WriterCmd {
     Notify { body: Vec<u8> },
 }
 
+const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+type Reader = BufReader<Box<dyn AsyncRead + Unpin + Send>>;
+type Writer = Box<dyn AsyncWrite + Unpin + Send>;
+type NotificationSink = Arc<dyn Fn(&AcpNotification) -> Result<(), AcpErrorWrap> + Send + Sync>;
+#[derive(Clone)]
+struct PeerInbox {
+    sender: mpsc::Sender<AcpPeerRequest>,
+    pending: Arc<StdMutex<HashSet<String>>>,
+    notifications: Arc<StdMutex<Option<NotificationSink>>>,
+}
+
+struct PendingCall {
+    id: i64,
+    entries: Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>>,
+}
+impl Drop for PendingCall {
+    fn drop(&mut self) {
+        self.entries.lock().expect("pending mutex").remove(&self.id);
+    }
+}
+
+pub struct PendingResponse {
+    receiver: oneshot::Receiver<AcpResponse>,
+    _pending: PendingCall,
+}
+impl PendingResponse {
+    pub async fn wait(self) -> Result<AcpResponse, AcpErrorWrap> {
+        let Self { receiver, _pending } = self;
+        receiver.await.map_err(|_| AcpErrorWrap::SessionClosed)
+    }
+}
+
 struct TransportInner {
     next_id: AtomicI64,
     writer_tx: mpsc::Sender<WriterCmd>,
@@ -76,7 +106,10 @@ struct TransportInner {
     pending: Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>>,
     notify_tx: broadcast::Sender<AcpNotification>,
     shutdown_tx: watch::Sender<bool>,
-    closed: AtomicBool,
+    closed: Arc<AtomicBool>,
+    peer_pending: Arc<StdMutex<HashSet<String>>>,
+    peer_receiver: StdMutex<Option<mpsc::Receiver<AcpPeerRequest>>>,
+    notification_sink: Arc<StdMutex<Option<NotificationSink>>>,
     framing: Framing,
     _writer_handle: JoinHandle<()>,
     _reader_handle: JoinHandle<()>,
@@ -89,47 +122,87 @@ pub struct AcpTransport {
 }
 
 impl AcpTransport {
-    /// Boot a transport from a child process's stdio handles. Default
-    /// framing is `ContentLength` (LSP-style) — the format my M1 fixture
-    /// uses and that codex-acp also adopts.
-    pub fn spawn(
-        stdin: ChildStdin,
-        stdout: ChildStdout,
-        stderr: Option<ChildStderr>,
-    ) -> Self {
+    /// Legacy fixture framing over supplied stdio handles. Does not spawn
+    /// a process. Standard ACP consumers use `from_io` and NDJSON.
+    pub fn spawn(stdin: ChildStdin, stdout: ChildStdout, stderr: Option<ChildStderr>) -> Self {
         Self::spawn_with_framing(stdin, stdout, stderr, Framing::ContentLength)
     }
 
-    /// Boot a transport with an explicit wire framing. Use `Framing::NdJson`
-    /// to talk to agents like opencode-acp that do not use Content-Length.
+    /// Adapt supplied stdio handles with explicit framing.
     pub fn spawn_with_framing(
         stdin: ChildStdin,
         stdout: ChildStdout,
         stderr: Option<ChildStderr>,
         framing: Framing,
     ) -> Self {
+        Self::build_io(stdin, stdout, stderr, framing)
+    }
+
+    pub fn from_io<W, R>(writer: W, reader: R) -> Self
+    where
+        W: AsyncWrite + Unpin + Send + 'static,
+        R: AsyncRead + Unpin + Send + 'static,
+    {
+        Self::build_io(writer, reader, None, Framing::NdJson)
+    }
+
+    fn build_io<W, R>(stdin: W, stdout: R, stderr: Option<ChildStderr>, framing: Framing) -> Self
+    where
+        W: AsyncWrite + Unpin + Send + 'static,
+        R: AsyncRead + Unpin + Send + 'static,
+    {
+        let stdin: Writer = Box::new(stdin);
+        let stdout: Box<dyn AsyncRead + Unpin + Send> = Box::new(stdout);
+        let closed = Arc::new(AtomicBool::new(false));
+        let (peer_sender, peer_receiver) = mpsc::channel(32);
+        let peer_pending = Arc::new(StdMutex::new(HashSet::new()));
+        let notification_sink = Arc::new(StdMutex::new(None));
+        let peer = PeerInbox {
+            sender: peer_sender,
+            pending: peer_pending.clone(),
+            notifications: notification_sink.clone(),
+        };
         let (writer_tx, writer_rx) = mpsc::channel(WRITER_CHANNEL_CAPACITY);
         let (notify_tx, _) = broadcast::channel(NOTIFY_BROADCAST_CAPACITY);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let pending: Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>> =
             Arc::new(StdMutex::new(HashMap::new()));
-        let writer_handle = tokio::spawn(writer_task(
-            stdin,
-            writer_rx,
-            shutdown_rx.clone(),
-            framing,
-        ));
-        let reader_handle = tokio::spawn(reader_task(
-            BufReader::new(stdout),
-            notify_tx.clone(),
-            shutdown_rx.clone(),
-            pending.clone(),
-            framing,
-        ));
-        let stderr_handle = stderr.map(|e| {
-            tokio::spawn(stderr_drain_task(BufReader::new(e), shutdown_rx))
+        let writer_handle = tokio::spawn({
+            let writer_closed = closed.clone();
+            let writer_shutdown = shutdown_tx.clone();
+            let shutdown_rx = shutdown_rx.clone();
+            let pending = pending.clone();
+            async move {
+                writer_task(stdin, writer_rx, shutdown_rx, framing).await;
+                writer_closed.store(true, Ordering::Release);
+                let _ = writer_shutdown.send(true);
+                drain_pending(&pending);
+            }
         });
+        let reader_handle = tokio::spawn({
+            let reader_closed = closed.clone();
+            let reader_shutdown = shutdown_tx.clone();
+            let shutdown_rx = shutdown_rx.clone();
+            let pending = pending.clone();
+            let notify_tx = notify_tx.clone();
+            async move {
+                reader_task(
+                    BufReader::new(stdout),
+                    notify_tx,
+                    shutdown_rx,
+                    pending.clone(),
+                    framing,
+                    peer,
+                )
+                .await;
+                reader_closed.store(true, Ordering::Release);
+                let _ = reader_shutdown.send(true);
+                drain_pending(&pending);
+            }
+        });
+        let stderr_handle =
+            stderr.map(|e| tokio::spawn(stderr_drain_task(BufReader::new(e), shutdown_rx)));
 
         Self {
             inner: Arc::new(TransportInner {
@@ -138,7 +211,10 @@ impl AcpTransport {
                 pending,
                 notify_tx,
                 shutdown_tx,
-                closed: AtomicBool::new(false),
+                closed,
+                peer_pending,
+                peer_receiver: StdMutex::new(Some(peer_receiver)),
+                notification_sink,
                 framing,
                 _writer_handle: writer_handle,
                 _reader_handle: reader_handle,
@@ -147,12 +223,11 @@ impl AcpTransport {
         }
     }
 
-    /// Send one JSON-RPC request, await the matched response.
-    pub async fn call(
+    fn prepare_call(
         &self,
         method: &str,
         params: serde_json::Value,
-    ) -> Result<AcpResponse, AcpErrorWrap> {
+    ) -> Result<(PendingResponse, Vec<u8>), AcpErrorWrap> {
         if self.inner.closed.load(Ordering::Acquire) {
             return Err(AcpErrorWrap::SessionClosed);
         }
@@ -165,29 +240,63 @@ impl AcpTransport {
         };
         // Serialize the JSON envelope; the writer task applies the configured
         // framing (Content-Length header or NDJSON newline).
-        let body = serde_json::to_vec(&req).map_err(|e| AcpErrorWrap::InvalidFrame(e.to_string()))?;
+        let body =
+            serde_json::to_vec(&req).map_err(|e| AcpErrorWrap::InvalidFrame(e.to_string()))?;
+        if body.len() > MAX_FRAME_BYTES {
+            return Err(AcpErrorWrap::InvalidFrame(
+                "ACP request exceeds transport budget".into(),
+            ));
+        }
 
         let (tx, rx) = oneshot::channel();
         {
             let mut pending = self.inner.pending.lock().expect("pending mutex");
+            if pending.len() >= 128 {
+                return Err(AcpErrorWrap::Transport(
+                    "ACP pending request budget exhausted".into(),
+                ));
+            }
             pending.insert(id, tx);
         }
-        if self
-            .inner
+        let guard = PendingCall {
+            id,
+            entries: self.inner.pending.clone(),
+        };
+        Ok((
+            PendingResponse {
+                receiver: rx,
+                _pending: guard,
+            },
+            body,
+        ))
+    }
+
+    pub async fn call(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<AcpResponse, AcpErrorWrap> {
+        let (pending, body) = self.prepare_call(method, params)?;
+        self.inner
             .writer_tx
             .send(WriterCmd::Call { body })
             .await
-            .is_err()
-        {
-            // Writer is gone — drain pending entry.
-            let mut pending = self.inner.pending.lock().expect("pending mutex");
-            pending.remove(&id);
-            return Err(AcpErrorWrap::SessionClosed);
-        }
-        match rx.await {
-            Ok(resp) => Ok(resp),
-            Err(_) => Err(AcpErrorWrap::SessionClosed),
-        }
+            .map_err(|_| AcpErrorWrap::SessionClosed)?;
+        pending.wait().await
+    }
+
+    /// Synchronous bounded admission preserves ordering with an immediate cancel.
+    pub fn begin_call(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<PendingResponse, AcpErrorWrap> {
+        let (pending, body) = self.prepare_call(method, params)?;
+        self.inner
+            .writer_tx
+            .try_send(WriterCmd::Call { body })
+            .map_err(|error| AcpErrorWrap::Transport(error.to_string()))?;
+        Ok(pending)
     }
 
     /// Send one JSON-RPC notification (no response expected).
@@ -204,7 +313,13 @@ impl AcpTransport {
             method: method.into(),
             params: if params.is_null() { None } else { Some(params) },
         };
-        let body = serde_json::to_vec(&notif).map_err(|e| AcpErrorWrap::InvalidFrame(e.to_string()))?;
+        let body =
+            serde_json::to_vec(&notif).map_err(|e| AcpErrorWrap::InvalidFrame(e.to_string()))?;
+        if body.len() > MAX_FRAME_BYTES {
+            return Err(AcpErrorWrap::InvalidFrame(
+                "ACP notification exceeds transport budget".into(),
+            ));
+        }
         self.inner
             .writer_tx
             .send(WriterCmd::Notify { body })
@@ -218,13 +333,83 @@ impl AcpTransport {
         self.inner.notify_tx.subscribe()
     }
 
+    /// Install the authoritative ordered sink before loading history. Reader
+    /// backpressure follows this sink; a replay cannot silently overflow a UI mirror.
+    pub fn set_notification_sink(&self, sink: NotificationSink) -> Result<(), AcpErrorWrap> {
+        let mut current = self
+            .inner
+            .notification_sink
+            .lock()
+            .expect("notification sink lock");
+        if current.is_some() {
+            return Err(AcpErrorWrap::Transport(
+                "notification sink already owned".into(),
+            ));
+        }
+        *current = Some(sink);
+        Ok(())
+    }
+
     pub fn is_closed(&self) -> bool {
-        self.inner.closed.load(Ordering::Acquire)
+        self.inner.closed.load(Ordering::Acquire) || self.inner.writer_tx.is_closed()
     }
 
     /// Wire framing this transport was spawned with.
     pub fn framing(&self) -> Framing {
         self.inner.framing
+    }
+
+    /// One trusted session owner consumes Agent-to-client requests.
+    pub fn take_peer_requests(&self) -> Option<mpsc::Receiver<AcpPeerRequest>> {
+        self.inner
+            .peer_receiver
+            .lock()
+            .expect("peer receiver lock")
+            .take()
+    }
+
+    pub fn has_peer_requests(&self) -> bool {
+        !self
+            .inner
+            .peer_pending
+            .lock()
+            .expect("peer requests lock")
+            .is_empty()
+    }
+
+    /// Queue exactly one response using the Agent's original JSON-RPC ID.
+    pub fn respond(
+        &self,
+        id: &serde_json::Value,
+        result: Result<serde_json::Value, crate::protocol::AcpErrorObj>,
+    ) -> Result<(), AcpErrorWrap> {
+        if self.is_closed() {
+            return Err(AcpErrorWrap::SessionClosed);
+        }
+        let envelope = match result {
+            Ok(value) => serde_json::json!({"jsonrpc":"2.0","id":id,"result":value}),
+            Err(error) => serde_json::json!({"jsonrpc":"2.0","id":id,"error":error}),
+        };
+        let body = serde_json::to_vec(&envelope)
+            .map_err(|error| AcpErrorWrap::InvalidFrame(error.to_string()))?;
+        if body.len() > MAX_FRAME_BYTES {
+            return Err(AcpErrorWrap::InvalidFrame(
+                "ACP response exceeds transport budget".into(),
+            ));
+        }
+        let mut pending = self.inner.peer_pending.lock().expect("peer requests lock");
+        let key = id.to_string();
+        if !pending.contains(&key) {
+            return Err(AcpErrorWrap::InvalidFrame(
+                "Agent request is not pending".into(),
+            ));
+        }
+        self.inner
+            .writer_tx
+            .try_send(WriterCmd::Notify { body })
+            .map_err(|error| AcpErrorWrap::Transport(error.to_string()))?;
+        pending.remove(&key);
+        Ok(())
     }
 
     pub fn shutdown(&self) {
@@ -245,7 +430,7 @@ impl Drop for TransportInner {
 // ---------- task bodies ----------
 
 async fn writer_task(
-    mut stdin: ChildStdin,
+    mut stdin: Writer,
     mut writer_rx: mpsc::Receiver<WriterCmd>,
     mut shutdown_rx: watch::Receiver<bool>,
     framing: Framing,
@@ -276,12 +461,6 @@ async fn writer_task(
                                 v
                             }
                         };
-                        eprintln!("[I3.6 TRACE] sending {} bytes: {}",
-                            framed.len(),
-                            String::from_utf8_lossy(&framed)
-                                .chars()
-                                .take(400)
-                                .collect::<String>());
                         if let Err(e) = stdin.write_all(&framed).await {
                             eprintln!("ridge-acp writer: write_all failed: {e}");
                             break;
@@ -299,29 +478,30 @@ async fn writer_task(
 }
 
 async fn reader_task(
-    reader: BufReader<ChildStdout>,
+    reader: Reader,
     notify_tx: broadcast::Sender<AcpNotification>,
     shutdown_rx: watch::Receiver<bool>,
     pending: Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>>,
     framing: Framing,
+    peer: PeerInbox,
 ) {
     match framing {
-        Framing::ContentLength => reader_task_content_length(
-            reader, notify_tx, shutdown_rx, pending,
-        ).await,
-        Framing::NdJson => reader_task_ndjson(
-            reader, notify_tx, shutdown_rx, pending,
-        ).await,
+        Framing::ContentLength => {
+            reader_task_content_length(reader, notify_tx, shutdown_rx, pending, peer).await
+        }
+        Framing::NdJson => reader_task_ndjson(reader, notify_tx, shutdown_rx, pending, peer).await,
     }
 }
 
 async fn reader_task_content_length(
-    mut reader: BufReader<ChildStdout>,
+    mut reader: Reader,
     notify_tx: broadcast::Sender<AcpNotification>,
     mut shutdown_rx: watch::Receiver<bool>,
     pending: Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>>,
-) {    let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
-    loop {
+    peer: PeerInbox,
+) {
+    let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
+    'read_loop: loop {
         tokio::select! {
             biased;
             _ = shutdown_rx.changed() => {
@@ -342,26 +522,32 @@ async fn reader_task_content_length(
             }
         }
         while let Some(header_end) = locate_header_end(&buf) {
-            let Some(split) = decode_frame(header_end, &buf) else { break };
+            let Some(split) = decode_frame(header_end, &buf) else {
+                break;
+            };
             let total = header_end + 4 + split.body.len();
             let body = split.body.to_vec();
             buf.drain(..total);
-            dispatch_frame(&body, &notify_tx, &pending);
+            if !dispatch_frame(&body, &notify_tx, &pending, &peer) {
+                break 'read_loop;
+            }
         }
     }
     drain_pending(&pending);
 }
 
 async fn reader_task_ndjson(
-    reader: BufReader<ChildStdout>,
+    reader: Reader,
     notify_tx: broadcast::Sender<AcpNotification>,
     mut shutdown_rx: watch::Receiver<bool>,
     pending: Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>>,
+    peer: PeerInbox,
 ) {
     let mut reader = reader;
     let mut line = Vec::with_capacity(4096);
     loop {
         line.clear();
+        let mut bounded = (&mut reader).take((MAX_FRAME_BYTES + 1) as u64);
         tokio::select! {
             biased;
             _ = shutdown_rx.changed() => {
@@ -370,16 +556,17 @@ async fn reader_task_ndjson(
                 }
                 continue;
             }
-            read = reader.read_until(b'\n', &mut line) => {
+            read = bounded.read_until(b'\n', &mut line) => {
                 match read {
                     Ok(0) => break,
                     Ok(n) => {
+                        if line.last() != Some(&b'\n') {break;}
                         // Strip trailing newline (and optional \r).
                         let mut end = n;
                         if end > 0 && line[end - 1] == b'\n' { end -= 1; }
                         if end > 0 && line[end - 1] == b'\r' { end -= 1; }
                         if end == 0 { continue; }
-                        dispatch_frame(&line[..end], &notify_tx, &pending);
+                        if line.len() > MAX_FRAME_BYTES || !dispatch_frame(&line[..end], &notify_tx, &pending, &peer) { break; }
                     }
                     Err(e) => {
                         eprintln!("ridge-acp reader: read failed: {e}");
@@ -405,7 +592,8 @@ fn dispatch_frame(
     body: &[u8],
     notify_tx: &broadcast::Sender<AcpNotification>,
     pending: &Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>>,
-) {
+    peer: &PeerInbox,
+) -> bool {
     // Iteration 3.6 — JSON-RPC demux correctness.
     //
     // The frame is classified FIRST by shape (notification vs response)
@@ -433,7 +621,7 @@ fn dispatch_frame(
                 "ridge-acp reader: malformed JSON frame ({} bytes): {e}",
                 body.len()
             );
-            return;
+            return true;
         }
     };
     let obj = match value.as_object() {
@@ -443,9 +631,34 @@ fn dispatch_frame(
                 "ridge-acp reader: frame is not a JSON object ({} bytes)",
                 body.len()
             );
-            return;
+            return true;
         }
     };
+    if obj.get("jsonrpc").and_then(|value| value.as_str()) != Some("2.0") {
+        return false;
+    }
+    if obj.contains_key("method") && obj.contains_key("id") {
+        if obj.contains_key("result") || obj.contains_key("error") {
+            return false;
+        }
+        let request: AcpPeerRequest = match serde_json::from_value(value) {
+            Ok(request) => request,
+            Err(_) => return false,
+        };
+        if !(request.id.is_string() || request.id.is_i64() || request.id.is_u64()) {
+            return false;
+        }
+        let key = request.id.to_string();
+        let mut pending = peer.pending.lock().expect("peer requests lock");
+        if !pending.insert(key.clone()) {
+            return false;
+        }
+        if peer.sender.try_send(request).is_err() {
+            pending.remove(&key);
+            return false;
+        }
+        return true;
+    }
     let is_response = obj.contains_key("result") || obj.contains_key("error");
     let is_notification = obj.contains_key("method") && !is_response;
     if is_response {
@@ -453,10 +666,8 @@ fn dispatch_frame(
         let resp: AcpResponse = match serde_json::from_value(value) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!(
-                    "ridge-acp reader: response-shape frame fails AcpResponse parse: {e}"
-                );
-                return;
+                eprintln!("ridge-acp reader: response-shape frame fails AcpResponse parse: {e}");
+                return true;
             }
         };
         let tx = {
@@ -475,10 +686,18 @@ fn dispatch_frame(
                 );
             }
         }
-        return;
+        return true;
     }
     if is_notification {
         if let Ok(notif) = serde_json::from_value::<AcpNotification>(value) {
+            let sink = peer
+                .notifications
+                .lock()
+                .expect("notification sink lock")
+                .clone();
+            if sink.is_some_and(|sink| sink(&notif).is_err()) {
+                return false;
+            }
             let _ = notify_tx.send(notif);
         } else {
             eprintln!(
@@ -486,12 +705,13 @@ fn dispatch_frame(
                 body.len()
             );
         }
-        return;
+        return true;
     }
     eprintln!(
         "ridge-acp reader: frame has neither result/error nor method ({} bytes)",
         body.len()
     );
+    true
 }
 
 async fn read_more<R: tokio::io::AsyncBufRead + Unpin>(
@@ -503,6 +723,12 @@ async fn read_more<R: tokio::io::AsyncBufRead + Unpin>(
         return Ok(0);
     }
     let n = tmp.len();
+    if buf.len().saturating_add(n) > MAX_FRAME_BYTES + 8192 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "ACP frame exceeds transport budget",
+        ));
+    }
     buf.extend_from_slice(tmp);
     reader.consume(n);
     Ok(n)
