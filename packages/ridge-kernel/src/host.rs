@@ -163,12 +163,6 @@ impl KernelHost {
             .and_then(Value::as_str)
             .and_then(|id| Uuid::parse_str(id).ok())
             .ok_or_else(|| "kernel create-workspace response missing workspace_id".to_string())?;
-        request_json(
-            &endpoint,
-            "POST",
-            &format!("/v1/domain/workspaces/{workspace_id}/activate"),
-            None,
-        )?;
         Self::seed_workspace_pane(&endpoint, workspace_id)?;
         Ok(json!({
             "success": true,
@@ -302,12 +296,13 @@ impl KernelHost {
                 }
             }
         }
-        ids.sort();
+        let entries = workspace_snapshot.as_ref().map(|snapshot|snapshot.entries.clone()).unwrap_or_default();
         let active = workspace_snapshot
             .and_then(|snapshot| snapshot.active)
             .and_then(|id| Uuid::parse_str(&id).ok())
             .or_else(|| ids.first().copied());
         KernelSnapshot {
+            entries,
             ids,
             active,
             ptys,
@@ -672,6 +667,7 @@ fn collect_pane_metadata(
 
 #[derive(Clone)]
 struct KernelSnapshot {
+    entries: Vec<ridge_core::commands::workspace::WorkspaceEntry>,
     ids: Vec<Uuid>,
     active: Option<Uuid>,
     ptys: Vec<KernelPtyInfo>,
@@ -756,7 +752,7 @@ impl WorkspaceProvider for KernelHost {
         let snapshot = self.snapshot();
         json!({
             "workspaces": snapshot.ids.iter().enumerate().map(|(index, id)| json!({
-                "id": id.to_string(), "name": "Ridge", "displaySeq": index + 1,
+                "id": id.to_string(), "name": snapshot.entries.iter().find(|entry|entry.id==id.to_string()).and_then(|entry|entry.name.as_ref()), "displaySeq": snapshot.entries.iter().find(|entry|entry.id==id.to_string()).map(|entry|entry.display_seq).unwrap_or(index as u64 + 1),
                 "active": snapshot.active == Some(*id), "panes": self.panes(*id, &snapshot),
                 "capabilities": KERNEL_HOST_CAPABILITIES,
             })).collect::<Vec<_>>()
@@ -786,9 +782,9 @@ impl WorkspaceProvider for KernelHost {
         let _ = self
             .workspace_id(Some(workspace_id))
             .map_err(HostError::NotFound)?;
-        Err(HostError::BadRequest(
-            "kernel keeps workspace topology; close panes instead".into(),
-        ))
+        dispatch_shared_core(self, "close_workspace", &json!({"workspaceId":workspace_id}), false, &self.roots(&self.snapshot()), &Uuid::new_v4().to_string())
+            .map_err(|error|HostError::BadRequest(error.message))?;
+        Ok(json!({"success":true,"workspaceId":workspace_id}))
     }
 
     fn allowed_file_roots(&self) -> Vec<PathBuf> {
@@ -949,7 +945,8 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsCon
         .as_ref()
         .and_then(|(connection, _)| connection.token.as_deref())
         .and_then(|token| host.sessions.origin_bound_workspace(token))
-        .and_then(|workspace| Uuid::parse_str(&workspace).ok());
+        .and_then(|workspace| Uuid::parse_str(&workspace).ok())
+        .filter(|workspace|initial.ids.contains(workspace));
     let view = Arc::new(Mutex::new(
         restored
             .or(initial.active)
@@ -1070,6 +1067,10 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsCon
             Some(message) = out_rx.recv() => { if tx.send(message).await.is_err() { break; } }
             event = events.next() => match event {
                 Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                    if serde_json::from_str::<Value>(&text).is_ok_and(|event|event["name"]=="workspace-list-changed") {
+                        let Ok(frame) = tokio::task::spawn_blocking({let host=host.clone();let view=view.clone();move||client_workspaces_frame(&host,&view)}).await else {break;};
+                        if tx.send(Message::Text(frame.to_string())).await.is_err() {break;}
+                    }
                     if tx.send(Message::Text(text)).await.is_err() { break; }
                 }
                 Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(bytes))) => {
@@ -1322,6 +1323,7 @@ fn handle_client_text(
     if method == "get_active_workspace_id" {
         let snapshot = host.snapshot();
         let selected = selected
+            .filter(|id|snapshot.ids.contains(id))
             .or(snapshot.active)
             .or_else(|| snapshot.ids.first().copied());
         let result = selected
@@ -1368,8 +1370,7 @@ fn handle_client_text(
             } else {
                 &response
             };
-            if let Some(id) = result["workspaceId"]
-                .as_str()
+            if let Some(id) = result.as_str().or_else(||result["workspaceId"].as_str())
                 .and_then(|id| Uuid::parse_str(id).ok())
             {
                 if let Ok(mut active) = view.lock() {
@@ -1681,7 +1682,7 @@ fn dispatch(
     // startup calls cannot delay the first real workspace action.
     if method == "create_workspace" {
         let name = args.get("name").and_then(Value::as_str);
-        return host.create_workspace_json(name);
+        return host.create_workspace_json(name).map(|value|value["workspaceId"].clone());
     }
     if matches!(
         method,
@@ -1970,15 +1971,24 @@ fn panes_frame(host: &Arc<KernelHost>) -> Value {
 
 fn client_panes_frame(host: &Arc<KernelHost>, view: &Arc<Mutex<Option<Uuid>>>) -> Value {
     let mut snapshot = host.snapshot();
-    if let Ok(active) = view.lock() {
-        if active.is_some() {
-            snapshot.active = *active;
-            if active.is_some_and(|id| !snapshot.ids.contains(&id)) {
-                snapshot.errors.push("client workspace unavailable".into());
-            }
-        }
+    if let Ok(mut active) = view.lock() {
+        *active = active.filter(|id|snapshot.ids.contains(id)).or(snapshot.active).or_else(||snapshot.ids.first().copied());
+        snapshot.active = *active;
     }
     panes_frame_for_snapshot(host, &snapshot)
+}
+
+fn client_workspaces_frame(host: &Arc<KernelHost>, view: &Arc<Mutex<Option<Uuid>>>) -> Value {
+    let mut frame = host.list_workspaces_json();
+    let valid: Vec<_> = frame["workspaces"].as_array().into_iter().flatten().filter_map(|row|row["id"].as_str().and_then(|id|Uuid::parse_str(id).ok())).collect();
+    if let Ok(mut active) = view.lock() {
+        *active = active.filter(|id|valid.contains(id)).or_else(||valid.first().copied());
+        if let Some(rows) = frame["workspaces"].as_array_mut() {
+            for row in rows {row["active"]=json!(row["id"].as_str()==active.map(|id|id.to_string()).as_deref());}
+        }
+    }
+    frame["type"] = json!("workspaces");
+    frame
 }
 
 fn panes_frame_for_snapshot(host: &Arc<KernelHost>, snapshot: &KernelSnapshot) -> Value {
@@ -2384,6 +2394,7 @@ mod tests {
     #[test]
     fn kernel_layout_is_converted_to_remote_shape() {
         let snapshot = KernelSnapshot {
+            entries: Vec::new(),
             ids: Vec::new(),
             active: None,
             ptys: vec![KernelPtyInfo {
@@ -2416,6 +2427,7 @@ mod tests {
     fn kernel_layout_includes_live_shell_metadata() {
         let pane_id = Uuid::from_u128(1);
         let snapshot = KernelSnapshot {
+            entries: Vec::new(),
             ids: vec![],
             active: None,
             ptys: vec![KernelPtyInfo {
@@ -2447,6 +2459,7 @@ mod tests {
         let pane_a = Uuid::new_v4();
         let pane_b = Uuid::new_v4();
         let snapshot = KernelSnapshot {
+            entries: Vec::new(),
             ids: vec![workspace_a, workspace_b],
             active: Some(workspace_a),
             ptys: vec![test_pty(pane_a, workspace_a), test_pty(pane_b, workspace_b)],
@@ -2465,6 +2478,7 @@ mod tests {
         let workspace_b = Uuid::new_v4();
         let pane_a = Uuid::new_v4();
         let snapshot = KernelSnapshot {
+            entries: Vec::new(),
             ids: vec![workspace_a, workspace_b],
             active: Some(workspace_a),
             ptys: vec![test_pty(pane_a, workspace_a)],
@@ -2489,12 +2503,14 @@ mod tests {
         let workspace = Uuid::new_v4();
         let pane = Uuid::new_v4();
         let stale = KernelSnapshot {
+            entries: Vec::new(),
             ids: vec![workspace],
             active: Some(workspace),
             ptys: Vec::new(),
             errors: Vec::new(),
         };
         let fresh = KernelSnapshot {
+            entries: Vec::new(),
             ids: vec![workspace],
             active: Some(workspace),
             ptys: vec![test_pty(pane, workspace)],
@@ -2517,12 +2533,14 @@ mod tests {
         let workspace_b = Uuid::new_v4();
         let pane = Uuid::new_v4();
         let stale = KernelSnapshot {
+            entries: Vec::new(),
             ids: vec![workspace_a, workspace_b],
             active: Some(workspace_a),
             ptys: Vec::new(),
             errors: Vec::new(),
         };
         let fresh = KernelSnapshot {
+            entries: Vec::new(),
             ids: vec![workspace_a, workspace_b],
             active: Some(workspace_a),
             ptys: vec![test_pty(pane, workspace_a)],
@@ -2543,6 +2561,7 @@ mod tests {
         let workspace = Uuid::new_v4();
         let pane = Uuid::new_v4();
         let stale = KernelSnapshot {
+            entries: Vec::new(),
             ids: vec![workspace],
             active: Some(workspace),
             ptys: vec![test_pty(pane, workspace)],
@@ -2565,12 +2584,14 @@ mod tests {
         let pane_a = Uuid::new_v4();
         let pane_b = Uuid::new_v4();
         let stale = KernelSnapshot {
+            entries: Vec::new(),
             ids: vec![workspace_a, workspace_b],
             active: Some(workspace_a),
             ptys: vec![test_pty(pane_a, workspace_a)],
             errors: Vec::new(),
         };
         let fresh = KernelSnapshot {
+            entries: Vec::new(),
             ids: vec![workspace_a, workspace_b],
             active: Some(workspace_b),
             ptys: vec![test_pty(pane_a, workspace_a), test_pty(pane_b, workspace_b)],
@@ -2611,6 +2632,7 @@ mod tests {
         let workspace_b = Uuid::new_v4();
         let pane_a = Uuid::new_v4();
         let snapshot = KernelSnapshot {
+            entries: Vec::new(),
             ids: vec![workspace_a, workspace_b],
             active: Some(workspace_a),
             ptys: vec![test_pty(pane_a, workspace_a)],

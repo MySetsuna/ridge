@@ -175,6 +175,7 @@ fn open(state: &AppState, path: &str) -> Result<Value, String> {
     next.insert_workspace(
         id,
         WorkspaceMeta {
+            display_seq: 0,
             pane_tree: tree,
             name: Some(payload.name),
             locked_sizes: HashMap::new(),

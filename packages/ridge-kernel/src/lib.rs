@@ -22,3 +22,4 @@ pub mod rtp1_session;
 pub mod rtp1_ws;
 pub mod server;
 mod workspace_files;
+mod workspace_commands;

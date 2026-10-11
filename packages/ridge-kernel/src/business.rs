@@ -109,7 +109,9 @@ pub async fn command(
                 let operator =
                     crate::host_core::runtime_ctx(state.fs_scope.roots(), request.native);
                 ridge_core::dispatch::validate_request(&method, &request.args, &operator)?;
-                ridge_core::dispatch(&method, request.args, &ctx)
+                ridge_core::dispatch::validate_request(&method, &request.args, &ctx)?;
+                crate::workspace_commands::dispatch(&state, &method, &request.args, &ctx)
+                    .unwrap_or_else(||ridge_core::dispatch(&method, request.args, &ctx))
             });
         match result {
             Ok(value) => json!({"ok":true,"value":value}),

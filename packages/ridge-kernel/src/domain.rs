@@ -96,13 +96,16 @@ fn parse_id(raw: &str, kind: &str) -> Result<Uuid, Json<Value>> {
 }
 
 fn workspace_list(graph: &ridge_core::workspace::graph::WorkspaceGraph) -> Value {
-    let mut ids: Vec<String> = graph.workspace_ids().map(ToString::to_string).collect();
-    ids.sort();
+    let ids: Vec<String> = graph.workspace_ids().map(ToString::to_string).collect();
     json!({
         "ok": true,
         "source": "ridge-kernel",
         "active": graph.active().map(|id| id.to_string()),
         "workspaces": ids,
+        "entries": graph.workspace_ids().enumerate().map(|(index,id)| {
+            let meta = graph.workspace(*id).expect("listed workspace exists");
+            json!({"id":id,"index":index,"name":meta.name,"displaySeq":if meta.display_seq == 0 {index as u64 + 1} else {meta.display_seq}})
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -359,9 +362,14 @@ pub async fn domain_workspaces(
     )))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceCreateRequest { pub name: Option<String> }
+
 pub async fn domain_workspace_create(
     State(st): State<AppState>,
     headers: HeaderMap,
+    request: Option<Json<WorkspaceCreateRequest>>,
 ) -> Result<Json<Value>, StatusCode> {
     if !auth_ok(&headers, &st.token) {
         return Err(StatusCode::UNAUTHORIZED);
@@ -369,6 +377,8 @@ pub async fn domain_workspace_create(
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
     let mut next = graph.clone();
     let workspace_id = next.create_workspace();
+    if let Some(name) = request.and_then(|Json(request)|request.name) { next.rename(workspace_id,name).map_err(|_|StatusCode::BAD_REQUEST)?; }
+    let active = next.active() == Some(workspace_id);
     persist_workspaces(&st, &next)?;
     *graph = next;
     drop(graph);
@@ -377,7 +387,7 @@ pub async fn domain_workspace_create(
         "ok": true,
         "source": "ridge-kernel",
         "workspace_id": workspace_id,
-        "active": true,
+        "active": active,
     })))
 }
 
@@ -787,10 +797,12 @@ pub async fn domain_workspace_topology(
     if !auth_ok(&headers, &st.token) {
         return Err(StatusCode::UNAUTHORIZED);
     }
+    let retired = st.retired_workspaces.lock().map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
     let workspace_id = match parse_id(&workspace_id, "workspace") {
         Ok(id) => id,
         Err(body) => return Ok(body),
     };
+    if retired.contains(&workspace_id) {return Ok(bad_request("workspace has been closed"));}
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
     let mut next = graph.clone();
     if let Some(meta) = next.workspace_mut(workspace_id) {
@@ -799,6 +811,7 @@ pub async fn domain_workspace_topology(
         next.insert_workspace(
             workspace_id,
             WorkspaceMeta {
+                display_seq: 0,
                 file: None,
                 pane_tree: request.pane_tree,
                 name: None,
@@ -865,6 +878,7 @@ fn seed_workspace_for_pty(
     graph.insert_workspace(
         workspace_id,
         ridge_core::workspace::graph::WorkspaceMeta {
+            display_seq: 0,
             file: None,
             pane_tree: ridge_core::workspace::pane_tree::PaneTree {
                 root: ridge_core::workspace::pane_tree::PaneNode::Leaf(pty_id),
@@ -906,6 +920,8 @@ pub async fn domain_pty_create(
     if !auth_ok(&headers, &st.token) {
         return Err(StatusCode::UNAUTHORIZED);
     }
+    let retired = st.retired_workspaces.lock().map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;
+    if request.workspace_id.is_some_and(|id|retired.contains(&id)) { return Ok(bad_request("workspace has been closed")); }
     let pty_id = request.pty_id.unwrap_or_else(Uuid::new_v4);
     let role = request.role.as_deref().unwrap_or("shell");
     let program = request.program.as_deref().or(request.shell.as_deref());
@@ -2319,6 +2335,7 @@ mod tests {
         let ptys = Arc::new(crate::pty::PtyRegistry::default());
         ptys.set_runtime_epoch(epoch.clone());
         AppState {
+            retired_workspaces: Default::default(),
             business_events: Default::default(),
             local_host: Arc::new(std::sync::OnceLock::new()),
             token: "test-token".to_string(),
@@ -2922,7 +2939,7 @@ mod tests {
     async fn workspace_handlers_mutate_only_kernel_state() {
         let state = test_state();
         let persisted = state.workspaces_path.clone();
-        let created = domain_workspace_create(State(state.clone()), test_headers())
+        let created = domain_workspace_create(State(state.clone()), test_headers(), None)
             .await
             .unwrap()
             .0;

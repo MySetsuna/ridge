@@ -46,6 +46,8 @@ pub(crate) struct OutputLeaseSlot {
 
 #[derive(Clone)]
 pub struct AppState {
+    /// Serializes workspace retirement with legacy topology/PTY registration.
+    pub(crate) retired_workspaces: Arc<std::sync::Mutex<std::collections::HashSet<Uuid>>>,
     pub(crate) business_events: crate::business::BusinessEvents,
     pub(crate) local_host: Arc<std::sync::OnceLock<Arc<crate::host::KernelHost>>>,
     pub token: String,
@@ -158,6 +160,7 @@ async fn health(State(st): State<AppState>) -> Json<HealthBody> {
             "local.presentation",
             "business.commands",
             "business.events",
+            "workspace.metadata",
         ],
     })
 }
@@ -193,6 +196,7 @@ async fn status(
             "local.presentation",
             "business.commands",
             "business.events",
+            "workspace.metadata",
         ],
     }))
 }
@@ -267,6 +271,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
     let port = local.port();
 
     let state = AppState {
+        retired_workspaces: Default::default(),
         business_events: Default::default(),
         local_host: Arc::new(std::sync::OnceLock::new()),
         token: token.clone(),
@@ -278,10 +283,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         shutdown_tx: Arc::new(std::sync::Mutex::new(Some(shutdown_tx))),
         shutting_down: Arc::new(AtomicBool::new(false)),
         workspaces: Arc::new(std::sync::Mutex::new(
-            load_workspace_graph().unwrap_or_else(|error| {
-                tracing::warn!(%error, "workspace topology restore failed; starting empty");
-                ridge_core::workspace::graph::WorkspaceGraph::new()
-            }),
+            load_workspace_graph()?,
         )),
         workspaces_path: workspace_graph_path(),
         roster: Arc::new(std::sync::Mutex::new(load_roster().unwrap_or_else(

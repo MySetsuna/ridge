@@ -8,12 +8,8 @@
 //!
 //! ## 谁用它
 //!
-//! - **headless `ridge-cli` / cloud host**：把它当作工作区/pane 存储（等价于桌面
-//!   `AppState.workspaces` 的 pane-tree 部分）。当前 cli 是单 workspace + 单 leaf 的
-//!   退化形态；S3 统一协议落地后采用（P4）。
-//! - **桌面**：**不**改用它作存储——桌面已有 `AppState.workspaces`，且 pane 模型的
-//!   实质复用已在 P1（共享 [`PaneTree`]）达成；桌面采用图谱属 S3 旁的较大重构，按
-//!   定稿延后。
+//! Kernel 持有并持久化此图谱；统一 Host 向 desktop / CLI / Remote 投影同一实体。
+//! CHG-070 正迁出旧桌面 `AppState`，展示层镜像不成为另一份工作区权威。
 //!
 //! ## 不发事件
 //!
@@ -30,6 +26,8 @@ use uuid::Uuid;
 /// 单个 workspace 的图谱数据：布局树 + 名称 + 每 pane 锁定渲染尺寸（共享属性）。
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WorkspaceMeta {
+    #[serde(default)]
+    pub display_seq: u64,
     #[serde(default, skip_serializing_if="Option::is_none")]
     pub file: Option<super::file::FileAssociation>,
     pub pane_tree: PaneTree,
@@ -45,6 +43,10 @@ pub struct WorkspaceMeta {
 pub struct WorkspaceGraph {
     workspaces: HashMap<Uuid, WorkspaceMeta>,
     active: Option<Uuid>,
+    #[serde(default)]
+    order: Vec<Uuid>,
+    #[serde(default)]
+    next_display_seq: u64,
 }
 
 impl WorkspaceGraph {
@@ -54,8 +56,11 @@ impl WorkspaceGraph {
 
     /// 新建一个空 workspace（单 leaf 树）；若是首个则置为 active。返回新 workspace id。
     pub fn create_workspace(&mut self) -> Uuid {
+        self.normalize_metadata();
         let wid = Uuid::new_v4();
-        self.workspaces.insert(wid, WorkspaceMeta::default());
+        self.workspaces.insert(wid, WorkspaceMeta { display_seq: self.next_display_seq, ..Default::default() });
+        self.next_display_seq = self.next_display_seq.saturating_add(1);
+        self.order.push(wid);
         if self.active.is_none() {
             self.active = Some(wid);
         }
@@ -63,7 +68,13 @@ impl WorkspaceGraph {
     }
 
     /// 以既有 meta 插入一个 workspace（host 从 `.ridge` 还原时用）；首个则置 active。
-    pub fn insert_workspace(&mut self, wid: Uuid, meta: WorkspaceMeta) {
+    pub fn insert_workspace(&mut self, wid: Uuid, mut meta: WorkspaceMeta) {
+        self.normalize_metadata();
+        if meta.display_seq == 0 {
+            meta.display_seq = self.workspaces.get(&wid).map(|meta|meta.display_seq).unwrap_or(self.next_display_seq);
+        }
+        self.next_display_seq = self.next_display_seq.max(meta.display_seq.saturating_add(1));
+        if !self.order.contains(&wid) { self.order.push(wid); }
         self.workspaces.insert(wid, meta);
         if self.active.is_none() {
             self.active = Some(wid);
@@ -73,9 +84,11 @@ impl WorkspaceGraph {
     /// 删除 workspace 并返回其 meta。若删的是 active，则回退到任意剩余 workspace
     /// （悬空回退的图谱侧，host 侧 ViewState 回退见 Wave C）。
     pub fn remove_workspace(&mut self, wid: Uuid) -> Option<WorkspaceMeta> {
+        self.normalize_metadata();
         let removed = self.workspaces.remove(&wid);
+        self.order.retain(|id| *id != wid);
         if removed.is_some() && self.active == Some(wid) {
-            self.active = self.workspaces.keys().next().copied();
+            self.active = self.order.first().copied();
         }
         removed
     }
@@ -102,7 +115,32 @@ impl WorkspaceGraph {
     }
 
     pub fn workspace_ids(&self) -> impl Iterator<Item = &Uuid> {
-        self.workspaces.keys()
+        let positions: HashMap<_,_> = self.order.iter().enumerate().map(|(index,id)|(id,index)).collect();
+        let mut ids: Vec<_> = self.workspaces.keys().collect();
+        ids.sort_by_key(|id|(positions.get(id).copied().unwrap_or(usize::MAX), **id));
+        ids.into_iter()
+    }
+
+    fn normalize_metadata(&mut self) {
+        self.order = self.workspace_ids().copied().collect();
+        self.next_display_seq = self.next_display_seq.max(self.workspaces.values().map(|meta|meta.display_seq).max().unwrap_or(0).saturating_add(1)).max(1);
+        for id in &self.order {
+            let meta = self.workspaces.get_mut(id).expect("ordered workspace exists");
+            if meta.display_seq == 0 { meta.display_seq = self.next_display_seq; self.next_display_seq = self.next_display_seq.saturating_add(1); }
+        }
+    }
+
+    pub fn reorder(&mut self, from: usize, to: usize) -> Result<(), CoreError> {
+        if from >= self.len() || to >= self.len() { return Err(CoreError::InvalidArgs("workspace index out of range".into())); }
+        self.normalize_metadata();
+        let id = self.order.remove(from);
+        self.order.insert(to, id);
+        Ok(())
+    }
+
+    pub fn rename(&mut self, id: Uuid, name: String) -> Result<(), CoreError> {
+        self.meta_mut(id)?.name = Some(name);
+        Ok(())
     }
 
     pub fn len(&self) -> usize {
@@ -218,6 +256,39 @@ impl WorkspaceGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_order_and_labels_survive_reorder_close_and_roundtrip() {
+        let mut graph = WorkspaceGraph::new();
+        let first = graph.create_workspace(); let second = graph.create_workspace(); let third = graph.create_workspace();
+        let labels: Vec<_> = graph.workspace_ids().map(|id|graph.workspace(*id).unwrap().display_seq).collect();
+        assert_eq!(labels, vec![1,2,3]);
+        graph.rename(second,"second".into()).unwrap(); graph.reorder(2,0).unwrap();
+        assert_eq!(graph.workspace_ids().copied().collect::<Vec<_>>(),vec![third,first,second]);
+        let bytes = serde_json::to_vec(&graph).unwrap();
+        let mut restored: WorkspaceGraph = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored.workspace_ids().copied().collect::<Vec<_>>(),vec![third,first,second]);
+        assert_eq!(restored.workspace(second).unwrap().name.as_deref(),Some("second"));
+        assert_eq!(restored.workspace(third).unwrap().display_seq,3);
+        restored.remove_workspace(third);
+        let fourth = restored.create_workspace();
+        assert_eq!(restored.workspace(fourth).unwrap().display_seq,4);
+    }
+
+    #[test]
+    fn legacy_graph_read_is_pure_and_failed_reorder_changes_nothing() {
+        let mut graph = WorkspaceGraph::new();graph.create_workspace();graph.create_workspace();
+        let mut old = serde_json::to_value(&graph).unwrap();
+        old.as_object_mut().unwrap().remove("order");old.as_object_mut().unwrap().remove("next_display_seq");
+        for meta in old["workspaces"].as_object_mut().unwrap().values_mut() {meta.as_object_mut().unwrap().remove("display_seq");}
+        let mut restored: WorkspaceGraph = serde_json::from_value(old).unwrap();
+        let before=serde_json::to_value(&restored).unwrap();let ids=restored.workspace_ids().copied().collect::<Vec<_>>();
+        assert_eq!(ids,restored.workspace_ids().copied().collect::<Vec<_>>());
+        assert!(restored.reorder(0,2).is_err());
+        assert_eq!(before,serde_json::to_value(&restored).unwrap());
+        restored.reorder(1,0).unwrap();
+        assert_eq!(restored.workspace_ids().copied().collect::<Vec<_>>(),vec![ids[1],ids[0]]);
+    }
 
     #[test]
     fn create_seeds_single_leaf_and_active() {

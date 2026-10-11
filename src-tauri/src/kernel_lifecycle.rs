@@ -55,7 +55,7 @@ pub async fn bootstrap_runtime_client(
         let endpoint = ensure_kernel_running()?;
         let status = ridge_kernel::client::request_json(&endpoint,"GET","/v1/status",None)?;
         if !status["domain"].as_array().is_some_and(|domains|
-            ["local.presentation", "business.commands", "business.events"].iter().all(|required| domains.iter().any(|domain| domain == required))) {
+            ["local.presentation", "business.commands", "business.events", "workspace.metadata"].iter().all(|required| domains.iter().any(|domain| domain == required))) {
             return Err("Running Runtime lacks the shared presentation command/event transport; update it explicitly before attaching".into());
         }
         let request = serde_json::json!({"deviceId":device_id,"origin":origin});

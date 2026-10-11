@@ -600,4 +600,80 @@ async fn scoped_local_client_cannot_become_kernel_or_lan_authority() {
         .unwrap();
     assert_eq!(remaining.child_pid, original.child_pid);
     assert!(client::health_ok(&endpoint));
+
+    let (mut editor, _) = tokio_tungstenite::connect_async(request(&grant,"owned-window","http://tauri.localhost")).await.unwrap();
+    let global_active = client::request_json(&endpoint,"GET","/v1/domain/workspaces",None).unwrap()["active"].clone();
+    let named = rpc(&mut editor,140,"create_workspace",json!({"name":"Named workspace"})).await;
+    let named_id = uuid::Uuid::parse_str(named.as_str().expect("create_workspace must retain its native UUID-string contract")).unwrap();
+    assert_eq!(client::request_json(&endpoint,"GET","/v1/domain/workspaces",None).unwrap()["active"],global_active);
+    assert_eq!(rpc(&mut editor,141,"get_active_workspace_id",json!({})).await,named);
+    let named_pty = client::list_domain_ptys(&endpoint).unwrap().into_iter().find(|pty|pty.workspace_id==Some(named_id)).unwrap();
+    let rows = rpc(&mut editor,142,"list_workspaces",json!({})).await;
+    let named_index = rows.as_array().unwrap().iter().position(|row|row["id"]==named).unwrap();
+    let display_seq = rows[named_index]["displaySeq"].clone();
+    assert_eq!(rows[named_index]["name"],"Named workspace");
+    rpc(&mut editor,143,"reorder_workspaces",json!({"fromIndex":named_index,"toIndex":0})).await;
+    let rows = rpc(&mut editor,144,"list_workspaces",json!({})).await;
+    assert_eq!(rows[0]["id"],named);assert_eq!(rows[0]["displaySeq"],display_seq);
+    let mut document: Value = serde_json::from_slice(&fs::read(&workspace_file).unwrap()).unwrap();
+    document["legacyExtra"] = json!({"preserve":"opaque data"});
+    fs::write(&workspace_file,serde_json::to_vec(&document).unwrap()).unwrap();
+    rpc(&mut editor,145,"rename_workspace",json!({"workspaceId":workspace_id,"name":"Renamed workspace"})).await;
+    let renamed: Value = serde_json::from_slice(&fs::read(&workspace_file).unwrap()).unwrap();
+    assert_eq!(renamed["name"],"Renamed workspace");assert_eq!(renamed["legacyExtra"],document["legacyExtra"]);
+    let previous_bytes = fs::read(&workspace_file).unwrap();
+    fs::rename(&state_path,&state_backup).unwrap();fs::create_dir(&state_path).unwrap();
+    let failed = rpc_reply(&mut editor,146,"rename_workspace",json!({"workspaceId":workspace_id,"name":"Must roll back"})).await;
+    assert!(failed.get("error").is_some());assert_eq!(fs::read(&workspace_file).unwrap(),previous_bytes);
+    let failed_close = rpc_reply(&mut editor,147,"close_workspace",json!({"workspaceId":named})).await;
+    assert!(failed_close.get("error").is_some());
+    assert_eq!(client::list_domain_ptys(&endpoint).unwrap().into_iter().find(|pty|pty.pty_id==named_pty.pty_id).unwrap().child_pid,named_pty.child_pid);
+    fs::remove_dir(&state_path).unwrap();fs::rename(&state_backup,&state_path).unwrap();
+    rpc(&mut editor,148,"close_workspace",json!({"workspaceId":named})).await;
+    assert!(client::create_domain_pty(&endpoint,uuid::Uuid::new_v4(),Some(if cfg!(windows){"cmd.exe"}else{"/bin/sh"}),None,Some(named_id),"shell",Some("stale-replay")).is_err());
+    assert!(client::sync_domain_workspace_topology(&endpoint,named_id,&ridge_core::workspace::pane_tree::PaneTree::default()).is_err());
+    assert!(!client::request_json(&endpoint,"GET","/v1/domain/workspaces",None).unwrap()["workspaces"].as_array().unwrap().contains(&named));
+    assert!(!client::list_domain_ptys(&endpoint).unwrap().iter().any(|pty|pty.workspace_id==Some(named_id)));
+    assert_eq!(client::list_domain_ptys(&endpoint).unwrap().into_iter().find(|pty|pty.pty_id==pane_id).unwrap().child_pid,original.child_pid);
+    let rows = rpc(&mut editor,149,"list_workspaces",json!({})).await;
+    for row in rows.as_array().unwrap().iter().filter(|row|row["id"]!=workspace_id.to_string()) {
+        rpc(&mut editor,150,"close_workspace",json!({"workspaceId":row["id"]})).await;
+    }
+    let last = rpc_reply(&mut editor,151,"close_workspace",json!({"workspaceId":workspace_id})).await;
+    assert!(last["error"]["message"].as_str().unwrap().contains("last workspace"));
+    assert_eq!(rpc(&mut editor,152,"get_active_workspace_id",json!({})).await,workspace_id.to_string());
+    assert!(workspace_file.exists());
+    editor.close(None).await.unwrap();
+    client::shutdown_endpoint(&endpoint,Duration::from_secs(5)).unwrap();
+    let deadline=Instant::now()+Duration::from_secs(5);
+    while process.try_wait().unwrap().is_none() {assert!(Instant::now()<deadline,"owned Kernel shutdown deadline");std::thread::sleep(Duration::from_millis(20));}
+    let mut restarted=Command::new(env!("CARGO_BIN_EXE_ridge-kernel")).env("RIDGE_KERNEL_DATA_DIR",&root).env("RIDGE_AUTH_FILE",root.join("auth.json"))
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let deadline=Instant::now()+Duration::from_secs(8);
+    let restored=loop {
+        assert!(restarted.try_wait().unwrap().is_none(),"restarted owned Kernel exited");
+        if let Ok(bytes)=fs::read(root.join("kernel.json")) {if let Ok(endpoint)=serde_json::from_slice::<KernelEndpoint>(&bytes) {if endpoint.pid==restarted.id() && client::health_ok(&endpoint) {break endpoint;}}}
+        assert!(Instant::now()<deadline,"owned Kernel restart deadline");std::thread::sleep(Duration::from_millis(20));
+    };
+    let _restored_cleanup=OwnedKernel{endpoint:restored.clone()};
+    assert!(client::list_domain_ptys(&restored).unwrap().is_empty(),"restart must not fabricate surviving PTYs");
+    let rows=client::request_json(&restored,"GET","/v1/domain/workspaces",None).unwrap();
+    assert_eq!(rows["workspaces"],json!([workspace_id]));assert_eq!(rows["entries"][0]["name"],"Renamed workspace");
+    let fresh=client::request_json(&restored,"POST","/v1/domain/workspaces",Some(&json!({"name":"After restart"}))).unwrap();
+    let rows=client::request_json(&restored,"GET","/v1/domain/workspaces",None).unwrap();
+    let entry=rows["entries"].as_array().unwrap().iter().find(|entry|entry["id"]==fresh["workspace_id"]).unwrap();
+    assert!(entry["displaySeq"].as_u64().unwrap()>display_seq.as_u64().unwrap());
+    assert_eq!(client::request_json(&restored,"GET","/v1/domain/workspaces",None).unwrap()["active"],workspace_id.to_string());
+}
+
+#[test]
+fn corrupt_workspace_authority_is_preserved_and_prevents_startup() {
+    let root=std::env::temp_dir().join(format!("ridge-070-corrupt-workspace-{}",uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();let source=root.join("workspace-graph.json");let bytes=b"{ invalid legacy graph";
+    fs::write(&source,bytes).unwrap();
+    let mut process=Command::new(env!("CARGO_BIN_EXE_ridge-kernel")).env("RIDGE_KERNEL_DATA_DIR",&root).env("RIDGE_AUTH_FILE",root.join("auth.json"))
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let deadline=Instant::now()+Duration::from_secs(5);
+    let status=loop {if let Some(status)=process.try_wait().unwrap(){break status;}if Instant::now()>deadline {process.kill().unwrap();panic!("Kernel must fail visibly instead of replacing corrupt graph");}std::thread::sleep(Duration::from_millis(20));};
+    assert!(!status.success());assert_eq!(fs::read(&source).unwrap(),bytes);assert!(!root.join("kernel.json").exists());
 }

@@ -145,13 +145,16 @@ pub fn save_workspace_graph_at(
 ) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(
-        &tmp,
-        serde_json::to_vec_pretty(graph).context("serialize workspace graph")?,
-    )
-    .with_context(|| format!("write {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))?;
+    if path.exists() {
+        let bytes = fs::read(path).with_context(||format!("read {} before replacing",path.display()))?;
+        let old: serde_json::Value = serde_json::from_slice(&bytes).context("validate existing workspace graph before replacing")?;
+        if old.get("order").is_none() || old.get("next_display_seq").is_none() {
+            let archive = path.with_extension(format!("json.archive-{}", uuid::Uuid::new_v4()));
+            ridge_core::workspace::file::write_atomic(&archive, &bytes).with_context(||format!("archive {}",path.display()))?;
+        }
+    }
+    ridge_core::workspace::file::write_atomic(path, &serde_json::to_vec_pretty(graph).context("serialize workspace graph")?)
+        .with_context(|| format!("replace {}", path.display()))?;
     Ok(())
 }
 
@@ -237,6 +240,22 @@ pub fn read_endpoint() -> Option<KernelEndpoint> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_legacy_graph_write_archives_exact_source_bytes() {
+        let root=std::env::temp_dir().join(format!("ridge-workspace-archive-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();let path=root.join("workspace-graph.json");
+        let mut graph=ridge_core::workspace::graph::WorkspaceGraph::new();let id=graph.create_workspace();
+        let mut old=serde_json::to_value(&graph).unwrap();old.as_object_mut().unwrap().remove("order");old.as_object_mut().unwrap().remove("next_display_seq");
+        old["legacyOpaque"]=serde_json::json!({"preserve":true});
+        let original=serde_json::to_vec_pretty(&old).unwrap();fs::write(&path,&original).unwrap();
+        let mut migrated:ridge_core::workspace::graph::WorkspaceGraph=serde_json::from_slice(&original).unwrap();
+        migrated.rename(id,"new name".into()).unwrap();save_workspace_graph_at(&path,&migrated).unwrap();
+        let archives:Vec<_>=fs::read_dir(&root).unwrap().map(|entry|entry.unwrap().path()).filter(|path|path.to_string_lossy().contains(".archive-")).collect();
+        assert_eq!(archives.len(),1);assert_eq!(fs::read(&archives[0]).unwrap(),original);
+        save_workspace_graph_at(&path,&migrated).unwrap();
+        assert_eq!(fs::read_dir(&root).unwrap().count(),2);
+    }
 
     #[test]
     fn endpoint_contract_round_trips_for_all_shells() {

@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ctx::Ctx;
@@ -33,7 +33,7 @@ pub struct WorkspaceRaw {
 
 /// 工作区列表的一项（`list_workspaces`）。序列化为前端 camelCase 形状，与桌面
 /// `commands::workspace::WorkspaceInfo` 逐字一致（id / index / name / displaySeq）。
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceEntry {
     pub id: String,

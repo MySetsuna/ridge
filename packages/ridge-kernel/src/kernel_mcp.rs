@@ -747,6 +747,7 @@ mod tests {
         let ptys = Arc::new(crate::pty::PtyRegistry::default());
         ptys.set_runtime_epoch(epoch.clone());
         AppState {
+            retired_workspaces: Default::default(),
             business_events: Default::default(),
             local_host: Arc::new(std::sync::OnceLock::new()),
             token: "test-token".into(),

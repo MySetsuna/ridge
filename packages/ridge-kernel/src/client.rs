@@ -89,6 +89,8 @@ pub struct KernelWorkspaceSnapshot {
     pub active: Option<String>,
     #[serde(default)]
     pub workspaces: Vec<String>,
+    #[serde(default)]
+    pub entries: Vec<ridge_core::commands::workspace::WorkspaceEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

@@ -44,6 +44,16 @@ try {
     const stopEvents=await events.listen('workspace-list-changed',event=>{if(!event.payload?.initial)updates++;});
     try {await window.fixtureWorkspaceMutation();await until(()=>updates===1);}
     finally {stopEvents();}
+    const created=await nativeCore.invoke('create_workspace',{name:'Browser metadata'});
+    if(typeof created!=='string')throw Error('Native workspace creation contract changed');
+    await nativeCore.invoke('rename_workspace',{workspaceId:created,name:'Browser renamed'});
+    let rows=await nativeCore.invoke('list_workspaces');const fromIndex=rows.findIndex(row=>row.id===created);
+    if(fromIndex<0||rows[fromIndex].name!=='Browser renamed')throw Error('Runtime workspace name projection failed');
+    const label=rows[fromIndex].displaySeq;
+    await nativeCore.invoke('reorder_workspaces',{fromIndex,toIndex:0});rows=await nativeCore.invoke('list_workspaces');
+    if(rows[0].id!==created||rows[0].displaySeq!==label)throw Error('Runtime workspace order/label changed');
+    await nativeCore.invoke('close_workspace',{workspaceId:created});
+    if(await nativeCore.invoke('get_active_workspace_id')!==workspaceId)throw Error('Retired client workspace view did not recover');
    }
    if(nativeRoute){const channel=new nativeCore.Channel();channel.onmessage=onFrame;await nativeCore.invoke('register_pane_delta_channel',{workspaceId,paneId,activationId:9,channel});}
    else connection.connection.subscribePane({workspaceId,paneId},{activationId:9,active:true});
@@ -51,7 +61,7 @@ try {
    const marker='BROWSER_'+crypto.randomUUID();connection.connection.sendStdin({workspaceId,paneId},new TextEncoder().encode('echo '+marker+'\r'),mirror.terminalInputContext());
    await until(()=>mirror.dumpVisibleText().some(line=>line.trim()===marker));
    if(nativeRoute&&JSON.stringify(osCalls)!==JSON.stringify(['bootstrap_runtime_client']))throw Error('Business traffic leaked into OS IPC');
-   return {frames,checks:['Production client factory connects over origin-bound local websocket','Existing LAN adapter and shared RPC client serve real business query','Canonical generated WASM receives and executes real PTY input',...(nativeRoute?['Native routing facade uses OS IPC solely for bootstrap; business RPC and terminal Channel use Runtime','Production native event facade receives a real Kernel workspace commit']:[])],storage:JSON.stringify({local:{...localStorage},session:{...sessionStorage}}),location:location.href};
+   return {frames,checks:['Production client factory connects over origin-bound local websocket','Existing LAN adapter and shared RPC client serve real business query','Canonical generated WASM receives and executes real PTY input',...(nativeRoute?['Native routing facade uses OS IPC solely for bootstrap; business RPC and terminal Channel use Runtime','Production native event facade receives a real Kernel workspace commit','Production facade creates, renames, reorders and closes a workspace with stable labels and scoped view recovery']:[])],storage:JSON.stringify({local:{...localStorage},session:{...sessionStorage}}),location:location.href};
   } finally {stop();rpc.dispose();connection.disconnect();mirror.free();}
  },{workspaceId,paneId,nativeRoute});
  assert.ok(socketUrls.length>0);assert.ok(socketUrls.every(url=>!url.includes(grant.token)&&!url.includes(endpoint.token)));assert.ok(!result.storage.includes(grant.token)&&!result.storage.includes(endpoint.token));
