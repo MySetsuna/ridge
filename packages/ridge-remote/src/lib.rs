@@ -13,6 +13,8 @@ pub mod embed_ui;
 /// + `serve_websocket` 钩子。让共享 `server_app` 路由用一份代码驱动桌面/rdg/云端，
 /// 零 Tauri 依赖。
 pub mod host;
+/// Shared JSON-RPC envelope parsing, errors and version negotiation.
+pub mod rpc;
 /// RFC 6762 multicast DNS responder for `_ridge._tcp.local.`（纯 UDP 广播，无 Tauri
 /// 依赖）。从 src-tauri 迁入共享层，供桌面 LAN host 与 rdg 共用发现广播。
 pub mod mdns;

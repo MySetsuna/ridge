@@ -20,6 +20,7 @@ futures = "0.3"
 parking_lot = "0.12"
 portable-pty = "0.8"
 ridge-core = { path = "../ridge-core" }
+ridge-remote = { path = "../ridge-remote" }
 ridge-mcp = { path = "../ridge-mcp", features = ["axum-transport"] }
 ridge-term = { path = "../ridge-term", default-features = false }
 serde = { version = "1", features = ["derive"] }

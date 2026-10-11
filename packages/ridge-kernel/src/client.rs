@@ -778,12 +778,13 @@ pub fn create_domain_pty_with_command(
     endpoint: &KernelEndpoint,
     launch: DomainPtyLaunch<'_>,
 ) -> Result<uuid::Uuid, String> {
+    let env = launch.env.cloned().unwrap_or_default();
     let body = serde_json::json!({
         "pty_id": launch.pty_id,
         "program": launch.program,
         "shell": launch.program,
         "args": launch.args,
-        "env": launch.env,
+        "env": env,
         "cwd": launch.cwd,
         "workspace_id": launch.workspace_id,
         "role": launch.role,
@@ -1078,15 +1079,18 @@ pub fn health_ok(endpoint: &KernelEndpoint) -> bool {
         format!("GET /v1/health HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).is_ok() && {
         let mut body = String::new();
-        stream.read_to_string(&mut body).is_ok()
+        stream.take(64 * 1024).read_to_string(&mut body).is_ok()
             && body
                 .split_once("\r\n\r\n")
+                .filter(|(headers, _)| headers.lines().next().and_then(|status| status.split_whitespace().nth(1)) == Some("200"))
                 .and_then(|(_, json)| serde_json::from_str::<Value>(json).ok())
                 .is_some_and(|health| {
                     health.get("ok").and_then(Value::as_bool) == Some(true)
                         && health.get("role").and_then(Value::as_str) == Some("ridge-kernel")
                         && health.get("protocolVersion").and_then(Value::as_u64)
                             == Some(KERNEL_PROTOCOL_VERSION)
+                        && health.get("pid").and_then(Value::as_u64) == Some(u64::from(endpoint.pid))
+                        && health.get("started_at_unix").and_then(Value::as_u64) == Some(endpoint.started_at_unix)
                 })
     }
 }
@@ -1359,7 +1363,8 @@ mod tests {
 
     const TREE_HELPER: &str = "client::tests::detached_process_tree_helper";
 
-    fn health_probe(body: &'static str) -> bool {
+    fn health_probe(body: Value, status: &'static str) -> bool {
+        let body = body.to_string();
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
@@ -1367,7 +1372,7 @@ mod tests {
             let mut request = [0_u8; 1024];
             let _ = stream.read(&mut request);
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(response.as_bytes()).unwrap();
@@ -1384,13 +1389,27 @@ mod tests {
 
     #[test]
     fn health_requires_matching_kernel_protocol() {
-        assert!(health_probe(
-            r#"{"ok":true,"role":"ridge-kernel","protocolVersion":1}"#
-        ));
-        assert!(!health_probe(
-            r#"{"ok":true,"role":"ridge-kernel","protocolVersion":2}"#
-        ));
-        assert!(!health_probe(r#"{"ok":true,"role":"ridge-kernel"}"#));
+        let mut health = json!({"ok":true,"role":"ridge-kernel","protocolVersion":1,
+            "pid":std::process::id(),"started_at_unix":1});
+        assert!(health_probe(health.clone(), "200 OK"));
+        assert!(!health_probe(health.clone(), "503 Service Unavailable"));
+        health["protocolVersion"] = json!(2);
+        assert!(!health_probe(health.clone(), "200 OK"));
+        health.as_object_mut().unwrap().remove("protocolVersion");
+        assert!(!health_probe(health, "200 OK"));
+    }
+
+    #[test]
+    fn health_rejects_reused_pid_and_another_kernel_generation() {
+        let mut health = json!({"ok":true,"role":"ridge-kernel","protocolVersion":1,
+            "pid":std::process::id(),"started_at_unix":1});
+        health["pid"] = json!(u32::MAX);
+        assert!(!health_probe(health.clone(), "200 OK"));
+        health["pid"] = json!(std::process::id());
+        health["started_at_unix"] = json!(2);
+        assert!(!health_probe(health.clone(), "200 OK"));
+        health.as_object_mut().unwrap().remove("started_at_unix");
+        assert!(!health_probe(health, "200 OK"));
     }
 
     fn request_probe(status: &'static str, body: &'static str) -> Result<Value, String> {

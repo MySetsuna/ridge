@@ -23,7 +23,9 @@ describe('PriorityFrameQueue', () => {
     expect(queue.enqueue(page)).toBe(true);
     expect(queue.getPendingControlBytes()).toBe(0);
     queue.enqueue(ack); expect(sent).toEqual([ack]);
-    allowed=true;queue.resume();expect(sent).toEqual([ack,page]);
+    allowed=true;queue.resume();expect(sent).toHaveLength(2);
+    expect(sent[0]).toEqual(ack);
+    expect(Buffer.from(sent[1]).equals(Buffer.from(page))).toBe(true);
     expect(isPaneOutputFrame(encodeJsonFrame({jsonrpc:'2.0',id:19,method:'write_terminal_input',params:{data:'a'.repeat(200_000)}}))).toBe(false);
   });
 

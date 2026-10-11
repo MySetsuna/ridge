@@ -34,7 +34,7 @@ describe('cross-entry Remote capability contract', () => {
   const rustCapability = source('packages/ridge-core/src/capability.rs');
   const desktopHost = source('src-tauri/src/remote_host_impl.rs');
   const coreDispatch = source('packages/ridge-core/src/dispatch.rs');
-  const cliRpc = source('packages/ridge-cli/src/rpc.rs');
+  const cliRpc = source('packages/ridge-remote/src/rpc.rs');
   const mainApp = source('src/remote/MainApp.svelte');
   const remoteSidebar = source('src/remote/lib/RemoteSidebar.svelte');
 
@@ -177,7 +177,7 @@ describe.skipIf(!capabilityMatrixExists)('docs/capability-matrix.json stays a pr
     capabilities: Record<string, MatrixCapability>;
     guards: string[];
   };
-  const cliCapabilities = rustStringArray(source('packages/ridge-cli/src/rpc.rs'), 'CLI_CAPABILITIES');
+  const cliCapabilities = rustStringArray(source('packages/ridge-remote/src/rpc.rs'), 'CLI_CAPABILITIES');
   const lanCapabilities = rustStringArray(
     source('src-tauri/src/remote_host_impl.rs'),
     'HOST_CAPABILITIES',

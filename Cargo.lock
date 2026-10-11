@@ -5726,6 +5726,7 @@ dependencies = [
  "portable-pty",
  "ridge-core",
  "ridge-mcp",
+ "ridge-remote",
  "ridge-term",
  "serde",
  "serde_json",

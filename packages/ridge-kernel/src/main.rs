@@ -8,6 +8,9 @@ use clap::Parser;
     about = "Ridge kernel control plane + domain"
 )]
 struct Args {
+    /// Shared launcher flag, also understood by embedded CLI/desktop hosts.
+    #[arg(long = "ridge-kernel-host", hide = true)]
+    _kernel_host: bool,
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
     #[arg(long, default_value_t = 0)]

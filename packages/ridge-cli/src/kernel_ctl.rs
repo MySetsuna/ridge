@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ridge_kernel::client::{
-    is_process_alive, running_endpoint, shutdown_endpoint, spawn_detached, wait_for_running,
+    is_process_alive, running_endpoint, shutdown_endpoint,
 };
 pub use ridge_kernel::registry::KernelEndpoint;
 
@@ -62,51 +62,7 @@ pub fn status_line() -> String {
 
 /// ridge 启动：内核不在则拉起（与桌面 detect-or-spawn 同契约）。
 pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
-    // `ridge host`, `ridge remote --daemon`, the desktop shell and the first pane
-    // can all bootstrap at once. The kernel boot lock is cross-process;
-    // use it as a short boot slot so only one caller can spawn while the
-    // kernel has not published a healthy endpoint yet.
-    if let Some(ep) = running_endpoint() {
-        return Ok(ep);
-    }
-    let deadline = std::time::Instant::now() + Duration::from_secs(8);
-    let boot_guard = loop {
-        if let Some(ep) = running_endpoint() {
-            return Ok(ep);
-        }
-        match ridge_kernel::registry::KernelBootGuard::try_acquire() {
-            Ok(Some(guard)) => break guard,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(80));
-            }
-            Ok(None) => {
-                return Err(
-                    "another ridge-kernel is booting but did not become healthy in time".into(),
-                );
-            }
-            Err(error) => return Err(format!("acquire ridge-kernel boot slot: {error}")),
-        }
-    };
-    if let Some(ep) = read_endpoint() {
-        let process_alive = is_process_alive(ep.pid);
-        if process_alive && ridge_kernel::client::health_ok(&ep) {
-            drop(boot_guard);
-            return Ok(ep);
-        }
-        let cleared = ridge_kernel::registry::try_clear_registry_if_instance_free(ep.pid)
-            .map_err(|error| format!("probe ridge-kernel instance lock: {error}"))?;
-        if !cleared {
-            drop(boot_guard);
-            return Err(format!(
-                "live ridge-kernel PID {} is unhealthy or protocol-incompatible; refusing a second instance",
-                ep.pid
-            ));
-        }
-    }
-    let bin = std::env::current_exe().map_err(|error| format!("定位 ridge: {error}"))?;
-    spawn_detached(&bin, &[ridge_kernel::client::KERNEL_HOST_ARG])?;
-    drop(boot_guard);
-    wait_for_running(Duration::from_secs(8)).ok_or_else(|| "ridge-kernel 未在时限内就绪".into())
+    ridge_kernel::lifecycle::ensure_kernel_running()
 }
 
 /// 经内核领域 API 读 agent profiles（DOMAIN 验收路径）。
