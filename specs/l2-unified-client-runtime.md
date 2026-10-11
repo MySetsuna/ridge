@@ -168,3 +168,13 @@ CodeGraph 索引不可用，本方案依据以上真实源码；未声称当前�
 新契约节点 `L2-UNIFIED-CLIENT-RUNTIME` 位于项目根下；配套 JSON 的正文由本文件生成，避免两份人工规范。引用现有 `L2-REMOTE-001`、`L2-TERM-001`、`L2-PROTO-001`、ACP 与 Communion 契约；正式应用前逐项更新其中仍声明 shell/Tauri 为权威的正文及与冻结 Runtime 的冲突，保留历史来源，不用新节点遮盖冲突。
 
 实施路径分组见 JSON。新文件/新 crate 或新增协议 surface 必须先通过 SpecTree 纳入实际 allowedPaths；候选路径不是当前代码写入授权。最终锁应基于 CHG-069 完成后的真实调用链重新收窄；不能借 broad glob 顺手重构无关模块。
+
+## Local presentation client bootstrap contract
+
+The OS shell authenticates POST /v1/local/clients with the private x-ridge-kernel-token header on the loopback Kernel endpoint. Body: {deviceId, origin}; deviceId is a nonempty bounded client/window identity and origin is an exact trusted local application origin (Tauri localhost or HTTP(S) loopback). Neither field grants privileges by itself. Remote/opaque origins and unauthenticated requests are rejected before issuance.
+
+Response: {protocolVersion, hostId, runtimeEpoch, deviceId, origin, wsUrl, token, expiresAtUnixSeconds, capabilities}. Version and terminal capabilities reuse existing authorities. wsUrl contains no credential and points only to /v1/local/ws on the loopback Kernel endpoint. The token is a separately issued OS-CSPRNG client credential with the existing server-owned 24-hour session lifetime, never the Kernel token. Capabilities advertise only actual shared Host implementations. The current reduced implementation is transitional and cannot satisfy CHG-070 capability parity; full business/local privilege migration remains required.
+
+The WebView keeps this grant only in memory. Websocket presents the nonsecret deviceId query, Origin header and Sec-WebSocket-Protocol values ridge-client and auth-<token>. Server selects only ridge-client, requires exact origin/device/token matching and accepts only loopback peers. Origin-bound local grants are rejected by ordinary LAN session validators and private Kernel API authentication. Missing/changed identity, expiry and Kernel generation changes fail visibly; no anonymous localhost or desktop business fallback. Socket closure only detaches subscriptions, never stops Kernel/PTY. OS bootstrap may issue a fresh bounded grant; it never extends stale credentials or creates Agent sessions.
+
+Acceptance: real Kernel/websocket clients test unauthorized issuance, wrong origin/device, private-API and LAN reuse, normal RPC/terminal exchange, detach with stable PTY identity and restart invalidation. Browser/native integration must prove Kernel credentials never appear in WebView state, URLs, storage or logs before this slice is complete.

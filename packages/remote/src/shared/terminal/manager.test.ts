@@ -3,6 +3,7 @@ import { SurfaceHostHandle } from './wasmRuntime';
 import { MAX_PANE_FEED_FLUSH_BUDGET_MS, TerminalManager } from './manager';
 
 const PANE = 'manager-test-pane';
+const ownedManagers = new Set<TerminalManager>();
 
 function makeContainer() {
 	return {
@@ -221,6 +222,7 @@ function makeManager() {
 		scrollbackLines: 200,
 	});
 	const internal = manager as any;
+    ownedManagers.add(manager);
 	internal.wasmReady = true;
 	internal.loadedFontStacks.add('new-font');
 	const fixture = makePane();
@@ -257,6 +259,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    for (const manager of ownedManagers) {
+        // Frame tests supply partial host doubles, not allocated GPU owners.
+        (manager as any).globalHost = null;
+        for (const key of Array.from((manager as any).panes.keys()) as string[]) manager.detach(key);
+    }
+    ownedManagers.clear();
 	vi.unstubAllGlobals();
 	(TerminalManager as any)._instance = null;
 });

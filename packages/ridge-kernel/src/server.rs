@@ -46,6 +46,7 @@ pub(crate) struct OutputLeaseSlot {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub(crate) local_host: Arc<std::sync::OnceLock<Arc<crate::host::KernelHost>>>,
     pub token: String,
     pub pid: u32,
     pub port: u16,
@@ -153,6 +154,7 @@ async fn health(State(st): State<AppState>) -> Json<HealthBody> {
             "remote.hosts",
             "workspaces",
             "mcp",
+            "local.presentation",
         ],
     })
 }
@@ -185,6 +187,7 @@ async fn status(
             "remote.hosts",
             "workspaces",
             "mcp",
+            "local.presentation",
         ],
     }))
 }
@@ -259,6 +262,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
     let port = local.port();
 
     let state = AppState {
+        local_host: Arc::new(std::sync::OnceLock::new()),
         token: token.clone(),
         pid,
         port,
@@ -306,6 +310,8 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
 
     let mcp = KernelMcpHost::router(state.clone(), Arc::new(token.clone()));
     let app = Router::new()
+        .route("/v1/local/clients", post(crate::local_client::issue))
+        .route("/v1/local/ws", get(crate::local_client::websocket))
         .route("/v1/health", get(health))
         .route("/v1/status", get(status))
         .route("/v1/metrics", get(crate::metrics::metrics_handler))

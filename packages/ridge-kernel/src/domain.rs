@@ -2304,6 +2304,7 @@ mod tests {
         let ptys = Arc::new(crate::pty::PtyRegistry::default());
         ptys.set_runtime_epoch(epoch.clone());
         AppState {
+            local_host: Arc::new(std::sync::OnceLock::new()),
             token: "test-token".to_string(),
             pid: 1,
             port: 0,

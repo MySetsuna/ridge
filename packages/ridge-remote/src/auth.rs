@@ -83,7 +83,7 @@ impl Default for RemoteAuth {
 /// shell/file control over the LAN. Keep the one-day convenience window bounded
 /// by the existing device and source-IP pins; a stolen token still cannot be
 /// replayed from another device or address.
-const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+pub const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Per-token binding + issue time. SECURITY (audit H5): tokens are pinned to the
 /// device id and source IP they were issued to, so a token sniffed/exfiltrated
@@ -95,6 +95,10 @@ struct SessionRecord {
     device_id: String,
     /// Source IP the token was issued to.
     ip: String,
+    /// Some origins identify private local presentation grants. Public LAN
+    /// validators must never accept them as ordinary controller sessions.
+    origin: Option<String>,
+    workspace: Option<String>,
 }
 
 pub struct SessionStore {
@@ -122,10 +126,87 @@ impl SessionStore {
                 created: Instant::now(),
                 device_id: device_id.to_string(),
                 ip: ip.to_string(),
+                origin: None,
+                workspace: None,
             },
         );
         self.cleanup_expired();
         token
+    }
+
+    pub fn create_origin_bound_session(
+        &self,
+        device_id: &str,
+        ip: &str,
+        origin: &str,
+    ) -> Result<String, String> {
+        if device_id.is_empty() || device_id.len() > 128 || origin.is_empty() || origin.len() > 256
+        {
+            return Err("invalid local client identity".into());
+        }
+        let mut tokens = self.tokens.lock();
+        tokens.retain(|_, record| record.created.elapsed() < SESSION_TTL);
+        if tokens
+            .values()
+            .filter(|record| record.origin.is_some())
+            .count()
+            >= 256
+        {
+            return Err("local presentation session capacity reached".into());
+        }
+        let token = generate_session_token();
+        tokens.insert(
+            token.clone(),
+            SessionRecord {
+                created: Instant::now(),
+                device_id: device_id.into(),
+                ip: ip.into(),
+                origin: Some(origin.into()),
+                workspace: None,
+            },
+        );
+        Ok(token)
+    }
+
+    pub fn validate_origin_bound_token(
+        &self,
+        token: &str,
+        device_id: &str,
+        ip: &str,
+        origin: &str,
+    ) -> bool {
+        let mut tokens = self.tokens.lock();
+        let Some(record) = tokens.get(token) else {
+            return false;
+        };
+        if record.created.elapsed() >= SESSION_TTL {
+            tokens.remove(token);
+            return false;
+        }
+        record.origin.as_deref() == Some(origin) && record.device_id == device_id && record.ip == ip
+    }
+
+    pub fn origin_bound_workspace(&self, token: &str) -> Option<String> {
+        self.tokens
+            .lock()
+            .get(token)
+            .filter(|record| record.origin.is_some() && record.created.elapsed() < SESSION_TTL)
+            .and_then(|record| record.workspace.clone())
+    }
+
+    pub fn set_origin_bound_workspace(&self, token: &str, workspace: &str) -> bool {
+        if uuid::Uuid::parse_str(workspace).is_err() {
+            return false;
+        }
+        let mut tokens = self.tokens.lock();
+        let Some(record) = tokens
+            .get_mut(token)
+            .filter(|record| record.origin.is_some() && record.created.elapsed() < SESSION_TTL)
+        else {
+            return false;
+        };
+        record.workspace = Some(workspace.into());
+        true
     }
 
     /// Existence + TTL check only (no binding). Used where the request context
@@ -135,10 +216,12 @@ impl SessionStore {
     pub fn validate_token(&self, token: &str) -> bool {
         let mut map = self.tokens.lock();
         if let Some(rec) = map.get(token) {
-            if rec.created.elapsed() < SESSION_TTL {
+            if rec.origin.is_none() && rec.created.elapsed() < SESSION_TTL {
                 return true;
             }
-            map.remove(token);
+            if rec.created.elapsed() >= SESSION_TTL {
+                map.remove(token);
+            }
         }
         false
     }
@@ -155,6 +238,9 @@ impl SessionStore {
         };
         if rec.created.elapsed() >= SESSION_TTL {
             map.remove(token);
+            return false;
+        }
+        if rec.origin.is_some() {
             return false;
         }
         // IP must always match the issuing IP.
@@ -188,6 +274,9 @@ impl SessionStore {
         };
         if rec.created.elapsed() >= SESSION_TTL {
             map.remove(token);
+            return false;
+        }
+        if rec.origin.is_some() {
             return false;
         }
         if rec.ip != ip {
@@ -458,6 +547,72 @@ fn generate_session_token() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_grants_require_exact_origin_device_and_address_and_cannot_be_lan_tokens() {
+        let store = super::SessionStore::new();
+        let token = store
+            .create_origin_bound_session("window-a", "127.0.0.1", "http://tauri.localhost")
+            .unwrap();
+        assert!(store.validate_origin_bound_token(
+            &token,
+            "window-a",
+            "127.0.0.1",
+            "http://tauri.localhost"
+        ));
+        for (device, ip, origin) in [
+            ("window-b", "127.0.0.1", "http://tauri.localhost"),
+            ("window-a", "127.0.0.2", "http://tauri.localhost"),
+            ("window-a", "127.0.0.1", "https://evil.test"),
+            ("", "127.0.0.1", "http://tauri.localhost"),
+        ] {
+            assert!(!store.validate_origin_bound_token(&token, device, ip, origin));
+        }
+        assert!(!store.validate_token(&token));
+        assert!(!store.validate_token_bound(&token, "window-a", "127.0.0.1"));
+        assert!(!store.validate_token_device_strict(&token, "window-a", "127.0.0.1"));
+        assert!(store.validate_origin_bound_token(
+            &token,
+            "window-a",
+            "127.0.0.1",
+            "http://tauri.localhost"
+        ));
+        let remote = store.create_session_bound("window-a", "127.0.0.1");
+        assert!(!store.validate_origin_bound_token(
+            &remote,
+            "window-a",
+            "127.0.0.1",
+            "http://tauri.localhost"
+        ));
+    }
+
+    #[test]
+    fn local_grants_are_bounded_and_revocable() {
+        let store = super::SessionStore::new();
+        assert!(store
+            .create_origin_bound_session("", "127.0.0.1", "http://tauri.localhost")
+            .is_err());
+        let token = store
+            .create_origin_bound_session("window", "127.0.0.1", "http://tauri.localhost")
+            .unwrap();
+        for _ in 1..256 {
+            store
+                .create_origin_bound_session("window", "127.0.0.1", "http://tauri.localhost")
+                .unwrap();
+        }
+        assert!(store
+            .create_origin_bound_session("window", "127.0.0.1", "http://tauri.localhost")
+            .is_err());
+        store.invalidate(&token);
+        assert!(!store.validate_origin_bound_token(
+            &token,
+            "window",
+            "127.0.0.1",
+            "http://tauri.localhost"
+        ));
+        assert!(store
+            .create_origin_bound_session("window", "127.0.0.1", "http://tauri.localhost")
+            .is_ok());
+    }
     use super::*;
 
     #[test]

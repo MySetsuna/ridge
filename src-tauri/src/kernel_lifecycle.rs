@@ -38,6 +38,51 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
     ridge_kernel::lifecycle::ensure_kernel_running()
 }
 
+/// OS-only launch/auth seam. No Kernel endpoint or private token is returned
+/// to JavaScript; the Runtime issues its own limited presentation credential.
+#[tauri::command]
+pub async fn bootstrap_runtime_client(
+    window: tauri::WebviewWindow,
+) -> Result<ridge_kernel::local_client::ClientGrant, String> {
+    let url = window.url().map_err(|error| error.to_string())?;
+    let origin = if url.scheme() == "tauri" && url.host_str() == Some("localhost") {
+        "tauri://localhost".to_string()
+    } else {
+        url.origin().ascii_serialization()
+    };
+    let device_id = format!("{}:{}", window.label(), uuid::Uuid::new_v4());
+    tauri::async_runtime::spawn_blocking(move || {
+        let endpoint = ensure_kernel_running()?;
+        let status = ridge_kernel::client::request_json(&endpoint,"GET","/v1/status",None)?;
+        if !status["domain"].as_array().is_some_and(|domains|domains.iter().any(|domain|domain=="local.presentation")) {
+            return Err("Running Runtime lacks local presentation transport; update it explicitly before attaching".into());
+        }
+        let request = serde_json::json!({"deviceId":device_id,"origin":origin});
+        let value = ridge_kernel::client::request_json(
+            &endpoint,
+            "POST",
+            "/v1/local/clients",
+            Some(&request),
+        )?;
+        let grant: ridge_kernel::local_client::ClientGrant = serde_json::from_value(value)
+            .map_err(|error| format!("invalid Runtime client grant: {error}"))?;
+        if grant.protocol_version != ridge_kernel::client::KERNEL_PROTOCOL_VERSION
+            || grant.device_id != device_id
+            || grant.origin != origin
+            || grant.ws_url != format!("ws://127.0.0.1:{}/v1/local/ws", endpoint.port)
+            || grant.token == endpoint.token
+            || grant.token.len() != 64
+            || status["host_id"].as_str() != Some(grant.host_id.as_str())
+            || status["runtime_epoch"].as_str() != Some(grant.runtime_epoch.as_str())
+        {
+            return Err("Runtime client grant identity mismatch".into());
+        }
+        Ok(grant)
+    })
+    .await
+    .map_err(|error| format!("Runtime bootstrap worker failed: {error}"))?
+}
+
 /// 监视启动/附着时确认过的精确内核 PID；瞬时 HTTP 故障不误退，
 /// 且进程在 watcher 首轮前死亡仍会触发外壳退出（验收④）。
 /// `should_stop` 为 true 时停止监视（本进程主动彻底退出途中）。

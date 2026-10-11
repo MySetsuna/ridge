@@ -11,6 +11,7 @@ pub mod host_fs;
 mod domain;
 pub mod kernel_backed_handle;
 pub mod lifecycle;
+pub mod local_client;
 mod kernel_mcp;
 pub mod metrics;
 pub mod pty;

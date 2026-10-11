@@ -332,6 +332,7 @@ pub fn run() {
         .manage(bridge::acp_bridge::PlanStoreState::default())
         .setup(move |app| setup_app(app, teammate_state, event_rx))
         .invoke_handler(tauri::generate_handler![
+            kernel_lifecycle::bootstrap_runtime_client,
             git::get_git_graph,
             git::get_git_diff,
             git::set_pane_workdir,

@@ -39,6 +39,10 @@ const WORKSPACE_URI_PREFIX: &str = "ridge://kernel-workspace/";
 /// background roster polling.
 const KERNEL_HOST_CAPABILITIES: &[&str] = &["pane", "fs", "search", "workspace", "theme"];
 
+pub fn implemented_capabilities() -> &'static [&'static str] {
+    KERNEL_HOST_CAPABILITIES
+}
+
 /// Report the actual shared terminal stream used by independent LAN hosts.
 pub fn log_kernel_transport_mode() {
     tracing::info!(target: "ridge_kernel::host", "kernel transport: canonical terminal frames over authenticated WebSocket");
@@ -799,8 +803,32 @@ impl RemoteHost for KernelHost {
         socket: WebSocket,
         _conn: WsConn,
     ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        Box::pin(async move { run_ws(socket, self).await })
+        Box::pin(async move { run_ws(socket, self, None).await })
     }
+}
+
+impl KernelHost {
+    pub async fn serve_local_websocket(
+        self: Arc<Self>,
+        socket: WebSocket,
+        connection: WsConn,
+        origin: String,
+    ) {
+        run_ws(socket, self, Some((connection, origin))).await;
+    }
+}
+
+fn presentation_authorized(host: &KernelHost, binding: Option<&(WsConn, String)>) -> bool {
+    binding.is_none_or(|(connection, origin)| {
+        connection.token.as_deref().is_some_and(|token| {
+            host.sessions.validate_origin_bound_token(
+                token,
+                &connection.device_id,
+                &connection.remote_addr,
+                origin,
+            )
+        })
+    })
 }
 
 fn kernel_layout_to_ui(value: Value, snapshot: &KernelSnapshot) -> Value {
@@ -896,13 +924,31 @@ impl DispatchTrace {
     }
 }
 
-async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
+async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsConn, String)>) {
     // P2-B8: surface the active kernel transport once per WS upgrade.
     log_kernel_transport_mode();
     let (mut tx, mut rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::channel::<Message>(64);
     let subscriptions = Arc::new(Mutex::new(HashMap::<(Uuid, Uuid), u64>::new()));
     let runtime = tokio::runtime::Handle::current();
+    let Ok(initial) = tokio::task::spawn_blocking({
+        let host = host.clone();
+        move || host.snapshot()
+    })
+    .await
+    else {
+        return;
+    };
+    let restored = binding
+        .as_ref()
+        .and_then(|(connection, _)| connection.token.as_deref())
+        .and_then(|token| host.sessions.origin_bound_workspace(token))
+        .and_then(|workspace| Uuid::parse_str(&workspace).ok());
+    let view = Arc::new(Mutex::new(
+        restored
+            .or(initial.active)
+            .or_else(|| initial.ids.first().copied()),
+    ));
     let dispatch_counters = host_trace_enabled().then(|| Arc::new(DispatchCounters::new()));
     let input_counters = host_trace_enabled().then(|| Arc::new(DispatchCounters::new()));
     let (dispatch_tx, mut dispatch_rx) = mpsc::channel::<(Value, Option<DispatchTrace>)>(64);
@@ -910,17 +956,24 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
     let dispatch_host = Arc::clone(&host);
     let dispatch_subscriptions = Arc::clone(&subscriptions);
     let dispatch_runtime = runtime.clone();
+    let dispatch_binding = binding.clone();
+    let dispatch_view = view.clone();
     let _dispatch_worker = tokio::task::spawn_blocking(move || {
         while let Some((value, trace)) = dispatch_rx.blocking_recv() {
+            if !presentation_authorized(&dispatch_host, dispatch_binding.as_ref()) {
+                break;
+            }
             if let Some(trace) = trace {
                 trace.dequeue("control", dispatch_rx.len());
             }
-            let Some(reply) = handle_text(
+            let Some(reply) = handle_client_text(
                 &value,
                 &dispatch_host,
                 &dispatch_runtime,
                 &dispatch_out_tx,
                 &dispatch_subscriptions,
+                &dispatch_view,
+                dispatch_binding.as_ref(),
             ) else {
                 continue;
             };
@@ -934,17 +987,24 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
     let input_host = Arc::clone(&host);
     let input_subscriptions = Arc::clone(&subscriptions);
     let input_runtime = runtime;
+    let input_binding = binding.clone();
+    let input_view = view.clone();
     let _input_worker = tokio::task::spawn_blocking(move || {
         while let Some((value, trace)) = input_rx.blocking_recv() {
+            if !presentation_authorized(&input_host, input_binding.as_ref()) {
+                break;
+            }
             if let Some(trace) = trace {
                 trace.dequeue("input", input_rx.len());
             }
-            let Some(reply) = handle_text(
+            let Some(reply) = handle_client_text(
                 &value,
                 &input_host,
                 &input_runtime,
                 &input_out_tx,
                 &input_subscriptions,
+                &input_view,
+                input_binding.as_ref(),
             ) else {
                 continue;
             };
@@ -953,7 +1013,15 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
             }
         }
     });
-    let mut last_panes_frame = panes_frame(&host);
+    let Ok(mut last_panes_frame) = tokio::task::spawn_blocking({
+        let host = host.clone();
+        let view = view.clone();
+        move || client_panes_frame(&host, &view)
+    })
+    .await
+    else {
+        return;
+    };
     let mut topology_poll = tokio::time::interval(Duration::from_millis(250));
     topology_poll.tick().await;
     if tx
@@ -985,12 +1053,16 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
     }
     let _ = tx.send(Message::Text(last_panes_frame.to_string())).await;
     loop {
+        if !presentation_authorized(&host, binding.as_ref()) {
+            break;
+        }
         tokio::select! {
             Some(message) = out_rx.recv() => { if tx.send(message).await.is_err() { break; } }
             _ = topology_poll.tick() => {
                 let next_panes_frame = tokio::task::spawn_blocking({
                     let host = Arc::clone(&host);
-                    move || panes_frame(&host)
+                    let view = view.clone();
+                    move || client_panes_frame(&host, &view)
                 }).await;
                 let Ok(next_panes_frame) = next_panes_frame else { continue; };
                 if panes_frame_changed(&last_panes_frame, &next_panes_frame) {
@@ -998,7 +1070,8 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
                     last_panes_frame = next_panes_frame;
                 }
             }
-            Some(Ok(message)) = rx.next() => match message {
+            message = rx.next() => match message {
+                Some(Ok(message)) => match message {
                 Message::Text(text) => {
                     let Ok(value) = serde_json::from_str::<Value>(&text) else { continue; };
                     let (target, counters) = if is_latency_sensitive_pty_message(&value) {
@@ -1016,6 +1089,8 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
                 Message::Ping(bytes) => { if tx.send(Message::Pong(bytes)).await.is_err() { break; } }
                 Message::Close(_) => break,
                 _ => {}
+            },
+                _ => break,
             },
             else => break,
         }
@@ -1043,6 +1118,162 @@ fn is_latency_sensitive_pty_message(value: &Value) -> bool {
                 | "subscribe_pane_raw"
         )
     )
+}
+
+fn handle_client_text(
+    value: &Value,
+    host: &Arc<KernelHost>,
+    runtime: &tokio::runtime::Handle,
+    out: &mpsc::Sender<Message>,
+    subscriptions: &Arc<Mutex<HashMap<(Uuid, Uuid), u64>>>,
+    view: &Arc<Mutex<Option<Uuid>>>,
+    binding: Option<&(WsConn, String)>,
+) -> Option<String> {
+    let jsonrpc = value["jsonrpc"] == "2.0";
+    let invoke = value["type"] == "invoke-request";
+    let method = value
+        .get(if jsonrpc {
+            "method"
+        } else if invoke {
+            "cmd"
+        } else {
+            "type"
+        })
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let args = if jsonrpc {
+        &value["params"]
+    } else if invoke {
+        &value["args"]
+    } else {
+        value
+    };
+    let reply = |result: Result<Value, String>| {
+        if jsonrpc {
+            value
+                .get("id")
+                .map(|id| jsonrpc_result(id, result).to_string())
+        } else if invoke {
+            Some(invoke_result_wire(
+                value.get("_reqId").cloned().unwrap_or(Value::Null),
+                result,
+            ))
+        } else {
+            Some(
+                workspace_wire_result(
+                    "switch-workspace-result",
+                    result.map_err(HostError::BadRequest),
+                )
+                .to_string(),
+            )
+        }
+    };
+    if matches!(method, "switch_workspace" | "switch-workspace") {
+        let snapshot = host.snapshot();
+        let result = KernelHost::workspace_id_from_snapshot(
+            &snapshot,
+            args.get("workspaceId").and_then(Value::as_str),
+        )
+        .and_then(|id| {
+            *view.lock().map_err(|_| "client selection unavailable")? = Some(id);
+            if let Some(token) = binding.and_then(|(connection, _)| connection.token.as_deref()) {
+                if !host
+                    .sessions
+                    .set_origin_bound_workspace(token, &id.to_string())
+                {
+                    return Err("client session expired".into());
+                }
+            }
+            subscriptions
+                .lock()
+                .map_err(|_| "client subscriptions unavailable")?
+                .retain(|(workspace, _), _| *workspace == id);
+            Ok(json!({"success":true,"workspaceId":id}))
+        });
+        return reply(result);
+    }
+    let selected = *view.lock().ok()?;
+    if method == "get_active_workspace_id" {
+        let snapshot = host.snapshot();
+        let selected = selected
+            .or(snapshot.active)
+            .or_else(|| snapshot.ids.first().copied());
+        let result = selected
+            .filter(|id| snapshot.ids.contains(id))
+            .ok_or_else(|| "client workspace unavailable".to_string())
+            .map(|id| {
+                if let Ok(mut active) = view.lock() {
+                    *active = Some(id);
+                }
+                if let Some(token) = binding.and_then(|(connection, _)| connection.token.as_deref())
+                {
+                    host.sessions
+                        .set_origin_bound_workspace(token, &id.to_string());
+                }
+                Value::String(id.to_string())
+            });
+        return reply(result);
+    }
+    if matches!(method, "list-panes" | "list-workspace-panes") {
+        return Some(client_panes_frame(host, view).to_string());
+    }
+    let mut scoped = value.clone();
+    let params = if jsonrpc {
+        &mut scoped["params"]
+    } else if invoke {
+        &mut scoped["args"]
+    } else {
+        &mut scoped
+    };
+    if params.is_null() {
+        *params = json!({});
+    }
+    if let (Some(id), Some(args)) = (selected, params.as_object_mut()) {
+        args.entry("workspaceId").or_insert_with(|| json!(id));
+    }
+    let answer = handle_text(&scoped, host, runtime, out, subscriptions)?;
+    // Creating a workspace selects it only for the creating presentation.
+    if matches!(method, "create_workspace" | "create-workspace") {
+        if let Ok(response) = serde_json::from_str::<Value>(&answer) {
+            let result = if jsonrpc {
+                &response["result"]
+            } else if invoke {
+                &response["_result"]
+            } else {
+                &response
+            };
+            if let Some(id) = result["workspaceId"]
+                .as_str()
+                .and_then(|id| Uuid::parse_str(id).ok())
+            {
+                if let Ok(mut active) = view.lock() {
+                    *active = Some(id);
+                }
+                if let Some(token) = binding.and_then(|(connection, _)| connection.token.as_deref())
+                {
+                    host.sessions
+                        .set_origin_bound_workspace(token, &id.to_string());
+                }
+            }
+        }
+    }
+    if method == "list_workspaces" {
+        if let Ok(mut response) = serde_json::from_str::<Value>(&answer) {
+            let rows = if jsonrpc {
+                &mut response["result"]
+            } else {
+                &mut response["_result"]
+            };
+            if let Some(rows) = rows.as_array_mut() {
+                for row in rows {
+                    row["active"] =
+                        json!(row["id"].as_str() == selected.map(|id| id.to_string()).as_deref());
+                }
+            }
+            return Some(response.to_string());
+        }
+    }
+    Some(answer)
 }
 
 fn handle_text(
@@ -1644,6 +1875,23 @@ fn is_kernel_host_method(method: &str) -> bool {
 
 fn panes_frame(host: &Arc<KernelHost>) -> Value {
     let snapshot = host.snapshot();
+    panes_frame_for_snapshot(host, &snapshot)
+}
+
+fn client_panes_frame(host: &Arc<KernelHost>, view: &Arc<Mutex<Option<Uuid>>>) -> Value {
+    let mut snapshot = host.snapshot();
+    if let Ok(active) = view.lock() {
+        if active.is_some() {
+            snapshot.active = *active;
+            if active.is_some_and(|id| !snapshot.ids.contains(&id)) {
+                snapshot.errors.push("client workspace unavailable".into());
+            }
+        }
+    }
+    panes_frame_for_snapshot(host, &snapshot)
+}
+
+fn panes_frame_for_snapshot(host: &Arc<KernelHost>, snapshot: &KernelSnapshot) -> Value {
     let workspace_id = snapshot
         .active
         .or_else(|| snapshot.ids.first().copied())

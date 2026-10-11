@@ -589,6 +589,7 @@ export function remoteWebSocketUrl(input: {
 }
 
 export class RemoteConnection implements RemoteLink {
+  constructor(private readonly socketFactory: (url: string) => WebSocket = url => new WebSocket(url)) {}
   private ws: WebSocket | null = null;
   private readonly stateListeners: Set<(s: ConnectionState) => void> = new Set();
   private readonly messageListeners: Set<Listener> = new Set();
@@ -901,7 +902,7 @@ export class RemoteConnection implements RemoteLink {
       device: getRemoteDeviceId(),
       secure,
     });
-    const ws = new WebSocket(url);
+    const ws = this.socketFactory(url);
     this.ws = ws;
     ws.binaryType = 'arraybuffer';
     this._socketConnectStarted = Date.now();
