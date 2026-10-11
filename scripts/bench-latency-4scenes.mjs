@@ -32,7 +32,7 @@ async function bounded(promise, timeout, label) {
 const hash = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const git = args => spawnSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true }).stdout ?? '';
 const result = { label, route: 'isolated authenticated localhost LAN WebSocket', clock: 'Node performance.now; browser spans separate; no cross-clock subtraction', binaryHash: hash(binary), sourceHead: git(['rev-parse','HEAD']).trim(), sourceDirtyFingerprint: crypto.createHash('sha256').update(git(['diff','--','src','packages','scripts','specs','changes'])).digest('hex'), traceEnabled: process.env.RIDGE_BENCH_TRACE === '1', kernelTransportFlag: process.env.RIDGE_RTP1_KERNEL ?? 'default', scenes: {}, coverage: { localhost: 'NOT_RUN', LAN_DEVICE: 'NOT_COVERED: no separate controller/device supplied', WAN_CELLULAR: 'NOT_COVERED: no authenticated WAN/cellular controller supplied', HOST_WEBVIEW_BACKGROUND: 'NOT_COVERED: CLI fixture has no host WebView' } };
-let host, kernel, browser;
+let host, kernel, browser, page;
 const childPanes = new Map();
 let stderr = '';
 let capturedCode = false;
@@ -100,7 +100,17 @@ async function typeLine(page, text, key = null) {
   await bounded(page.keyboard.type(text),10000,'keyboard typing timeout');
   await bounded(page.keyboard.press('Enter'),10000,'keyboard submit timeout');
 }
+async function terminalReady(page, key) {
+  await until(() => page.evaluate(async key => {
+    const url = performance.getEntriesByType('resource').map(entry=>entry.name).find(url=>window.__ridgeManagerChunk && new URL(url).pathname.endsWith('/'+window.__ridgeManagerChunk));
+    if (!url) return false;
+    const module = await import(url);
+    const Manager = Object.values(module).find(value=>typeof value==='function' && typeof value.tryInstance==='function');
+    return !!Manager?.tryInstance()?.getKernel(key)?.terminalInputContext();
+  }, key));
+}
 async function startChild(page, key) {
+  await terminalReady(page,key);
   const ready = 'ready_'+crypto.randomUUID().replaceAll('-','').slice(0,12);
   const encoded = Buffer.from(program(ready)).toString('base64');
   await typeLine(page, 'python -u -c "exec(__import__(\'base64\').b64decode(\''+encoded+'\'))"',key);
@@ -155,8 +165,21 @@ try {
   await until(() => fs.existsSync(tls));
   const cert = new crypto.X509Certificate(fs.readFileSync(tls));
   const pin = crypto.createHash('sha256').update(cert.publicKey.export({type:'spki',format:'der'})).digest('base64');
-  browser = await chromium.launch({headless:false,args:['--ignore-certificate-errors-spki-list='+pin]});
-  const page = await browser.newPage({viewport:{width:1440,height:900}});
+  browser = await chromium.launch({headless:true,args:['--ignore-certificate-errors-spki-list='+pin,'--enable-unsafe-swiftshader','--use-angle=swiftshader']});
+  page = await browser.newPage({viewport:{width:1440,height:900}});
+  page.on('dialog', dialog => dialog.accept());
+  result.browserDiagnostic = { errors: [], subscriptions: [], terminalFrames: 0 };
+  page.on('pageerror', error => result.browserDiagnostic.errors.push(error.message.slice(0,400)));
+  page.on('console', message => {
+    if (message.type() === 'error' || message.text().includes('[remote-pane]')) result.browserDiagnostic.errors.push(message.text().slice(0,400));
+  });
+  page.on('websocket', socket => {
+    socket.on('framesent', ({payload}) => {
+      if (typeof payload !== 'string') return;
+      try { const value = JSON.parse(payload); if (value.type === 'subscribe-pane' || value.method === 'subscribe-pane') result.browserDiagnostic.subscriptions.push(value); } catch {}
+    });
+    socket.on('framereceived', ({payload}) => { if (Buffer.isBuffer(payload) && payload[0] === 0x13) result.browserDiagnostic.terminalFrames++; });
+  });
   page.setDefaultTimeout(10000); page.setDefaultNavigationTimeout(15000);
   // CDP evaluate/input methods can otherwise outlive Playwright's locator timeout.
   for(const [owner,name] of [[page,'evaluate'],[page,'reload'],[page,'screenshot'],[page.mouse,'wheel']]) {
@@ -164,6 +187,7 @@ try {
   }
   result.clientLoopProbeEnabled=process.env.RIDGE_BENCH_LOOP_TRACE==='1';
   await page.addInitScript(({trace,loop}) => {
+    window.__ridgeBenchmarkDocument = crypto.randomUUID();
     window.__RIDGE_E2E__=true; window.__RIDGE_REMOTE_PERF_TRACE=trace;
     if(loop) {
       window.__ridgeLoopProbe={gaps:[],longTasks:[]};
@@ -172,6 +196,8 @@ try {
       if(PerformanceObserver.supportedEntryTypes.includes('longtask')) new PerformanceObserver(list=>{for(const e of list.getEntries()){window.__ridgeLoopProbe.longTasks.push({at:e.startTime,durationMs:e.duration});if(window.__ridgeLoopProbe.longTasks.length>128)window.__ridgeLoopProbe.longTasks.shift();}}).observe({type:'longtask',buffered:true});
     }
   },{trace:result.traceEnabled,loop:result.clientLoopProbeEnabled});
+  const managerChunk=fs.readdirSync('remote-dist/desktop/_app/immutable/chunks').find(name=>name.endsWith('.js') && fs.readFileSync(path.join('remote-dist/desktop/_app/immutable/chunks',name),'utf8').includes('__windE2E'));
+  await page.addInitScript(chunk=>window.__ridgeManagerChunk=chunk,managerChunk);
   const workers=new Set(); page.on('worker',worker=>workers.add(worker.url().startsWith('blob:')?'blob-worker':new URL(worker.url()).pathname));
   const resources = new Set(); page.on('response', response => { const url=new URL(response.url()); if(/\.(js|wasm|css)$/.test(url.pathname)) resources.add(url.pathname); });
   await page.goto('https://127.0.0.1:'+hostRegistry.port+'/?ui=desktop',{waitUntil:'domcontentloaded'});
@@ -192,8 +218,9 @@ try {
   }
   for (const scene of scenes) {
     const samples=[];
+    let key;
     try {
-      let key=await active(page);
+      key=await active(page);
       if(scene==='tui') throw new Error('no supplied authenticated TUI fixture; nvim/vim absent from PATH');
       // Shell scenes may precede these probes; each must own a known reply process.
       if(['idle','heavy','history','reconnect'].includes(scene) && !childPanes.has(key)) { key=await newWorkspace(page); await startChild(page,key); }
@@ -206,14 +233,15 @@ try {
         await visible(page,key,ready);
       }
       if(scene==='heavy') await typeLine(page,'LOAD');
-      if(scene==='history') { await typeLine(page,'LOAD_5000'); await until(()=>page.evaluate(key=>window.__windE2E.scrollbackLen(key)>0,key),15000); }
+      // Windows timer granularity can stretch 5000 sleep(.001) calls beyond a minute.
+      if(scene==='history') { await typeLine(page,'LOAD_5000'); await visible(page,key,'load_4999',120000); result.historyObservation='Scroll through retained history, return to live viewport, then measure controlled reply.'; }
       if(scene==='switchback' && childPanes.size<2) { key=await newWorkspace(page); await startChild(page,key); }
       for(let i=0;i<count;i++) {
         let transitionMs;
         if(scene==='firstopen') { const transition=performance.now(); key=await newWorkspace(page); transitionMs=performance.now()-transition; await startChild(page,key); }
         if(scene==='switchback') { const owned=[...childPanes]; const [expected,workspace]=owned[i%2 ? owned.length-1 : 0]; const transition=performance.now(); await page.locator('[data-ws-tab-id="'+workspace+'"]').click(); key=await until(async()=>await active(page)===expected?expected:null); transitionMs=performance.now()-transition; }
-        if(scene==='history') { await page.locator('[data-rg-pane-id]').filter({visible:true}).first().hover(); await page.mouse.wheel(0,-100000); }
-        if(scene==='reconnect') { const transition=performance.now(); await page.reload({waitUntil:'domcontentloaded'}); await page.waitForFunction(()=>!!window.__windE2E?.paneKeys().length); key=await until(()=>active(page)); transitionMs=performance.now()-transition; }
+        if(scene==='history') { await page.locator('[data-rg-pane-id]').filter({visible:true}).first().hover(); await page.mouse.wheel(0,-100000); await page.mouse.wheel(0,100000); }
+        if(scene==='reconnect') { const document=await page.evaluate(()=>window.__ridgeBenchmarkDocument); const transition=performance.now(); await page.reload({waitUntil:'domcontentloaded'}); await page.waitForFunction(previous=>window.__ridgeBenchmarkDocument!==previous,document); await page.waitForFunction(()=>!!window.__windE2E?.paneKeys().length); key=await until(()=>active(page)); await terminalReady(page,key); transitionMs=performance.now()-transition; }
         if(!['powershell','cmd'].includes(scene) && !childPanes.has(key)) throw new Error('selected pane has no verified controlled reply process');
         const nonce='U'+i+'_'+crypto.randomUUID().slice(0,8);
         await focusPane(page,key);
@@ -227,7 +255,11 @@ try {
       const stats=summary(samples);
       result.scenes[scene]={status:stats.timeouts?'MEASURED_WITH_TIMEOUTS':'MEASURED',stats,applicationStats:summary(applicationSamples),applicationSamples,...(samples.some(s=>s.transitionMs!==undefined)?{transitionStats:summary(samples,'transitionMs')} : {}),samples};
       result.scenes[scene].renderBackend=await page.evaluate(key=>window.__windE2E.backendName(key),key);
-    } catch(error) { result.scenes[scene]={status:'NOT_COVERED',reason:String(error.message),samples}; }
+    } catch(error) {
+      result.scenes[scene]={status:'NOT_COVERED',reason:String(error.message),samples};
+      result.scenes[scene].paneState=await page.evaluate(key=>({cursor:window.__windE2E.kernelCursor(key),tail:window.__windE2E.visibleText(key).slice(-6),loadedRows:window.__windE2E.scrollbackLen(key)}),key).catch(()=>null);
+      if(scene==='history') result.scenes[scene].lastRowAtKernel=await kernelReplyPresent(key,'load_4999').catch(()=>null);
+    }
     console.log('SCENE '+scene+' '+result.scenes[scene].status);
     result.scenes[scene].trace=await page.evaluate(()=>window.__RIDGE_REMOTE_PERF?.snapshot()??null).catch(()=>null);
     result.scenes[scene].clientLoop=await page.evaluate(()=>window.__ridgeLoopProbe??null).catch(()=>null);
@@ -245,7 +277,13 @@ try {
   result.applicationEcho='existing get_active_workspace_id RPC through authenticated business framing; control worker, not the latency-sensitive PTY input worker';
   await page.screenshot({path:path.join(output,label+'-actual-ui.png')}).catch(error=>{result.screenshotError=String(error.message);});
   result.coverage.localhost='MEASURED';
-} catch(error) { result.error=String(error.message); result.coverage.localhost='NOT_COVERED: '+result.error; process.exitCode=1; }
+} catch(error) {
+  result.error=String(error.message);
+  result.startupDiagnostic=stderr.replace(/TOTP:\s*\d{6}/g,'TOTP: [redacted]');
+  result.failurePaneState=await page?.evaluate(()=>window.__windE2E?.paneKeys().map(key=>({key,cursor:window.__windE2E.kernelCursor(key),tail:window.__windE2E.visibleText(key).filter(text=>text.trim()).slice(-4)}))).catch(()=>null);
+  if(result.failurePaneState?.length) await page.screenshot({path:path.join(output,label+'-failure-ui.png')}).catch(()=>{});
+  result.coverage.localhost='NOT_COVERED: '+result.error; process.exitCode=1;
+}
 finally {
   if(browser) await bounded(browser.close(),10000,'browser close timeout').catch(error=>{result.cleanupError=String(error.message);process.exitCode=1;});
   const endpointFile=path.join(env.RIDGE_KERNEL_DATA_DIR,'kernel.json');

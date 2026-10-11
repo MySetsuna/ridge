@@ -8,6 +8,9 @@ const managerSource = readFileSync(
 const desktopSource = readFileSync(new URL('../../routes/+page.svelte', import.meta.url), 'utf8');
 const mobileSource = readFileSync(new URL('../../remote/MainApp.svelte', import.meta.url), 'utf8');
 const paneSource = readFileSync(new URL('../components/RidgePane.svelte', import.meta.url), 'utf8');
+const gpuSource = readFileSync(
+	new URL('../../../packages/ridge-term/src/render/webgpu.rs', import.meta.url), 'utf8',
+);
 
 describe('terminal renderer bootstrap contracts', () => {
 	it('claims the shared host when pane mount wins the desktop action race', () => {
@@ -39,7 +42,9 @@ describe('terminal renderer bootstrap contracts', () => {
 	});
 
 	it('keeps modifier-link affordance continuous, thin, and platform-specific', () => {
-		expect(managerSource).toContain("'height:1px'");
+		expect(managerSource).toContain('entry.handle?.setLinkUnderlines(entry.linkUnderlineRegions)');
+		expect(managerSource).not.toContain('createLinkUnderlineOverlay');
+		expect(gpuSource).toContain('fn draw_hyperlink_underlines');
 		expect(managerSource).toContain('regionsForSpan(entry.kernel, span)');
 		expect(managerSource).toContain('createLinkHintOverlay');
 		expect(managerSource).toContain("'Ctrl+点击打开'");

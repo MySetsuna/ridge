@@ -1,193 +1,29 @@
-import { describe, expect, it } from 'vitest';
-import { LinkSpanIndex } from './linkSpans';
-import { decideHoverUnderline, decideLinkClick, underlineRegionsFromSpan } from './linkAffordance';
-import { buildOpenPlanFromHit } from './linkOpenHost';
+import { describe, expect, it, vi } from 'vitest';
+import { LinkSpanIndex, type LinkSpan } from './linkSpans';
 
-function fakeKernel(lines: string[], wrapped: Set<number> = new Set()) {
-  return {
-    dumpVisibleText: () => lines,
-    rows: () => lines.length,
-    cols: () => Math.max(...lines.map((line) => line.length), 1),
-    rowWrapped: (row: number) => wrapped.has(row),
-  };
-}
+const first: LinkSpan = { row: 0, c0: 5, c1: 24, kind: 'url', text: 'https://example.com/long/path', linkId: 'kernel-link' };
+const second: LinkSpan = { ...first, row: 1, c0: 0, c1: 10 };
 
-describe('LinkSpanIndex', () => {
-  it('opens a URL even when its scheme itself crosses a soft wrap', () => {
-    const kernel = fakeKernel(['see http', 's://exam', 'ple.com/', 'a'], new Set([0, 1, 2]));
-    const index = new LinkSpanIndex();
-    for (const [row, col] of [[0, 4], [1, 0], [2, 0], [3, 0]]) {
-      expect(index.hitTest(kernel, row, col)).toMatchObject({ kind: 'url', text: 'https://example.com/a' });
-    }
-  });
-
-  it('retains the complete target when the scheme has scrolled above the viewport', () => {
-    const kernel = {
-      ...fakeKernel(['com/a']),
-      dumpWrappedText: () => [
-        { row: -2, text: 'https://', wrapped: true },
-        { row: -1, text: 'example.', wrapped: true },
-        { row: 0, text: 'com/a', wrapped: false },
-      ],
-    };
-    expect(new LinkSpanIndex().hitTest(kernel, 0, 0)).toMatchObject({
-      kind: 'url', text: 'https://example.com/a',
-    });
-  });
-
-  it('keeps a real space at the wrap edge outside the URL', () => {
-    const kernel = fakeKernel(['see https://example.com ', 'Press Ctrl+C'], new Set([0]));
-    const index = new LinkSpanIndex();
-    expect(index.hitTest(kernel, 0, 4)?.text).toBe('https://example.com');
-    expect(index.hitTest(kernel, 1, 0)).toBeNull();
-  });
-
-  it('hits a wrapped URL in cell columns after a wide Chinese prefix', () => {
-    const url = 'https://example.com/long/path?value=123456789';
-    const kernel = {
-      ...fakeKernel(['中文 https://example.com', '/long/path?value=1234567', '89'], new Set([0, 1])),
-      cols: () => 24,
-      textOffsetToCell: (row: number, offset: number) => (row === 0
-        ? [0, 2, ...Array.from({ length: 21 }, (_, i) => i + 4)]
-        : Array.from({ length: 25 }, (_, i) => i))[offset] ?? offset,
-    };
+describe('ridge-term link adapter', () => {
+  it('uses canonical cells and full targets without rescanning text in JavaScript', () => {
+    const kernel = { linkSpans: vi.fn(() => [first, second]) };
     const index = new LinkSpanIndex();
     expect(index.hitTest(kernel, 0, 4)).toBeNull();
-    expect(index.hitTest(kernel, 0, 5)).toMatchObject({ c0: 5, c1: 24, text: url });
-    expect(index.hitTest(kernel, 0, 23)?.text).toBe(url);
-    expect(index.hitTest(kernel, 1, 0)?.text).toBe(url);
-    expect(index.hitTest(kernel, 2, 1)?.text).toBe(url);
+    expect(index.hitTest(kernel, 0, 5)).toBe(first);
+    expect(index.hitTest(kernel, 1, 2)).toBe(second);
+    expect(index.regionsForSpan(kernel, second)).toEqual([first, second]);
+    expect(kernel.linkSpans).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    ['https://example.com/a', 'https://example.com/a', 'url'],
-    ['C:\\repo\\src\\main.ts:12:3', 'C:\\repo\\src\\main.ts:12:3', 'path'],
-    ['/home/u/repo/main.rs:9:2', '/home/u/repo/main.rs:9:2', 'path'],
-    ['./src/main.ts:4', './src/main.ts:4', 'path'],
-    ['src/components', 'src/components', 'path'],
-    ['"C:\\My Project\\main.ts:7:2"', 'C:\\My Project\\main.ts:7:2', 'path'],
-    ["'../My Project/main.rs:8'", '../My Project/main.rs:8', 'path'],
-  ])('classifies %s without quote or location loss', (line, text, kind) => {
+  it('invalidates cached spans on content, viewport or clear changes', () => {
+    const kernel = { linkSpans: vi.fn(() => [first]) };
     const index = new LinkSpanIndex();
-    const hit = index.hitTest(fakeKernel([line]), 0, Math.max(0, line.indexOf(text) + 1));
-    expect(hit).toMatchObject({ text, kind });
-  });
-
-  it.each(['/word', '/help', 'value / count', '--output=/tmp'])('keeps ambiguous bare POSIX text inert: %s', (line) => {
-    const index = new LinkSpanIndex();
-    for (let col = 0; col < line.length; col += 1) {
-      expect(index.hitTest(fakeKernel([line]), 0, col)).toBeNull();
-    }
-  });
-
-  it.each([
-    'file:///C:/repo/main.ts',
-    'mailto:user@example.com',
-    'https://user:secret@example.com/path',
-  ])('keeps unsupported or credential-bearing URLs inert: %s', (line) => {
-    const index = new LinkSpanIndex();
-    for (let col = 0; col < line.length; col += 1) {
-      expect(index.hitTest(fakeKernel([line]), 0, col)).toBeNull();
-    }
-  });
-
-  it('rebuilds viewport coordinates after content scrolls', () => {
-    let lines = ['https://old.example/a', 'plain'];
-    const kernel = {
-      dumpVisibleText: () => lines,
-      rows: () => lines.length,
-      cols: () => 40,
-      rowWrapped: () => false,
-    };
-    const index = new LinkSpanIndex();
-    expect(index.hitTest(kernel, 0, 10)?.text).toContain('old.example');
-    lines = ['plain', 'https://new.example/b'];
+    expect(index.hitTest(kernel, 0, 5)).toBe(first);
+    kernel.linkSpans.mockReturnValue([]);
     index.markDirty();
-    expect(index.hitTest(kernel, 0, 10)).toBeNull();
-    expect(index.hitTest(kernel, 1, 10)?.text).toContain('new.example');
-  });
-
-  it('keeps the full URL on every visual segment after a soft wrap', () => {
-    const lines = ['https://example.com/lo', 'ng/path'];
-    const kernel = fakeKernel(lines, new Set([0]));
-    const index = new LinkSpanIndex();
-
-    const first = index.hitTest(kernel, 0, 10);
-    const second = index.hitTest(kernel, 1, 2);
-
-    expect(first?.text).toBe('https://example.com/long/path');
-    expect(second?.text).toBe(first?.text);
-    expect(second).toMatchObject({ row: 1, c0: 0, c1: 7 });
-    expect(first && index.regionsForSpan(kernel, first)).toMatchObject([
-      { row: 0 },
-      { row: 1, c0: 0, c1: 7 },
-    ]);
-  });
-
-  it('does not join a hard line break that merely looks continuous', () => {
-    const lines = ['https://example.com/lo', 'ng/path'];
-    const index = new LinkSpanIndex();
-    const kernel = fakeKernel(lines);
-
-    const first = index.hitTest(kernel, 0, 10);
-    const second = index.hitTest(kernel, 1, 2);
-
-    expect(first?.text).toBe('https://example.com/lo');
-    expect(second?.text).toBe('ng/path');
-    expect(second?.text).not.toContain(first?.text ?? '');
-  });
-
-  it('uses the full-row fallback for older kernels without rowWrapped()', () => {
-    const lines = ['https://example.com/lo', 'ng/path'];
-    const index = new LinkSpanIndex();
-    const kernel = {
-      dumpVisibleText: () => lines,
-      rows: () => lines.length,
-      cols: () => lines[0]!.length,
-    };
-
-    expect(index.hitTest(kernel, 1, 2)?.text).toBe('https://example.com/long/path');
-  });
-
-  it('joins when punctuation trimmed from the first row sits at the wrap edge', () => {
-    const lines = ['https://example.com/foo,', 'bar'];
-    const index = new LinkSpanIndex();
-    const kernel = fakeKernel(lines, new Set([0]));
-
-    const first = index.hitTest(kernel, 0, 10);
-    const second = index.hitTest(kernel, 1, 1);
-
-    expect(first?.text).toBe('https://example.com/foo,bar');
-    expect(second?.text).toBe(first?.text);
-    // The comma belongs to the URL target, but is intentionally excluded
-    // from the first visual underline segment while the target is rebuilt.
-    expect(first).toMatchObject({ row: 0, c1: lines[0]!.length - 1 });
-    expect(second).toMatchObject({ row: 1, c0: 0, c1: 3 });
-  });
-
-  it('keeps the manager hover/click pipeline on the full wrapped target', () => {
-    const lines = ['https://example.com/lo', 'ng/path'];
-    const index = new LinkSpanIndex();
-    const kernel = fakeKernel(lines, new Set([0]));
-    const span = index.hitTest(kernel, 1, 2);
-    expect(span).not.toBeNull();
-    if (!span) return;
-
-    expect(decideHoverUnderline({
-      hasLinkHit: true,
-      modifierHeld: true,
-      spanText: span.text,
-    })).toMatchObject({ showUnderline: true, cursor: 'pointer', spanText: span.text });
-    expect(underlineRegionsFromSpan(span)).toEqual({ row: 1, c0: 0, c1: 7 });
-    expect(decideLinkClick({
-      mouseReportingOn: false,
-      modifierHeld: true,
-      hasLinkHit: true,
-      primaryButton: true,
-    }).openLink).toBe(true);
-    expect(buildOpenPlanFromHit({ text: span.text, kind: span.kind })).toEqual({
-      type: 'open_url',
-      href: 'https://example.com/long/path',
-    });
+    expect(index.hitTest(kernel, 0, 5)).toBeNull();
+    index.clear();
+    expect(index.hitTest(kernel, 0, 5)).toBeNull();
+    expect(kernel.linkSpans).toHaveBeenCalledTimes(3);
   });
 });
