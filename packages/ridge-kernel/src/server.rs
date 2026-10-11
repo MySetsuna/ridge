@@ -311,6 +311,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
     let mcp = KernelMcpHost::router(state.clone(), Arc::new(token.clone()));
     let app = Router::new()
         .route("/v1/local/clients", post(crate::local_client::issue))
+        .route("/v1/domain/workspace-files", post(crate::workspace_files::endpoint))
         .route("/v1/local/ws", get(crate::local_client::websocket))
         .route("/v1/health", get(health))
         .route("/v1/status", get(status))

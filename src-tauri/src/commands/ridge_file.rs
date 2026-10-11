@@ -32,26 +32,9 @@ use uuid::Uuid;
 use crate::engine::pane_tree::PaneTree;
 use crate::state::AppState;
 
-const RIDGE_FILE_VERSION: u32 = 1;
 const AUTO_SAVE_DEBOUNCE_MS: u64 = 400;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RidgeFile {
-    pub version: u32,
-    pub name: String,
-    pub saved_at: String,
-    pub pane_tree: serde_json::Value,
-    #[serde(default)]
-    pub git_repos: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index_path: Option<String>,
-    /// Per-pane teammate display names keyed by pane UUID string. Written by
-    /// Claude Code's `new-window -n` / `split-window -n` and surfaced in the
-    /// Ridge pane header. Runtime state (busy / idle, agent_id) is deliberately
-    /// NOT persisted — it's session-scoped and would lie across restarts.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub pane_titles: HashMap<String, String>,
-}
+pub use ridge_core::workspace::file::{RidgeFile, RIDGE_FILE_VERSION};
 
 // 旧版 `.ridge` 文件可能含有 `serialized_panes` 字段（前端 SerializeAddon 已移除）。
 // serde 默认忽略未知字段（结构体未声明 `deny_unknown_fields`），旧文件可正常反序列化。
@@ -101,25 +84,7 @@ fn resolve_target_path(name: &str, explicit: Option<String>) -> PathBuf {
     }
 }
 
-fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("ridge.tmp");
-    std::fs::write(&tmp, content)?;
-    std::fs::rename(&tmp, path)?;
-    // Tighten permissions to user-only after the rename. `.ridge` files now
-    // include serialized scrollback (shell command history, env-printed
-    // values, possibly secrets that scrolled past). Best-effort — failure
-    // is logged but doesn't fail the save.
-    if let Err(e) = set_secure_permissions(path) {
-        eprintln!(
-            "[ridge] warning: failed to set 0600 on {}: {e}",
-            path.display()
-        );
-    }
-    Ok(())
-}
+use ridge_core::workspace::file::write_atomic as atomic_write;
 
 /// Restrict `path` to the current user only.
 ///

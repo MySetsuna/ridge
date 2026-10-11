@@ -55,13 +55,23 @@ impl EventSink for NoopSink {
 /// `~/.ssh` / `/etc/passwd` off the host. Build the slice with
 /// [`resolve_serving_roots`].
 pub fn headless_ctx(roots: &[PathBuf]) -> Ctx {
+    runtime_ctx(roots, false)
+}
+
+/// Native presentation trust is derived from private issuance, never from RPC
+/// arguments. It preserves local file access; LAN keeps its existing sandbox.
+pub fn runtime_ctx(roots: &[PathBuf], native: bool) -> Ctx {
     let state: Arc<dyn ridge_core::CoreState> = Arc::new(HeadlessState);
     let events: Arc<dyn EventSink> = Arc::new(NoopSink);
     Ctx::new(
         state,
         events,
         Arc::new(TokioSpawner),
-        CapabilitySet::remote_default().with_roots(roots.iter()),
+        if native {
+            CapabilitySet::allow_all()
+        } else {
+            CapabilitySet::remote_default().with_roots(roots.iter())
+        },
     )
 }
 

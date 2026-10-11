@@ -789,6 +789,7 @@ pub async fn domain_workspace_topology(
         next.insert_workspace(
             workspace_id,
             WorkspaceMeta {
+                file: None,
                 pane_tree: request.pane_tree,
                 name: None,
                 locked_sizes: HashMap::new(),
@@ -851,6 +852,7 @@ fn seed_workspace_for_pty(
     graph.insert_workspace(
         workspace_id,
         ridge_core::workspace::graph::WorkspaceMeta {
+            file: None,
             pane_tree: ridge_core::workspace::pane_tree::PaneTree {
                 root: ridge_core::workspace::pane_tree::PaneNode::Leaf(pty_id),
                 panes,

@@ -22,5 +22,6 @@
 //! pane id 对齐（详设计文档 §1.5 / §10）。
 
 pub mod graph;
+pub mod file;
 pub mod mode;
 pub mod pane_tree;

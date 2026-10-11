@@ -30,6 +30,8 @@ use uuid::Uuid;
 /// 单个 workspace 的图谱数据：布局树 + 名称 + 每 pane 锁定渲染尺寸（共享属性）。
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WorkspaceMeta {
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub file: Option<super::file::FileAssociation>,
     pub pane_tree: PaneTree,
     pub name: Option<String>,
     /// 每 pane 的**锁定渲染尺寸** `(cols, rows)`（D11 共享属性，last-write-wins，

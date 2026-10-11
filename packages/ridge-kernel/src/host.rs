@@ -1168,6 +1168,118 @@ fn handle_client_text(
             )
         }
     };
+    if (jsonrpc || invoke)
+        && matches!(
+            method,
+            "save_workspace_to_file"
+                | "open_workspace_from_file"
+                | "get_workspace_save_info"
+                | "list_workspace_save_info"
+                | "get_default_workspace_save_dir"
+                | "list_saved_workspace_files"
+        )
+    {
+        let result = (|| {
+            let native = binding.is_some();
+            let roots = if native {
+                Vec::new()
+            } else {
+                host.roots(&host.snapshot())
+            };
+            ridge_core::dispatch::validate_request(
+                method,
+                args,
+                &core_host::runtime_ctx(&roots, native),
+            )
+            .map_err(|error| error.to_command_string())?;
+            let operation = match method {
+                "save_workspace_to_file" => "save",
+                "open_workspace_from_file" => "open",
+                "get_workspace_save_info" => "info",
+                "list_workspace_save_info" => "associations",
+                "get_default_workspace_save_dir" => "default-directory",
+                _ => "list",
+            };
+            let selected = *view.lock().map_err(|_| "client selection unavailable")?;
+            let response = request_json(
+                &host.current_endpoint(),
+                "POST",
+                "/v1/domain/workspace-files",
+                Some(&json!({"operation":operation,
+                "workspaceId":args.get("workspaceId").cloned().or_else(||selected.map(|id|json!(id))),"path":args.get("path"),"name":args.get("name")})),
+            )?;
+            if response["ok"] != true {
+                return Err(response["error"]
+                    .as_str()
+                    .unwrap_or("workspace file operation failed")
+                    .into());
+            }
+            let value = response["value"].clone();
+            if method == "open_workspace_from_file" {
+                let id = value["workspaceId"]
+                    .as_str()
+                    .and_then(|id| Uuid::parse_str(id).ok())
+                    .ok_or("invalid imported workspace identity")?;
+                *view.lock().map_err(|_| "client selection unavailable")? = Some(id);
+                if let Some(token) = binding.and_then(|(connection, _)| connection.token.as_deref())
+                {
+                    host.sessions
+                        .set_origin_bound_workspace(token, &id.to_string());
+                }
+                return Ok(json!(id));
+            }
+            if method == "save_workspace_to_file" {
+                Ok(value["path"].clone())
+            } else {
+                Ok(value)
+            }
+        })();
+        return reply(result);
+    }
+    if (jsonrpc || invoke)
+        && (!is_kernel_host_method(method)
+            || binding.is_some()
+                && matches!(
+                    method,
+                    "get_file_tree"
+                        | "read_file"
+                        | "text_search"
+                        | "load_terminal_font_faces"
+                        | "read_terminal_font_face_chunk"
+                ))
+    {
+        let native = binding.is_some();
+        let admitted = if native {
+            ridge_core::protocol_guard::admit_desktop_method(method)
+        } else {
+            ridge_core::protocol_guard::admit_remote_method(method)
+        };
+        let result = admitted.and_then(|method| {
+            if !native && !ridge_core::CapabilitySet::remote_default().is_allowed(&method) {
+                return Err(format!("remote capability denied: {method}"));
+            }
+            let roots = if native {
+                Vec::new()
+            } else {
+                host.roots(&host.snapshot())
+            };
+            match ridge_core::dispatch(
+                &method,
+                args.clone(),
+                &core_host::runtime_ctx(&roots, native),
+            ) {
+                Err(ridge_core::CoreError::MethodNotFound(_)) if matches!(method.as_str(),"git_stage"|"git_unstage"|"git_commit") => {
+                    let mut request = json!({"operation":method.trim_start_matches("git_"),"repo_root":args["repoRoot"]});
+                    if method=="git_commit" {request["message"]=args["message"].clone();request["amend"]=args["amend"].clone();}
+                    else {request["paths"]=args["paths"].clone();}
+                    serde_json::from_value::<crate::domain::GitMutationRequest>(request.clone()).map_err(|error|format!("invalid Git mutation: {error}"))?;
+                    crate::client::mutate_domain_git(&host.current_endpoint(),&request).map(|_|Value::Null)
+                }
+                result => result.map_err(|error|error.to_command_string()),
+            }
+        });
+        return reply(result);
+    }
     if matches!(method, "switch_workspace" | "switch-workspace") {
         let snapshot = host.snapshot();
         let result = KernelHost::workspace_id_from_snapshot(

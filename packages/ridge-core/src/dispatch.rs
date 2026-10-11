@@ -137,6 +137,13 @@ fn opt_vec_s(args: &Value, key: &str) -> Option<Vec<String>> {
 ///
 /// See module docs for the order of admission / guard / table checks.
 pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
+    let owned = validate_request(method, &args, ctx)?;
+    dispatch_admitted(&owned, args, ctx)
+}
+
+/// Shared admission for Core handlers and Runtime-owned domain handlers.
+/// Keeps aliases, capability, traversal and sandbox enforcement in one place.
+pub fn validate_request(method: &str, args: &Value, ctx: &Ctx) -> CoreResult<String> {
     // 0. AC4-C10: normalize aliases + reject invalid method names before
     // capability admission. Desktop-privileged remote denial stays in
     // protocol_guard::remote_may_invoke (host-facing bridges call it when
@@ -148,7 +155,9 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
                 tracing::warn!(target: "ridge::core::dispatch", method = %owned, "capability denied");
                 return Err(CoreError::CapabilityDenied(owned));
             }
-            dispatch_admitted(&owned, args, ctx)
+            traversal_guard(args)?;
+            sandbox_guard(args, ctx.capabilities().root_scope())?;
+            Ok(owned)
         }
         Err(e) => Err(CoreError::MethodNotFound(e)),
     }
@@ -157,10 +166,8 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
 fn dispatch_admitted(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
     // Entry after protocol admission (admit_desktop_method) + capability check.
     // 2. Path-traversal guard.
-    traversal_guard(&args)?;
 
     // 3. Sandbox / root-scoping guard (D8 / §5.6, R10). No-op when unrestricted.
-    sandbox_guard(&args, ctx.capabilities().root_scope())?;
 
     // 4. Method table (vertical slice: settings + theme).
     match method {

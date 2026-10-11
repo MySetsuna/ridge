@@ -35,7 +35,11 @@ async fn rpc(
         if let Message::Text(text) = frame {
             let value: Value = serde_json::from_str(&text).unwrap();
             if value["id"] == id {
-                assert!(value.get("error").is_none());
+                assert!(
+                    value.get("error").is_none(),
+                    "RPC {method} failed: {}",
+                    value["error"]["message"]
+                );
                 return value["result"].clone();
             }
         }
@@ -265,6 +269,220 @@ async fn scoped_local_client_cannot_become_kernel_or_lan_authority() {
         Some(&json!({"name":"second-local-window"})),
     )
     .unwrap();
+    let file = root.join("client-file.txt");
+    rpc(&mut socket, 101, "create_file", json!({"path":file})).await;
+    rpc(
+        &mut socket,
+        102,
+        "write_file",
+        json!({"path":file,"content":"shared runtime file content"}),
+    )
+    .await;
+    assert_eq!(
+        rpc(&mut socket, 103, "read_file", json!({"path":file})).await,
+        "shared runtime file content"
+    );
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "shared runtime file content"
+    );
+    let initialized = ridge_core::commands::git::run_git_guarded(
+        root.to_string_lossy().into(),
+        vec!["init".into(), "--quiet".into()],
+    )
+    .await
+    .unwrap();
+    assert!(initialized.status.success());
+    let info = rpc(
+        &mut socket,
+        104,
+        "get_git_info_with_cwd",
+        json!({"cwd":root}),
+    )
+    .await;
+    assert_eq!(info["is_git_repo"], true);
+    let status = rpc(&mut socket, 105, "get_scm_status", json!({"repoRoot":root})).await;
+    assert!(status.is_object());
+    for (key, value) in [
+        ("user.name", "070 fixture"),
+        ("user.email", "070-fixture@example.invalid"),
+        ("commit.gpgsign", "false"),
+    ] {
+        let configured = ridge_core::commands::git::run_git_guarded(
+            root.to_string_lossy().into(),
+            vec!["config".into(), "--local".into(), key.into(), value.into()],
+        )
+        .await
+        .unwrap();
+        assert!(configured.status.success());
+    }
+    rpc(
+        &mut socket,
+        106,
+        "git_stage",
+        json!({"repoRoot":root,"paths":["client-file.txt"]}),
+    )
+    .await;
+    let staged = ridge_core::commands::git::run_git_guarded(
+        root.to_string_lossy().into(),
+        vec!["diff".into(), "--cached".into(), "--name-only".into()],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        String::from_utf8(staged.stdout).unwrap().trim(),
+        "client-file.txt"
+    );
+    rpc(
+        &mut socket,
+        107,
+        "git_commit",
+        json!({"repoRoot":root,"message":"owned RPC commit"}),
+    )
+    .await;
+    let committed = ridge_core::commands::git::run_git_guarded(
+        root.to_string_lossy().into(),
+        vec!["show".into(), "HEAD:client-file.txt".into()],
+    )
+    .await
+    .unwrap();
+    assert!(committed.status.success());
+    assert_eq!(
+        String::from_utf8(committed.stdout).unwrap(),
+        "shared runtime file content"
+    );
+    let tree = json!({"root":{"Leaf":pane_id},"panes":{pane_id.to_string():{"id":pane_id,"mode":"Terminal"}}});
+    client::request_json(
+        &endpoint,
+        "PUT",
+        &format!("/v1/domain/workspaces/{workspace_id}/topology"),
+        Some(&json!({"pane_tree":tree})),
+    )
+    .unwrap();
+    let workspace_file = root.join("owned-workspace.ridge");
+    assert_eq!(
+        rpc(
+            &mut socket,
+            108,
+            "save_workspace_to_file",
+            json!({"workspaceId":workspace_id,"name":"Owned workspace","path":workspace_file})
+        )
+        .await,
+        workspace_file.to_string_lossy().as_ref()
+    );
+    let original_file = fs::read(&workspace_file).unwrap();
+    let payload = ridge_core::workspace::file::read(&workspace_file).unwrap();
+    assert_eq!(payload.name, "Owned workspace");
+    assert!(ridge_core::workspace::file::validate(&payload)
+        .unwrap()
+        .panes
+        .contains_key(&pane_id));
+    rpc(
+        &mut socket,
+        109,
+        "save_workspace_to_file",
+        json!({"workspaceId":workspace_id,"name":"Updated workspace","path":workspace_file}),
+    )
+    .await;
+    let backup = fs::read_dir(&root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().contains(".ridge.archive-"))
+        })
+        .unwrap();
+    assert_eq!(fs::read(backup).unwrap(), original_file);
+    let info = rpc(
+        &mut socket,
+        110,
+        "get_workspace_save_info",
+        json!({"workspaceId":workspace_id}),
+    )
+    .await;
+    assert_eq!(info["file_path"], workspace_file.to_string_lossy().as_ref());
+    assert_eq!(info["name"], "Updated workspace");
+    let state_path = root.join("workspace-graph.json");
+    let state_backup = root.join("workspace-graph.json.fixture-archive");
+    let prior_snapshot = fs::read(&workspace_file).unwrap();
+    fs::rename(&state_path, &state_backup).unwrap();
+    fs::create_dir(&state_path).unwrap();
+    socket.send(Message::Text(json!({"jsonrpc":"2.0","id":114,"method":"save_workspace_to_file","params":{"workspaceId":workspace_id,"name":"Must roll back","path":workspace_file}}).to_string())).await.unwrap();
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(3), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        if let Message::Text(text) = frame {
+            let value: Value = serde_json::from_str(&text).unwrap();
+            if value["id"] == 114 {
+                assert!(value["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("previous snapshot restored"));
+                break;
+            }
+        }
+    }
+    assert_eq!(fs::read(&workspace_file).unwrap(), prior_snapshot);
+    fs::remove_dir(&state_path).unwrap();
+    fs::rename(&state_backup, &state_path).unwrap();
+    let info = rpc(
+        &mut socket,
+        115,
+        "get_workspace_save_info",
+        json!({"workspaceId":workspace_id}),
+    )
+    .await;
+    assert_eq!(info["name"], "Updated workspace");
+    assert_eq!(
+        rpc(
+            &mut socket,
+            111,
+            "open_workspace_from_file",
+            json!({"path":workspace_file})
+        )
+        .await,
+        workspace_id.to_string()
+    );
+    let fresh_tree = ridge_core::workspace::pane_tree::PaneTree::default();
+    let imported_file = root.join("imported.ridge");
+    ridge_core::workspace::file::write(
+        &imported_file,
+        &ridge_core::workspace::file::RidgeFile {
+            version: 1,
+            name: "Legacy import".into(),
+            saved_at: "2026-10-11T00:00:00Z".into(),
+            pane_tree: serde_json::to_value(&fresh_tree).unwrap(),
+            git_repos: vec![],
+            index_path: None,
+            pane_titles: std::collections::HashMap::new(),
+        },
+    )
+    .unwrap();
+    let count = client::list_domain_ptys(&endpoint).unwrap().len();
+    let imported = rpc(
+        &mut socket,
+        112,
+        "open_workspace_from_file",
+        json!({"path":imported_file}),
+    )
+    .await;
+    assert!(imported.as_str().is_some());
+    assert_eq!(
+        client::list_domain_ptys(&endpoint).unwrap().len(),
+        count,
+        "import must not launch processes"
+    );
+    rpc(
+        &mut socket,
+        113,
+        "switch_workspace",
+        json!({"workspaceId":workspace_id}),
+    )
+    .await;
     let second_id = second_workspace["workspace_id"].clone();
     let global_before = client::request_json(&endpoint, "GET", "/v1/domain/workspaces", None)
         .unwrap()["active"]
