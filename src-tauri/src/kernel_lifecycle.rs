@@ -54,8 +54,9 @@ pub async fn bootstrap_runtime_client(
     tauri::async_runtime::spawn_blocking(move || {
         let endpoint = ensure_kernel_running()?;
         let status = ridge_kernel::client::request_json(&endpoint,"GET","/v1/status",None)?;
-        if !status["domain"].as_array().is_some_and(|domains|domains.iter().any(|domain|domain=="local.presentation")) {
-            return Err("Running Runtime lacks local presentation transport; update it explicitly before attaching".into());
+        if !status["domain"].as_array().is_some_and(|domains|
+            ["local.presentation", "business.commands", "business.events"].iter().all(|required| domains.iter().any(|domain| domain == required))) {
+            return Err("Running Runtime lacks the shared presentation command/event transport; update it explicitly before attaching".into());
         }
         let request = serde_json::json!({"deviceId":device_id,"origin":origin});
         let value = ridge_kernel::client::request_json(

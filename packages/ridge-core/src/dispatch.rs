@@ -51,16 +51,16 @@ const PATH_KEYS: &[&str] = &["path", "from", "to", "repoRoot", "root", "cwd"];
 /// argument surface, so they share this iterator.
 fn for_each_path_arg<F>(args: &Value, mut visit: F) -> CoreResult<()>
 where
-    F: FnMut(&str) -> CoreResult<()>,
+    F: FnMut(&str, &str) -> CoreResult<()>,
 {
     for key in PATH_KEYS {
         if let Some(v) = args.get(*key).and_then(|x| x.as_str()) {
-            visit(v)?;
+            visit(key, v)?;
         }
     }
     if let Some(arr) = args.get("paths").and_then(|x| x.as_array()) {
         for v in arr.iter().filter_map(|x| x.as_str()) {
-            visit(v)?;
+            visit("paths", v)?;
         }
     }
     Ok(())
@@ -74,7 +74,7 @@ pub fn path_has_traversal(value: &str) -> bool {
 
 /// Reject the request if any path-bearing arg contains traversal.
 fn traversal_guard(args: &Value) -> CoreResult<()> {
-    for_each_path_arg(args, |v| {
+    for_each_path_arg(args, |_, v| {
         if path_has_traversal(v) {
             Err(CoreError::PathTraversal)
         } else {
@@ -87,12 +87,16 @@ fn traversal_guard(args: &Value) -> CoreResult<()> {
 /// granted workspace roots (D8 / §5.6, R10). A no-op when `scope` is
 /// unrestricted (empty roots), so this never changes behaviour for hosts that
 /// inject no roots — the backward-compatible desktop / LAN default.
-fn sandbox_guard(args: &Value, scope: &RootScope) -> CoreResult<()> {
+fn sandbox_guard(method: &str, args: &Value, scope: &RootScope) -> CoreResult<()> {
     if scope.is_unrestricted() {
         return Ok(()); // fast path: sandbox off
     }
-    for_each_path_arg(args, |v| {
-        if scope.is_allowed(v) {
+    for_each_path_arg(args, |key, v| {
+        // Git pathspecs are relative to repoRoot, not the service process CWD.
+        let candidate = if key == "paths" && matches!(method, "git_stage" | "git_unstage") && std::path::Path::new(v).is_relative() {
+            args["repoRoot"].as_str().map(|root| std::path::Path::new(root).join(v))
+        } else { None };
+        if scope.is_allowed(candidate.as_ref().map(|path|path.to_string_lossy()).as_deref().unwrap_or(v)) {
             Ok(())
         } else {
             Err(CoreError::OutsideSandbox)
@@ -156,7 +160,7 @@ pub fn validate_request(method: &str, args: &Value, ctx: &Ctx) -> CoreResult<Str
                 return Err(CoreError::CapabilityDenied(owned));
             }
             traversal_guard(args)?;
-            sandbox_guard(args, ctx.capabilities().root_scope())?;
+            sandbox_guard(&owned, args, ctx.capabilities().root_scope())?;
             Ok(owned)
         }
         Err(e) => Err(CoreError::MethodNotFound(e)),
@@ -931,6 +935,19 @@ mod tests {
         .unwrap_err();
         // Reaches the handler (missing file) rather than being sandbox-rejected.
         assert_eq!(err.kind_tag(), "internal");
+    }
+
+    #[test]
+    fn git_relative_paths_use_repo_root_without_widening_other_requests() {
+        let root = std::env::current_dir().unwrap().join("shared-sandbox-git");
+        let outside = root.parent().unwrap().join("escape.txt");
+        let (ctx, _) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::allow_all().with_roots([&root]));
+        for method in ["git_stage", "git_unstage"] {
+            assert!(validate_request(method, &serde_json::json!({"repoRoot":root,"paths":["src/tracked.txt"]}), &ctx).is_ok());
+            assert!(matches!(validate_request(method, &serde_json::json!({"repoRoot":root,"paths":[outside]}), &ctx), Err(CoreError::OutsideSandbox)));
+            assert!(matches!(validate_request(method, &serde_json::json!({"repoRoot":root,"paths":["../escape.txt"]}), &ctx), Err(CoreError::PathTraversal)));
+        }
+        assert!(matches!(validate_request("write_file", &serde_json::json!({"repoRoot":root,"path":outside}), &ctx), Err(CoreError::OutsideSandbox)));
     }
 
     #[test]

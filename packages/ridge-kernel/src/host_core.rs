@@ -61,14 +61,17 @@ pub fn headless_ctx(roots: &[PathBuf]) -> Ctx {
 /// Native presentation trust is derived from private issuance, never from RPC
 /// arguments. It preserves local file access; LAN keeps its existing sandbox.
 pub fn runtime_ctx(roots: &[PathBuf], native: bool) -> Ctx {
+    runtime_ctx_with_events(roots, native, Arc::new(NoopSink))
+}
+
+pub fn runtime_ctx_with_events(roots: &[PathBuf], native: bool, events: Arc<dyn EventSink>) -> Ctx {
     let state: Arc<dyn ridge_core::CoreState> = Arc::new(HeadlessState);
-    let events: Arc<dyn EventSink> = Arc::new(NoopSink);
     Ctx::new(
         state,
         events,
         Arc::new(TokioSpawner),
         if native {
-            CapabilitySet::allow_all()
+            CapabilitySet::allow_all().with_roots(roots.iter())
         } else {
             CapabilitySet::remote_default().with_roots(roots.iter())
         },

@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'ridge-070-client-cdp-'));
-const binary=path.resolve('.webview2-dev-cdp/cli-target/debug/ridge-kernel.exe');
+const binary=path.resolve(process.env.RIDGE_TEST_KERNEL_BINARY||'.webview2-dev-cdp/cli-target/debug/ridge-kernel.exe');
 const nativeRoute=process.env.RIDGE_TEST_NATIVE_ROUTE==='1';
 const devUrl=process.env.RIDGE_TEST_DEV_URL||JSON.parse(fs.readFileSync('.webview2-dev-cdp/tauri-dev-cdp.config.json','utf8')).build.devUrl;
 const kernel=spawn(binary,[],{windowsHide:true,env:{...process.env,RIDGE_KERNEL_DATA_DIR:root,RIDGE_AUTH_FILE:path.join(root,'auth.json')},stdio:'ignore'});
@@ -24,6 +24,7 @@ try {
  const origin=new URL(devUrl).origin;grant=await call('POST','/v1/local/clients',{deviceId:'owned-browser-window',origin});assert.notEqual(grant.token,endpoint.token);
  const socketUrls=[];page.on('websocket',socket=>socketUrls.push(socket.url()));
  await page.exposeFunction('fixtureGrant',()=>grant);
+ await page.exposeFunction('fixtureWorkspaceMutation',()=>call('POST','/v1/domain/workspaces'));
  const result=await page.evaluate(async({workspaceId,paneId,nativeRoute})=>{
   let nativeCore,bridge;const osCalls=[];
   if(nativeRoute){
@@ -38,13 +39,19 @@ try {
   try {
    if(nativeRoute)bridge.attach(connection.transport,{useGlobalWorkspace:false});
    const theme=nativeRoute?await nativeCore.invoke('get_theme_data'):await rpc.request('get_theme_data',{});if(theme.version!==1)throw Error('shared theme RPC failed');
+   if(nativeRoute){
+    const events=await import('/src/lib/transport/nativeRuntimeEvent.ts');let updates=0;
+    const stopEvents=await events.listen('workspace-list-changed',event=>{if(!event.payload?.initial)updates++;});
+    try {await window.fixtureWorkspaceMutation();await until(()=>updates===1);}
+    finally {stopEvents();}
+   }
    if(nativeRoute){const channel=new nativeCore.Channel();channel.onmessage=onFrame;await nativeCore.invoke('register_pane_delta_channel',{workspaceId,paneId,activationId:9,channel});}
    else connection.connection.subscribePane({workspaceId,paneId},{activationId:9,active:true});
    await until(()=>!!mirror.terminalInputContext());
    const marker='BROWSER_'+crypto.randomUUID();connection.connection.sendStdin({workspaceId,paneId},new TextEncoder().encode('echo '+marker+'\r'),mirror.terminalInputContext());
    await until(()=>mirror.dumpVisibleText().some(line=>line.trim()===marker));
    if(nativeRoute&&JSON.stringify(osCalls)!==JSON.stringify(['bootstrap_runtime_client']))throw Error('Business traffic leaked into OS IPC');
-   return {frames,checks:['Production client factory connects over origin-bound local websocket','Existing LAN adapter and shared RPC client serve real business query','Canonical generated WASM receives and executes real PTY input',...(nativeRoute?['Native routing facade uses OS IPC solely for bootstrap; business RPC and terminal Channel use Runtime']:[])],storage:JSON.stringify({local:{...localStorage},session:{...sessionStorage}}),location:location.href};
+   return {frames,checks:['Production client factory connects over origin-bound local websocket','Existing LAN adapter and shared RPC client serve real business query','Canonical generated WASM receives and executes real PTY input',...(nativeRoute?['Native routing facade uses OS IPC solely for bootstrap; business RPC and terminal Channel use Runtime','Production native event facade receives a real Kernel workspace commit']:[])],storage:JSON.stringify({local:{...localStorage},session:{...sessionStorage}}),location:location.href};
   } finally {stop();rpc.dispose();connection.disconnect();mirror.free();}
  },{workspaceId,paneId,nativeRoute});
  assert.ok(socketUrls.length>0);assert.ok(socketUrls.every(url=>!url.includes(grant.token)&&!url.includes(endpoint.token)));assert.ok(!result.storage.includes(grant.token)&&!result.storage.includes(endpoint.token));

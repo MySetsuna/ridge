@@ -46,6 +46,7 @@ pub(crate) struct OutputLeaseSlot {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub(crate) business_events: crate::business::BusinessEvents,
     pub(crate) local_host: Arc<std::sync::OnceLock<Arc<crate::host::KernelHost>>>,
     pub token: String,
     pub pid: u32,
@@ -155,6 +156,8 @@ async fn health(State(st): State<AppState>) -> Json<HealthBody> {
             "workspaces",
             "mcp",
             "local.presentation",
+            "business.commands",
+            "business.events",
         ],
     })
 }
@@ -188,6 +191,8 @@ async fn status(
             "workspaces",
             "mcp",
             "local.presentation",
+            "business.commands",
+            "business.events",
         ],
     }))
 }
@@ -262,6 +267,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
     let port = local.port();
 
     let state = AppState {
+        business_events: Default::default(),
         local_host: Arc::new(std::sync::OnceLock::new()),
         token: token.clone(),
         pid,
@@ -318,6 +324,8 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         .route("/v1/metrics", get(crate::metrics::metrics_handler))
         .route("/v1/shutdown", post(shutdown))
         .route("/v1/domain", get(domain::domain_meta))
+        .route("/v1/domain/commands", post(crate::business::command))
+        .route("/v1/domain/events", get(crate::business::stream))
         .route("/v1/domain/agents", get(domain::domain_agents))
         .route(
             "/v1/domain/agents/roster",

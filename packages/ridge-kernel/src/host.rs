@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -30,7 +30,6 @@ use ridge_remote::host::{HostAuth, HostError, HostMeta, RemoteHost, WorkspacePro
 use ridge_remote::serve::UaServeConfig;
 
 use crate::host_core as core_host;
-use crate::host_fs as fs_reuse;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 const WORKSPACE_URI_PREFIX: &str = "ridge://kernel-workspace/";
@@ -929,6 +928,13 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsCon
     log_kernel_transport_mode();
     let (mut tx, mut rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::channel::<Message>(64);
+    let connection_id = Uuid::new_v4().to_string();
+    let endpoint = host.current_endpoint();
+    let Ok(mut events_request) = format!("ws://127.0.0.1:{}/v1/domain/events?connectionId={connection_id}", endpoint.port).into_client_request() else { return; };
+    let Ok(token) = endpoint.token.parse() else { return; };
+    events_request.headers_mut().insert("x-ridge-kernel-token", token);
+    let Ok(Ok((mut events, _))) = tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(events_request)).await else { return; };
+
     let subscriptions = Arc::new(Mutex::new(HashMap::<(Uuid, Uuid), u64>::new()));
     let runtime = tokio::runtime::Handle::current();
     let Ok(initial) = tokio::task::spawn_blocking({
@@ -957,6 +963,7 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsCon
     let dispatch_subscriptions = Arc::clone(&subscriptions);
     let dispatch_runtime = runtime.clone();
     let dispatch_binding = binding.clone();
+    let dispatch_connection = connection_id.clone();
     let dispatch_view = view.clone();
     let _dispatch_worker = tokio::task::spawn_blocking(move || {
         while let Some((value, trace)) = dispatch_rx.blocking_recv() {
@@ -974,6 +981,7 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsCon
                 &dispatch_subscriptions,
                 &dispatch_view,
                 dispatch_binding.as_ref(),
+                &dispatch_connection,
             ) else {
                 continue;
             };
@@ -988,6 +996,7 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsCon
     let input_subscriptions = Arc::clone(&subscriptions);
     let input_runtime = runtime;
     let input_binding = binding.clone();
+    let input_connection = connection_id.clone();
     let input_view = view.clone();
     let _input_worker = tokio::task::spawn_blocking(move || {
         while let Some((value, trace)) = input_rx.blocking_recv() {
@@ -1005,6 +1014,7 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsCon
                 &input_subscriptions,
                 &input_view,
                 input_binding.as_ref(),
+                &input_connection,
             ) else {
                 continue;
             };
@@ -1058,6 +1068,16 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsCon
         }
         tokio::select! {
             Some(message) = out_rx.recv() => { if tx.send(message).await.is_err() { break; } }
+            event = events.next() => match event {
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                    if tx.send(Message::Text(text)).await.is_err() { break; }
+                }
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(bytes))) => {
+                    if events.send(tokio_tungstenite::tungstenite::Message::Pong(bytes)).await.is_err() { break; }
+                }
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None | Some(Err(_)) => break,
+                _ => {},
+            },
             _ = topology_poll.tick() => {
                 let next_panes_frame = tokio::task::spawn_blocking({
                     let host = Arc::clone(&host);
@@ -1120,6 +1140,21 @@ fn is_latency_sensitive_pty_message(value: &Value) -> bool {
     )
 }
 
+fn dispatch_shared_core(host: &KernelHost, method: &str, args: &Value, native: bool, roots: &[PathBuf], connection_id: &str) -> Result<Value, ridge_remote::rpc::RpcError> {
+    let internal = |message: String| ridge_remote::rpc::RpcError::new(ridge_remote::rpc::JSON_RPC_INTERNAL_ERROR, message);
+    let response = request_json(&host.current_endpoint(), "POST", "/v1/domain/commands",
+        Some(&json!({"method":method,"args":args,"native":native,"roots":roots,"connectionId":connection_id}))).map_err(internal)?;
+    if response["ok"] == true { return Ok(response["value"].clone()); }
+    if response["error"]["code"] == -32601 && matches!(method,"git_stage"|"git_unstage"|"git_commit") {
+        let mut request = json!({"operation":method.trim_start_matches("git_"),"repo_root":args["repoRoot"]});
+        if method=="git_commit" {request["message"]=args["message"].clone();request["amend"]=args["amend"].clone();}
+        else {request["paths"]=args["paths"].clone();}
+        serde_json::from_value::<crate::domain::GitMutationRequest>(request.clone()).map_err(|error|internal(format!("invalid Git mutation: {error}")))?;
+        return crate::client::mutate_domain_git(&host.current_endpoint(),&request).map(|_|Value::Null).map_err(internal);
+    }
+    Err(serde_json::from_value(response["error"].clone()).unwrap_or_else(|_|internal("invalid shared Runtime command error".into())))
+}
+
 fn handle_client_text(
     value: &Value,
     host: &Arc<KernelHost>,
@@ -1128,6 +1163,7 @@ fn handle_client_text(
     subscriptions: &Arc<Mutex<HashMap<(Uuid, Uuid), u64>>>,
     view: &Arc<Mutex<Option<Uuid>>>,
     binding: Option<&(WsConn, String)>,
+    connection_id: &str,
 ) -> Option<String> {
     let jsonrpc = value["jsonrpc"] == "2.0";
     let invoke = value["type"] == "invoke-request";
@@ -1238,10 +1274,9 @@ fn handle_client_text(
     }
     if (jsonrpc || invoke)
         && (!is_kernel_host_method(method)
-            || binding.is_some()
-                && matches!(
+            || matches!(
                     method,
-                    "get_file_tree"
+                    "get_theme_data" | "set_active_theme" | "detect_available_shells" | "get_file_tree"
                         | "read_file"
                         | "text_search"
                         | "load_terminal_font_faces"
@@ -1249,36 +1284,15 @@ fn handle_client_text(
                 ))
     {
         let native = binding.is_some();
-        let admitted = if native {
-            ridge_core::protocol_guard::admit_desktop_method(method)
-        } else {
-            ridge_core::protocol_guard::admit_remote_method(method)
-        };
-        let result = admitted.and_then(|method| {
-            if !native && !ridge_core::CapabilitySet::remote_default().is_allowed(&method) {
-                return Err(format!("remote capability denied: {method}"));
-            }
-            let roots = if native {
-                Vec::new()
-            } else {
-                host.roots(&host.snapshot())
-            };
-            match ridge_core::dispatch(
-                &method,
-                args.clone(),
-                &core_host::runtime_ctx(&roots, native),
-            ) {
-                Err(ridge_core::CoreError::MethodNotFound(_)) if matches!(method.as_str(),"git_stage"|"git_unstage"|"git_commit") => {
-                    let mut request = json!({"operation":method.trim_start_matches("git_"),"repo_root":args["repoRoot"]});
-                    if method=="git_commit" {request["message"]=args["message"].clone();request["amend"]=args["amend"].clone();}
-                    else {request["paths"]=args["paths"].clone();}
-                    serde_json::from_value::<crate::domain::GitMutationRequest>(request.clone()).map_err(|error|format!("invalid Git mutation: {error}"))?;
-                    crate::client::mutate_domain_git(&host.current_endpoint(),&request).map(|_|Value::Null)
-                }
-                result => result.map_err(|error|error.to_command_string()),
-            }
-        });
-        return reply(result);
+        let roots = if native { Vec::new() } else { host.roots(&host.snapshot()) };
+        let result = dispatch_shared_core(host, method, args, native, &roots, connection_id);
+        if jsonrpc {
+            return value.get("id").map(|id| match result {
+                Ok(value) => ridge_remote::rpc::result_response(id, value),
+                Err(error) => ridge_remote::rpc::error_response(id, &error),
+            }.to_string());
+        }
+        return reply(result.map_err(|error|error.message));
     }
     if matches!(method, "switch_workspace" | "switch-workspace") {
         let snapshot = host.snapshot();
@@ -1578,10 +1592,6 @@ fn dispatch(
     if !is_kernel_host_method(method) {
         return Err(format!("method not supported by kernel host: {method}"));
     }
-    if matches!(method, "get_theme_data" | "set_active_theme") {
-        return ridge_core::dispatch(method, args.clone(), &core_host::headless_ctx(&[]))
-            .map_err(|error| error.to_string());
-    }
     if matches!(
         method,
         "write_terminal_input" | "get_terminal_history" | "get_terminal_snapshot"
@@ -1820,45 +1830,13 @@ fn dispatch(
             )?;
             Ok(json!({"success":true,"workspaceId":id}))
         }
-        "search" | "search_files" => {
-            let root = args
-                .get("root")
-                .or_else(|| args.get("path"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let query = args.get("query").and_then(Value::as_str).unwrap_or("");
-            let hits = fs_reuse::try_search(
-                &host.roots(&snapshot),
-                root,
-                query,
-                args.get("useRegex")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                args.get("caseSensitive")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-            )?;
-            serde_json::to_value(hits).map_err(|error| error.to_string())
-        }
-        "get_directory_children" | "list-files" => {
-            let path = args.get("path").and_then(Value::as_str).unwrap_or("");
-            let entries = fs_reuse::list_dir(&host.roots(&snapshot), Path::new(path))
-                .map_err(|error| error.to_string())?;
-            serde_json::to_value(entries).map_err(|error| error.to_string())
-        }
-        "get_file_tree"
-        | "read_file"
-        | "text_search"
-        | "load_terminal_font_faces"
-        | "read_terminal_font_face_chunk" => {
-            let roots = host.roots(&snapshot);
-            let ctx = core_host::headless_ctx(&roots);
-            ridge_core::dispatch(method, args.clone(), &ctx)
-                .map_err(|error| error.to_command_string())
-        }
-        "detect_available_shells" => {
-            serde_json::to_value(ridge_core::commands::shell::detect_available_shells())
-                .map_err(|error| error.to_string())
+        "search" | "search_files" | "get_directory_children" | "list-files" | "get_file_tree" | "read_file" | "text_search" | "load_terminal_font_faces" | "read_terminal_font_face_chunk" | "detect_available_shells" => {
+            let method = match method { "list-files" => "get_directory_children", "search_files" => "text_search", other => other };
+            let mut params = args.clone();
+            if matches!(method, "search" | "text_search") && params.get("root").is_none() {
+                params["root"] = args.get("path").cloned().unwrap_or(Value::String(String::new()));
+            }
+            dispatch_shared_core(host, method, &params, false, &host.roots(&snapshot), &Uuid::new_v4().to_string()).map_err(|error|error.message)
         }
         "change_pane_shell" => {
             let pane_id = host.pane_id(args, &snapshot)?;

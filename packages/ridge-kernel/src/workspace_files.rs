@@ -129,6 +129,8 @@ fn save(state: &AppState, request: &Request) -> Result<Value, String> {
         ));
     }
     *graph = next;
+    drop(graph);
+    state.business_events.workspace_list_changed();
     Ok(json!({"path":path,"backupPath":backup,"workspaceId":id}))
 }
 
@@ -186,6 +188,8 @@ fn open(state: &AppState, path: &str) -> Result<Value, String> {
     );
     save_workspace_graph_at(&state.workspaces_path, &next).map_err(|error| error.to_string())?;
     *graph = next;
+    drop(graph);
+    state.business_events.workspace_list_changed();
     Ok(json!({"workspaceId":id,"alreadyOpen":false}))
 }
 

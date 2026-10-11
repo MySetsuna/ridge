@@ -371,6 +371,8 @@ pub async fn domain_workspace_create(
     let workspace_id = next.create_workspace();
     persist_workspaces(&st, &next)?;
     *graph = next;
+    drop(graph);
+    st.business_events.workspace_list_changed();
     Ok(Json(json!({
         "ok": true,
         "source": "ridge-kernel",
@@ -416,6 +418,8 @@ pub async fn domain_workspace_activate(
         Ok(()) => {
             persist_workspaces(&st, &next)?;
             *graph = next;
+    drop(graph);
+    st.business_events.workspace_list_changed();
             Ok(Json(json!({ "ok": true, "workspace_id": workspace_id })))
         }
         Err(e) => Ok(bad_request(e.to_string())),
@@ -466,6 +470,8 @@ pub async fn domain_workspace_split(
         Ok(new_pane_id) => {
             persist_workspaces(&st, &next)?;
             *graph = next;
+    drop(graph);
+    st.business_events.pane_tree_changed(workspace_id);
             Ok(Json(json!({ "ok": true, "pane_id": new_pane_id })))
         }
         Err(e) => Ok(bad_request(e.to_string())),
@@ -543,6 +549,8 @@ pub async fn domain_workspace_pane_close(
         return Ok(bad_request(message));
     }
     *graph = next;
+    drop(graph);
+    st.business_events.pane_tree_changed(workspace_id);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -575,6 +583,8 @@ pub async fn domain_workspace_pane_locked_size(
         Ok(()) => {
             persist_workspaces(&st, &next)?;
             *graph = next;
+    drop(graph);
+    st.business_events.pane_tree_changed(workspace_id);
             Ok(Json(
                 json!({ "ok": true, "cols": request.cols, "rows": request.rows }),
             ))
@@ -798,6 +808,9 @@ pub async fn domain_workspace_topology(
     }
     persist_workspaces(&st, &next)?;
     *graph = next;
+    drop(graph);
+    st.business_events.workspace_list_changed();
+    st.business_events.pane_tree_changed(workspace_id);
     Ok(Json(json!({
         "ok": true,
         "source": "ridge-kernel",
@@ -2306,6 +2319,7 @@ mod tests {
         let ptys = Arc::new(crate::pty::PtyRegistry::default());
         ptys.set_runtime_epoch(epoch.clone());
         AppState {
+            business_events: Default::default(),
             local_host: Arc::new(std::sync::OnceLock::new()),
             token: "test-token".to_string(),
             pid: 1,

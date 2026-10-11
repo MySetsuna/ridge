@@ -90,7 +90,14 @@
         runtime => {
           runtime.bridge.attach(runtime.transport, { useGlobalWorkspace: false });
           setTransport(new TauriDataProvider());
-          return () => runtime.bridge.detach();
+          const stop = runtime.connection.onStateChange(state => {
+            if (state === 'error') {
+              ready = false;
+              phase = 'error';
+              errorMsg = runtime.connection.lastFailure()?.message ?? 'Runtime connection failed';
+            }
+          });
+          return () => { stop(); runtime.bridge.detach(); };
         },
         error => {
           if (error) { errorMsg = error instanceof Error ? error.message : 'Runtime attach failed'; phase = 'error'; }

@@ -11,7 +11,7 @@ use std::{
 };
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 
-async fn rpc(
+async fn rpc_reply(
     socket: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
@@ -35,16 +35,29 @@ async fn rpc(
         if let Message::Text(text) = frame {
             let value: Value = serde_json::from_str(&text).unwrap();
             if value["id"] == id {
-                assert!(
-                    value.get("error").is_none(),
-                    "RPC {method} failed: {}",
-                    value["error"]["message"]
-                );
-                return value["result"].clone();
+                return value;
             }
         }
         assert!(Instant::now() < deadline, "scoped RPC did not answer");
     }
+}
+
+async fn rpc(socket: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, id: u64, method: &str, params: Value) -> Value {
+    let response = rpc_reply(socket, id, method, params).await;
+    assert!(response.get("error").is_none(), "RPC {method} failed: {}", response["error"]["message"]);
+    response["result"].clone()
+}
+
+async fn business_event(socket: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, name: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let frame = socket.next().await.unwrap().unwrap();
+            if let Message::Text(text) = frame {
+                let value: Value = serde_json::from_str(&text).unwrap();
+                if value["type"] == "event" && value["name"] == name && value["payload"]["initial"] != true { return value; }
+            }
+        }
+    }).await.expect("shared business event deadline")
 }
 
 struct OwnedKernel {
@@ -85,6 +98,7 @@ async fn scoped_local_client_cannot_become_kernel_or_lan_authority() {
     fs::create_dir_all(&root).unwrap();
     let mut process = Command::new(env!("CARGO_BIN_EXE_ridge-kernel"))
         .env("RIDGE_KERNEL_DATA_DIR", &root)
+        .env("RIDGE_KERNEL_FS_ROOT", &root)
         .env("RIDGE_AUTH_FILE", root.join("auth.json"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -136,6 +150,12 @@ async fn scoped_local_client_cannot_become_kernel_or_lan_authority() {
     let mut limited = endpoint.clone();
     limited.token = grant.token.clone();
     assert!(client::request_json(&limited, "GET", "/v1/status", None).is_err());
+    assert!(client::request_json(&limited, "POST", "/v1/domain/commands", Some(&json!({
+        "method":"get_theme_data","args":{},"native":true,"roots":[],"connectionId":uuid::Uuid::new_v4()
+    }))).is_err());
+    let mut private_events = format!("ws://127.0.0.1:{}/v1/domain/events?connectionId={}", endpoint.port, uuid::Uuid::new_v4()).into_client_request().unwrap();
+    private_events.headers_mut().insert("x-ridge-kernel-token", grant.token.parse().unwrap());
+    assert!(tokio_tungstenite::connect_async(private_events).await.is_err());
     assert!(tokio_tungstenite::connect_async(request(
         &grant,
         "other-window",
@@ -182,6 +202,13 @@ async fn scoped_local_client_cannot_become_kernel_or_lan_authority() {
         response.headers().get("sec-websocket-protocol").unwrap(),
         "ridge-client"
     );
+    let invalid_theme = rpc_reply(&mut socket, 130, "set_active_theme", json!({})).await;
+    assert_eq!(invalid_theme["error"]["code"], -32602);
+    assert!(invalid_theme["error"]["message"].as_str().unwrap().contains("themeId"));
+    let outside = std::env::temp_dir().join(format!("ridge-070-denied-{}.txt", uuid::Uuid::new_v4()));
+    let denied = rpc_reply(&mut socket, 131, "write_file", json!({"path":outside,"content":"must not write"})).await;
+    assert_eq!(denied["error"]["code"], 1006);
+    assert!(!outside.exists(), "native grant bypassed operator filesystem scope");
     socket
         .send(Message::Text(
             json!({"jsonrpc":"2.0","id":1,"method":"get_theme_data","params":{}}).to_string(),
@@ -523,6 +550,16 @@ async fn scoped_local_client_cannot_become_kernel_or_lan_authority() {
         client::request_json(&endpoint, "GET", "/v1/domain/workspaces", None).unwrap()["active"],
         global_before
     );
+    let created = client::request_json(&endpoint, "POST", "/v1/domain/workspaces", None).unwrap();
+    let first_event = business_event(&mut socket, "workspace-list-changed").await;
+    let second_event = business_event(&mut other, "workspace-list-changed").await;
+    assert_eq!(first_event["sequence"], second_event["sequence"]);
+    assert_eq!(first_event["runtimeEpoch"], grant.runtime_epoch);
+    assert!(first_event["connectionId"].is_null());
+    assert!(client::request_json(&endpoint, "GET", "/v1/domain/workspaces", None).unwrap()["workspaces"].as_array().unwrap()
+        .iter().any(|item|item==&created["workspace_id"]));
+    assert_eq!(rpc(&mut socket, 120, "get_active_workspace_id", json!({})).await, workspace_id.to_string());
+    assert_eq!(rpc(&mut other, 121, "get_active_workspace_id", json!({})).await, second_id);
     rpc(
         &mut socket,
         6,

@@ -5,6 +5,7 @@
 
 pub mod agent_profiles;
 pub mod client;
+mod business;
 pub mod host;
 pub mod host_core;
 pub mod host_fs;
