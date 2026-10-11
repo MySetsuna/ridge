@@ -163,6 +163,7 @@ impl KernelMcpHost {
                         "online": identity.online,
                         "lastSeenUnixMs": identity.last_seen_unix_ms,
                         "capabilities": identity.capabilities,
+                        "protocolBinding": identity.protocol_binding,
                     })
                 })
                 .collect::<Vec<_>>()
@@ -747,6 +748,7 @@ mod tests {
         let ptys = Arc::new(crate::pty::PtyRegistry::default());
         ptys.set_runtime_epoch(epoch.clone());
         AppState {
+            commune: Default::default(),
             retired_workspaces: Default::default(),
             business_events: Default::default(),
             local_host: Arc::new(std::sync::OnceLock::new()),

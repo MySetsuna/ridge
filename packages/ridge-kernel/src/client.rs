@@ -30,6 +30,8 @@ pub struct KernelPtyInfo {
     pub status: String,
     #[serde(default)]
     pub child_pid: Option<u32>,
+    #[serde(default)]
+    pub child_start_instance: Option<String>,
     pub cols: u16,
     pub rows: u16,
     pub oldest_seq: u64,

@@ -46,6 +46,7 @@ pub(crate) struct OutputLeaseSlot {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub(crate) commune: Arc<tokio::sync::Mutex<std::collections::HashMap<String,Arc<ridge_acp::existing::ExistingConversation>>>>,
     /// Serializes workspace retirement with legacy topology/PTY registration.
     pub(crate) retired_workspaces: Arc<std::sync::Mutex<std::collections::HashSet<Uuid>>>,
     pub(crate) business_events: crate::business::BusinessEvents,
@@ -271,6 +272,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
     let port = local.port();
 
     let state = AppState {
+        commune: Default::default(),
         retired_workspaces: Default::default(),
         business_events: Default::default(),
         local_host: Arc::new(std::sync::OnceLock::new()),
@@ -286,12 +288,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
             load_workspace_graph()?,
         )),
         workspaces_path: workspace_graph_path(),
-        roster: Arc::new(std::sync::Mutex::new(load_roster().unwrap_or_else(
-            |error| {
-                tracing::warn!(%error, "agent roster restore failed; starting empty");
-                ridge_core::teammate::topology::TopologyGraph::new()
-            },
-        ))),
+        roster: Arc::new(std::sync::Mutex::new({let mut roster=load_roster()?;roster.restore_protocol_bindings_offline();roster})),
         roster_path: roster_path(),
         groups: Arc::new(std::sync::Mutex::new(HashMap::new())),
         mcp_state: Arc::new(
@@ -327,6 +324,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         .route("/v1/shutdown", post(shutdown))
         .route("/v1/domain", get(domain::domain_meta))
         .route("/v1/domain/commands", post(crate::business::command))
+        .route("/v1/domain/commune/register", post(crate::commune::register))
         .route("/v1/domain/events", get(crate::business::stream))
         .route("/v1/domain/agents", get(domain::domain_agents))
         .route(

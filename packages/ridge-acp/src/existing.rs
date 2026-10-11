@@ -228,6 +228,7 @@ impl ExistingConversation {
     pub fn is_busy(&self) -> bool {
         self.inner.busy.load(Ordering::Acquire)
     }
+    pub fn is_connected(&self) -> bool { !self.inner.transport.is_closed() }
 
     /// Retires this connection only. Runtime owns the external process lifetime.
     pub fn disconnect(&self) {

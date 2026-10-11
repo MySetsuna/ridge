@@ -35,7 +35,21 @@ impl AgentLifecycle {
 
 /// Stable identity owned by the Kernel/Teammate registry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct ProtocolBinding {
+    pub protocol: String,
+    pub host_id: String,
+    pub runtime_epoch: String,
+    pub process: crate::process_identity::ProcessInstance,
+    pub endpoint_owner: crate::process_identity::ProcessInstance,
+    pub endpoint: String,
+    pub peer_namespace: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentIdentity {
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub protocol_binding: Option<ProtocolBinding>,
     pub agent_id: String,
     pub session_id: String,
     pub workspace_id: String,
@@ -363,6 +377,7 @@ mod tests {
 
     fn identity() -> AgentIdentity {
         AgentIdentity {
+            protocol_binding: None,
             agent_id: "agent-a".into(),
             session_id: "session-a".into(),
             workspace_id: "workspace-a".into(),

@@ -518,6 +518,7 @@ pub struct PtyInfo {
     pub cwd: Option<String>,
     pub status: String,
     pub child_pid: Option<u32>,
+    pub child_start_instance: Option<String>,
     pub cols: u16,
     pub rows: u16,
 }
@@ -674,6 +675,7 @@ impl PtyRegistry {
             cwd: launch.cwd.map(str::to_string),
             status: "Idle".to_string(),
             child_pid: bridge.process_id(),
+            child_start_instance: bridge.process_id().and_then(|pid|ridge_core::process_identity::instance(pid).ok()).map(|instance|instance.start_instance),
             cols,
             rows,
         };
@@ -781,6 +783,7 @@ impl PtyRegistry {
                     cwd: cwd.map(str::to_string),
                     status: "Idle".to_string(),
                     child_pid,
+                    child_start_instance: child_pid.and_then(|pid|ridge_core::process_identity::instance(pid).ok()).map(|instance|instance.start_instance),
                     cols: DEFAULT_COLS,
                     rows: DEFAULT_ROWS,
                 },

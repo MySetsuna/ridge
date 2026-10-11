@@ -299,6 +299,7 @@ mod tests {
             cwd: cwd.map(str::to_owned),
             status: "running".into(),
             child_pid: None,
+            child_start_instance: None,
             cols: 80,
             rows: 24,
             oldest_seq: 0,

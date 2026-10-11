@@ -5724,6 +5724,7 @@ dependencies = [
  "libc",
  "parking_lot",
  "portable-pty",
+ "ridge-acp",
  "ridge-core",
  "ridge-mcp",
  "ridge-remote",

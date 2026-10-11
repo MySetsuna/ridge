@@ -89,6 +89,18 @@ pub async fn command(
     if uuid::Uuid::parse_str(&request.connection_id).is_err() {
         return Err(StatusCode::BAD_REQUEST);
     }
+    if request.method=="register_commune_member" {
+        if !request.native {return Ok(Json(json!({"ok":false,"error":ridge_core::CoreError::CapabilityDenied(request.method).to_json_rpc()})));}
+        let ctx=crate::host_core::runtime_ctx(state.fs_scope.roots(),true);
+        let value=match ridge_core::dispatch::validate_request(&request.method,&request.args,&ctx) {
+            Err(error)=>json!({"ok":false,"error":error.to_json_rpc()}),
+            Ok(_)=>match serde_json::from_value::<crate::commune::RegisterRequest>(request.args) {
+                Err(error)=>json!({"ok":false,"error":ridge_core::CoreError::InvalidArgs(error.to_string()).to_json_rpc()}),
+                Ok(args)=>match crate::commune::attach(&state,args).await {Ok(value)=>json!({"ok":true,"value":value}),Err(error)=>json!({"ok":false,"error":ridge_core::CoreError::InvalidArgs(error).to_json_rpc()})}
+            }
+        };
+        return Ok(Json(value));
+    }
     let result = tokio::task::spawn_blocking(move || {
         let ctx = crate::host_core::runtime_ctx_with_events(
             &request.roots,

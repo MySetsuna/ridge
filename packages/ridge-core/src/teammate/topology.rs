@@ -109,6 +109,10 @@ impl TopologyGraph {
             .iter()
             .find(|(_, identity)| identity.pane_id == pane_id)
             .map(|(agent_id, _)| agent_id.clone())?;
+        if let Some(identity)=self.identities.get_mut(&agent_id).filter(|identity|identity.protocol_binding.is_some()) {
+            identity.online=false;identity.lifecycle=super::communication::AgentLifecycle::Stopped;
+            return Some(identity.clone());
+        }
         self.identities.remove(&agent_id)
     }
 
@@ -188,6 +192,22 @@ impl TopologyGraph {
 
     pub fn agent_identity(&self, agent_id: &str) -> Option<&AgentIdentity> {
         self.identities.get(agent_id)
+    }
+
+    /// Persisted protocol bindings are evidence, not live control leases.
+    pub fn restore_protocol_bindings_offline(&mut self) {
+        for identity in self.identities.values_mut().filter(|identity|identity.protocol_binding.is_some()) {
+            identity.online=false;
+            identity.lifecycle=super::communication::AgentLifecycle::Discovered;
+        }
+    }
+
+    pub fn disconnect_protocol_binding(&mut self, agent_id:&str,generation:u64,lease:&str,exited:bool)->bool {
+        let Some(identity)=self.identities.get_mut(agent_id) else{return false;};
+        if identity.generation!=generation || identity.lease!=lease || identity.protocol_binding.is_none() {return false;}
+        identity.online=false;
+        identity.lifecycle=if exited {super::communication::AgentLifecycle::Stopped}else{super::communication::AgentLifecycle::Discovered};
+        true
     }
 
     /// Next generation accepted for a stable Agent id, including after its
@@ -309,6 +329,7 @@ mod tests {
 
     fn identity(generation: u64, lease: &str) -> AgentIdentity {
         AgentIdentity {
+            protocol_binding: None,
             agent_id: "agent-a".into(),
             session_id: "session-a".into(),
             workspace_id: "workspace-a".into(),

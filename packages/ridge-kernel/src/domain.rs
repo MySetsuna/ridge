@@ -172,6 +172,7 @@ pub(crate) fn commit_agent_identity_for_pty(
     let mut next = roster.clone();
     let generation = next.next_agent_generation(&agent_id);
     next.commit_online_agent(ridge_core::teammate::communication::AgentIdentity {
+        protocol_binding: None,
         agent_id: agent_id.clone(),
         session_id: format!("session:{}", Uuid::new_v4()),
         workspace_id: workspace_id.to_string(),
@@ -682,6 +683,7 @@ pub async fn domain_agent_identity_commit(
         return Err(StatusCode::UNAUTHORIZED);
     }
     let identity = AgentIdentity {
+        protocol_binding: None,
         agent_id: request.agent_id,
         session_id: request.session_id,
         workspace_id: request.workspace_id,
@@ -1008,6 +1010,7 @@ pub async fn domain_pty_list(
                 "cwd": info.cwd,
                 "status": info.status,
                 "child_pid": info.child_pid,
+                "child_start_instance": info.child_start_instance,
                 "cols": info.cols,
                 "rows": info.rows,
                 "oldest_seq": oldest_seq,
@@ -2335,6 +2338,7 @@ mod tests {
         let ptys = Arc::new(crate::pty::PtyRegistry::default());
         ptys.set_runtime_epoch(epoch.clone());
         AppState {
+            commune: Default::default(),
             retired_workspaces: Default::default(),
             business_events: Default::default(),
             local_host: Arc::new(std::sync::OnceLock::new()),

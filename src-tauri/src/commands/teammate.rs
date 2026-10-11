@@ -1500,6 +1500,7 @@ mod tests {
             }]
         });
         let identity = ridge_core::teammate::communication::AgentIdentity {
+            protocol_binding: None,
             agent_id: "agent-stable".into(),
             session_id: "session-1".into(),
             workspace_id: Uuid::nil().to_string(),

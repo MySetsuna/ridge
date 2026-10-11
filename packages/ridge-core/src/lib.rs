@@ -45,6 +45,7 @@ pub use ridge_mcp as mcp;
 pub mod external_spawn_registry;
 pub mod grant_store;
 pub mod process_guard;
+pub mod process_identity;
 pub mod pty;
 pub mod remote;
 pub mod sandbox;

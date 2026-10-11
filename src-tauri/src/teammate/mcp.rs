@@ -1181,6 +1181,7 @@ mod tests {
         let identity =
             |workspace_id: Uuid, pane_id: Uuid, online: bool, generation: u64, lease: &str| {
                 ridge_core::teammate::communication::AgentIdentity {
+                    protocol_binding: None,
                     agent_id: format!("kernel:{pane_id}"),
                     session_id: "session-1".into(),
                     workspace_id: workspace_id.to_string(),
