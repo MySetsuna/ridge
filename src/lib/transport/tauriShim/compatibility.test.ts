@@ -15,6 +15,7 @@ afterEach(() => {
 function transportRig() {
 	let controlHandler: ((frame: unknown) => void) | undefined;
 	let paneHandler: ((paneId: string, bytes: Uint8Array) => void) | undefined;
+	let terminalHandler: ((bytes: Uint8Array) => void) | undefined;
 	const sent: unknown[] = [];
 	const transport = {
 		sendControl: (frame: unknown) => sent.push(frame),
@@ -23,6 +24,10 @@ function transportRig() {
 			return () => { controlHandler = undefined; };
 		},
 		sendPaneBytes: vi.fn(),
+		onTerminalFrame: (handler: (bytes: Uint8Array) => void) => {
+			terminalHandler = handler;
+			return () => { terminalHandler = undefined; };
+		},
 		onPaneBytes: (handler: (paneId: string, bytes: Uint8Array) => void) => {
 			paneHandler = handler;
 			return () => { paneHandler = undefined; };
@@ -34,7 +39,7 @@ function transportRig() {
 		authState: () => 'authorized' as const,
 		onAuthChange: () => () => {},
 	};
-	return { transport, sent, dispatchControl: (frame: unknown) => controlHandler?.(frame), dispatchPane: (id: string, bytes: Uint8Array) => paneHandler?.(id, bytes) };
+	return { transport, sent, dispatchControl: (frame: unknown) => controlHandler?.(frame), dispatchPane: (id: string, bytes: Uint8Array) => paneHandler?.(id, bytes), dispatchTerminal: (bytes: Uint8Array) => terminalHandler?.(bytes) };
 }
 
 describe('browser Tauri compatibility shims', () => {
@@ -89,8 +94,22 @@ describe('browser Tauri compatibility shims', () => {
 		bridge.attach(rig.transport as never, { useGlobalWorkspace: false });
 		const result = await (await import('./core')).invoke('set_pane_delta_mode', { paneId: 'pane-1' });
 		expect(result).toBeUndefined();
-		await (await import('./core')).invoke('register_pane_delta_channel', { paneId: 'pane-1', workspaceId: 'ws', active: true });
-		expect(rig.sent).toContainEqual(expect.objectContaining({ method: 'subscribe-pane' }));
+		const channel = new Channel<Uint8Array>();
+		channel.onmessage = vi.fn();
+		await (await import('./core')).invoke('register_pane_delta_channel', { paneId: 'pane-1', workspaceId: 'ws', activationId: 7, channel });
+		expect(rig.sent).toContainEqual(expect.objectContaining({ method: 'subscribe-pane', params: { paneId: 'pane-1', workspaceId: 'ws', activationId: 7, active: true } }));
+		const frame = new Uint8Array([0x13, 1, 0xff]);
+		rig.dispatchTerminal(frame);
+		expect(channel.onmessage).toHaveBeenCalledWith(frame);
+		const replacement = new Channel<Uint8Array>();
+		replacement.onmessage = vi.fn();
+		await (await import('./core')).invoke('register_pane_delta_channel', { paneId: 'pane-1', workspaceId: 'ws', activationId: 8, channel: replacement });
+		rig.dispatchTerminal(frame);
+		expect(channel.onmessage).toHaveBeenCalledTimes(1);
+		expect(replacement.onmessage).toHaveBeenCalledOnce();
+		bridge.detach();
+		rig.dispatchTerminal(frame);
+		expect(replacement.onmessage).toHaveBeenCalledOnce();
 	});
 
 	it('provides prompt-backed dialog behavior and fullscreen window shims', async () => {

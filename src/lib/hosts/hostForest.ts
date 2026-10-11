@@ -44,12 +44,14 @@ export interface HostTopologyLink extends HostForestLink {
   closePane(pane: PaneRef): Promise<boolean>;
   closeWorkspace(workspaceId: string): Promise<boolean>;
   onRawBytes(fn: (pane: PaneRef, bytes: Uint8Array) => void): () => void;
+  onTerminalFrame?: NonNullable<RemoteLink['onTerminalFrame']>;
   onPtyResize?(fn: PtyResizeListener): () => void;
-  subscribePane(pane: PaneRef): void;
+  subscribePane: RemoteLink['subscribePane'];
   /** Promote a subscribed pane to the host's latency-priority stream. */
   promotePane?(pane: PaneRef): void;
-  sendStdin(pane: PaneRef, data: string): void;
+  sendStdin: RemoteLink['sendStdin'];
   enqueueStdinTask?: NonNullable<RemoteLink['enqueueStdinTask']>;
+  fetchTerminalHistory?: NonNullable<RemoteLink['fetchTerminalHistory']>;
   refreshPane(
     pane: PaneRef,
     rows: number,

@@ -171,7 +171,7 @@ const RENDER_BURST_GAP_MS: i64 = 120;
 /// One physical viewport scroll. The native delta producer consumes these
 /// records to move its snapshot by row identity instead of reserializing every
 /// row that merely changed vertical position.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScrollOp {
     pub top: usize,
     pub bottom: usize,
@@ -343,6 +343,8 @@ impl Grid {
     /// paths fill blank cells with the active background colour.
     pub fn set_pen(&mut self, attrs: Attrs) {
         self.pen = attrs;
+        let attr = self.attrs.intern(attrs);
+        self.screen_mut().cursor.attr = attr;
     }
 
     pub fn scrollback_clear_count(&self) -> u64 {
@@ -1411,20 +1413,26 @@ impl Grid {
             return;
         }
         let current = self.screen().rows[row].cells[col];
+        let mut link_start = col;
+        let mut link_end = col.saturating_add(width).min(cols);
         if current.width == 0 && col > 0 {
+            link_start = col - 1;
             self.screen_mut().rows[row].clear_cluster_at(col - 1);
             self.screen_mut().rows[row].cells[col - 1] = Cell::new(' ', AttrId::DEFAULT, 1);
         }
         if current.width == 2 && col + 1 < cols {
+            link_end = link_end.max(col + 2);
             self.screen_mut().rows[row].cells[col + 1] = Cell::new(' ', AttrId::DEFAULT, 1);
         }
         if width == 2 {
             let next = col + 1;
             if next < cols && self.screen().rows[row].cells[next].width == 2 && next + 1 < cols {
+                link_end = link_end.max(next + 2);
                 self.screen_mut().rows[row].clear_cluster_at(next);
                 self.screen_mut().rows[row].cells[next + 1] = Cell::new(' ', AttrId::DEFAULT, 1);
             }
         }
+        clip_hyperlinks_around(&mut self.screen_mut().rows[row].hyperlinks, link_start, link_end);
     }
 
     fn write_cell(&mut self, ch: char, attr_id: AttrId, width: usize) {
@@ -1918,6 +1926,7 @@ impl Grid {
                 return;
             };
             let end = col + width.max(1);
+            clip_hyperlinks_around(&mut r.hyperlinks, col, end.min(r.cells.len()));
             if let Some(last) = r.hyperlinks.last_mut() {
                 let id_match = match (&last.id, id) {
                     (None, None) => true,

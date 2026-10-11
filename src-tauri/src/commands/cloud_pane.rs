@@ -76,12 +76,12 @@ fn resolve_workspace(
     Ok(ws)
 }
 
-fn emit_terminal_v2(
+fn emit_terminal(
     app: &AppHandle,
     event_name: &str,
-    envelope: &ridge_term::terminal_v2::TerminalEnvelope,
+    envelope: &ridge_term::terminal_protocol::TerminalFrame,
 ) -> bool {
-    let Ok(frame) = ridge_term::terminal_v2::encode_frame(envelope) else {
+    let Ok(frame) = ridge_term::terminal_protocol::encode_frame(envelope) else {
         return false;
     };
     let b64 = base64::engine::general_purpose::STANDARD.encode(frame);
@@ -99,7 +99,7 @@ fn remove_terminal_sub_if_owner(state: &AppState, key: (Uuid, Uuid, u64), sub_id
 /// Activation-scoped semantic stream used by cloud Remote. Every subscriber
 /// gets its own envelope fence, even when several controllers view one pane.
 #[tauri::command]
-pub fn subscribe_pane_terminal_v2(
+pub fn subscribe_pane_terminal(
     pane_id: String,
     workspace_id: Option<String>,
     activation_id: u64,
@@ -132,25 +132,21 @@ pub fn subscribe_pane_terminal_v2(
                         desync: Arc::clone(&desync),
                     },
                 );
-                let event_name = format!("pane-terminal-v2-{ws}-{pane}-{activation_id}");
+                let Some(initial) = state.get_remote_terminal_snapshot(ws, pane) else {
+                    state.unregister_remote_sub(ws, pane, sub_id);
+                    subs.remove(&key);
+                    return Err("terminal snapshot unavailable".into());
+                };
+                let event_name = format!("pane-terminal-{ws}-{pane}-{activation_id}");
                 let app_state = state.inner().clone();
                 tauri::async_runtime::spawn(async move {
                     let pane_ref =
-                        ridge_term::terminal_v2::PaneRef::new(ws.to_string(), pane.to_string());
-                    let Some(initial) = app_state.get_remote_terminal_snapshot(ws, pane) else {
-                        app_state.unregister_remote_sub(ws, pane, sub_id);
-                        remove_terminal_sub_if_owner(&app_state, key, sub_id);
-                        return;
-                    };
-                    let mut revision = initial.revision;
-                    if !emit_terminal_v2(
+                        ridge_term::terminal_protocol::PaneRef::new(ws.to_string(), pane.to_string());
+                    let mut revision = initial.revision();
+                    if !emit_terminal(
                         &app,
                         &event_name,
-                        &ridge_term::terminal_v2::TerminalEnvelope::snapshot(
-                            pane_ref.clone(),
-                            activation_id,
-                            initial,
-                        ),
+                        &initial.into_frame(pane_ref.clone(), activation_id),
                     ) {
                         app_state.unregister_remote_sub(ws, pane, sub_id);
                         remove_terminal_sub_if_owner(&app_state, key, sub_id);
@@ -169,18 +165,18 @@ pub fn subscribe_pane_terminal_v2(
                         if workspace_id != ws || pane_id != pane {
                             continue;
                         }
+                        if frame.pane_seq > revision && frame.semantic_update.as_deref().is_none_or(|update|
+                            matches!(&update.body, ridge_term::terminal_protocol::TerminalBody::Delta(delta) if delta.base_revision != revision)) {
+                            desync.store(true, Ordering::Release);
+                        }
                         if desync.swap(false, Ordering::AcqRel) {
                             if let Some(snapshot) = app_state.get_remote_terminal_snapshot(ws, pane)
                             {
-                                revision = snapshot.revision;
-                                if !emit_terminal_v2(
+                                revision = snapshot.revision();
+                                if !emit_terminal(
                                     &app,
                                     &event_name,
-                                    &ridge_term::terminal_v2::TerminalEnvelope::snapshot(
-                                        pane_ref.clone(),
-                                        activation_id,
-                                        snapshot,
-                                    ),
+                                    &snapshot.into_frame(pane_ref.clone(), activation_id),
                                 ) {
                                     break;
                                 }
@@ -191,23 +187,11 @@ pub fn subscribe_pane_terminal_v2(
                             continue;
                         }
                         let next_revision = frame.pane_seq;
-                        let delta = ridge_term::remote_v2::frame_from_local(
-                            &frame,
-                            revision,
-                            if is_alt {
-                                ridge_term::terminal_v2::ScreenKind::Alternate
-                            } else {
-                                ridge_term::terminal_v2::ScreenKind::Primary
-                            },
-                        );
-                        if !emit_terminal_v2(
+                        let Some(delta) = frame.semantic_update.as_deref().cloned() else { continue; };
+                        if !emit_terminal(
                             &app,
                             &event_name,
-                            &ridge_term::terminal_v2::TerminalEnvelope::delta(
-                                pane_ref.clone(),
-                                activation_id,
-                                delta,
-                            ),
+                            &delta.into_frame(pane_ref.clone(), activation_id),
                         ) {
                             break;
                         }
@@ -226,29 +210,48 @@ pub fn subscribe_pane_terminal_v2(
 /// the legacy raw resync this is an exact atomic terminal state and is returned
 /// to the requesting bridge only; no Tauri event is broadcast to peers.
 #[tauri::command]
-pub fn get_pane_terminal_snapshot_v2(
+pub fn get_terminal_snapshot(
     pane_id: String,
     workspace_id: String,
     activation_id: u64,
     state: State<AppState>,
 ) -> Result<String, String> {
+    terminal_snapshot_reply(&state, &pane_id, &workspace_id, activation_id)
+}
+
+pub fn terminal_snapshot_reply(state: &AppState, pane_id: &str, workspace_id: &str, activation_id: u64) -> Result<String, String> {
     let pane = Uuid::parse_str(&pane_id).map_err(|_| "invalid paneId".to_string())?;
     let ws = Uuid::parse_str(&workspace_id).map_err(|_| "invalid workspaceId".to_string())?;
     let snapshot = state
         .get_remote_terminal_snapshot(ws, pane)
         .ok_or_else(|| "terminal snapshot unavailable".to_string())?;
-    let envelope = ridge_term::terminal_v2::TerminalEnvelope::snapshot(
-        ridge_term::terminal_v2::PaneRef::new(ws.to_string(), pane.to_string()),
-        activation_id,
-        snapshot,
-    );
-    let frame = ridge_term::terminal_v2::encode_frame(&envelope)
-        .map_err(|error| format!("terminal-v2 encode failed: {error}"))?;
+    let envelope = snapshot.into_frame(ridge_term::terminal_protocol::PaneRef::new(ws.to_string(), pane.to_string()), activation_id);
+    let frame = ridge_term::terminal_protocol::encode_frame(&envelope)
+        .map_err(|error| format!("terminal encode failed: {error}"))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(frame))
 }
 
+pub fn terminal_history_reply(state: &AppState, request: ridge_term::terminal_protocol::HistoryRequest) -> Result<String, String> {
+    let ws = Uuid::parse_str(&request.pane.workspace_id).map_err(|_| "invalid workspaceId")?;
+    let pane = Uuid::parse_str(&request.pane.pane_id).map_err(|_| "invalid paneId")?;
+    let update = {
+        let workspaces = state.workspaces.read();
+        let handle = workspaces.get(&ws).and_then(|workspace| workspace.terminals.get(&pane)).ok_or("terminal unavailable")?;
+        let update = handle.parser.lock().semantic_history(&request).map_err(str::to_owned)?;
+        update
+    };
+    let frame = update.into_frame(request.pane, request.activation_id);
+    let bytes = ridge_term::terminal_protocol::encode_frame(&frame).map_err(|error| error.to_string())?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 #[tauri::command]
-pub fn unsubscribe_pane_terminal_v2(
+pub fn get_terminal_history(request: ridge_term::terminal_protocol::HistoryRequest, state: State<AppState>) -> Result<String, String> {
+    terminal_history_reply(&state, request)
+}
+
+#[tauri::command]
+pub fn unsubscribe_pane_terminal(
     pane_id: String,
     workspace_id: String,
     activation_id: u64,

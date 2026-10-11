@@ -1,31 +1,10 @@
-// src/remote/lib/cloudRemote.ts
-//
-// Cloud control-end transport for the mobile app (design 2026-06-16-mobile-cloud).
-//
-// The mobile UI (MainApp / BottomTabBar / WorkspaceTree) is written against the
-// LAN wsRemote flat protocol ({@link RemoteLink}). The cloud host answerer
-// (cloudHostBridge.ts), however, only speaks the Tauri-invoke surface the desktop
-// SPA uses — JSON-RPC over the WebRTC E2EE DataChannel, gated by the §5.4 capability
-// allow-list and the §4 zero-trust TOTP. That flat protocol is actually `server.rs`
-// translating the host's pane-tree/PTY model down for mobile; the cloud bridge does
-// NOT do that translation.
-//
-// So this class RE-DERIVES server.rs's translation on the CLIENT, on top of the
-// tauriShim bridge (already attached by cloudControllerBoot). Net effect: the exact
-// same mobile UI runs over the secure cloud path with ZERO host changes (the host
-// side is the already-shipped desktop binary that desktop-app proves works).
-//
-// Wire reuse (no new byte path invented — all of this already exists for desktop-app):
-//   - invoke(...)                 → bridge.invoke → rpc.request (allow-list gated)
-//   - register_pane_delta_channel → core.ts special-cases to bridge.subscribePane
-//                                   → 'subscribe-pane' notify → host streams 0x10 pane bytes
-//   - listen('pty-output-{ws}-{pane}') → bridge fans the pane bytes here
-//
-// Auth/boot lives in App.svelte (cookie bootstrap → cloudControllerBoot → TOTP gate);
-// this class is constructed AFTER the bridge is connected + TOTP-verified, so invoke/
-// listen are live. It holds the boot handle so disconnect() tears down the WebRTC.
+import type { TerminalInputContext, TerminalInputData } from '@ridge/remote/shared/transport/paneRpcScheduler';
+import terminalHello from '@ridge/remote/shared/cloud/signaling/fixtures/terminal/hello.json';
+// Remote UI metadata rides the scoped RPC bridge. Terminal snapshots/deltas
+// arrive directly through the canonical adapter; each activation owns one stream.
+// Auth/boot stays in CloudAuthScreen and the existing controller handle.
 
-import { Channel, invoke } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { PaneNode } from '$lib/types';
 import type { CloudControllerHandle } from '$lib/remote/cloud/cloudControllerBoot';
@@ -38,7 +17,6 @@ import {
   type RemoteLink,
   type PaneRef,
   type RpcRequestOptions,
-  type PendingScrollbackPage,
   type ConnectionState,
   type ConnectionFailure,
   type PaneInfo,
@@ -65,7 +43,6 @@ import {
   tryEnqueuePaneInputImmediate,
   retirePaneInput,
 } from '@ridge/remote/shared/terminal/paneInputGate';
-import { remotePerfMark } from '@ridge/remote/shared/transport/remotePerfTrace';
 
 /** Backend `list_workspaces` row (subset we use). */
 interface BackendWorkspace {
@@ -89,29 +66,6 @@ const DEFAULT_COLS = 80;
 // one RPC per keystroke under a burst.
 const INPUT_BATCH_WINDOW_MS = 0;
 
-/**
- * §history-pull（2026-07-02）: 首屏拉取的 scrollback 上限（约 1.5 屏）。host 不再推
- * `RIS + 256KiB` 全量回放；controller 订阅时自己拉这么多作首屏（RIS + tail），再挂 live，
- * 用户向上滚动时才经 `get_pane_scrollback_before` 分批拉更旧历史。初始种子保持 8KiB
- * 上限，优先保证实时尾流与输入，不把 Host 历史当作首屏权威。
- */
-// Initial subscribe is a live-screen seed, not a history replay. Older output
-// is paged only by the scroll-up path; keep this seed bounded to the latest
-// visual tail so it cannot delay the live render/input lane.
-const REMOTE_INITIAL_SCROLLBACK_BYTES = 8 * 1024;
-
-/** 滚顶懒加载每批拉取的 scrollback 上限。 */
-const REMOTE_OLDER_SCROLLBACK_BYTES = 64 * 1024;
-
-/**
- * Bound the live bytes retained while a first-screen seed RPC is in flight.
- * Live bytes are rendered immediately; this copy only lets a late seed reset
- * and replay the already-rendered tail in order. If it overflows, the seed is
- * discarded as stale instead of retaining unbounded output or blocking input.
- */
-const REMOTE_SEED_REPLAY_MAX_BYTES = 2 * 1024 * 1024;
-const PTY_ENCODER = new TextEncoder();
-
 // A transient listen/subscribe failure must not strand a Pane after the UI has
 // recorded its subscription intent. Keep retries bounded and cancel them on
 // reconnect/close so a dead transport cannot create a retry storm.
@@ -119,49 +73,12 @@ const SUBSCRIBE_RETRY_BASE_MS = 100;
 const SUBSCRIBE_RETRY_MAX_MS = 2_000;
 const SUBSCRIBE_MAX_RETRIES = 4;
 
-/** One page of scrollback bytes returned by `get_pane_scrollback_tail` / `_before`. */
-interface ScrollbackChunk {
-  bytes: string;
-  start_seq: number;
-  end_seq: number;
-  at_oldest: boolean;
-  head_seq: number;
-}
-
-/**
- * §R-CLOUD-CONVERGE — `get_pane_resync_frame` response. `frame` is the COMPLETE
- * host-built reattach frame (RIS + mode-reattach preamble + scrollback tail, via the
- * shared build_resync_frame SSOT); we feed it verbatim. `start_seq`/`at_oldest` seed
- * the scroll-up cursor; `head_seq` is the live/history seam (R-INCR). A superset of
- * ScrollbackChunk — one invoke replaces the old tail+preamble self-assembly.
- */
-interface PaneResyncFrame {
-  frame: string;
-  start_seq: number;
-  at_oldest: boolean;
-  head_seq: number;
-}
-
 interface SubscribeRetryIntent {
   pane: PaneRef;
   resume: boolean;
   active: boolean;
   attempts: number;
   activationId?: number;
-}
-
-interface LiveSeedState {
-  seeding: boolean;
-  pendingLive: Uint8Array[];
-  pendingLiveBytes: number;
-  seedReplayOverflow: boolean;
-}
-
-interface RawPtyEventPayload {
-  /** Compatibility fallback for older Tauri/event bridges. */
-  data?: string;
-  /** Exact bytes from the authenticated binary transport. */
-  bytes?: Uint8Array;
 }
 
 /** Flatten a host pane-tree to the mobile's flat leaf list (server.rs's downgrade). */
@@ -191,7 +108,6 @@ interface CloudRemoteBridge {
     options?: RpcRequestOptions,
   ): Promise<T>;
   listen<T>(name: string, cb: (event: TauriEvent<T>) => void): Promise<UnlistenFn> | UnlistenFn;
-  subscribePane(paneId: string, workspaceId?: string, active?: boolean): Promise<void> | void;
   hasCapability(capability: string): boolean;
   onCapabilitiesChanged(fn: () => void): UnlistenFn;
 }
@@ -204,14 +120,6 @@ const defaultCloudRemoteBridge: CloudRemoteBridge = {
     return args ? invoke<T>(cmd, args) : invoke<T>(cmd);
   },
   listen,
-  async subscribePane(paneId, workspaceId, active) {
-    await invoke('register_pane_delta_channel', {
-      workspaceId: workspaceId ?? '',
-      paneId,
-      active,
-      channel: new Channel(),
-    });
-  },
   hasCapability: (capability) => bridge.hasCapability(capability),
   onCapabilitiesChanged: (fn) => bridge.onCapabilitiesChanged(fn),
 };
@@ -220,7 +128,6 @@ export class CloudRemoteConnection implements RemoteLink {
   private readonly handle: CloudControllerHandle;
   private readonly bridge: CloudRemoteBridge;
   private readonly fixedAuthorized: boolean;
-  private readonly directCloudTransport: boolean;
 
   private _state: ConnectionState = 'connecting';
   // 最近一次失败分级（任务 A 问题1）。云端服务端「已认证但无权」会经信令 error 帧把
@@ -239,12 +146,14 @@ export class CloudRemoteConnection implements RemoteLink {
   private readonly messageListeners = new Set<(msg: WsMessage) => void>();
   private readonly rawByteListeners = new Set<RawByteListener>();
   private readonly terminalFrameListeners = new Set<TerminalFrameListener>();
+  private terminalTransportUnlisten: UnlistenFn | null = null;
+  private readonly terminalActivations = new Map<string, number>();
   private readonly metaListeners = new Set<MetaListener>();
   private readonly resizeListeners = new Set<PtyResizeListener>();
   private readonly themeListeners = new Set<ThemeListener>();
 
-  // Per-pane `pty-output-*` unlisten handles (bounded via pruneOutputs / disconnect).
-  private readonly ptyUnlisten = new Map<string, UnlistenFn>();
+  // Notification admission is tracked independently of authoritative snapshots.
+  private readonly paneSubscriptions = new Set<string>();
   /** Exact identities for the currently registered live streams. */
   private readonly streamPaneRefs = new Map<string, PaneRef>();
   // Panes whose subscribe is in flight (so concurrent subscribe calls stay idempotent).
@@ -258,16 +167,12 @@ export class CloudRemoteConnection implements RemoteLink {
   private activePaneKey: string | null = null;
   private activePromotionInFlight = false;
   private pendingActivePromotion: PaneRef | null = null;
-  // §history-pull: per-pane seq cursor for lazy "scroll up to load older". Seeded
-  // from the initial tail read; advanced by each get_pane_scrollback_before page.
-  private readonly scrollbackCursor = new Map<string, { oldestSeq: number; atOldest: boolean }>();
-  // Panes whose older-history fetch is in flight (dedup overlapping scroll-up loads).
-  private readonly fetchingOlder = new Set<string>();
   // pane-tree-changed unlisten (host-side layout changes → re-list panes).
   private treeUnlisten: UnlistenFn | null = null;
   /** iter-60 G9：pane-meta-changed 退订句柄。 */
   private metaUnlisten: UnlistenFn | null = null;
   private resizeUnlisten: UnlistenFn | null = null;
+  private terminalErrorUnlisten: UnlistenFn | null = null;
   private _lastTheme: ThemeSnapshot | null = null;
   // True once we've reached 'connected' at least once — gates reconnect handling
   // so the initial connect isn't treated as a reconnect.
@@ -285,7 +190,6 @@ export class CloudRemoteConnection implements RemoteLink {
   ) {
     this.handle = handle;
     this.bridge = bridgeInstance;
-    this.directCloudTransport = bridgeInstance === defaultCloudRemoteBridge;
     this.fixedAuthorized = options.fixedAuthorized === true;
     this.paneScheduler = new PaneRpcScheduler(
       {
@@ -365,14 +269,9 @@ export class CloudRemoteConnection implements RemoteLink {
     if (this.pendingActivePromotion && paneRefKey(this.pendingActivePromotion) === key) {
       this.pendingActivePromotion = null;
     }
-    this.fetchingOlder.delete(key);
-    this.scrollbackCursor.delete(key);
-    const unlisten = this.ptyUnlisten.get(key);
-    if (unlisten) {
-      this.ptyUnlisten.delete(key);
-      try { unlisten(); } catch { /* already gone */ }
-    }
+    this.paneSubscriptions.delete(key);
     this.streamPaneRefs.delete(key);
+    this.terminalActivations.delete(key);
   }
 
   private _unsubscribePaneStream(pane: PaneRef): void {
@@ -382,30 +281,16 @@ export class CloudRemoteConnection implements RemoteLink {
     if (timer) clearTimeout(timer);
     this.subscribeRetryTimers.delete(key);
     this.subscribeRetryIntents.delete(key);
-    this.fetchingOlder.delete(key);
-    this.scrollbackCursor.delete(key);
-    const unlisten = this.ptyUnlisten.get(key);
-    if (unlisten) {
-      this.ptyUnlisten.delete(key);
-      try { unlisten(); } catch { /* listener already gone */ }
-    }
+    this.paneSubscriptions.delete(key);
     this.streamPaneRefs.delete(key);
+    this.terminalActivations.delete(key);
     if (this.activePaneKey === key) this.activePaneKey = null;
     if (this.pendingActivePromotion && paneRefKey(this.pendingActivePromotion) === key) {
       this.pendingActivePromotion = null;
     }
-    if (this.directCloudTransport && typeof this.handle.adapter.sendControl === 'function') {
-      this.handle.adapter.sendControl({
-        jsonrpc: '2.0',
-        method: 'unsubscribe-pane',
-        params: { paneId: pane.paneId, workspaceId: pane.workspaceId },
-      });
-    } else {
-      void this.bridge.invoke('unsubscribe_pane_raw', {
-        paneId: pane.paneId,
-        workspaceId: pane.workspaceId,
-      }).catch(() => undefined);
-    }
+    this.handle.adapter.sendControl({
+      jsonrpc: '2.0', method: 'unsubscribe-pane', params: pane,
+    });
   }
 
   hasCapability(capability: string): boolean {
@@ -436,6 +321,17 @@ export class CloudRemoteConnection implements RemoteLink {
    * which depend on the active workspace id.
    */
   async init(): Promise<void> {
+    this.terminalErrorUnlisten = await this.bridge.listen<{
+      workspaceId: string; paneId: string; activationId: number;
+    }>('pane-terminal-error', ({ payload }) => {
+      if (!payload || typeof payload.workspaceId !== 'string' || typeof payload.paneId !== 'string' || !Number.isSafeInteger(payload.activationId)) return;
+      const key = paneRefKey(payload);
+      if (this.disposed || this.terminalActivations.get(key) !== payload.activationId) return;
+      this._unsubscribePaneStream(payload);
+      this._failure = { category: 'channel', message: 'Terminal connection failed; reconnect to retry' };
+      this.setState('error');
+    });
+    if (this.disposed) { this.terminalErrorUnlisten(); this.terminalErrorUnlisten = null; return; }
     try {
       this._activeWorkspaceId = await this.bridge.invoke<string>('get_active_workspace_id');
     } catch {
@@ -551,8 +447,7 @@ export class CloudRemoteConnection implements RemoteLink {
     this.setState('error');
   }
 
-  /** Drop all per-pane subscription state — live `pty-output` listeners, in-flight
-   *  subscribe flags, and the lazy-scrollback seq cursors. Shared by disconnect()
+  /** Drop pane subscriptions and activation state. Shared by disconnect()
    *  and the reconnect path so a fresh transport re-subscribes from a clean slate. */
   private _teardownSubscriptions(): void {
     this._abortAllPaneRpcs();
@@ -561,17 +456,13 @@ export class CloudRemoteConnection implements RemoteLink {
     this.subscribeRetryIntents.clear();
     this.closingPaneKeys.clear();
     this.deadPaneKeys.clear();
-    for (const [, unlisten] of this.ptyUnlisten) {
-      try { unlisten(); } catch { /* handle points at a dead transport — ignore */ }
-    }
-    this.ptyUnlisten.clear();
+    this.paneSubscriptions.clear();
     this.streamPaneRefs.clear();
+    this.terminalActivations.clear();
     this.subscribing.clear();
     this.activePaneKey = null;
     this.activePromotionInFlight = false;
     this.pendingActivePromotion = null;
-    this.scrollbackCursor.clear();
-    this.fetchingOlder.clear();
   }
 
   private async _handleReconnect(): Promise<void> {
@@ -718,6 +609,13 @@ export class CloudRemoteConnection implements RemoteLink {
     if (!paneId || !workspaceId) return;
     const key = paneRefKey(pane);
     if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
+    const previousActivation = this.terminalActivations.get(key);
+    const activation = opts?.activationId ?? previousActivation;
+    if (!pane.workspaceId || !pane.paneId || !Number.isSafeInteger(activation) || activation! < 1) {
+      throw new Error('terminal activation required');
+    }
+    this.terminalActivations.set(key, activation!);
+    if (previousActivation !== activation) this.paneSubscriptions.delete(key);
     this.streamPaneRefs.set(key, pane);
     const previous = this.subscribeRetryIntents.get(key);
     this.subscribeRetryIntents.set(key, {
@@ -725,10 +623,10 @@ export class CloudRemoteConnection implements RemoteLink {
       resume: opts?.resume ?? previous?.resume ?? false,
       active: opts?.active === true || previous?.active === true,
       attempts: previous?.attempts ?? 0,
-      activationId: opts?.activationId ?? previous?.activationId,
+      activationId: activation,
     });
     this.paneScheduler.resume(pane);
-    if (this.ptyUnlisten.has(key)) {
+    if (this.paneSubscriptions.has(key)) {
       this.subscribeRetryIntents.delete(key);
       if (opts?.active === true) this.queueActivePromotion(pane);
       return;
@@ -739,8 +637,21 @@ export class CloudRemoteConnection implements RemoteLink {
     void this._subscribe(pane, intent.resume, intent.active, intent.activationId);
   }
   onTerminalFrame(fn: TerminalFrameListener): () => void {
+    if (this.disposed) return () => {};
+    if (!this.terminalTransportUnlisten) {
+      this.terminalTransportUnlisten = this.handle.adapter.onTerminalFrame(bytes => {
+        if (this.disposed || this.streamPaneRefs.size === 0 || bytes[0] !== 0x13 || bytes.byteLength > terminalHello.maxFrameBytes) return;
+        this.terminalFrameListeners.forEach(listener => listener(bytes));
+      });
+    }
     this.terminalFrameListeners.add(fn);
-    return () => this.terminalFrameListeners.delete(fn);
+    return () => {
+      this.terminalFrameListeners.delete(fn);
+      if (this.terminalFrameListeners.size === 0) {
+        this.terminalTransportUnlisten?.();
+        this.terminalTransportUnlisten = null;
+      }
+    };
   }
 
   activatePane(
@@ -768,7 +679,7 @@ export class CloudRemoteConnection implements RemoteLink {
     const pane = this.pendingActivePromotion;
     this.pendingActivePromotion = null;
     this.activePromotionInFlight = true;
-    void Promise.resolve(this.bridge.subscribePane(pane.paneId, pane.workspaceId, true))
+    void Promise.resolve().then(() => this.sendTerminalSubscription(pane, true))
       .catch(() => undefined)
       .finally(() => {
         this.activePromotionInFlight = false;
@@ -776,282 +687,58 @@ export class CloudRemoteConnection implements RemoteLink {
       });
   }
 
-  /** Tell the host's existing raw fan-out to emit one bounded canonical
+  /** Request one bounded canonical
    * resync after local render backpressure shed output. Keep the listener and
    * subscription alive; tearing them down/re-registering would create a second
    * fan-out and could replay stale bytes twice. */
   resyncPane(pane: PaneRef): void {
     const key = paneRefKey(pane);
     if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
-    void this._invokePane<void>(pane, 'resync_pane_raw', {
-      paneId: pane.paneId,
-      workspaceId: pane.workspaceId,
-    }).catch(() => {
-      // Older hosts may lack the command; keep the live subscription intact.
-      // The next reconnect/explicit subscribe remains the safe recovery path.
-    });
+    const activationId = this.terminalActivations.get(key);
+    if (activationId !== undefined) {
+      void this._invokePane<string>(pane, 'get_terminal_snapshot', {
+        paneId: pane.paneId, workspaceId: pane.workspaceId, activationId,
+      }).then(encoded => {
+        if (this.disposed
+          || this.terminalActivations.get(key) !== activationId) return;
+        if (typeof encoded !== 'string' || encoded.length > Math.ceil(terminalHello.maxFrameBytes / 3) * 4) throw new Error('invalid terminal snapshot');
+        const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+        if (bytes[0] !== 0x13) throw new Error('invalid terminal snapshot');
+        this.terminalFrameListeners.forEach(fn => fn(bytes));
+      }).catch(() => {
+        if (this.disposed
+          || this.terminalActivations.get(key) !== activationId) return;
+        this._failure = { category: 'channel', message: 'terminal snapshot recovery failed' };
+        this.setState('error');
+      });
+      return;
+    }
   }
 
-  /**
-   * §history-pull lazy paging: fetch the next older batch of this pane's scrollback
-   * (bytes with `seq < cursor`), advancing the seq cursor. Returns the raw bytes to
-   * PREPEND above the current scrollback (the caller feeds them through the kernel's
-   * prepend path), or `null` when there's nothing to load (already at oldest, no
-   * cursor yet, a fetch is already in flight, or the host rejected the command).
-   * Idempotent-safe under rapid scroll-up (fetchingOlder dedup + atOldest stop).
-   */
-  async fetchOlderScrollback(pane: PaneRef): Promise<PendingScrollbackPage | null> {
+  async fetchTerminalHistory(request: import('@ridge/remote/shared/cloud/signaling').HistoryRequest): Promise<Uint8Array> {
+    const encoded = await this._invokePane<string>(request.pane, 'get_terminal_history', { request });
+    if (typeof encoded !== 'string' || encoded.length > Math.ceil(terminalHello.maxFrameBytes / 3) * 4) throw new Error('invalid terminal history frame');
+    const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+    if (bytes[0] !== 0x13) throw new Error('invalid terminal history tag');
+    return bytes;
+  }
+
+  private _subscribe(pane: PaneRef, _resume = false, active?: boolean, activationId?: number): void {
     const key = paneRefKey(pane);
-    const cursor = this.scrollbackCursor.get(key);
-    if (!cursor || cursor.atOldest || this.fetchingOlder.has(key)) return null;
-    this.fetchingOlder.add(key);
     try {
-      const chunk = await this._invokePane<ScrollbackChunk>(pane, 'get_pane_scrollback_before', {
-        paneId: pane.paneId,
-        workspaceId: pane.workspaceId,
-        beforeSeq: cursor.oldestSeq,
-        maxBytes: REMOTE_OLDER_SCROLLBACK_BYTES,
-      });
-      const bytes = chunk.bytes ? PTY_ENCODER.encode(chunk.bytes) : new Uint8Array();
-      if (chunk.start_seq >= chunk.end_seq
-          || chunk.end_seq !== cursor.oldestSeq
-          || bytes.length === 0) {
-        if (bytes.length === 0 && chunk.end_seq === cursor.oldestSeq && chunk.at_oldest) {
-          this.scrollbackCursor.set(key, { ...cursor, atOldest: true });
-        }
-        this.fetchingOlder.delete(key);
-        return null;
-      }
-      let settled = false;
-      const finish = () => {
-        if (!settled) {
-          settled = true;
-          this.fetchingOlder.delete(key);
-        }
-      };
-      return {
-        bytes,
-        startSeq: chunk.start_seq,
-        endSeq: chunk.end_seq,
-        atOldest: chunk.at_oldest,
-        commit: (apply) => {
-          if (settled || this.scrollbackCursor.get(key)?.oldestSeq !== chunk.end_seq) return false;
-          try {
-            if (!apply()) return false;
-          } catch {
-            return false;
-          }
-          this.scrollbackCursor.set(key, {
-            oldestSeq: chunk.start_seq,
-            atOldest: chunk.at_oldest,
-          });
-          finish();
-          return true;
-        },
-        discard: finish,
-      };
-    } catch {
-      this.fetchingOlder.delete(key);
-      return null;
-    }
-  }
-
-  private emitSeededLive(pane: PaneRef, key: string, state: LiveSeedState, bytes: Uint8Array): void {
-    remotePerfMark('raw-receive', {
-      paneKey: key,
-      bytes: bytes.byteLength,
-      transport: 'cloud-webrtc',
-    });
-    this.emitRaw(pane, bytes);
-    if (!state.seeding || state.seedReplayOverflow) return;
-    if (state.pendingLiveBytes + bytes.byteLength <= REMOTE_SEED_REPLAY_MAX_BYTES) {
-      state.pendingLive.push(bytes.slice());
-      state.pendingLiveBytes += bytes.byteLength;
-      return;
-    }
-    state.seedReplayOverflow = true;
-    state.pendingLive.length = 0;
-    state.pendingLiveBytes = 0;
-  }
-
-  private listenPane(pane: PaneRef, key: string, state: LiveSeedState): Promise<UnlistenFn> | UnlistenFn {
-    const { paneId, workspaceId } = pane;
-    return this.bridge.listen<RawPtyEventPayload>(
-      `pty-output-${workspaceId}-${paneId}`,
-      (event) => {
-        const bytes = event.payload?.bytes instanceof Uint8Array
-          ? event.payload.bytes
-          : PTY_ENCODER.encode(event.payload?.data ?? '');
-        if (!bytes.length) return;
-        if (bytes[0] === 0x13) {
-          state.seeding = false;
-          state.pendingLive.length = 0;
-          state.pendingLiveBytes = 0;
-          this.terminalFrameListeners.forEach((fn) => fn(bytes));
-          return;
-        }
-        this.emitSeededLive(pane, key, state, bytes);
-      },
-    );
-  }
-
-  private replaySeed(pane: PaneRef, state: LiveSeedState, frame: string): void {
-    if (state.seedReplayOverflow) return;
-    this.emitRaw(pane, PTY_ENCODER.encode(frame));
-    for (const bytes of state.pendingLive) this.emitRaw(pane, bytes);
-    state.pendingLive.length = 0;
-    state.pendingLiveBytes = 0;
-  }
-
-  private async seedWithResync(pane: PaneRef, key: string, state: LiveSeedState): Promise<boolean> {
-    const { paneId, workspaceId } = pane;
-    try {
-      const frame = await this._invokePane<PaneResyncFrame>(pane, 'get_pane_resync_frame', {
-        paneId,
-        workspaceId,
-        maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
-      });
-      if (!this.subscribing.has(key)) return false;
-      this.scrollbackCursor.set(key, { oldestSeq: frame.start_seq, atOldest: frame.at_oldest });
-      this.replaySeed(pane, state, frame.frame);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private async seedWithTail(pane: PaneRef, key: string, state: LiveSeedState): Promise<void> {
-    const { paneId, workspaceId } = pane;
-    try {
-      const chunk = await this._invokePane<ScrollbackChunk>(pane, 'get_pane_scrollback_tail', {
-        paneId,
-        workspaceId,
-        maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
-      });
-      if (!this.subscribing.has(key)) return;
-      this.scrollbackCursor.set(key, { oldestSeq: chunk.start_seq, atOldest: chunk.at_oldest });
-      this.replaySeed(pane, state, `\x1bc${chunk.bytes ?? ''}`);
-    } catch {
-      // Older hosts may reject both seed commands; live output remains usable.
-    }
-  }
-
-  private async seedPane(pane: PaneRef, key: string, state: LiveSeedState): Promise<boolean> {
-    if (await this.seedWithResync(pane, key, state)) return true;
-    if (!this.subscribing.has(key)) return false;
-    await this.seedWithTail(pane, key, state);
-    return this.subscribing.has(key);
-  }
-
-  private cleanupSubscribe(key: string, subscribed: boolean, failed: boolean, liveUnlisten: UnlistenFn | null): void {
-    if (!subscribed) {
-      const registered = this.ptyUnlisten.get(key);
-      if (registered && registered === liveUnlisten) {
-        this.ptyUnlisten.delete(key);
-        try { registered(); } catch { /* transport already closed */ }
-      } else if (liveUnlisten) {
-        try { liveUnlisten(); } catch { /* transport already closed */ }
-      }
-    }
-    this.subscribing.delete(key);
-    if (subscribed) {
+      this.sendTerminalSubscription(pane, active === true, activationId);
+      this.paneSubscriptions.add(key);
       this.subscribeRetryIntents.delete(key);
-      return;
-    }
-    if (failed) {
+      if (active) this.activePaneKey = key;
+    } catch {
       const intent = this.subscribeRetryIntents.get(key);
       if (intent) this.scheduleSubscribeRetry(intent);
-    }
+    } finally { this.subscribing.delete(key); }
   }
 
-  private async _subscribe(
-    pane: PaneRef,
-    resume = false,
-    active?: boolean,
-    activationId?: number,
-  ): Promise<void> {
-    const { paneId, workspaceId } = pane;
-    const key = paneRefKey(pane);
-    const state: LiveSeedState = {
-      seeding: !resume,
-      pendingLive: [],
-      pendingLiveBytes: 0,
-      seedReplayOverflow: false,
-    };
-    let liveUnlisten: UnlistenFn | null = null;
-    let subscribed = false;
-    let failed = false;
-    try {
-      // Live-tail authority: the listener above is attached before the bounded
-      // visual seed. Bytes arriving while the seed RPC is in flight render
-      // immediately; a bounded copy lets a completed seed reset and replay
-      // them in FIFO order without ever blocking the live/input lanes.
-      // Older scrollback is a separate upward-scroll query. Keep-alive resume skips
-      // the RIS seed so the surviving kernel is not wiped.
-      liveUnlisten = await this.listenPane(pane, key, state);
-      if (!this.subscribing.has(key)) {
-        liveUnlisten?.();
-        liveUnlisten = null;
-        return;
-      }
-      this.ptyUnlisten.set(key, liveUnlisten);
-      // Register every listener as background first. Active QoS is promoted
-      // through the same latest-wins gate used by already-subscribed panes;
-      // passing `active` directly here lets rapid first visits enqueue one
-      // channel registration per Pane before the switch settles.
-      if (
-        this.directCloudTransport
-        && activationId !== undefined
-        && typeof this.handle.adapter.sendControl === 'function'
-      ) {
-        this.handle.adapter.sendControl({
-          jsonrpc: '2.0',
-          method: 'subscribe-pane',
-          params: { paneId, workspaceId, active: active === true, activationId },
-        });
-      } else {
-        await this.bridge.subscribePane(paneId, workspaceId, active === true);
-      }
-      if (!this.subscribing.has(key)) {
-        if (this.directCloudTransport && typeof this.handle.adapter.sendControl === 'function') {
-          this.handle.adapter.sendControl({
-            jsonrpc: '2.0',
-            method: 'unsubscribe-pane',
-            params: { paneId, workspaceId },
-          });
-        } else {
-          void this.bridge.invoke('unsubscribe_pane_raw', { paneId, workspaceId }).catch(() => undefined);
-        }
-        return;
-      }
-      subscribed = true;
-      const intent = this.subscribeRetryIntents.get(key);
-      if (!active && intent?.active) this.queueActivePromotion(pane);
-
-      if (!resume && activationId === undefined) {
-        // §R-CLOUD-CONVERGE: the host builds ONE complete resync frame (RIS + active-
-        // mode preamble + scrollback tail) via the shared build_resync_frame SSOT — we
-        // feed it verbatim, NO client-side assembly. The preamble (?1002h/?1049h/?1006h…)
-        // reasserts a TUI's one-time mouse/alt enables that scrolled off the tail, so the
-        // mirror kernel comes up mouse-alive (this now actually reaches the cloud gate —
-        // the prior get_pane_resync_preamble was never in the real allow-list → dead fix).
-        const seeded = await this.seedWithResync(pane, key, state);
-        if (!seeded) await this.seedWithTail(pane, key, state);
-        if (!this.subscribing.has(key)) return;
-      }
-
-      // Seed is complete. Subsequent events bypass the replay copy and enter
-      // the bounded render queue directly. When the copy overflowed, the
-      // already-rendered live tail remains authoritative and the stale seed is
-      // intentionally skipped.
-      state.seeding = false;
-      state.pendingLive.length = 0;
-    } catch {
-      failed = true;
-      /* subscribe failed — pane stays blank; a later refresh/re-subscribe retries */
-    } finally {
-      this.cleanupSubscribe(key, subscribed, failed, liveUnlisten);
-    }
+  private sendTerminalSubscription(pane: PaneRef, active: boolean, activationId = this.terminalActivations.get(paneRefKey(pane))): void {
+    if (!Number.isSafeInteger(activationId) || activationId! < 1) throw new Error('terminal activation required');
+    this.handle.adapter.sendControl({ jsonrpc: '2.0', method: 'subscribe-pane', params: { ...pane, active, activationId } });
   }
 
   private scheduleSubscribeRetry(intent: SubscribeRetryIntent): void {
@@ -1061,7 +748,7 @@ export class CloudRemoteConnection implements RemoteLink {
       || this._state !== 'connected'
       || this.closingPaneKeys.has(key)
       || this.deadPaneKeys.has(key)
-      || this.ptyUnlisten.has(key)
+      || this.paneSubscriptions.has(key)
     ) {
       this.subscribeRetryIntents.delete(key);
       return;
@@ -1086,7 +773,7 @@ export class CloudRemoteConnection implements RemoteLink {
         || this._state !== 'connected'
         || this.closingPaneKeys.has(key)
         || this.deadPaneKeys.has(key)
-        || this.ptyUnlisten.has(key)
+        || this.paneSubscriptions.has(key)
         || this.subscribing.has(key)
       ) return;
       const current = this.subscribeRetryIntents.get(key);
@@ -1102,22 +789,22 @@ export class CloudRemoteConnection implements RemoteLink {
     this.subscribeRetryTimers.set(key, timer);
   }
 
-  sendStdin(pane: PaneRef, data: string): boolean {
+  sendStdin(pane: PaneRef, data: TerminalInputData, context: TerminalInputContext): boolean {
     if (!pane.paneId || !data) return false;
     const key = paneRefKey(pane);
     if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return false;
     return tryEnqueuePaneInputImmediate(key, () => {
-      this.paneScheduler.enqueueInput(pane, data);
+      this.paneScheduler.enqueueInput(pane, data, context);
     });
   }
 
-  enqueueStdinTask(pane: PaneRef, task: () => Promise<string | null> | string | null): boolean {
+  enqueueStdinTask(pane: PaneRef, task: () => Promise<TerminalInputData | null> | TerminalInputData | null, context: TerminalInputContext): boolean {
     if (!pane.paneId) return false;
     const key = paneRefKey(pane);
     if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return false;
     return tryEnqueuePaneInput(key, async () => {
       const data = await task();
-      if (data) this.paneScheduler.enqueueInput(pane, data);
+      if (data) this.paneScheduler.enqueueInput(pane, data, context);
     });
   }
 
@@ -1478,10 +1165,8 @@ export class CloudRemoteConnection implements RemoteLink {
     // Release `pty-output` listeners for panes the host no longer reports (bounds
     // listener growth on a long-lived PWA tab — mirrors the LAN pruneOutputs intent).
     const tracked = new Set([
-      ...this.ptyUnlisten.keys(),
+      ...this.paneSubscriptions.keys(),
       ...this.subscribing,
-      ...this.scrollbackCursor.keys(),
-      ...this.fetchingOlder,
       ...this.paneRpcControllers.keys(),
     ]);
     const schedulerRetired = new Set(this.paneScheduler.prune(liveIds));
@@ -1493,18 +1178,15 @@ export class CloudRemoteConnection implements RemoteLink {
     // Raw wsRemote frames have no meaning on the cloud invoke bridge.
   }
 
-  private emitRaw(pane: PaneRef, bytes: Uint8Array): void {
-    this.rawByteListeners.forEach((fn) => fn(pane, bytes));
-  }
-
   disconnect(): void {
     if (this.disposed) return;
     for (const key of new Set([
       ...this.paneRpcControllers.keys(),
-      ...this.scrollbackCursor.keys(),
-      ...this.ptyUnlisten.keys(),
+      ...this.paneSubscriptions.keys(),
     ])) retirePaneInput(key);
     this.disposed = true;
+    this.terminalTransportUnlisten?.();
+    this.terminalTransportUnlisten = null;
     this._failure = null; // 主动断开，清掉失败分级
     this.setState('disconnected');
     this.paneScheduler.dispose();
@@ -1521,6 +1203,8 @@ export class CloudRemoteConnection implements RemoteLink {
       try { this.resizeUnlisten(); } catch { /* already gone */ }
       this.resizeUnlisten = null;
     }
+    this.terminalErrorUnlisten?.();
+    this.terminalErrorUnlisten = null;
     // Tear down the WebRTC / E2EE session (idempotent).
     try { this.handle.disconnect(); } catch { /* already torn down */ }
   }

@@ -96,7 +96,7 @@ impl Flags {
 
 /// Full per-cell graphical attributes. `Eq + Hash` so the flyweight table
 /// can dedupe identical attribute sets across millions of cells.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Attrs {
     pub fg: Color,
     pub bg: Color,

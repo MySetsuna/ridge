@@ -13,6 +13,7 @@
   backend survives; in-buffer state does not.
 -->
 <script lang="ts">
+import type { HistoryRequest } from "@ridge/remote/shared/cloud/signaling";
 import { onMount, onDestroy } from 'svelte';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -28,7 +29,6 @@ import { remoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
 import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
-import { enqueuePtyInput, enqueuePtyWrite, flushPtyInput } from '$lib/terminal/ptyWriteQueue';
 import { enqueuePaneInput, tryEnqueuePaneInputImmediate } from '@ridge/remote/shared/terminal/paneInputGate';
 import { activateRemotePaneBinding, promoteRemotePaneBinding, remotePaneBinding } from '$lib/hosts/remotePaneBindings';
 import { hasLiveTuiSignal } from '@ridge/remote/shared/terminal/tuiGate';
@@ -48,7 +48,7 @@ import { reportRepeatedError } from '$lib/utils/repeatedError';
 import { synchronizePaneSize } from '$lib/terminal/paneSizeSync';
 import { scheduleForcedPaneResize } from '$lib/terminal/desktopPaneResize';
 import { buildPtyRuntimeSnapshot } from '$lib/terminal/ptyRuntimeSnapshot';
-import { PaneRpcScheduler } from '@ridge/remote/shared/transport/paneRpcScheduler';
+import { PaneRpcScheduler, type TerminalInputContext } from '@ridge/remote/shared/transport/paneRpcScheduler';
 import { RpcCancelledError, RpcTimeoutError, type RpcRequestOptions } from '@ridge/remote/shared/transport/types';
 import { pinImeCaretToAnchor } from '@ridge/remote/shared/terminal/imeAnchor';
 import { Terminal, PlugZap } from 'lucide-svelte';
@@ -62,12 +62,6 @@ let { paneId, workspaceId }: Props = $props();
 
 let container: HTMLElement;
 let alive = true;
-// §B 代际保护：每个 mount 实例分配独立对象身份 `mountInstance`；unmount→remount
-// 拿到新对象，旧 mountInstance 不再匹配 → ptyWriteQueue 立即清理旧 lane 与挂起
-// 字节（详见 src/lib/terminal/ptyWriteQueue.ts §B generation guard）。注意：
-// `alive` 标志不够——同一 paneId 多次 mount 都把 alive 翻成 true，闭包引用
-// 仍能区分但 boolean 不行，必须用对象身份。
-const mountInstance = { paneId };
 // `$state` so the focus + padding `$effect`s re-run when `attached` flips
 // from false → true inside the async onMount IIFE. Without reactivity the
 // effects only ran once (at mount with attached=false), leaving the new
@@ -75,6 +69,8 @@ const mountInstance = { paneId };
 // after a split until the next activePaneId change.
 let attached = $state(false);
 let webgpuInitError = $state<string | null>(null);
+let terminalStreamError = $state(false);
+let terminalStreamRetrying = $state(false);
 
 function formatWebgpuInitError(error: unknown): string {
 	const detail = error instanceof Error ? error.message : String(error);
@@ -104,6 +100,18 @@ $effect(() => {
 
 const manager = TerminalManager.instance();
 
+async function registerPtyStream(): Promise<void> {
+  if (terminalStreamRetrying) return;
+  terminalStreamRetrying = true;
+  try {
+    await ensurePtyBridge(paneId, workspaceId);
+    if (alive) terminalStreamError = false;
+  } catch (error) {
+    if (alive) terminalStreamError = true;
+    console.warn('[ridge-pane] terminal stream registration failed', error);
+  } finally { terminalStreamRetrying = false; }
+}
+
 const DESKTOP_RESIZE_TIMEOUT_MS = 5_000;
 
 /** Local Tauri resize admission. Native invoke has no AbortSignal, so keep a
@@ -117,7 +125,7 @@ function createDesktopResizeScheduler(): PaneRpcScheduler {
 		params?: unknown,
 		options: RpcRequestOptions = {},
 	): Promise<T> => {
-		if (method !== 'resize_pane') return Promise.reject(new Error(`unsupported desktop pane RPC: ${method}`));
+		if (method !== 'resize_pane' && method !== 'write_terminal_input') return Promise.reject(new Error(`unsupported desktop pane RPC: ${method}`));
 		const scope = options.scope;
 		const timeoutMs = Math.max(1, options.timeoutMs ?? DESKTOP_RESIZE_TIMEOUT_MS);
 		return new Promise<T>((resolve, reject) => {
@@ -147,7 +155,7 @@ function createDesktopResizeScheduler(): PaneRpcScheduler {
 			bucket?.add(cancel);
 			timer = setTimeout(() => finishReject(new RpcTimeoutError(method, timeoutMs)), timeoutMs);
 				void Promise.resolve()
-					.then(() => invoke<T>(method, { request: params as Record<string, unknown> }))
+					.then(() => invoke<T>(method, method === 'resize_pane' ? { request: params as Record<string, unknown> } : params as Record<string, unknown>))
 				.then(finishResolve, (error: unknown) => finishReject(error instanceof Error ? error : new Error(String(error))));
 		});
 	};
@@ -162,7 +170,6 @@ function createDesktopResizeScheduler(): PaneRpcScheduler {
 		} },
 		{
 			resizeDebounceMs: 40,
-			inputSourceId: 'desktop_resize',
 			onError: (error, operation) => reportRepeatedError(operation === 'resize' ? 'resize_pane' : 'write_to_pty', error, 'warn'),
 		},
 	);
@@ -182,8 +189,6 @@ const WEB_REMOTE = import.meta.env.RIDGE_WEB_REMOTE === true;
 // LAN-WS / cloud-WebRTC shim, so seed only ~1.5 screens on mount (fast first
 // paint, no multi-KiB parse stall) and page older history in smaller batches on
 // scroll-up. The local desktop keeps the larger local-invoke budgets.
-const SCROLLBACK_TAIL_BYTES = WEB_REMOTE ? 32 * 1024 : 256 * 1024;
-const SCROLLBACK_OLDER_BYTES = WEB_REMOTE ? 64 * 1024 : 128 * 1024;
 
 // §1.32 (2026-05-20) Wave C: state is now `{ text, cursorCol }` so
 // ArrowLeft / Home / Delete / mid-line edits preserve the buffer
@@ -288,7 +293,6 @@ const PTY_RUNTIME_SAMPLE_INTERVAL_MS = 1000;
 const PTY_RUNTIME_INPUT_SAMPLE_DEBOUNCE_MS = 120;
 // The queue already batches while an IPC write is in flight. A timer here
 // adds avoidable keystroke latency, especially inside Codex's inline TUI.
-const PTY_INPUT_COALESCE_MS = 0;
 const PTY_RUNTIME_PENDING_REFRESH_MS = 1000;
 const PTY_RUNTIME_INPUT_GUARD_MS = 750;
 let ptyRuntimeSampler: ReturnType<typeof setInterval> | null = null;
@@ -593,13 +597,12 @@ function pasteIntoPane(text: string): void {
 	if (!text) return;
 	focusPane(paneId, workspaceId);
 	notePaste(text);
-	if (!remotePaneBinding(paneId)) flushPtyInput(`${workspaceId}:${paneId}`);
 	manager.paste(paneId, text);
 }
 
-function encodePasteForPty(text: string): string | null {
+function encodePasteForPty(text: string): Uint8Array | null {
 	const bytes = manager.getKernel(paneId)?.encodePaste(text) ?? new Uint8Array(0);
-	return bytes.length > 0 ? new TextDecoder().decode(bytes) : null;
+	return bytes.length > 0 ? bytes : null;
 }
 
 // §clipboard-image: 主动粘贴入口——先尝试剪贴板里的图片（落盘成临时 PNG，把绝对路径作为文本
@@ -630,6 +633,8 @@ async function readClipboardPasteText(): Promise<string | null> {
 function enqueuePasteTextTask(read: () => Promise<string | null>): void {
 	// Claim before the asynchronous clipboard/image read completes.
 	focusPane(paneId, workspaceId);
+	const context = manager.getKernel(paneId)?.terminalInputContext() as TerminalInputContext | null;
+	if (!context) { reportRepeatedError("write_terminal_input", new Error("terminal snapshot required")); return; }
 	const remote = remotePaneBinding(paneId);
 	const remotePane = remote
 		? { workspaceId: remote.workspaceId, paneId: remote.remotePaneId }
@@ -640,12 +645,11 @@ function enqueuePasteTextTask(read: () => Promise<string | null>): void {
 			if (!text) return null;
 			notePaste(text);
 			return encodePasteForPty(text);
-		});
+		}, context);
 		if (!accepted) reportRepeatedError('write_to_pty', new Error('input intent queue full'));
 		return;
 	}
 	const key = `${workspaceId}:${paneId}`;
-	flushPtyInput(key);
 	void enqueuePaneInput(key, async () => {
 		const text = await read();
 		if (!text) return;
@@ -653,11 +657,7 @@ function enqueuePasteTextTask(read: () => Promise<string | null>): void {
 		notePaste(text);
 		const data = encodePasteForPty(text);
 		if (!data) return;
-		await enqueuePtyWrite(key, () => invoke('write_to_pty', {
-			workspaceId,
-			paneId,
-			data,
-		}));
+		localResizeScheduler.enqueueInput({ workspaceId, paneId }, data, context);
 	}).catch((err) => reportRepeatedError('write_to_pty', err));
 }
 
@@ -919,22 +919,9 @@ function handleHostPriorityShortcut(e: KeyboardEvent, isTui: boolean): boolean {
 	return false;
 }
 
-// Reverse-scrollback bridge state (TASKS §2.1).
-//
-// `oldestSeq` is the backend `seq` (monotonic byte counter) of the first
-// byte the kernel's scrollback currently holds. Initial value comes from
-// the `get_pane_scrollback_tail` response at mount; each successful
-// `get_pane_scrollback_before` fetch updates it to the older chunk's
-// `start_seq`.
-//
-// `atOldest` flips true when the backend tells us we've drained its
-// retention window; further fetches are no-ops.
-//
-// `pendingScrollbackFetch` guards against piling up overlapping fetches
-// when the user mashes Shift+PageUp.
-let oldestSeq = 0;
-let atOldest = false;
+// History coordinates and generation live in the authoritative kernel mirror.
 let pendingScrollbackFetch = false;
+let scrollbackFetchError = $state(false);
 
 // §1.23 (2026-05-15): Auto-hide scrollbar logic.
 // `isScrolling` toggles when user interacts via wheel or keyboard.
@@ -948,44 +935,35 @@ function showScrollbarTemporarily() {
 }
 
 async function fetchOlderScrollback(): Promise<void> {
-	if (!alive || !attached) return;
-	if (atOldest || pendingScrollbackFetch) return;
-	pendingScrollbackFetch = true;
-	try {
-		const chunk = await invoke<{
-			bytes: string;
-			start_seq: number;
-			at_oldest: boolean;
-		}>('get_pane_scrollback_before', {
-			paneId,
-			workspaceId,
-			beforeSeq: oldestSeq,
-			maxBytes: SCROLLBACK_OLDER_BYTES,
-		});
-		if (!alive) return;
-		if (chunk.bytes) {
-			manager.prependScrollback(paneId, chunk.bytes);
-			oldestSeq = chunk.start_seq;
-		}
-		if (chunk.at_oldest) {
-			atOldest = true;
-		}
-	} catch (err) {
-		// Backend may not support before-seq paging on older builds; treat
-		// as "no more history" rather than spamming console for every key.
-		atOldest = true;
-		if (import.meta.env?.DEV) {
-			console.debug('[ridge-pane] get_pane_scrollback_before failed', err);
-		}
-	} finally {
-		pendingScrollbackFetch = false;
-	}
+ if (!alive || !attached || pendingScrollbackFetch) return;
+ const kernel = manager.getKernel(paneId);
+ const request = kernel?.terminalHistoryRequest(128) as HistoryRequest | null;
+ if (!request) return;
+ pendingScrollbackFetch = true;
+ scrollbackFetchError = false;
+ try {
+  const remote = remotePaneBinding(paneId);
+  const bytes = remote
+   ? await remote.link.fetchTerminalHistory?.(request)
+   : Uint8Array.from(atob(await invoke<string>('get_terminal_history', { request })), ch => ch.charCodeAt(0));
+  if (!alive || manager.getKernel(paneId) !== kernel) return;
+  if (!bytes) throw new Error('semantic history unavailable');
+  manager.applyRemoteFrame(paneId, bytes, request.pane.workspaceId, request.pane.paneId, request.activationId);
+ } catch (error) {
+  if (alive) scrollbackFetchError = true;
+  console.warn('[ridge-pane] semantic history request failed', error);
+ } finally {
+  pendingScrollbackFetch = false;
+  if (alive && !scrollbackFetchError && kernel?.historyRecoveryPending()) {
+   queueMicrotask(() => { void fetchOlderScrollback(); });
+  }
+ }
 }
 
 /** Trigger a backend fetch when the viewport is near the top of the
  *  in-kernel scrollback. Called from Shift+PageUp / wheel-up paths. */
 function maybePrefetchOlder(): void {
-	if (atOldest || pendingScrollbackFetch) return;
+	if (pendingScrollbackFetch || scrollbackFetchError) return;
 	const { offset, total } = manager.scrollState(paneId);
 	// Fire when the user is within one viewport of the top — gives the
 	// fetch time to land before they actually hit the boundary, so heavy
@@ -1306,36 +1284,18 @@ function isValidPaneId(id: string): boolean {
 function onPtyData(bytes: Uint8Array) {
 	if (!alive) return;
 	notePtyRuntimeInput();
-	// Tauri's write_to_pty currently expects a JS string. We send
-	// the raw bytes through TextDecoder. NOTE: this is lossy for
-	// non-UTF-8 byte sequences — the encoder never produces those
-	// (key sequences are all ASCII), but a future binary tunneling
-	// path may want a base64 alternative.
-	const s = new TextDecoder().decode(bytes);
+	const context = manager.getKernel(paneId)?.terminalInputContext() as TerminalInputContext | null;
+	if (!context) { reportRepeatedError('write_terminal_input', new Error('terminal snapshot required')); return; }
 	const remote = remotePaneBinding(paneId);
 	if (remote) {
-		remote.link.sendStdin({
-			workspaceId: remote.workspaceId,
-			paneId: remote.remotePaneId,
-		}, s);
+		remote.link.sendStdin({ workspaceId: remote.workspaceId, paneId: remote.remotePaneId }, bytes, context);
 		return;
 	}
-	// Keep paste ordering through the intent gate; keyboard bytes use one short
-	// bounded batch so fast typing does not create one kernel HTTP request/key.
 	const key = `${workspaceId}:${paneId}`;
 	const accepted = tryEnqueuePaneInputImmediate(key, () => {
-		const queued = enqueuePtyInput(key, s, (data) => invoke('write_to_pty', { workspaceId, paneId, data }), {
-			// The write queue folds bytes while the previous IPC write is active.
-			coalesceWindowMs: PTY_INPUT_COALESCE_MS,
-			onError: (err) => reportRepeatedError('write_to_pty', err),
-			// §B 代际保护：把当前 mount 的对象身份 `mountInstance` 传给队列；
-			// 新实例进来时新 mountInstance（新对象身份），旧 lane 立即清理 + 挂起
-			// 字节丢弃。同一实例内多次 enqueue 共享同一 mountInstance → 合并。
-			mountToken: mountInstance,
-		});
-		if (!queued) reportRepeatedError('write_to_pty', new Error('PTY input queue full'));
+		localResizeScheduler.enqueueInput({ workspaceId, paneId }, bytes, context);
 	});
-	if (!accepted) reportRepeatedError('write_to_pty', new Error('pane input intent queue full'));
+	if (!accepted) reportRepeatedError('write_terminal_input', new Error('pane input intent queue full'));
 }
 
 function onPtyResize(
@@ -1494,6 +1454,8 @@ onMount(() => {
 			manager.onData(paneId, onPtyData);
 			manager.onResize(paneId, onPtyResize);
 			manager.onEvent(paneId, onKernelEvent);
+			if (remotePaneBinding(paneId)) activateRemotePaneBinding(paneId);
+			else await registerPtyStream();
 			return;
 		}
 
@@ -1590,28 +1552,11 @@ onMount(() => {
 		//
 		// The bridge owns both the raw fallback listener and the binary delta
 		// Channel used by local desktop panes.
-		await ensurePtyBridge(paneId, workspaceId);
+		await registerPtyStream();
 		if (!alive) return;
 
-		// 5) Replay scrollback. Seed `oldestSeq` / `atOldest` from the
-		// tail chunk so subsequent `Shift+PageUp` past the kernel buffer
-		// boundary can page further into the backend's 4 MiB store.
-		try {
-			const chunk = await invoke<{
-				bytes: string;
-				start_seq: number;
-				at_oldest: boolean;
-			}>('get_pane_scrollback_tail', { paneId, workspaceId, maxBytes: SCROLLBACK_TAIL_BYTES });
-			if (alive && chunk.bytes) {
-				manager.feed(paneId, chunk.bytes);
-			}
-			if (alive) {
-				oldestSeq = chunk.start_seq;
-				atOldest = chunk.at_oldest;
-			}
-		} catch {
-			if (alive) atOldest = true;
-		}
+		// The bridge's canonical snapshot already contains the bounded recent row tail.
+		// Older rows arrive only through generation-fenced history pages.
 
 		// 6) Reassert the measured grid before activation. `create_pane` already
 		// starts the kernel PTY at this size; this fit catches layout changes that
@@ -1742,7 +1687,7 @@ onDestroy(() => {
 	// purge) happens in `paneTree.closePane` after the backend close_pane
 	// IPC succeeds.
 	if (attached) {
-		manager.park(paneId);
+		manager.park(paneId, 'component', container);
 	}
 	// NOTE: title stores are intentionally NOT cleared here. The kernel
 	// is still alive, the bridge is still parsing OSC events into them,
@@ -2153,10 +2098,13 @@ let scrollTotal = $state(0);
 function refreshScrollState() {
 	if (!alive || !attached) return;
 	const s = manager.scrollState(paneId);
+	const moved = s.offset !== scrollOffset;
 	if (s.offset !== scrollOffset) scrollOffset = s.offset;
 	if (s.total !== scrollTotal) scrollTotal = s.total;
 	const next = s.offset === 0;
 	if (next !== isAtBottom) isAtBottom = next;
+	if (moved && s.offset > 0) maybePrefetchOlder();
+	if (manager.getKernel(paneId)?.historyRecoveryPending() && !scrollbackFetchError) void fetchOlderScrollback();
 }
 function jumpToBottom() {
 	if (!alive || !attached) return;
@@ -2394,6 +2342,12 @@ function captureBackspace(node: HTMLElement) {
 	onkeydown={onContainerKeyDown}
 	use:captureBackspace
 >
+	{#if terminalStreamError}
+  <button style="position:absolute;top:8px;left:8px;z-index:20" disabled={terminalStreamRetrying} onpointerdown={(event) => event.stopPropagation()} onclick={() => void registerPtyStream()}>Terminal connection failed · Retry</button>
+	{/if}
+	{#if scrollbackFetchError}
+  <button class="rg-history-retry" style="position:absolute;top:8px;right:8px;z-index:20" onpointerdown={(event) => event.stopPropagation()} onclick={() => void fetchOlderScrollback()}>Older output unavailable · Retry</button>
+ {/if}
 	{#if webgpuInitError}
 		<div class="rg-webgpu-error" role="alert" aria-live="assertive">{webgpuInitError}</div>
 	{/if}

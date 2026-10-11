@@ -5809,10 +5809,10 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "console_error_panic_hook",
- "cosmic-text",
  "js-sys",
  "naga",
  "postcard",
+ "ridge-term-font",
  "serde",
  "serde-wasm-bindgen",
  "unicode-segmentation",
@@ -5822,6 +5822,32 @@ dependencies = [
  "web-sys",
  "wgpu",
  "wgpu-types",
+]
+
+[[package]]
+name = "ridge-term-font"
+version = "0.1.0"
+dependencies = [
+ "cosmic-text",
+ "js-sys",
+ "postcard",
+ "serde",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "ridge-term-render"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "js-sys",
+ "ridge-term",
+ "serde",
+ "serde-wasm-bindgen",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

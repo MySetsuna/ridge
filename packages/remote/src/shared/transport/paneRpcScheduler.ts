@@ -8,6 +8,12 @@ import {
 import { paneRefKey, type PaneRef } from './paneRef';
 import { remotePerfEnd, remotePerfStart } from './remotePerfTrace';
 import { unknownText } from './unknownText';
+import terminalLimits from '../cloud/signaling/fixtures/terminal/hello.json';
+import type { TerminalInput, TerminalInputAck } from '../cloud/signaling';
+
+/** Captured from the installed mirror, never inferred from a pane UUID. */
+export type TerminalInputContext = readonly [TerminalInput['pane'], string, number];
+export type TerminalInputData = string | Uint8Array;
 
 export const DEFAULT_MAX_QUEUED_INPUT_BYTES = 256 * 1024;
 export const DEFAULT_INPUT_BATCH_WINDOW_MS = 0;
@@ -28,7 +34,7 @@ interface RpcPort {
 }
 
 interface InputBatch {
-  data: string;
+  data: Uint8Array;
   bytes: number;
   sequence: number;
   admittedAt?: number;
@@ -36,9 +42,10 @@ interface InputBatch {
 
 interface InputLane {
   pane: PaneRef;
+  context: TerminalInputContext;
   sourceId: string;
   nextSequence: number;
-  queued: string;
+  queued: Uint8Array[];
   queuedBytes: number;
   queuedAt?: number;
   active: InputBatch | null;
@@ -223,11 +230,35 @@ export class PaneRpcScheduler {
     this.onError = options.onError ?? (() => {});
   }
 
-  enqueueInput(pane: PaneRef, data: string): boolean {
+  enqueueInput(pane: PaneRef, data: TerminalInputData, context: TerminalInputContext): boolean {
     this.counters.inputCalls += 1;
-    if (!data) return true;
-    const lane = this.inputLane(pane);
-    const bytes = utf8.encode(data).byteLength;
+    const encoded = typeof data === 'string' ? utf8.encode(data) : data.slice();
+    if (!encoded.length) return true;
+    const key = paneRefKey(pane);
+    const previous = this.inputLanes.get(key);
+    if (!context || paneRefKey(context[0]) !== key || !context[1] || !Number.isSafeInteger(context[2]) || context[2] < 1 ||
+        (previous && (context[2] < previous.context[2] || (context[2] === previous.context[2] && context[1] !== previous.context[1])))) {
+      this.counters.inputRejected += 1;
+      this.reportError(new Error('terminal input binding is stale or unavailable'), 'input', pane);
+      return false;
+    }
+    if (previous && context[2] !== previous.context[2]) {
+      this.clearTimer(previous);
+      if (context[1] === previous.context[1] && !previous.active && !previous.inFlight) {
+        // Confirmed sequence belongs to this terminal lifetime, across view activations.
+        previous.context = [{ ...context[0] }, context[1], context[2]];
+        previous.queued = [];
+        previous.queuedBytes = 0;
+        previous.queuedAt = undefined;
+        previous.paused = false;
+        previous.failures = 0;
+      } else {
+        this.inputLanes.delete(key);
+        this.rpc.cancelScope(key);
+      }
+    }
+    const lane = this.inputLane(pane, context);
+    const bytes = encoded.byteLength;
     const retained = lane.queuedBytes + (lane.active?.bytes ?? 0);
     if (retained + bytes > this.maxQueuedInputBytes) {
       this.counters.inputRejected += 1;
@@ -235,7 +266,7 @@ export class PaneRpcScheduler {
       return false;
     }
     if (lane.queuedBytes === 0) lane.queuedAt = remotePerfStart('transport-queue')?.startedAt;
-    lane.queued += data;
+    lane.queued.push(encoded);
     lane.queuedBytes += bytes;
     this.counters.inputBytesAccepted += bytes;
     this.counters.inputQueueHighWaterBytes = Math.max(
@@ -421,16 +452,17 @@ export class PaneRpcScheduler {
     };
   }
 
-  private inputLane(pane: PaneRef): InputLane {
+  private inputLane(pane: PaneRef, context: TerminalInputContext): InputLane {
     const key = paneRefKey(pane);
     let lane = this.inputLanes.get(key);
     if (!lane) {
       this.laneSequence += 1;
       lane = {
         pane,
+        context: [{ ...context[0] }, context[1], context[2]],
         sourceId: `${this.sourcePrefix}_${this.laneSequence}`.slice(0, 64),
         nextSequence: 1,
-        queued: '',
+        queued: [],
         queuedBytes: 0,
         active: null,
         inFlight: false,
@@ -453,7 +485,7 @@ export class PaneRpcScheduler {
       lane.retryTimer ||
       lane.throttleTimer
     ) return;
-    if (!lane.active && !lane.queued) return;
+    if (!lane.active && !lane.queuedBytes) return;
     const throttleDelay = lane.nextSendAt - Date.now();
     if (throttleDelay > 0) {
       lane.throttleTimer = setTimeout(() => {
@@ -463,15 +495,25 @@ export class PaneRpcScheduler {
       return;
     }
     if (!lane.active) {
+      const size = Math.min(lane.queuedBytes, terminalLimits.maxInputBytes);
+      const data = new Uint8Array(size);
+      let offset = 0;
+      while (offset < size) {
+        const chunk = lane.queued[0];
+        const count = Math.min(chunk.length, size - offset);
+        data.set(chunk.subarray(0, count), offset);
+        offset += count;
+        if (count === chunk.length) lane.queued.shift();
+        else lane.queued[0] = chunk.subarray(count);
+      }
       lane.active = {
-        data: lane.queued,
-        bytes: lane.queuedBytes,
+        data,
+        bytes: size,
         sequence: lane.nextSequence,
         admittedAt: lane.queuedAt,
       };
-      lane.queued = '';
-      lane.queuedBytes = 0;
-      lane.queuedAt = undefined;
+      lane.queuedBytes -= size;
+      if (!lane.queuedBytes) lane.queuedAt = undefined;
     }
     const batch = lane.active;
     lane.inFlight = true;
@@ -487,15 +529,24 @@ export class PaneRpcScheduler {
       oldestAgeKnown: batch.admittedAt !== undefined,
     });
     if (trace && batch.admittedAt !== undefined) trace.meta = { ...trace.meta, oldestAgeMs: Math.max(0, trace.startedAt - batch.admittedAt) };
-    void this.rpc.request('write_to_pty', {
-      workspaceId: lane.pane.workspaceId,
-      paneId: lane.pane.paneId,
-      data: batch.data,
-      inputSourceId: lane.sourceId,
-      inputSequence: batch.sequence,
+    const input: TerminalInput = {
+      pane: lane.context[0],
+      terminalEpoch: lane.context[1],
+      activationId: lane.context[2],
+      bytes: Array.from(batch.data),
+      sourceId: lane.sourceId,
+      sequence: batch.sequence,
+    };
+    void this.rpc.request<TerminalInputAck>('write_terminal_input', {
+      input,
     }, { scope: key, timeoutMs: this.rpcTimeoutMs }).then(
-      () => {
+      (ack) => {
         if (this.inputLanes.get(key) !== lane) return;
+        if (ack?.sequence !== batch.sequence || typeof ack.alreadyApplied !== 'boolean') {
+          lane.inFlight = false;
+          this.failLane(new Error('invalid terminal input acknowledgement'), 'input', lane.pane, lane, () => this.drainInput(key, lane));
+          return;
+        }
         this.recordLatency(this.inputLatencySamples, Date.now() - startedAt);
         remotePerfEnd(trace, { queueBytes: lane.queuedBytes });
         lane.inFlight = false;

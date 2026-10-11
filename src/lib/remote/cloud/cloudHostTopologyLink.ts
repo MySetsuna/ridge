@@ -1,3 +1,5 @@
+import type { TerminalInputContext, TerminalInputData } from '@ridge/remote/shared/transport/paneRpcScheduler';
+import terminalHello from '@ridge/remote/shared/cloud/signaling/fixtures/terminal/hello.json';
 import {
   createCloudWebrtcTransportWith,
   PaneRpcScheduler,
@@ -59,6 +61,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
    * panes discovered while projecting a workspace, so it is not a safe
    * subscription list to replay after the Host bridge is recreated. */
   private readonly subscribedPanes = new Map<string, PaneRef>();
+  private readonly terminalActivations = new Map<string, number>();
   private activePaneKey: string | null = null;
   private readonly scheduler: PaneRpcScheduler;
   private readonly stopReconnectResume: () => void;
@@ -104,6 +107,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
           workspaceId: pane.workspaceId,
           paneId: pane.paneId,
           active,
+          activationId: this.terminalActivations.get(key),
         });
         if (active) this.activePaneKey = key;
       }
@@ -119,6 +123,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     for (const key of this.livePanes) retirePaneInput(key);
     this.livePanes.clear();
     this.subscribedPanes.clear();
+    this.terminalActivations.clear();
     this.workspaceByPane.clear();
     this.paneKeysById.clear();
     this.activePaneKey = null;
@@ -304,6 +309,10 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     });
   }
 
+  onTerminalFrame(fn: (bytes: Uint8Array) => void): () => void {
+    return this.adapter.onTerminalFrame(fn);
+  }
+
   async inspectPath(path: string, signal?: AbortSignal): Promise<{ exists: boolean; isDirectory?: boolean }> {
     if (signal?.aborted) return { exists: false };
     try {
@@ -322,15 +331,17 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     }
   }
 
-  subscribePane(pane: PaneRef): void {
+  subscribePane(pane: PaneRef, options?: { activationId?: number }): void {
     this.activatePane(pane);
     this.subscribedPanes.set(paneRefKey(pane), pane);
+    if (options?.activationId !== undefined) this.terminalActivations.set(paneRefKey(pane), options.activationId);
     this.rpc.notify('subscribe-pane', {
       workspaceId: pane.workspaceId,
       paneId: pane.paneId,
       // A newly-bound foreign pane must receive its initial live tail while
       // the local component attaches. Focus changes are promoted below.
       active: true,
+      activationId: this.terminalActivations.get(paneRefKey(pane)),
     });
     this.activePaneKey = paneRefKey(pane);
   }
@@ -345,23 +356,32 @@ export class CloudHostTopologyLink implements HostTopologyLink {
       workspaceId: pane.workspaceId,
       paneId: pane.paneId,
       active: true,
+      activationId: this.terminalActivations.get(key),
     });
   }
 
-  sendStdin(pane: PaneRef, data: string): boolean {
+  sendStdin(pane: PaneRef, data: TerminalInputData, context: TerminalInputContext): boolean {
     if (!this.livePanes.has(paneRefKey(pane))) return false;
     const key = paneRefKey(pane);
     return tryEnqueuePaneInputImmediate(key, () => {
-      this.scheduler.enqueueInput(pane, data);
+      this.scheduler.enqueueInput(pane, data, context);
     });
   }
 
-  enqueueStdinTask(pane: PaneRef, task: () => Promise<string | null> | string | null): boolean {
+  async fetchTerminalHistory(request: import('@ridge/remote/shared/cloud/signaling').HistoryRequest): Promise<Uint8Array> {
+    const encoded = await this.rpc.request<string>('get_terminal_history', { request }, { scope: paneRefKey(request.pane) });
+    if (typeof encoded !== 'string' || encoded.length > Math.ceil(terminalHello.maxFrameBytes / 3) * 4) throw new Error('invalid terminal history frame');
+    const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+    if (bytes[0] !== 0x13) throw new Error('invalid terminal history tag');
+    return bytes;
+  }
+
+  enqueueStdinTask(pane: PaneRef, task: () => Promise<TerminalInputData | null> | TerminalInputData | null, context: TerminalInputContext): boolean {
     const key = paneRefKey(pane);
     if (!this.livePanes.has(key)) return false;
     return tryEnqueuePaneInput(key, async () => {
       const data = await task();
-      if (data) this.scheduler.enqueueInput(pane, data);
+      if (data) this.scheduler.enqueueInput(pane, data, context);
     });
   }
 
@@ -416,6 +436,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
       if (keys.size === 0) this.paneKeysById.delete(pane.paneId);
     }
     this.subscribedPanes.delete(key);
+    this.terminalActivations.delete(key);
     this.livePanes.delete(key);
     if (this.activePaneKey === key) this.activePaneKey = null;
     this.scheduler.retire(pane);

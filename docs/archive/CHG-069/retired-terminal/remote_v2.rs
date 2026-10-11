@@ -315,11 +315,10 @@ pub fn install_snapshot(grid: &mut Grid, modes: &mut Modes, snapshot: &TerminalS
     modes.cursor_shape = cursor_shape_from_wire(active_cursor.shape);
 }
 
-pub fn prepend_history(grid: &mut Grid, lines: &[WireLine]) {
-    let links = HashMap::new();
+pub fn prepend_history(grid: &mut Grid, lines: &[WireLine], links: &HashMap<u32, (String, String)>) {
     let cols = grid.cols();
     for line in lines.iter().rev() {
-        let row = row_from_wire(line, cols, &mut grid.attrs, &links);
+        let row = row_from_wire(line, cols, &mut grid.attrs, links);
         let _ = grid.scrollback.push_front(row);
     }
 }
@@ -552,7 +551,7 @@ fn screen_from_wire(
     screen
 }
 
-fn row_from_wire(
+pub(crate) fn row_from_wire(
     line: &WireLine,
     cols: usize,
     attrs: &mut crate::term::attr_table::AttrTable,
@@ -571,26 +570,45 @@ fn row_from_wire(
             row.set_cluster(col, cluster.clone().into_boxed_str());
         }
     }
+    restore_cell_links(&mut row, 0, &line.cells, links);
+    row
+}
+
+pub(crate) fn restore_cell_links(row: &mut Row, offset: usize, cells: &[WireCell], links: &HashMap<u32, (String, String)>) {
+    let end = offset.saturating_add(cells.len()).min(row.cells.len());
+    row.hyperlinks = row.hyperlinks.iter().flat_map(|span| {
+        let mut remaining = Vec::new();
+        if span.col_start < offset {
+            let mut left = span.clone();
+            left.col_end = left.col_end.min(offset);
+            remaining.push(left);
+        }
+        if span.col_end > end {
+            let mut right = span.clone();
+            right.col_start = right.col_start.max(end);
+            remaining.push(right);
+        }
+        remaining
+    }).collect();
     let mut col = 0;
-    while col < line.cells.len().min(cols) {
-        let Some(id) = line.cells[col].hyperlink_id else {
+    while col < cells.len().min(end.saturating_sub(offset)) {
+        let Some(id) = cells[col].hyperlink_id else {
             col += 1;
             continue;
         };
         let start = col;
-        while col < line.cells.len().min(cols) && line.cells[col].hyperlink_id == Some(id) {
+        while col < cells.len().min(end.saturating_sub(offset)) && cells[col].hyperlink_id == Some(id) {
             col += 1;
         }
         if let Some((uri, params)) = links.get(&id) {
             row.hyperlinks.push(HyperlinkSpan {
-                col_start: start,
-                col_end: col,
+                col_start: offset + start,
+                col_end: offset + col,
                 uri: uri.clone(),
                 id: (!params.is_empty()).then(|| params.clone()),
             });
         }
     }
-    row
 }
 
 fn cursor_to_wire(row: usize, col: usize, modes: &Modes) -> WireCursor {
@@ -695,6 +713,7 @@ fn line_from_local(line: &DeltaLine) -> WireLine {
 
 fn line_to_local(line: &WireLine) -> DeltaLine {
     DeltaLine {
+                    hyperlinks: Vec::new(),
         cells: line.cells.iter().map(cell_to_local).collect(),
         wrapped: line.wrapped,
     }
@@ -762,6 +781,62 @@ mod tests {
         assert_eq!(remote.revision, 9);
         assert!(remote.requires_render_settle);
         assert_eq!(remote.deltas.len(), 2);
+    }
+
+    #[test]
+    fn semantic_cells_history_and_dictionary_changes_preserve_osc8() {
+        let mut source = Terminal::new(3, 12, 20);
+        source.feed(b"\x1b]8;id=original;https://example.com\x07abcdef\x1b]8;;\x07");
+        let mut mirror = Terminal::new(3, 12, 20);
+        mirror.apply_remote_v2_snapshot(&source.remote_v2_snapshot(1, String::new(), String::new()));
+        let mut cell = WireCell::blank();
+        cell.ch = 'X';
+        cell.hyperlink_id = Some(99);
+        let line = WireLine { cells: vec![cell.clone()], wrapped: true };
+        let frame = TerminalDeltaFrame { base_revision: 1, revision: 2, requires_render_settle: false,
+            deltas: vec![
+                TerminalDelta::HyperlinkUpsert(Hyperlink { id: 99, uri: "https://example.org".into(), params: "named".into() }),
+                TerminalDelta::Cells { screen: ScreenKind::Primary, row: 0, col: 2, wrapped: false, cells: vec![cell] },
+                TerminalDelta::ScrollbackAppend { lines: vec![line.clone()] },
+            ] };
+        mirror.apply_remote_v2_delta(&frame);
+        let spans = &mirror.grid().primary.rows[0].hyperlinks;
+        assert!(spans.iter().any(|span| span.col_start == 0 && span.col_end == 2 && span.uri == "https://example.com"));
+        assert!(spans.iter().any(|span| span.col_start == 2 && span.col_end == 3 && span.uri == "https://example.org"));
+        assert!(spans.iter().any(|span| span.col_start == 3 && span.col_end == 6 && span.uri == "https://example.com"));
+        mirror.prepend_remote_v2_history(&[line]);
+        assert_eq!(mirror.grid().scrollback.get(0).unwrap().hyperlinks[0].id.as_deref(), Some("named"));
+        assert!(mirror.grid().scrollback.get(0).unwrap().wrapped);
+        let update = |delta| TerminalDeltaFrame { base_revision: 2, revision: 3, deltas: vec![delta], requires_render_settle: false };
+        mirror.apply_remote_v2_delta(&update(TerminalDelta::HyperlinkUpsert(Hyperlink {
+            id: 99, uri: "https://changed.example".into(), params: "changed".into(),
+        })));
+        assert_eq!(mirror.grid().scrollback.get(0).unwrap().hyperlinks[0].uri, "https://changed.example");
+        mirror.apply_remote_v2_delta(&update(TerminalDelta::HyperlinkRemove { id: 99 }));
+        assert!(mirror.grid().scrollback.get(0).unwrap().hyperlinks.is_empty());
+        assert!(mirror.grid().primary.rows[0].hyperlinks.iter().all(|span| span.uri == "https://example.com"));
+    }
+
+    #[test]
+    fn inactive_screen_mutations_do_not_switch_or_erase_the_active_screen() {
+        let mut source = Terminal::new(3, 12, 20);
+        source.feed(b"primary\x1b[?1049halt");
+        let mut mirror = Terminal::new(3, 12, 20);
+        mirror.apply_remote_v2_snapshot(&source.remote_v2_snapshot(1, String::new(), String::new()));
+        let active = mirror.dump_visible_text();
+        let mut cell = WireCell::blank();
+        cell.ch = 'P';
+        mirror.apply_remote_v2_delta(&TerminalDeltaFrame {
+            base_revision: 1, revision: 2, requires_render_settle: false,
+            deltas: vec![TerminalDelta::Cells { screen: ScreenKind::Primary, row: 0, col: 0, wrapped: false, cells: vec![cell] },
+                TerminalDelta::ScrollRegion { screen: ScreenKind::Primary, top: 1, bottom: 2 },
+                TerminalDelta::SavedCursor { screen: ScreenKind::Primary, cursor: None }],
+        });
+        assert!(mirror.grid().is_alt);
+        assert_eq!(mirror.dump_visible_text(), active);
+        assert_eq!(mirror.grid().primary.rows[0].cells[0].ch, 'P');
+        assert_eq!(mirror.grid().primary.scroll_top, 1);
+        assert!(mirror.grid().primary.saved_cursor.is_none());
     }
 
     #[test]

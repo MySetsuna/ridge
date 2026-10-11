@@ -29,25 +29,19 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { TerminalManager } from './manager';
-import { perfMark } from './perfTrace';
 import { paneRefKey } from '../transport/paneRef';
 import { unknownText } from '../transport/unknownText';
 
 /**
  * P4.3 — pty-delta byte payload as received on the frontend. Tauri 2's
- * `Channel<Vec<u8>>` (Rust side) now carries either a legacy complete frame
+ * `Channel<Vec<u8>>` (Rust side) now carries a complete canonical packet
  * or a zero-byte mailbox wake. The JS bridge pulls one merged frame at most
  * once per browser frame, keeping high-rate PTY output out of the task queue.
  */
+let nativeActivationCounter = 0;
 type DeltaPayload = ArrayBuffer | Uint8Array | number[];
 
-type PtyOutputPayload = { data: string; bytes?: Uint8Array };
-
-const ptyTextEncoder = new TextEncoder();
-const ptyTextDecoder = new TextDecoder();
-
 interface Bridge {
-	outUnlisten: UnlistenFn;
 	closedUnlisten: UnlistenFn;
 	paneId: string;
 	workspaceId: string;
@@ -115,59 +109,6 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 
 	const manager = TerminalManager.instance();
 
-	const outUnlisten = await listen<PtyOutputPayload>(
-		`pty-output-${workspaceId}-${paneId}`,
-		(e) => {
-			const bytes = e.payload.bytes instanceof Uint8Array
-				? e.payload.bytes
-				: ptyTextEncoder.encode(e.payload.data);
-			// §B.6 (2026-05-08) — opt-in PTY byte trace. When
-			// `localStorage.RIDGE_PTY_TRACE === '1'`, log every chunk
-			// the shell sends, formatted as the printable string +
-			// hex bytes. Lets users investigating cursor-drift issues
-			// (e.g. "🎂 看起来在 4 列之后") capture exactly what
-			// PSReadLine / ConPTY emitted, so we can pinpoint whether
-			// it's a width-disagreement (ConPTY wrote padding spaces),
-			// a CSI positioning sequence (shell jumped cursor), or
-			// something else entirely. Off by default — gated on
-			// localStorage so normal users pay nothing.
-			if (typeof localStorage !== 'undefined') {
-				try {
-					if (localStorage.getItem('RIDGE_PTY_TRACE') === '1') {
-						const data = e.payload.data ?? ptyTextDecoder.decode(bytes);
-						const hex = Array.from(bytes)
-							.map((b) => b.toString(16).padStart(2, '0'))
-							.join(' ');
-						const printable = data
-							.replaceAll(new RegExp(String.fromCodePoint(0x1b), 'g'), String.raw`\e`)
-							.replace(
-								new RegExp(`[${String.fromCodePoint(0)}-${String.fromCodePoint(0x1f)}]`, 'g'),
-								(c) => String.raw`\x${(c.codePointAt(0) ?? 0).toString(16).padStart(2, '0')}`,
-							);
-						console.log(`[pty-trace ${paneId.slice(0, 6)}] ${printable.length} chars / ${bytes.length} bytes\n  text: ${JSON.stringify(printable)}\n  hex:  ${hex}`);
-					}
-				} catch {
-					/* localStorage denied / SSR — silently skip */
-				}
-			}
-			// Preserve the binary transport path through the browser shim. This
-			// avoids a UTF-8 decode/re-encode round trip and keeps arbitrary PTY
-			// bytes intact for the VTE parser.
-			// Keep the existing attribution label for dashboards and perf specs.
-			perfMark('rg.ptyText.feed', () => manager.feed(paneId, bytes));
-			// History popup close is driven by the user's Enter keystroke
-			// inside the active pane (RidgePane.dispatchBufferEvent 'clear'
-			// case) — NOT by `\n`/`\r` in PTY output. Per-byte detection
-			// here used to fire a window event that closed popups across
-			// every pane whenever any pane echoed a newline, including
-			// every shell prompt redraw and async background output.
-		},
-	);
-	if (teardownRequested.has(key)) {
-		try { outUnlisten(); } catch { /* already unsubscribed */ }
-		return;
-	}
-
 	const closedUnlisten = await listen<{ workspaceId: string; paneId: string }>(
 		'pane-pty-closed',
 		async (e) => {
@@ -224,26 +165,21 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 				workspaceId,
 			);
 		},
-	).catch((error) => {
-		try { outUnlisten(); } catch { /* already unsubscribed */ }
-		throw error;
-	});
+	);
 	if (teardownRequested.has(key)) {
-		try { outUnlisten(); } catch { /* already unsubscribed */ }
 		try { closedUnlisten(); } catch { /* already unsubscribed */ }
 		return;
 	}
 
 	// The Channel is a mailbox wake. A burst produces one empty marker; this
 	// bridge then pulls the merged postcard frame at most once per browser
-	// animation frame. Legacy complete payloads remain accepted for fallback.
+	// animation frame. Complete canonical packets can also arrive directly.
 	//
 	// `delta_mode` on the backend still gates whether the channel fires at
 	// all, so registering here is safe even before `set_pane_delta_mode`
 	// flips the gate — the channel simply stays quiet until then.
 	const deltaChannel = new Channel<DeltaPayload>();
 	const bridge: Bridge = {
-		outUnlisten,
 		closedUnlisten,
 		paneId,
 		workspaceId,
@@ -254,17 +190,28 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 		deltaPullRaf: null,
 		closed: false,
 	};
+	let activationId = ++nativeActivationCounter;
+	let recoveryInFlight = false;
+	manager.setNativeActivation(paneId, activationId);
 	const recoverDelta = (err: unknown) => {
-		if (bridge.closed) return;
-		console.warn(
-			'[ridge-term] pty-delta apply failed; falling back to wasm parser',
-			{ paneId, error: String(err) },
-		);
-		void setPaneDeltaMode(paneId, false, workspaceId);
+		if (bridge.closed || recoveryInFlight) return;
+		recoveryInFlight = true;
+		activationId = ++nativeActivationCounter;
+		manager.setNativeActivation(paneId, activationId);
+		console.warn('[ridge-term] terminal stream requires snapshot', { paneId, error: String(err) });
+		void invoke('register_pane_delta_channel', { workspaceId, paneId, channel: deltaChannel, activationId })
+			.then(() => invoke<string>('get_terminal_snapshot', { workspaceId, paneId, activationId }))
+			.then(encoded => {
+				if (bridge.closed) return;
+				const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+				manager.enqueueDeltaFrame(paneId, bytes, error => console.error('[ridge-term] terminal recovery failed', error));
+			})
+			.catch(error => { if (!bridge.closed) console.error('[ridge-term] terminal recovery failed', error); })
+			.finally(() => { recoveryInFlight = false; });
 	};
 	const consumeDelta = (payload: DeltaPayload | null | undefined) => {
 		const bytes = deltaBytes(payload);
-		if (bytes.byteLength === 0 || bridge.closed) return;
+		if (bytes.byteLength === 0 || bridge.closed || recoveryInFlight) return;
 		manager.enqueueDeltaFrame(paneId, bytes, (err) => {
 			recoverDelta(err);
 		});
@@ -284,8 +231,8 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 		} else {
 			queueMicrotask(releaseFrameGate);
 		}
-		void invoke<DeltaPayload | null>('take_pane_delta_frame', { workspaceId, paneId })
-			.then(consumeDelta, recoverDelta)
+		void invoke<DeltaPayload[]>('take_terminal_frames', { workspaceId, paneId })
+			.then(frames => { for (const frame of frames ?? []) consumeDelta(frame); }, recoverDelta)
 			.finally(() => {
 				bridge.deltaPullInFlight = false;
 				if (!bridge.deltaFrameGate && bridge.deltaWakePending) requestMailboxPull();
@@ -309,19 +256,13 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 			workspaceId,
 			paneId,
 			channel: deltaChannel,
+			activationId,
 		});
-	} catch (err) {
-		// Backend not ready or pane vanished mid-registration. Surface to
-		// console for diagnostics but don't tear down the other listeners
-		// — the `pty-output-*` path keeps the pane usable until the next
-		// reconnect attempt.
-		console.warn(
-			'[ridge-term] register_pane_delta_channel failed; pane will use legacy pty-output path',
-			{ paneId, workspaceId, error: String(err) },
-		);
+	} catch (error) {
+		try { closedUnlisten(); } catch { /* event bus already closed */ }
+		throw error;
 	}
 	if (teardownRequested.has(key)) {
-		try { outUnlisten(); } catch { /* already unsubscribed */ }
 		try { closedUnlisten(); } catch { /* already unsubscribed */ }
 		return;
 	}
@@ -429,7 +370,6 @@ export function teardownPtyBridge(paneId: string, workspaceId?: string): void {
 	if (key && pendingBridges.has(key)) teardownRequested.add(key);
 	const b = key ? bridges.get(key) : undefined;
 	if (!b) return;
-	try { b.outUnlisten(); } catch { /* already unsubscribed */ }
 	try { b.closedUnlisten(); } catch { /* already unsubscribed */ }
 	b.closed = true;
 	if (b.deltaPullRaf !== null && typeof cancelAnimationFrame === 'function') {

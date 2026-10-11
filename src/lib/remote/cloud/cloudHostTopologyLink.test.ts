@@ -105,6 +105,19 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  it('retains canonical activation when promoting panes and restoring subscriptions', () => {
+    const rpc = new FakeRpc();
+    const link = linkWith(rpc);
+    link.subscribePane(paneA, { activationId: 17 });
+    link.subscribePane(paneB, { activationId: 18 });
+    link.promotePane(paneA);
+    for (const reconnect of rpc.reconnectHooks) reconnect();
+    expect(rpc.notifications.filter(n => (n.params as PaneRef).paneId === paneA.paneId))
+      .toHaveLength(3);
+    expect(rpc.notifications.every(n => (n.params as { activationId: number }).activationId ===
+      ((n.params as PaneRef).paneId === paneA.paneId ? 17 : 18))).toBe(true);
+  });
+
   it('probes paths through the cloud origin and distinguishes file, directory, and missing', async () => {
     const rpc = new FakeRpc();
     const link = linkWith(rpc);
@@ -204,20 +217,20 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
     const link = linkWith(rpc);
     link.subscribePane(paneA);
     link.subscribePane(paneB);
-    link.sendStdin(paneA, 'a');
+    link.sendStdin(paneA, 'a', [{ ...paneA }, 'epoch', 1] as const);
     link.refreshPane(paneA, 24, 80, 0, 0);
     await vi.advanceTimersByTimeAsync(40);
 
     const closing = link.closePane(paneA);
-    link.sendStdin(paneA, 'stale');
+    link.sendStdin(paneA, 'stale', [{ ...paneA }, 'epoch', 1] as const);
     link.refreshPane(paneA, 30, 100, 0, 0);
-    link.sendStdin(paneB, 'live');
+    link.sendStdin(paneB, 'live', [{ ...paneB }, 'epoch', 1] as const);
 
     await expect(closing).resolves.toBe(true);
     expect(rpc.cancelledScopes).toEqual(['w1:p1']);
-    expect(rpc.requests.filter(({ method }) => method === 'write_to_pty')).toHaveLength(2);
+    expect(rpc.requests.filter(({ method }) => method === 'write_terminal_input')).toHaveLength(2);
     expect(rpc.requests.filter(({ method }) => method === 'resize_pane')).toHaveLength(1);
-    expect(rpc.requests.at(-1)?.params).toMatchObject({ paneId: 'p2', data: 'live' });
+    expect(rpc.requests.at(-1)?.params).toMatchObject({ input: { pane: { paneId: 'p2' }, bytes: Array.from(new TextEncoder().encode('live')) } });
   });
 
   it('promotes the focused foreign pane without creating a second subscription', () => {
@@ -277,11 +290,11 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
     link.subscribePane(paneA);
 
     await expect(link.closePane(paneA)).resolves.toBe(false);
-    link.sendStdin(paneA, 'retry');
+    link.sendStdin(paneA, 'retry', [{ ...paneA }, 'epoch', 1] as const);
 
     expect(rpc.requests.at(-1)).toMatchObject({
-      method: 'write_to_pty',
-      params: { workspaceId: 'w1', paneId: 'p1', data: 'retry' },
+      method: 'write_terminal_input',
+      params: { input: { pane: { workspaceId: 'w1', paneId: 'p1' }, bytes: Array.from(new TextEncoder().encode('retry')) } },
       options: { scope: 'w1:p1' },
     });
     for (const reconnect of rpc.reconnectHooks) reconnect();
@@ -319,8 +332,8 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
     rpc.paneLayout = null;
     await expect(link.listWorkspacePanes('w1')).resolves.toEqual([]);
 
-    expect(link.sendStdin(paneA, 'stale')).toBe(false);
-    expect(link.sendStdin(sameInOtherWorkspace, 'live')).toBe(true);
+    expect(link.sendStdin(paneA, 'stale', [{ ...paneA }, 'epoch', 1] as const)).toBe(false);
+    expect(link.sendStdin(sameInOtherWorkspace, 'live', [{ ...sameInOtherWorkspace }, 'epoch', 1] as const)).toBe(true);
   });
 
   it('routes legacy cloud raw bytes only when paneId identifies one workspace', async () => {
@@ -353,16 +366,12 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
     link.subscribePane(other);
 
     await expect(link.closeWorkspace('w1')).resolves.toBe(true);
-    link.sendStdin(paneA, 'stale-a');
-    link.sendStdin(paneB, 'stale-b');
-    link.sendStdin(other, 'live');
+    link.sendStdin(paneA, 'stale-a', [{ ...paneA }, 'epoch', 1] as const);
+    link.sendStdin(paneB, 'stale-b', [{ ...paneB }, 'epoch', 1] as const);
+    link.sendStdin(other, 'live', [{ ...other }, 'epoch', 1] as const);
 
     expect(rpc.cancelledScopes).toEqual(['w1:p1', 'w1:p2']);
-    expect(rpc.requests.at(-1)?.params).toMatchObject({
-      workspaceId: 'w2',
-      paneId: 'p3',
-      data: 'live',
-    });
+    expect(rpc.requests.at(-1)?.params).toMatchObject({ input: { pane: { workspaceId: 'w2', paneId: 'p3' }, bytes: Array.from(new TextEncoder().encode('live')) } });
   });
 
   it('lists workspaces/shells, forwards workspace mutations, and disconnects transport', async () => {

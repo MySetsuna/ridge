@@ -15,6 +15,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** @param {string} f */
 const shim = (f) => path.resolve(__dirname, 'src/lib/transport/tauriShim', f);
 
+// The LAN development host uses its self-signed TLS identity. This exception
+// belongs only to Vite's loopback proxy; browser/production trust stays intact.
+const lanDevHost = process.env.RIDGE_REMOTE_DEV_HOST_URL || 'https://127.0.0.1:9527';
+const lanDevProxy = { target: lanDevHost, secure: false };
+const lanDevWsHost = lanDevHost.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
+
 export default defineConfig({
   root: path.resolve(__dirname, 'src/remote'),
   base: '/',
@@ -37,6 +43,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@ridge/term-wasm': path.resolve(__dirname, 'packages/ridge-term/pkg'),
+      '@ridge/term-font-wasm': path.resolve(__dirname, 'packages/ridge-term-font/pkg'),
+      '@ridge/term-render-wasm': path.resolve(__dirname, 'packages/ridge-term-render/pkg'),
       '@ridge/remote': path.resolve(__dirname, 'packages/remote/src'),
       '$lib': path.resolve(__dirname, 'src/lib'),
       // Tauri API → browser shims (cloud-controller path). Mirror of the
@@ -162,7 +170,7 @@ export default defineConfig({
     format: 'es',
   },
   optimizeDeps: {
-    exclude: ['@ridge/term-wasm'],
+    exclude: ['@ridge/term-wasm', '@ridge/term-font-wasm', '@ridge/term-render-wasm'],
   },
   server: {
     host: '0.0.0.0',
@@ -178,16 +186,17 @@ export default defineConfig({
     },
     proxy: {
       '/ws': {
-        target: 'ws://127.0.0.1:9527',
+        target: lanDevWsHost,
+        secure: false,
         ws: true,
       },
-      '/info': { target: 'http://127.0.0.1:9527' },
-      '/verify': { target: 'http://127.0.0.1:9527' },
-      '/health': { target: 'http://127.0.0.1:9527' },
-      '/status': { target: 'http://127.0.0.1:9527' },
-      '/workspace': { target: 'http://127.0.0.1:9527' },
-      '/ridge-ca.crt': { target: 'http://127.0.0.1:9527' },
-      '/ridge-ca.pem': { target: 'http://127.0.0.1:9527' },
+      '/info': lanDevProxy,
+      '/verify': lanDevProxy,
+      '/health': lanDevProxy,
+      '/status': lanDevProxy,
+      '/workspace': lanDevProxy,
+      '/ridge-ca.crt': lanDevProxy,
+      '/ridge-ca.pem': lanDevProxy,
     },
   },
 });

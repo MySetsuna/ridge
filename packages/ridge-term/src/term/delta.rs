@@ -82,6 +82,8 @@ impl DeltaCell {
 pub struct DeltaLine {
     pub cells: Vec<DeltaCell>,
     pub wrapped: bool,
+    #[serde(skip)]
+    pub hyperlinks: Vec<super::cell::HyperlinkSpan>,
 }
 
 /// Cursor shape carried in the `Cursor` delta variant. Parallel to
@@ -190,6 +192,9 @@ pub struct DeltaFrame {
     /// order, but may freeze the presented cursor for one short compositor
     /// window so an inline TUI cannot flash its walk cursor.
     pub requires_render_settle: bool,
+    /// Captured atomically by the producer; transport never consults a newer grid.
+    #[serde(skip)]
+    pub semantic_update: Option<Box<crate::semantic::SemanticUpdate>>,
 }
 
 /// Append two frames produced by the same pane in parser order.  The consumer
@@ -227,6 +232,7 @@ impl DeltaFrame {
             pane_seq,
             deltas,
             requires_render_settle: false,
+            semantic_update: None,
         }
     }
 }
@@ -238,6 +244,7 @@ impl DeltaFrame {
 /// flags) to ~10 bytes vs ~3 KB for the same shape serialized as JSON.
 /// Errors are propagated from postcard verbatim so the caller can log
 /// the underlying serde violation rather than a stringified summary.
+#[cfg(test)]
 pub fn encode_frame(frame: &DeltaFrame) -> Result<Vec<u8>, postcard::Error> {
     postcard::to_allocvec(frame)
 }
@@ -248,6 +255,7 @@ pub fn encode_frame(frame: &DeltaFrame) -> Result<Vec<u8>, postcard::Error> {
 /// the caller (`Terminal::apply_frame`) checks it after decode so a
 /// version mismatch produces a structured `Err(u16)` instead of a
 /// generic postcard decode error.
+#[cfg(test)]
 pub fn decode_frame(bytes: &[u8]) -> Result<DeltaFrame, postcard::Error> {
     postcard::from_bytes(bytes)
 }
@@ -317,6 +325,7 @@ mod tests {
                 },
                 GridDelta::ScrollbackAppend {
                     lines: vec![DeltaLine {
+                    hyperlinks: Vec::new(),
                         cells: vec![DeltaCell::blank()],
                         wrapped: true,
                     }],

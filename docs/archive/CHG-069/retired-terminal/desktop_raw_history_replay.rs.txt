@@ -1,0 +1,20 @@
+		// 5) Replay scrollback. Seed `oldestSeq` / `atOldest` from the
+		// tail chunk so subsequent `Shift+PageUp` past the kernel buffer
+		// boundary can page further into the backend's 4 MiB store.
+		try {
+			const chunk = await invoke<{
+				bytes: string;
+				start_seq: number;
+				at_oldest: boolean;
+			}>('get_pane_scrollback_tail', { paneId, workspaceId, maxBytes: SCROLLBACK_TAIL_BYTES });
+			if (alive && chunk.bytes) {
+				manager.feed(paneId, chunk.bytes);
+			}
+			if (alive) {
+				oldestSeq = chunk.start_seq;
+				atOldest = chunk.at_oldest;
+			}
+		} catch {
+			if (alive) atOldest = true;
+		}
+

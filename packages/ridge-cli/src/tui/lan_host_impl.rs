@@ -26,8 +26,8 @@ use ridge_core::workspace::pane_tree::SplitDirection;
 use ridge_remote::auth::SessionStore;
 use ridge_remote::host::{HostAuth, HostError, HostMeta, RemoteHost, WorkspaceProvider, WsConn};
 use ridge_remote::serve::UaServeConfig;
-use ridge_term::remote_v2::RemoteTerminalUpdate;
-use ridge_term::terminal_v2::{self, PaneRef, TerminalEnvelope};
+
+use ridge_term::terminal_protocol::{self, PaneRef};
 
 use crate::fs_reuse;
 use crate::totp::RemoteTotp;
@@ -283,8 +283,8 @@ async fn run_ws(socket: WebSocket, workspace: SharedWorkspace, ws_id: Uuid) {
         "type": "hello",
         "version": 1,
         "protocol": "ridge-remote-ws",
-        "terminalProtocolVersion": ridge_term::terminal_v2::PROTOCOL_VERSION,
-        "terminalMaxFrameBytes": ridge_term::terminal_v2::MAX_FRAME_BYTES,
+        "terminalProtocolVersion": ridge_term::terminal_protocol::PROTOCOL_VERSION,
+        "terminalMaxFrameBytes": ridge_term::terminal_protocol::MAX_FRAME_BYTES,
     });
     if ws_tx.send(Message::Text(hello.to_string())).await.is_err() {
         return;
@@ -445,6 +445,24 @@ fn dispatch_lan_invoke_for_connection(
     active_pane_stream: Option<&ActivePaneStream>,
 ) -> Result<Value, String> {
     match cmd {
+        "write_terminal_input" => {
+            let input: ridge_term::terminal_protocol::TerminalInput = serde_json::from_value(args["input"].clone()).map_err(|error| error.to_string())?;
+            let pane_id = Uuid::parse_str(&input.pane.pane_id).map_err(|_| "invalid paneId")?;
+            let w = workspace.lock().unwrap();
+            let session = w.find(pane_id).ok_or("terminal unavailable")?;
+            let pane = ridge_term::terminal_protocol::PaneRef::new(ws_id.to_string(), pane_id.to_string());
+            serde_json::to_value(session.terminal_input(&input, &pane)?).map_err(|error| error.to_string())
+        }
+        "get_terminal_history" => {
+            let request: ridge_term::terminal_protocol::HistoryRequest = serde_json::from_value(args["request"].clone()).map_err(|error| error.to_string())?;
+            if request.pane.workspace_id != ws_id.to_string() { return Err("workspace mismatch".into()); }
+            let pane_id = Uuid::parse_str(&request.pane.pane_id).map_err(|_| "invalid paneId")?;
+            let w = workspace.lock().unwrap();
+            let session = w.find(pane_id).ok_or("terminal unavailable")?;
+            let update = session.semantic_history(&request)?;
+            let bytes = ridge_term::terminal_protocol::encode_frame(&update.into_frame(request.pane, request.activation_id)).map_err(|error| error.to_string())?;
+            Ok(Value::String(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)))
+        }
         "write_to_pty" | "write_pty" => {
             let data = args.get("data").and_then(Value::as_str).unwrap_or("");
             if data.is_empty() {
@@ -767,8 +785,8 @@ fn start_pane_subscription(
             if !active_pane_stream.is_current(stream_generation) {
                 return;
             }
-            let initial = TerminalEnvelope::snapshot(pane.clone(), activation_id, snapshot);
-            let Ok(frame) = terminal_v2::encode_frame(&initial) else {
+            let initial = snapshot.into_frame(pane.clone(), activation_id);
+            let Ok(frame) = terminal_protocol::encode_frame(&initial) else {
                 return;
             };
             if tx.send(Message::Binary(frame)).is_err() {
@@ -785,22 +803,11 @@ fn start_pane_subscription(
                     update = rx.recv() => update,
                 };
                 let envelope = match update {
-                    Ok(RemoteTerminalUpdate::Snapshot(snapshot)) => {
-                        TerminalEnvelope::snapshot(pane.clone(), activation_id, snapshot)
-                    }
-                    Ok(RemoteTerminalUpdate::Delta(delta)) => {
-                        TerminalEnvelope::delta(pane.clone(), activation_id, delta)
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        TerminalEnvelope::snapshot(
-                            pane.clone(),
-                            activation_id,
-                            session.semantic_snapshot(),
-                        )
-                    }
+                    Ok(update) => update.into_frame(pane.clone(), activation_id),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => session.semantic_snapshot().into_frame(pane.clone(), activation_id),
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 };
-                let Ok(frame) = terminal_v2::encode_frame(&envelope) else {
+                let Ok(frame) = terminal_protocol::encode_frame(&envelope) else {
                     continue;
                 };
                 if !active_pane_stream.is_current(stream_generation) {

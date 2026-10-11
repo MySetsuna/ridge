@@ -111,6 +111,7 @@ pub struct Terminal {
     /// older frame prevents a queued pre-reframe packet from reviving stale
     /// cells.
     last_applied_frame_seq: Option<u64>,
+    history_generation: u64,
 }
 
 impl Terminal {
@@ -129,50 +130,8 @@ impl Terminal {
             grapheme_buf: String::new(),
             pending_reset: false,
             last_applied_frame_seq: None,
+            history_generation: 0,
         }
-    }
-
-    pub fn remote_v2_snapshot(
-        &self,
-        revision: u64,
-        title: String,
-        cwd: String,
-    ) -> crate::terminal_v2::TerminalSnapshot {
-        crate::remote_v2::snapshot(&self.grid, &self.modes, revision, title, cwd)
-    }
-
-    pub fn apply_remote_v2_snapshot(&mut self, snapshot: &crate::terminal_v2::TerminalSnapshot) {
-        crate::remote_v2::install_snapshot(&mut self.grid, &mut self.modes, snapshot);
-        self.current_attrs = Attrs::DEFAULT;
-        self.scroll_offset = 0;
-        self.user_scroll_locked = false;
-        self.pending_response.clear();
-        self.pending_events.clear();
-        if !snapshot.title.is_empty() {
-            self.pending_events
-                .push(KernelEvent::TitleChanged(snapshot.title.clone()));
-        }
-        if !snapshot.cwd.is_empty() {
-            self.pending_events
-                .push(KernelEvent::CwdChanged(snapshot.cwd.clone()));
-        }
-        self.last_printed = None;
-        self.current_link = None;
-        self.grapheme_buf.clear();
-        self.pending_reset = false;
-        self.last_applied_frame_seq = None;
-    }
-
-    pub fn apply_remote_v2_delta(&mut self, frame: &crate::terminal_v2::TerminalDeltaFrame) {
-        for delta in &frame.deltas {
-            if let Some(local) = crate::remote_v2::delta_to_local(delta) {
-                self.apply_delta(&local);
-            }
-        }
-    }
-
-    pub fn prepend_remote_v2_history(&mut self, lines: &[crate::terminal_v2::WireLine]) {
-        crate::remote_v2::prepend_history(&mut self.grid, lines);
     }
 
     /// P3.10 — drain the RIS-observed flag. Used by `PaneParser` to
@@ -185,6 +144,7 @@ impl Terminal {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
+        let clears_before = self.grid.scrollback_clear_count();
         // Auto-snap the viewport back to the live grid on new output —
         // matches xterm so log streams don't disappear behind the user
         // while they're paging — UNLESS the user has explicitly paged
@@ -229,6 +189,9 @@ impl Terminal {
         if self.grid.is_alt_screen() != alt_before {
             self.user_scroll_locked = false;
             self.scroll_offset = 0;
+        }
+        if clears_before != self.grid.scrollback_clear_count() {
+            self.history_generation = self.history_generation.saturating_add(1);
         }
     }
 
@@ -580,6 +543,7 @@ impl Terminal {
     /// trip. Live grid is untouched — caller can pair with
     /// `erase_in_display(All)` + `cursor_to(0,0)` for a full wipe.
     pub fn clear_scrollback(&mut self) {
+        self.history_generation = self.history_generation.saturating_add(1);
         self.grid.clear_scrollback();
         self.scroll_offset = 0;
         self.user_scroll_locked = false;
@@ -644,6 +608,9 @@ impl Terminal {
     }
 
     pub fn resize(&mut self, rows: usize, cols: usize) {
+        if rows != self.grid.rows() || cols != self.grid.cols() {
+            self.history_generation = self.history_generation.saturating_add(1);
+        }
         // §A.3 (2026-05-07): drive the inline-TUI heuristic into
         // `Grid::resize_with_inline_tui` so primary-screen Ink apps
         // (Claude Code's input box) get the same SIGWINCH-blank-canvas
@@ -731,6 +698,91 @@ impl Terminal {
     }
     pub fn grid(&self) -> &Grid {
         &self.grid
+    }
+
+    pub fn history_generation(&self) -> u64 { self.history_generation }
+
+    pub fn apply_semantic_snapshot(&mut self, snapshot: &crate::terminal_protocol::TerminalSnapshot) {
+        crate::semantic::install_snapshot(&mut self.grid, &mut self.modes, snapshot);
+        self.history_generation = snapshot.history.epoch;
+        self.current_attrs = Attrs::DEFAULT;
+        self.scroll_offset = 0;
+        self.user_scroll_locked = false;
+        self.pending_response.clear();
+        self.pending_events.clear();
+        if !snapshot.title.is_empty() { self.pending_events.push(KernelEvent::TitleChanged(snapshot.title.clone())); }
+        if !snapshot.cwd.is_empty() { self.pending_events.push(KernelEvent::CwdChanged(snapshot.cwd.clone())); }
+        self.last_printed = None;
+        self.current_link = None;
+        self.grapheme_buf.clear();
+        self.pending_reset = false;
+        self.last_applied_frame_seq = None;
+    }
+
+    pub fn apply_semantic_delta(&mut self, frame: &crate::terminal_protocol::TerminalDeltaFrame) {
+        use crate::terminal_protocol::{ScreenKind, TerminalDelta};
+        let links = crate::semantic::packet_dictionary(&frame.hyperlinks);
+        for delta in &frame.deltas {
+            match delta {
+                TerminalDelta::Cells { screen, row, col, cells, wrapped } => {
+                    let active = self.grid.is_alt;
+                    self.grid.is_alt = *screen == ScreenKind::Alternate;
+                    let quads = cells.iter().map(|cell| (cell.ch, crate::semantic::cell_attrs(cell), cell.width,
+                        cell.cluster.clone().map(String::into_boxed_str))).collect::<Vec<_>>();
+                    self.grid.write_delta_cells(usize::from(*row), usize::from(*col), &quads, *wrapped);
+                    let target = if self.grid.is_alt { &mut self.grid.alt } else { &mut self.grid.primary };
+                    if let Some(row) = target.rows.get_mut(usize::from(*row)) { crate::semantic::restore_cell_links(row, usize::from(*col), cells, &links); }
+                    self.grid.is_alt = active;
+                }
+                TerminalDelta::Cursor { screen, cursor } => {
+                    let target = if *screen == ScreenKind::Alternate { &mut self.grid.alt } else { &mut self.grid.primary };
+                    target.cursor.row = usize::from(cursor.row);
+                    target.cursor.col = usize::from(cursor.col);
+                    target.cursor.pending_wrap = cursor.pending_wrap;
+                    if self.grid.is_alt == (*screen == ScreenKind::Alternate) {
+                        self.modes.cursor_visible = cursor.visible;
+                        self.modes.cursor_blink = cursor.blink;
+                        self.modes.cursor_shape = crate::semantic::cursor_shape_from_wire(cursor.shape);
+                    }
+                }
+                TerminalDelta::SavedCursor { screen, cursor } => {
+                    let saved = cursor.map(|cursor| crate::semantic::saved_cursor_from_wire(cursor, &mut self.grid.attrs));
+                    let target = if *screen == ScreenKind::Alternate { &mut self.grid.alt } else { &mut self.grid.primary };
+                    target.saved_cursor = saved;
+                }
+                TerminalDelta::ScrollbackAppend { lines, .. } => {
+                    for line in lines {
+                        let row = crate::semantic::row_from_wire(line, self.grid.cols(), &mut self.grid.attrs, &links);
+                        let _ = self.grid.scrollback.push(row);
+                    }
+                    if self.user_scroll_locked && !self.grid.is_alt {
+                        self.scroll_offset = self.scroll_offset.saturating_add(lines.len()).min(self.grid.scrollback.len());
+                    }
+                }
+                TerminalDelta::Scroll { screen, top, bottom, count, up } => {
+                    let active = self.grid.is_alt;
+                    self.grid.is_alt = *screen == ScreenKind::Alternate;
+                    self.grid.apply_scroll_delta(usize::from(*top), usize::from(*bottom), usize::from(*count), *up);
+                    self.grid.is_alt = active;
+                }
+                TerminalDelta::ScrollRegion { screen, top, bottom } => {
+                    let target = if *screen == ScreenKind::Alternate { &mut self.grid.alt } else { &mut self.grid.primary };
+                    target.scroll_top = usize::from(*top); target.scroll_bottom = usize::from(*bottom);
+                }
+                TerminalDelta::ModeChange(mode) => self.apply_delta(&crate::term::delta::GridDelta::ModeChange { mode: mode.mode, on: mode.on }),
+                TerminalDelta::ScreenSwitch { active } => {
+                    self.grid.is_alt = *active == ScreenKind::Alternate;
+                    self.scroll_offset = 0; self.user_scroll_locked = false;
+                }
+                TerminalDelta::Title(title) => self.pending_events.push(KernelEvent::TitleChanged(title.clone())),
+                TerminalDelta::Cwd(cwd) => self.pending_events.push(KernelEvent::CwdChanged(cwd.clone())),
+                TerminalDelta::Bell => self.pending_events.push(KernelEvent::Bell),
+            }
+        }
+    }
+
+    pub fn prepend_semantic_history(&mut self, page: &crate::terminal_protocol::HistoryPage) {
+        crate::semantic::prepend_history(&mut self.grid, &page.lines, &crate::semantic::packet_dictionary(&page.hyperlinks));
     }
     /// Drain physical scroll operations observed while parsing. The native
     /// delta producer turns these into compact `GridDelta::Scroll` records
@@ -977,10 +1029,12 @@ mod tests {
         t.apply_delta(&GridDelta::ScrollbackAppend {
             lines: vec![
                 DeltaLine {
+                    hyperlinks: Vec::new(),
                     cells: line_a,
                     wrapped: true,
                 },
                 DeltaLine {
+                    hyperlinks: Vec::new(),
                     cells: line_b,
                     wrapped: false,
                 },

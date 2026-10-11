@@ -128,6 +128,24 @@ describe('CloudWebrtcAdapter — inbound demux', () => {
     ({ provider, adapter } = wire());
   });
 
+  it('delivers canonical packets intact, with independent listener teardown', () => {
+    const receive = vi.fn();
+    const legacy = vi.fn();
+    const stop = adapter.onTerminalFrame(receive);
+    adapter.onPaneBytes(legacy);
+    const frame = new Uint8Array([0x13, 1, 0xff, 0]);
+    provider.deliverFrame(frame);
+    expect(receive).toHaveBeenCalledWith(frame);
+    expect(legacy).not.toHaveBeenCalled();
+    stop();
+    provider.deliverFrame(frame);
+    expect(receive).toHaveBeenCalledOnce();
+    adapter.onTerminalFrame(receive);
+    adapter.dispose();
+    provider.deliverFrame(frame);
+    expect(receive).toHaveBeenCalledOnce();
+  });
+
   it('routes a 0x11 JSON frame to onControl', () => {
     const frames: unknown[] = [];
     adapter.onControl((f) => frames.push(f));
@@ -344,7 +362,7 @@ describe('CloudWebrtcAdapter + L2 RpcClient — end to end', () => {
     provider.deliverJson({
       jsonrpc: '2.0',
       method: '$/hello',
-      params: { protocolVersion: 1, terminalProtocolVersion: 2, capabilities: ['pane', 'invoke', 'fs'] },
+      params: { protocolVersion: 1, terminalProtocolVersion: 1, capabilities: ['pane', 'invoke', 'fs'] },
     });
     expect(rpc.protocol?.protocolVersion).toBe(1);
     expect(rpc.hasCapability('fs')).toBe(true);

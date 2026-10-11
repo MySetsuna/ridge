@@ -150,7 +150,7 @@ pub fn negotiate_hello(params: &Value) -> Value {
         .get("terminalProtocolVersion")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    if terminal_version != ridge_term::terminal_v2::PROTOCOL_VERSION as u64 {
+    if terminal_version != ridge_term::terminal_protocol::PROTOCOL_VERSION as u64 {
         return serde_json::json!({
             "jsonrpc": "2.0",
             "method": BYE_METHOD,
@@ -173,8 +173,8 @@ pub fn negotiate_hello(params: &Value) -> Value {
         "method": HELLO_METHOD,
         "params": {
             "protocolVersion": HOST_PROTOCOL_VERSION,
-            "terminalProtocolVersion": ridge_term::terminal_v2::PROTOCOL_VERSION,
-            "terminalMaxFrameBytes": ridge_term::terminal_v2::MAX_FRAME_BYTES,
+            "terminalProtocolVersion": ridge_term::terminal_protocol::PROTOCOL_VERSION,
+            "terminalMaxFrameBytes": ridge_term::terminal_protocol::MAX_FRAME_BYTES,
             "capabilities": agreed,
         },
     })

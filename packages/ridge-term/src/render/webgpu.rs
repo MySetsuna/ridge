@@ -639,6 +639,7 @@ impl WebGpuPaneBackend {
         let render_path = scan_line_path(row.cells, row.clusters);
         let mut consume_until: usize = 0;
         let mut background_run: Option<(usize, usize, [u8; 4], [u8; 4])> = None;
+        let mut decorations = Vec::new();
 
         for (col, cell) in row.cells.iter().enumerate() {
             if cell.width == 0 {
@@ -663,10 +664,25 @@ impl WebGpuPaneBackend {
                 continue;
             }
 
-            let (_attrs, fg, bg) =
+            let (attrs, fg, bg) =
                 crate::render::backend::resolve_cell_colors(cell, attrs_table, &theme, tui_mode);
 
             let cell_span = cell.width.max(1) as usize;
+            use crate::term::attrs::Flags;
+            let thickness = self.metrics.dpr.round().max(1.0);
+            if !attrs.flags.contains(Flags::HIDDEN) {
+                let mut stroke = |y: f32| decorations.push(CellInstance {
+                    cell_xy: [col as f32 * cell_w, y],
+                    cell_size: [cell_span as f32 * cell_w, thickness],
+                    atlas_uv: [0.0; 4], atlas_layer: 0,
+                    fg_rgba: rgba_u8_to_f32(fg), bg_rgba: rgba_u8_to_f32(fg), is_color: 0,
+                });
+                if attrs.flags.contains(Flags::UNDERLINE) || attrs.flags.contains(Flags::DBL_UNDERLINE) {
+                    stroke(pixel_y_bot - thickness);
+                }
+                if attrs.flags.contains(Flags::DBL_UNDERLINE) { stroke((pixel_y_bot - 3.0 * thickness).max(pixel_y)); }
+                if attrs.flags.contains(Flags::STRIKETHROUGH) { stroke(pixel_y + (row_h_int * 0.5).floor()); }
+            }
 
             // Normal shell default backgrounds are transparent: the damaged
             // row was already repaired by SurfaceHost, so emitting one quad
@@ -733,6 +749,7 @@ impl WebGpuPaneBackend {
             pixel_y,
             row_h_int,
         );
+        self.pending_instances.extend(decorations);
     }
 
     fn admit_glyph(

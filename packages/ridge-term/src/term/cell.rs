@@ -10,13 +10,14 @@ use super::attr_table::AttrId;
 /// One grid cell. `width` carries the result of `wcwidth` so the renderer
 /// (and selection logic) can skip the second half of a wide cell without
 /// re-running the unicode-width table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Cell {
     pub ch: char,
     pub attr: AttrId,
     /// 0 = continuation half of a wide cell (renderer must skip),
     /// 1 = normal cell, 2 = first half of a wide cell.
     pub width: u8,
+    #[serde(skip)]
     _pad: u8,
 }
 
@@ -62,7 +63,7 @@ impl Default for Cell {
 /// One OSC 8 hyperlink range on a row: cells `[col_start, col_end)` are
 /// part of the same link. Coalesced with adjacent same-(uri,id) writes
 /// at insertion time so a 12-char filename only produces one span, not 12.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HyperlinkSpan {
     pub col_start: usize,
     pub col_end: usize,
@@ -120,7 +121,7 @@ pub fn scan_line_path(cells: &[Cell], clusters: &[ClusterSpan]) -> RenderPath {
 /// glyph there); renderers that find a matching `ClusterSpan` use
 /// `text` instead of `cell.ch`. Spans are kept ordered by `col` for cheap
 /// binary lookup in both the kernel-facing row helpers and WebGPU renderer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClusterSpan {
     pub col: u16,
     pub text: Box<str>,
@@ -129,7 +130,7 @@ pub struct ClusterSpan {
 /// One row. Wraps `Vec<Cell>` plus a small amount of per-row metadata
 /// (wrap flag for reflow, hyperlink spans for OSC 8 click-through,
 /// grapheme cluster spans for ZWJ-emoji rendering).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Row {
     pub cells: Vec<Cell>,
     /// Monotonic Grid-owned content revision. Native delta production uses

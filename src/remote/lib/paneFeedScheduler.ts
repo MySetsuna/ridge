@@ -143,7 +143,7 @@ export class PaneFeedScheduler {
       activeTurn = next.activeTurn;
       backgroundTurn = next.backgroundTurn;
       if (!paneKey) break;
-      const delivered = this.drainPane(paneKey);
+      const delivered = this.drainPane(paneKey, this.maxBytesPerFrame - processed);
       if (delivered < 0) break;
       processed += delivered;
     }
@@ -151,12 +151,12 @@ export class PaneFeedScheduler {
     if (this.hasQueued()) this.schedule();
   }
 
-  private drainPane(paneKey: string): number {
+  private drainPane(paneKey: string, frameBytesRemaining: number): number {
     const queue = this.queues.get(paneKey);
     if (!queue || queue.frames.length === 0) return 0;
     const frame = queue.frames[0];
     const remaining = frame.bytes.byteLength - frame.offset;
-    const size = Math.min(this.stepBytes, remaining);
+    const size = Math.min(this.stepBytes, remaining, frameBytesRemaining);
     const start = frame.offset;
     const chunk = frame.bytes.subarray(start, start + size);
     frame.offset += size;

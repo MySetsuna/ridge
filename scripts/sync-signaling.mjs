@@ -33,42 +33,64 @@ export const srcRepo =
 const DEST = join(root, 'packages', 'remote', 'src', 'shared', 'cloud', 'signaling');
 const GENERATED = join(DEST, 'generated');
 const FIXTURES = join(DEST, 'fixtures');
-const TERMINAL_FIXTURES = join(FIXTURES, 'terminal-v2');
-const GENERATED_RUST = join(root, 'packages', 'ridge-term', 'src', 'remote_protocol_generated.rs');
+const TERMINAL_FIXTURES = join(FIXTURES, 'terminal');
+const GENERATED_RUST = join(root, 'packages', 'ridge-term', 'src', 'terminal_protocol_generated.rs');
 
-/** Generated bindings to vendor (relative to `bindings/`), preserving subdirs. */
-const BINDING_FILES = [
-  'SignalMsg.ts',
-  'Role.ts',
-  'PaneRef.ts',
-  'ActivateTerminalParams.ts',
-  'TerminalHello.ts',
-  'PointerAction.ts',
-  'PointerEvent.ts',
-  join('serde_json', 'JsonValue.ts'),
-];
+// Copy the entire generated type set; request/body types have one owner.
+async function bindingFiles(dir, prefix = '') {
+  const names = await readdir(dir, { withFileTypes: true });
+  const files = [];
+  for (const entry of names) {
+    const relative = prefix ? join(prefix, entry.name) : entry.name;
+    if (entry.isDirectory()) files.push(...await bindingFiles(join(dir, entry.name), relative));
+    else if (entry.name.endsWith('.ts')) files.push(relative);
+  }
+  return files.sort();
+}
 
 export function sourceError(repo = srcRepo, exists = existsSync) {
   if (!exists(repo)) return `[sync-signaling] ridge-signaling repo not found at ${repo}.\nCheck it out as a sibling of wind, or set RIDGE_SIGNALING_REPO to its path.`;
-  if (!exists(join(repo, 'bindings')) || !exists(join(repo, 'fixtures', 'signaling')) || !exists(join(repo, 'src', 'terminal_v2.rs'))) return `[sync-signaling] ${repo} is missing bindings/, fixtures/, or src/terminal_v2.rs.\nRegenerate them in ridge-signaling first (ts-rs export + fixtures).`;
+  if (!exists(join(repo, 'bindings')) || !exists(join(repo, 'fixtures', 'signaling')) || !exists(join(repo, 'src', 'terminal.rs'))) return `[sync-signaling] ${repo} is missing bindings/, fixtures/, or src/terminal.rs.\nRegenerate them in ridge-signaling first (ts-rs export + fixtures).`;
   return null;
 }
 
 export async function main({ repo = srcRepo, exists = existsSync, io = console } = {}) {
   const error = sourceError(repo, exists);
   if (error) { io.error(error); return false; }
+  // Resolve the authority before mutating generated artifacts. Git on PATH is
+  // the platform fallback when the helper's default installation is absent.
+  const configuredGit = process.env.RIDGE_GIT_PATH?.trim();
+  const sourceGit = configuredGit || (exists(gitTool()) ? gitTool() : 'git');
+  const rev = execFileSync(sourceGit, ['rev-parse', 'HEAD'], {
+    cwd: repo, encoding: 'utf8',
+  }).trim();
   const sourceBindings = join(repo, 'bindings');
   const sourceFixtures = join(repo, 'fixtures', 'signaling');
-  const sourceTerminalFixtures = join(repo, 'fixtures', 'terminal-v2');
+  const sourceTerminalFixtures = join(repo, 'fixtures', 'terminal');
 
-  // 1) generated/: clear then copy the fixed binding set (verbatim, keep ts-rs header).
+  const bindings = await bindingFiles(sourceBindings);
+  // Archive retired generated artifacts before replacing the owned directories.
+  const archive = join(root, 'docs', 'archive', 'CHG-069', 'terminal-v2');
+  for (const dir of [GENERATED, FIXTURES, archive]) {
+    const resolved = resolve(dir);
+    if (!resolved.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) throw new Error('generated directory escapes workspace');
+  }
+  if (!exists(archive)) {
+    await mkdir(archive, { recursive: true });
+    if (exists(GENERATED)) await cp(GENERATED, join(archive, 'generated'), { recursive: true });
+    if (exists(FIXTURES)) await cp(FIXTURES, join(archive, 'fixtures'), { recursive: true });
+    const retired = join(root, 'packages', 'ridge-term', 'src', 'remote_protocol_generated.rs');
+    if (exists(retired)) await cp(retired, join(archive, 'remote_protocol_generated.rs'));
+  }
+  // 1) Generated types are copied byte-for-byte from their authority.
   await rm(GENERATED, { recursive: true, force: true });
   await mkdir(join(GENERATED, 'serde_json'), { recursive: true });
-  for (const rel of BINDING_FILES) {
+  for (const rel of bindings) {
     const from = join(sourceBindings, rel);
     if (!exists(from)) {
       throw new Error(`[sync-signaling] missing binding ${from} in ridge-signaling.`);
     }
+    await mkdir(dirname(join(GENERATED, rel)), { recursive: true });
     await cp(from, join(GENERATED, rel));
   }
 
@@ -81,27 +103,23 @@ export async function main({ repo = srcRepo, exists = existsSync, io = console }
     await cp(join(sourceFixtures, name), join(FIXTURES, name));
   }
 
-  // 3) Terminal v2 Rust wire module + golden bytes. ridge-term is compiled on
+  // 3) Terminal Rust wire module + golden bytes. ridge-term is compiled on
   // both native and wasm targets, so this exact generated source is the codec
   // used by the host and mobile kernel.
-  await cp(join(repo, 'src', 'terminal_v2.rs'), GENERATED_RUST);
+  await cp(join(repo, 'src', 'terminal.rs'), GENERATED_RUST);
   await mkdir(TERMINAL_FIXTURES, { recursive: true });
   const terminalFixtureNames = exists(sourceTerminalFixtures)
-    ? (await readdir(sourceTerminalFixtures)).filter((f) => f.endsWith('.hex')).sort()
+    ? (await readdir(sourceTerminalFixtures)).filter((f) => (f.endsWith('.hex') || f.endsWith('.json'))).sort()
     : [];
   for (const name of terminalFixtureNames) {
     await cp(join(sourceTerminalFixtures, name), join(TERMINAL_FIXTURES, name));
   }
 
   // 4) SOURCE_REV: record the source commit (single line, no newline noise).
-  const rev = execFileSync(gitTool(), ['rev-parse', 'HEAD'], {
-    cwd: repo,
-    encoding: 'utf8',
-  }).trim();
   await writeFile(join(DEST, 'SOURCE_REV'), rev, 'utf8');
 
   io.log(
-    `[sync-signaling] vendored ${BINDING_FILES.length} bindings + ${fixtureNames.length + terminalFixtureNames.length} fixtures + terminal v2 Rust codec\n` +
+    `[sync-signaling] vendored ${bindings.length} bindings + ${fixtureNames.length + terminalFixtureNames.length} fixtures + terminal Rust codec\n` +
       `  from ${repo}\n` +
       `  → ${DEST}\n` +
       `  SOURCE_REV = ${rev}`,

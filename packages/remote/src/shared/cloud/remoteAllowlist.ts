@@ -51,6 +51,9 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   'activate_pane_pty',
   'change_pane_shell',
   'write_to_pty',
+  'write_terminal_input',
+  'get_terminal_snapshot',
+  'get_terminal_history',
   'resize_pane',
   'detect_available_shells',
   'get_shell_history',
@@ -167,6 +170,7 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
  * read-write. Keep it synchronized for consumers that grade command impact.
  */
 export const MUTATING_METHODS: readonly string[] = [
+  'write_terminal_input',
   // ── Filesystem writes ──
   'write_file',
   'apply_file_edits',

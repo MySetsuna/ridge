@@ -1,4 +1,5 @@
-import { CHANNEL } from '../transport/cloudMux';
+import { CHANNEL, BULK_RPC_THRESHOLD_BYTES, isPaneOutputFrame } from '../transport/cloudMux';
+import terminalHello from './signaling/fixtures/terminal/hello.json';
 import { remotePerfEnabled, remotePerfMark, remotePerfStart } from '../transport/remotePerfTrace';
 
 /**
@@ -15,7 +16,7 @@ export interface PriorityFrameQueueOptions {
 }
 
 export const DEFAULT_MAX_PENDING_PANE_BYTES = 256 * 1024;
-export const DEFAULT_MAX_PENDING_CONTROL_BYTES = 128 * 1024;
+export const DEFAULT_MAX_PENDING_CONTROL_BYTES = BULK_RPC_THRESHOLD_BYTES;
 
 interface QueuedFrame {
   frame: Uint8Array;
@@ -51,7 +52,7 @@ export class PriorityFrameQueue {
   enqueue(frame: Uint8Array): boolean {
     const copy = frame.slice();
     const item = { frame: copy, bytes: copy.byteLength, queuedAt: remotePerfStart('transport-queue')?.startedAt };
-    if (copy[0] === CHANNEL.PANE_RAW) {
+    if (isPaneOutputFrame(copy)) {
       if (!this.admitPane(item)) return false;
       this.panes.push(item);
       this.pendingPaneBytes += item.bytes;
@@ -115,7 +116,11 @@ export class PriorityFrameQueue {
   private observeDrop() { if (remotePerfEnabled()) this.droppedFrames++; this.observe(); }
 
   private admitPane(item: QueuedFrame): boolean {
-    if (item.bytes > this.maxPendingPaneBytes) {
+    // A snapshot cannot be split into independent terminal packets. Retain at
+    // most one large canonical packet, bounded by the negotiated frame limit.
+    const canonical = item.frame[0] === CHANNEL.TERMINAL || item.frame[0] === CHANNEL.JSON;
+    const limit = canonical ? Math.max(this.maxPendingPaneBytes, Math.min(item.bytes, terminalHello.maxFrameBytes)) : this.maxPendingPaneBytes;
+    if ((canonical && item.bytes > terminalHello.maxFrameBytes) || item.bytes > limit) {
       this.observeDrop();
       this.onPaneDrop?.();
       return false;
@@ -123,7 +128,7 @@ export class PriorityFrameQueue {
     // Keep the newest live tail. Older pane bytes are recoverable through the
     // existing pane resync path, while retaining them only increases latency.
     while (
-      this.pendingPaneBytes + item.bytes > this.maxPendingPaneBytes &&
+      this.pendingPaneBytes + item.bytes > limit &&
       this.panes.length > 0
     ) {
       const dropped = this.panes.shift()!;
@@ -131,7 +136,7 @@ export class PriorityFrameQueue {
       this.observeDrop();
       this.onPaneDrop?.();
     }
-    return this.pendingPaneBytes + item.bytes <= this.maxPendingPaneBytes;
+    return this.pendingPaneBytes + item.bytes <= limit;
   }
 
   private pump(): void {

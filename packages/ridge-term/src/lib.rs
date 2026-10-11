@@ -39,19 +39,24 @@ use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
 
 pub mod input;
-pub mod remote_v2;
+pub mod input_sequence;
+pub mod links;
+pub mod semantic;
+pub mod producer;
+pub mod presentation;
 pub mod render;
 pub mod search;
 pub mod selection;
 pub mod term;
-#[path = "remote_protocol_generated.rs"]
-pub mod terminal_v2;
+#[path = "terminal_protocol_generated.rs"]
+pub mod terminal_protocol;
 
 use crate::input::KeyEvent;
 use crate::search::SearchState;
 use crate::selection::{Pos, Range, RangeAbs, Selection};
 use crate::term::Terminal;
 
+#[cfg(any(feature = "bindings", test))]
 #[wasm_bindgen(start)]
 pub fn _init() {
     console_error_panic_hook::set_once();
@@ -69,12 +74,11 @@ pub fn set_present_fast(on: bool) {
     crate::render::webgpu::set_present_fast(on);
 }
 
-/// Install one host-resolved system font into the synchronous WebGPU glyph
-/// rasterizer. JS must finish this preload before constructing SurfaceHost.
+/// Install the separately loaded selected-font engine before creating GPU contexts.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-#[wasm_bindgen(js_name = installFontData)]
-pub fn install_font_data(data: Vec<u8>) -> Result<bool, JsValue> {
-    crate::render::gpu_context::install_font_data(data).map_err(JsValue::from)
+#[wasm_bindgen(js_name = installFontRasterizer)]
+pub fn install_font_rasterizer(factory: js_sys::Function) {
+    crate::render::glyph_rasterizer::install_factory(factory);
 }
 
 /// §atlas-race detector (2026-06-22): read the process-wide count of
@@ -90,6 +94,7 @@ pub fn atlas_overwrite_after_cite_count() -> f64 {
     crate::render::gpu_context::atlas_overwrite_after_cite_count() as f64
 }
 
+#[cfg(any(feature = "bindings", test))]
 #[wasm_bindgen(js_name = TerminalKernel)]
 pub struct JsTerminal {
     inner: Terminal,
@@ -108,14 +113,47 @@ pub struct JsTerminal {
     /// drains Grid's producer queue independently; this copy drives the
     /// renderer's pixel scroll path.
     render_scroll_ops: RefCell<Vec<crate::term::grid::ScrollOp>>,
+    presentation: RefCell<crate::presentation::PresentationSource>,
     /// Identity/revision fence for semantic remote frames. A pane switch
     /// changes the activation id, making every queued frame from the former
     /// pane a harmless no-op.
     remote_activation_id: Option<u64>,
     remote_revision: Option<u64>,
+    remote_scrollback_start: Option<u64>,
+    remote_history_has_more: bool,
+    remote_epoch: Option<String>,
+    remote_pane: Option<crate::terminal_protocol::PaneRef>,
+    remote_history: Option<crate::terminal_protocol::HistoryRange>,
+    remote_recovery_anchor: Option<(u64, Option<crate::selection::RangeAbs>)>,
 }
 
+#[cfg(any(feature = "bindings", test))]
 impl JsTerminal {
+    fn restore_recovery_anchor(&mut self) {
+        let Some((top, selection)) = self.remote_recovery_anchor else { return; };
+        let Some(history) = self.remote_history else { return; };
+        let Some(start) = self.remote_scrollback_start else { return; };
+        let needed = selection.map_or(top, |range| top.min(range.start_abs_row as u64));
+        if needed < history.start || history.end.saturating_sub(needed) > self.inner.grid().scrollback.capacity() as u64 {
+            self.remote_recovery_anchor = None;
+            return;
+        }
+        if needed < start {
+            self.inner.scroll_up_view(self.inner.scrollback_len());
+            return;
+        }
+        self.inner.scroll_to_bottom();
+        self.inner.scroll_up_view(history.end.saturating_sub(top) as usize);
+        if let Some(mut range) = selection {
+            if range.start_abs_row as u64 >= start && (range.end_abs_row as u64) < history.end + self.inner.rows() as u64 {
+                range.start_abs_row -= start as usize;
+                range.end_abs_row -= start as usize;
+                self.selection.set_abs(range);
+            }
+        }
+        self.remote_recovery_anchor = None;
+    }
+
     fn capture_render_scroll_ops(&mut self) {
         let ops = self.inner.take_scroll_ops();
         if !ops.is_empty() {
@@ -123,7 +161,89 @@ impl JsTerminal {
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
+    fn apply_remote_envelope(&mut self, frame: crate::terminal_protocol::TerminalFrame,
+        workspace: &str, pane: &str, activation: u64) -> Result<bool, &'static str> {
+        use crate::terminal_protocol::TerminalBody;
+        if frame.pane.workspace_id != workspace || frame.pane.pane_id != pane || frame.activation_id != activation { return Ok(false); }
+        match frame.body {
+            TerminalBody::Snapshot(snapshot) => {
+                if self.remote_activation_id == Some(activation) {
+                    if self.remote_epoch.as_deref() != Some(frame.terminal_epoch.as_str()) { return Err("TERMINAL_LIFETIME_CHANGED"); }
+                    if self.remote_revision.is_some_and(|revision| snapshot.revision <= revision) { return Ok(false); }
+                }
+                let same_history = self.remote_epoch.as_deref() == Some(frame.terminal_epoch.as_str())
+                    && self.remote_pane.as_ref() == Some(&frame.pane)
+                    && self.remote_history.is_some_and(|history| history.epoch == snapshot.history.epoch)
+                    && self.inner.cols() == usize::from(snapshot.cols)
+                    && self.inner.is_alt_screen() == (snapshot.active_screen == crate::terminal_protocol::ScreenKind::Alternate);
+                let old_start = self.remote_scrollback_start.unwrap_or(snapshot.scrollback_start);
+                let old_len = self.inner.scrollback_len();
+                let old_top = self.remote_recovery_anchor.map(|anchor| anchor.0)
+                    .unwrap_or(old_start + old_len.saturating_sub(self.inner.scroll_offset()) as u64);
+                let old_offset = self.inner.scroll_offset();
+                let old_selection = same_history.then(|| self.selection.range_abs()).flatten();
+                let saved_selection = self.remote_recovery_anchor.and_then(|anchor| anchor.1).or_else(|| old_selection.map(|mut range| {
+                    range.start_abs_row += old_start as usize;
+                    range.end_abs_row += old_start as usize;
+                    range
+                }));
+                let mut cache_start = snapshot.scrollback_start;
+                let prefix = if same_history && snapshot.scrollback_start <= old_start.saturating_add(old_len as u64) {
+                    let room = self.inner.grid().scrollback.capacity().saturating_sub(snapshot.scrollback.len());
+                    let start = old_start.max(snapshot.history.start).max(snapshot.scrollback_start.saturating_sub(room as u64));
+                    if start < snapshot.scrollback_start {
+                        cache_start = start;
+                        Some(crate::semantic::cached_history_slice(&self.inner,
+                            (start-old_start) as usize..(snapshot.scrollback_start-old_start) as usize,
+                            snapshot.history, start)?)
+                    } else { None }
+                } else { None };
+                self.inner.apply_semantic_snapshot(&snapshot);
+                if let Some(prefix) = prefix { self.inner.prepend_semantic_history(&prefix); }
+                *self.presentation.borrow_mut() = crate::presentation::PresentationSource::default();
+                self.remote_epoch = Some(frame.terminal_epoch); self.remote_pane = Some(frame.pane);
+                self.remote_activation_id = Some(activation); self.remote_revision = Some(snapshot.revision);
+                self.remote_history = Some(snapshot.history); self.remote_scrollback_start = Some(cache_start);
+                self.remote_history_has_more = cache_start > snapshot.history.start;
+                self.remote_recovery_anchor = if same_history && old_offset > 0 {
+                    Some((old_top, saved_selection))
+                } else { None };
+                self.selection.clear(); self.search.clear(); self.render_scroll_ops.borrow_mut().clear();
+                self.restore_recovery_anchor();
+                Ok(true)
+            }
+            TerminalBody::Delta(delta) => {
+                if self.remote_activation_id != Some(activation) { return Err("TERMINAL_SNAPSHOT_REQUIRED"); }
+                if self.remote_epoch.as_deref() != Some(frame.terminal_epoch.as_str()) { return Ok(false); }
+                if self.remote_revision.is_some_and(|revision| delta.revision <= revision) { return Ok(false); }
+                if self.remote_revision != Some(delta.base_revision) { return Err("TERMINAL_REVISION_GAP"); }
+                if self.remote_history.is_none_or(|history| history.epoch != delta.history.epoch) { return Err("HISTORY_GENERATION_CHANGED"); }
+                crate::semantic::validate_delta(&self.inner, &delta, self.remote_history.unwrap().end)?;
+                let evictions = self.inner.scrollback_eviction_count(); self.inner.apply_semantic_delta(&delta);
+                self.remote_revision = Some(delta.revision); self.remote_history = Some(delta.history);
+                let evicted = self.inner.scrollback_eviction_count().saturating_sub(evictions);
+                if let Some(start) = &mut self.remote_scrollback_start { *start = start.saturating_add(evicted); }
+                self.remote_history_has_more = self.remote_scrollback_start.is_some_and(|start| start > delta.history.start);
+                if evicted > 0 { self.selection.clear(); self.search.clear(); }
+                self.restore_recovery_anchor();
+                self.capture_render_scroll_ops(); Ok(true)
+            }
+            TerminalBody::HistoryPage(page) => {
+                if self.remote_activation_id != Some(activation) || self.remote_epoch.as_deref() != Some(frame.terminal_epoch.as_str()) { return Ok(false); }
+                if self.remote_history.is_none_or(|history| history.epoch != page.history.epoch) { return Ok(false); }
+                let end = page.start.checked_add(page.lines.len() as u64);
+                if !page.lines.is_empty() && self.remote_scrollback_start.is_some_and(|start|
+                    page.start >= start && end.is_some_and(|end| end <= start.saturating_add(self.inner.scrollback_len() as u64))) { return Ok(false); }
+                if end != self.remote_scrollback_start { return Err("HISTORY_RANGE_GAP"); }
+                if page.lines.len() > self.inner.grid().scrollback.capacity().saturating_sub(self.inner.scrollback_len()) { return Err("HISTORY_CAPACITY"); }
+                self.inner.prepend_semantic_history(&page); self.remote_scrollback_start = Some(page.start);
+                self.remote_history_has_more = page.start > page.history.start.max(self.remote_history.unwrap().start);
+                self.selection.prepend_rows(page.lines.len()); self.search.prepend_rows(page.lines.len());
+                self.restore_recovery_anchor(); Ok(true)
+            }
+            TerminalBody::Error(_) => Err("TERMINAL_PROTOCOL_ERROR"),
+        }
+    }
     fn take_render_scroll_ops(&self) -> Vec<crate::term::grid::ScrollOp> {
         std::mem::take(&mut *self.render_scroll_ops.borrow_mut())
     }
@@ -142,6 +262,208 @@ fn append_render_scroll_ops(
         } else {
             target.push(op);
         }
+    }
+}
+
+#[cfg(test)]
+mod semantic_frame_tests {
+    #[test]
+    fn disjoint_recovery_pages_back_to_the_browsed_row_and_selection() {
+        let mut source = TerminalProducer::with_epoch(3,12,64,"disjoint".into());
+        for i in 0..12 { source.feed_semantic(format!("{i:02}\r\n").as_bytes()); }
+        let mut kernel = JsTerminal::new(3,12,64);
+        apply(&mut kernel,source.semantic_snapshot(),1).unwrap();
+        kernel.scroll_up(5);
+        kernel.set_selection_abs(1,0,1,2);
+        let top = kernel.inner.dump_visible_text()[0].clone();
+        let selected = kernel.get_selection_text();
+        for i in 12..32 { source.feed_semantic(format!("{i:02}\r\n").as_bytes()); }
+        apply(&mut kernel,source.semantic_snapshot(),1).unwrap();
+        assert!(kernel.history_recovery_pending());
+        let mut pages = 0;
+        while kernel.history_recovery_pending() {
+            let request = HistoryRequest {
+                pane: PaneRef::new("work","pane"), terminal_epoch: "disjoint".into(),
+                activation_id: 1, history_epoch: kernel.remote_history.unwrap().epoch,
+                before: kernel.remote_scrollback_start.unwrap(), max_rows: 4,
+            };
+            apply(&mut kernel,source.semantic_history(&request).unwrap(),1).unwrap();
+            pages += 1;
+            assert!(pages <= 8);
+        }
+        assert!(pages > 1);
+        assert_eq!(kernel.inner.dump_visible_text()[0],top);
+        assert_eq!(kernel.get_selection_text(),selected);
+        assert!(kernel.inner.scrollback_len() <= 64);
+        for i in 32..44 { source.feed_semantic(format!("{i:02}\r\n").as_bytes()); }
+        apply(&mut kernel,source.semantic_snapshot(),1).unwrap();
+        assert!(kernel.history_recovery_pending());
+        kernel.scroll_to_bottom();
+        assert!(!kernel.history_recovery_pending());
+        assert_eq!(kernel.scroll_offset(),0);
+    }
+
+    #[test]
+    fn same_generation_recovery_keeps_cached_history_view_and_selection() {
+        let mut source = TerminalProducer::with_epoch(3,12,30,"anchor".into());
+        source.feed_semantic(b"\x1b[31m\x1b]8;;https://example.test\x1b\\");
+        for i in 0..12 { source.feed_semantic(format!("{i:02}\r\n").as_bytes()); }
+        let mut kernel = JsTerminal::new(3,12,30);
+        apply(&mut kernel,source.semantic_snapshot(),1).unwrap();
+        kernel.inner.scroll_up_view(kernel.inner.scrollback_len());
+        kernel.set_selection_abs(0,0,0,2);
+        let selected = kernel.get_selection_text();
+        let top = kernel.inner.dump_visible_text()[0].clone();
+        let links = kernel.inner.viewport_row(0).unwrap().hyperlinks.clone();
+        let cell = kernel.inner.viewport_row(0).unwrap().cells[0];
+        let attrs = kernel.inner.grid().attrs.get(cell.attr);
+        source.feed_semantic(b"12\r\n");
+        apply(&mut kernel,source.semantic_snapshot(),1).unwrap();
+        assert_eq!(kernel.inner.dump_visible_text()[0],top);
+        assert_eq!(kernel.get_selection_text(),selected);
+        assert_eq!(kernel.inner.viewport_row(0).unwrap().hyperlinks,links);
+        let cell = kernel.inner.viewport_row(0).unwrap().cells[0];
+        assert_eq!(kernel.inner.grid().attrs.get(cell.attr),attrs);
+        source.feed_semantic(b"\x1b[3J");
+        apply(&mut kernel,source.semantic_snapshot(),1).unwrap();
+        assert_eq!(kernel.inner.scroll_offset(),0);
+        assert!(!kernel.has_selection());
+    }
+
+    #[test]
+    fn duplicate_snapshot_keeps_local_selection_and_viewport() {
+        let mut source = TerminalProducer::with_epoch(3, 12, 20, "duplicate".into());
+        source.feed_semantic(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
+        let snapshot = source.semantic_snapshot();
+        let mut kernel = JsTerminal::new(3,12,20);
+        apply(&mut kernel,snapshot.clone(),1).unwrap();
+        kernel.inner.scroll_up_view(1);
+        kernel.set_selection_abs(0,0,0,3);
+        let selected = kernel.get_selection_text();
+        let offset = kernel.inner.scroll_offset();
+        assert_eq!(apply(&mut kernel,snapshot,1),Ok(false));
+        assert_eq!(kernel.inner.scroll_offset(),offset);
+        assert_eq!(kernel.get_selection_text(),selected);
+    }
+
+    #[test]
+    fn recovered_snapshot_replaces_renderer_palette_even_with_same_geometry() {
+        use crate::presentation::{RenderTerminal, RenderView};
+        let mut source = TerminalProducer::with_epoch(3, 8, 20, "palette".into());
+        source.feed_semantic(b"\x1b[31mA");
+        let mut kernel = JsTerminal::new(3, 8, 20);
+        apply(&mut kernel, source.semantic_snapshot(), 1).unwrap();
+        let mut view = RenderView::default();
+        let capture = |kernel: &JsTerminal, after| kernel.presentation.borrow_mut().capture(&kernel.inner, None, after, vec![]).unwrap().unwrap();
+        view.apply(&capture(&kernel,0)).unwrap();
+        source.feed_semantic(b"\x1b[1;1H\x1b[34mB");
+        apply(&mut kernel, source.semantic_snapshot(), 1).unwrap();
+        view.apply(&capture(&kernel,view.revision())).unwrap();
+        let painted = view.viewport_row(0).unwrap().cells[0];
+        let authoritative = kernel.inner.viewport_row(0).unwrap().cells[0];
+        assert_eq!(painted.ch,'B');
+        assert_eq!(view.attrs_table().get(painted.attr),kernel.inner.grid().attrs.get(authoritative.attr));
+    }
+
+    #[test]
+    fn canonical_repaints_keep_selection_but_reset_and_eviction_clear_it() {
+        let mut source = TerminalProducer::with_epoch(2, 20, 1, "selection".into());
+        source.feed_and_diff(b"hello world");
+        let mut kernel = JsTerminal::new(2, 20, 1);
+        apply(&mut kernel, source.semantic_snapshot(), 1).unwrap();
+        kernel.set_selection_abs(0, 0, 0, 5);
+        for _ in 0..8 {
+            let next = source.feed_semantic(b"\x1b[1;13H");
+            apply(&mut kernel, next, 1).unwrap();
+            assert_eq!(kernel.get_selection_text(), "hello");
+        }
+        let reset = source.feed_semantic(b"\x1bc");
+        apply(&mut kernel, reset, 1).unwrap();
+        assert!(!kernel.has_selection());
+        source.feed_and_diff(b"a\r\nb\r\nc");
+        apply(&mut kernel, source.semantic_snapshot(), 2).unwrap();
+        kernel.set_selection_abs(0, 0, 0, 1);
+        apply(&mut kernel, source.feed_semantic(b"\r\nd\r\ne"), 2).unwrap();
+        assert!(!kernel.has_selection());
+    }
+
+    #[test]
+    fn visible_text_offsets_follow_wide_cells_and_history() {
+        let mut kernel = JsTerminal::new(2, 24, 20);
+        kernel.feed("中文 https://example.com".as_bytes());
+        assert_eq!(kernel.text_offset_to_cell(0, 3), 5);
+        assert_eq!(kernel.text_offset_to_cell(0, 22), 24);
+        kernel.feed(b"\r\nsecond\r\nthird");
+        kernel.inner.scroll_up_view(1);
+        assert_eq!(kernel.text_offset_to_cell(0, 3), 5);
+        let mut emoji = JsTerminal::new(2, 40, 20);
+        emoji.feed("👨‍👩‍👧 https://example.com".as_bytes());
+        assert_eq!(emoji.text_offset_to_cell(0, "👨‍👩‍👧 ".encode_utf16().count()), 3);
+        assert_eq!(emoji.inner.dump_visible_text()[0], "👨‍👩‍👧 https://example.com");
+    }
+
+    use super::*;
+    use crate::producer::TerminalProducer;
+    use crate::terminal_protocol::*;
+
+    fn apply(kernel: &mut JsTerminal, update: crate::semantic::SemanticUpdate, activation: u64) -> Result<bool, &'static str> {
+        let frame = update.into_frame(PaneRef::new("work", "pane"), activation);
+        let frame = decode_frame(&encode_frame(&frame).unwrap()).unwrap();
+        kernel.apply_remote_envelope(frame, "work", "pane", activation)
+    }
+
+    #[test]
+    fn pages_apply_after_live_revisions_and_keep_viewport_and_selection_anchors() {
+        let mut source = TerminalProducer::with_epoch(3, 20, 100, "epoch".into());
+        for row in 0..60 { source.feed_and_diff(format!("row-{row:02}\r\n").as_bytes()); }
+        let seed = source.semantic_snapshot();
+        let TerminalBody::Snapshot(snapshot) = &seed.body else { unreachable!() };
+        let request = HistoryRequest { pane: PaneRef::new("work", "pane"), terminal_epoch: "epoch".into(), activation_id: 1,
+            history_epoch: snapshot.history.epoch, before: snapshot.scrollback_start, max_rows: 10 };
+        let page = source.semantic_history(&request).unwrap();
+        let mut kernel = JsTerminal::new(3, 20, 100);
+        assert_eq!(apply(&mut kernel, seed, 1), Ok(true));
+        kernel.inner.scroll_up_view(2);
+        kernel.selection.set(&kernel.inner, Range { start: Pos { row: 0, col: 0 }, end: Pos { row: 0, col: 6 } });
+        let before = kernel.inner.dump_visible_text();
+        let selected = kernel.selection.text(&kernel.inner);
+        let next = source.feed_and_diff(b"later\r\n").semantic_update.unwrap();
+        assert_eq!(apply(&mut kernel, *next, 1), Ok(true));
+        assert_eq!(apply(&mut kernel, page.clone(), 1), Ok(true));
+        assert_eq!(kernel.inner.dump_visible_text(), before);
+        assert_eq!(kernel.selection.text(&kernel.inner), selected);
+        assert_eq!(apply(&mut kernel, page, 1), Ok(false));
+    }
+
+    #[test]
+    fn lifetime_changes_require_new_activation_and_late_frames_cannot_rewind() {
+        let mut source = TerminalProducer::with_epoch(3, 20, 20, "old".into());
+        let mut kernel = JsTerminal::new(3, 20, 20);
+        apply(&mut kernel, source.semantic_snapshot(), 1).unwrap();
+        let late = source.feed_and_diff(b"late").semantic_update.unwrap();
+        let replacement = TerminalProducer::with_epoch(3, 20, 20, "new".into());
+        assert_eq!(apply(&mut kernel, replacement.semantic_snapshot(), 1), Err("TERMINAL_LIFETIME_CHANGED"));
+        assert_eq!(apply(&mut kernel, replacement.semantic_snapshot(), 2), Ok(true));
+        let stale = late.into_frame(PaneRef::new("work", "pane"), 1);
+        assert_eq!(kernel.apply_remote_envelope(stale, "work", "pane", 2), Ok(false));
+        assert!(kernel.inner.dump_visible_text().iter().all(|row| row.trim().is_empty()));
+    }
+
+    #[test]
+    fn cursor_only_frames_are_presented_and_revision_gaps_do_not_mutate() {
+        let mut source = TerminalProducer::with_epoch(3, 20, 20, "epoch".into());
+        let mut kernel = JsTerminal::new(3, 20, 20);
+        apply(&mut kernel, source.semantic_snapshot(), 1).unwrap();
+        let first = source.feed_and_diff(b"hello").semantic_update.unwrap();
+        assert_eq!(apply(&mut kernel, *first, 1), Ok(true));
+        let cursor = source.feed_and_diff(b"\x1b[2;4H").semantic_update.unwrap();
+        assert_eq!(apply(&mut kernel, *cursor, 1), Ok(true));
+        assert_eq!((kernel.inner.grid().cursor().row, kernel.inner.grid().cursor().col), (1, 3));
+        source.feed_and_diff(b"skipped");
+        let gap = source.feed_and_diff(b"gap").semantic_update.unwrap();
+        let before = kernel.inner.dump_visible_text();
+        assert_eq!(apply(&mut kernel, *gap, 1), Err("TERMINAL_REVISION_GAP"));
+        assert_eq!(kernel.inner.dump_visible_text(), before);
     }
 }
 
@@ -220,6 +542,7 @@ mod render_scroll_op_tests {
 const SHELL_HISTORY_STICKY_MS: i64 = 0;
 
 #[wasm_bindgen(js_class = TerminalKernel)]
+#[cfg(any(feature = "bindings", test))]
 impl JsTerminal {
     #[wasm_bindgen(constructor)]
     pub fn new(rows: usize, cols: usize, scrollback: usize) -> JsTerminal {
@@ -229,8 +552,15 @@ impl JsTerminal {
             search: SearchState::new(),
             last_tui_signal_at_ms: 0,
             render_scroll_ops: RefCell::new(Vec::new()),
+            presentation: RefCell::new(crate::presentation::PresentationSource::default()),
             remote_activation_id: None,
             remote_revision: None,
+            remote_scrollback_start: None,
+            remote_history_has_more: false,
+            remote_epoch: None,
+            remote_pane: None,
+            remote_history: None,
+            remote_recovery_anchor: None,
         }
     }
 
@@ -336,35 +666,15 @@ impl JsTerminal {
     /// when the rust-parser backend landed in P3.6).
     #[wasm_bindgen(js_name = applyDeltaFrame)]
     pub fn apply_delta_frame(&mut self, bytes: &[u8]) -> Result<bool, JsValue> {
-        let frame = crate::term::delta::decode_frame(bytes)
-            .map_err(|e| JsValue::from_str(&format!("delta decode: {e}")))?;
-        let requires_render_settle = frame.requires_render_settle;
-        let evictions_before = self.inner.scrollback_eviction_count();
-        let has_reset = frame
-            .deltas
-            .iter()
-            .any(|d| matches!(d, crate::term::delta::GridDelta::Reset));
-        let has_scrollback_clear = frame
-            .deltas
-            .iter()
-            .any(|d| matches!(d, crate::term::delta::GridDelta::ScrollbackClear));
-        let applied = self
-            .inner
-            .apply_frame(&frame)
-            .map_err(|v| JsValue::from_str(&format!("protocol version {v} not supported")))?;
-        if !applied {
-            return Ok(false);
-        }
-        self.capture_render_scroll_ops();
-        let evictions_after = self.inner.scrollback_eviction_count();
-        if has_reset || has_scrollback_clear || evictions_after != evictions_before {
-            self.selection.clear();
-            self.search.clear();
-        }
-        Ok(requires_render_settle)
+        let frame = crate::terminal_protocol::decode_frame(bytes)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        let pane = self.remote_pane.clone().unwrap_or_else(|| frame.pane.clone());
+        let activation = self.remote_activation_id.unwrap_or(frame.activation_id);
+        self.apply_remote_envelope(frame, &pane.workspace_id, &pane.pane_id, activation)
+            .map_err(JsValue::from_str)
     }
 
-    /// Install/apply a Remote Terminal Protocol v2 frame. The full PaneRef,
+    /// Install/apply a canonical terminal frame. The full PaneRef,
     /// activation id and contiguous revision are checked before any grid
     /// mutation; a Snapshot replaces both screens and scrollback atomically.
     #[wasm_bindgen(js_name = applyRemoteFrame)]
@@ -375,52 +685,47 @@ impl JsTerminal {
         pane_id: &str,
         activation_id: f64,
     ) -> Result<bool, JsValue> {
-        let envelope = crate::terminal_v2::decode_frame(bytes)
+        let envelope = crate::terminal_protocol::decode_frame(bytes)
             .map_err(|error| JsValue::from_str(&format!("remote terminal decode: {error}")))?;
-        let expected_activation = activation_id as u64;
-        if envelope.pane.workspace_id != workspace_id
-            || envelope.pane.pane_id != pane_id
-            || envelope.activation_id != expected_activation
-        {
-            return Ok(false);
-        }
-        match envelope.body {
-            crate::terminal_v2::TerminalBody::Snapshot(snapshot) => {
-                self.inner.apply_remote_v2_snapshot(&snapshot);
-                self.remote_activation_id = Some(expected_activation);
-                self.remote_revision = Some(snapshot.revision);
-                self.selection.clear();
-                self.search.clear();
-                self.render_scroll_ops.borrow_mut().clear();
-                Ok(true)
-            }
-            crate::terminal_v2::TerminalBody::Delta(delta) => {
-                if self.remote_activation_id != Some(expected_activation)
-                    || self.remote_revision != Some(delta.base_revision)
-                    || delta.revision <= delta.base_revision
-                {
-                    return Ok(false);
-                }
-                let settle = delta.requires_render_settle;
-                self.inner.apply_remote_v2_delta(&delta);
-                self.remote_revision = Some(delta.revision);
-                self.capture_render_scroll_ops();
-                Ok(settle)
-            }
-            crate::terminal_v2::TerminalBody::HistoryPage(page) => {
-                if self.remote_activation_id != Some(expected_activation)
-                    || self.remote_revision != Some(page.revision)
-                {
-                    return Ok(false);
-                }
-                self.inner.prepend_remote_v2_history(&page.lines);
-                Ok(true)
-            }
-            crate::terminal_v2::TerminalBody::Error(error) => Err(JsValue::from_str(&format!(
-                "remote terminal {}: {}",
-                error.code, error.message
-            ))),
-        }
+        self.apply_remote_envelope(envelope, workspace_id, pane_id, activation_id as u64)
+            .map_err(|error| JsValue::from_str(error))
+    }
+
+    #[wasm_bindgen(js_name = remoteHistoryBefore)]
+    pub fn remote_history_before(&self) -> Option<f64> {
+        self.remote_history_has_more.then_some(self.remote_scrollback_start?).map(|start| start as f64)
+    }
+
+    #[wasm_bindgen(js_name = historyRecoveryPending)]
+    pub fn history_recovery_pending(&self) -> bool {
+        self.remote_recovery_anchor.is_some()
+    }
+
+    #[wasm_bindgen(js_name = presentationFrame)]
+    pub fn presentation_frame(&self, after: u32) -> Result<Option<Vec<u8>>, JsValue> {
+        self.presentation.borrow_mut().capture(&self.inner, self.selection.range_in_viewport(&self.inner), after, self.take_render_scroll_ops())
+            .map_err(|error| JsValue::from_str(&error))
+    }
+
+    #[wasm_bindgen(js_name = terminalInputContext)]
+    pub fn terminal_input_context(&self) -> Result<JsValue, JsValue> {
+        let (Some(pane), Some(epoch), Some(activation)) = (&self.remote_pane, &self.remote_epoch, self.remote_activation_id) else { return Ok(JsValue::NULL); };
+        serde_wasm_bindgen::to_value(&(pane, epoch, activation)).map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    #[wasm_bindgen(js_name = terminalHistoryRequest)]
+    pub fn terminal_history_request(&self, max_rows: u16) -> Result<JsValue, JsValue> {
+        if !self.remote_history_has_more { return Ok(JsValue::NULL); }
+        let room = self.inner.grid().scrollback.capacity().saturating_sub(self.inner.scrollback_len());
+        let count = usize::from(max_rows).min(room).min(crate::terminal_protocol::MAX_HISTORY_PAGE_ROWS as usize);
+        if count == 0 { return Ok(JsValue::NULL); }
+        let request = crate::terminal_protocol::HistoryRequest {
+            pane: self.remote_pane.clone().ok_or_else(|| JsValue::from_str("missing terminal pane"))?,
+            terminal_epoch: self.remote_epoch.clone().ok_or_else(|| JsValue::from_str("missing terminal epoch"))?,
+            activation_id: self.remote_activation_id.unwrap(), history_epoch: self.remote_history.unwrap().epoch,
+            before: self.remote_scrollback_start.unwrap(), max_rows: count as u16,
+        };
+        serde_wasm_bindgen::to_value(&request).map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
     pub fn resize(&mut self, rows: usize, cols: usize) {
@@ -620,16 +925,19 @@ impl JsTerminal {
 
     #[wasm_bindgen(js_name = scrollUp)]
     pub fn scroll_up(&mut self, n: usize) {
+        self.remote_recovery_anchor = None;
         self.inner.scroll_up_view(n);
     }
 
     #[wasm_bindgen(js_name = scrollDown)]
     pub fn scroll_down(&mut self, n: usize) {
+        self.remote_recovery_anchor = None;
         self.inner.scroll_down_view(n);
     }
 
     #[wasm_bindgen(js_name = scrollToBottom)]
     pub fn scroll_to_bottom(&mut self) {
+        self.remote_recovery_anchor = None;
         self.inner.scroll_to_bottom();
     }
 
@@ -684,6 +992,7 @@ impl JsTerminal {
 
     #[wasm_bindgen(js_name = clearSelection)]
     pub fn clear_selection(&mut self) {
+        if let Some(anchor) = &mut self.remote_recovery_anchor { anchor.1 = None; }
         self.selection.clear();
     }
 
@@ -710,6 +1019,7 @@ impl JsTerminal {
         end_row: usize,
         end_col: usize,
     ) {
+        self.remote_recovery_anchor = None;
         // Pass &self.inner so Selection captures the current scroll state
         // and stores the range in abs-row form (§1.20). After this, scroll
         // changes don't dislodge the highlight from its original cells.
@@ -744,6 +1054,7 @@ impl JsTerminal {
         end_abs_row: usize,
         end_col: usize,
     ) {
+        self.remote_recovery_anchor = None;
         self.selection.set_abs(RangeAbs {
             start_abs_row,
             start_col,
@@ -776,19 +1087,12 @@ impl JsTerminal {
     /// anywhere near that range.
     #[wasm_bindgen(js_name = e2eEncodeCursorDeltaFrame)]
     pub fn e2e_encode_cursor_delta_frame(&self, pane_seq: u32, row: u16, col: u16) -> Vec<u8> {
-        use crate::term::delta::{
-            encode_frame, CursorShape as DeltaCursorShape, DeltaFrame, GridDelta,
-        };
-        let frame = DeltaFrame::new(
-            pane_seq as u64,
-            vec![GridDelta::Cursor {
-                row,
-                col,
-                visible: true,
-                blink: true,
-                shape: DeltaCursorShape::Block,
-            }],
-        );
+        use crate::terminal_protocol::*;
+        let (Some(pane), Some(epoch), Some(history), Some(base)) = (&self.remote_pane, &self.remote_epoch, self.remote_history, self.remote_revision) else { return Vec::new(); };
+        let cursor = WireCursor { row, col, visible: true, blink: true, shape: CursorShape::Block, pending_wrap: false };
+        let frame = TerminalFrame::new(pane.clone(), epoch.clone(), self.remote_activation_id.unwrap(), TerminalBody::Delta(
+            TerminalDeltaFrame { base_revision: base, revision: u64::from(pane_seq).max(base + 1), history,
+                deltas: vec![TerminalDelta::Cursor { screen: ScreenKind::Primary, cursor }], hyperlinks: Vec::new() }));
         encode_frame(&frame).unwrap_or_default()
     }
 
@@ -1192,6 +1496,13 @@ impl JsTerminal {
         }).collect()
     }
 
+    /// Canonical logical link detection, projected to visible terminal cells.
+    #[wasm_bindgen(js_name = linkSpans)]
+    pub fn link_spans(&self) -> Result<JsValue, JsValue> {
+        serde_wasm_bindgen::to_value(&crate::links::detect(&self.inner))
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
     /// Look up the OSC 8 hyperlink span containing the cell at `(row, col)`
     /// in viewport coordinates. Returns `{ uri, id }` or `null`. Used by
     /// the manager's Ctrl+click handler to decide whether to open a link.
@@ -1219,680 +1530,11 @@ impl JsTerminal {
     }
 }
 
-#[cfg(test)]
-mod delta_selection_tests {
-    //! Regression coverage for `apply_delta_frame`'s selection guard.
-    //!
-    //! Locks down the §B.2 invariant for the rust-parser delta path:
-    //! ordinary repaint frames (Cells / Cursor / ModeChange / non-evicting
-    //! ScrollbackAppend) MUST NOT clear the active selection. Only
-    //! scrollback eviction or a hard `Reset` may invalidate anchors.
-    //!
-    //! The bug this test catches: in P3.6 the wasm `applyDeltaFrame`
-    //! cleared selection unconditionally on every applied frame. With the
-    //! rust parser backend as the default (P3.7), Claude Code / htop / vim
-    //! / less emit ~30+ frames/s in active panes, so every drag-select was
-    //! erased one frame after pointerdown — the visible "selection
-    //! flickers, can't copy text from a refreshing TUI" symptom the user
-    //! re-reported on 2026-05-21.
-    use super::*;
-    #[test]
-    fn visible_text_offsets_follow_wide_cells_and_history() {
-        let mut kernel = JsTerminal::new(2, 24, 20);
-        kernel.feed("中文 https://example.com".as_bytes());
-        assert_eq!(kernel.text_offset_to_cell(0, 3), 5);
-        assert_eq!(kernel.text_offset_to_cell(0, 22), 24);
-        kernel.feed(b"\r\nsecond\r\nthird");
-        kernel.inner.scroll_up_view(1);
-        assert_eq!(kernel.text_offset_to_cell(0, 3), 5);
-        let mut emoji = JsTerminal::new(2, 40, 20);
-        emoji.feed("👨‍👩‍👧 https://example.com".as_bytes());
-        assert_eq!(emoji.text_offset_to_cell(0, "👨‍👩‍👧 ".encode_utf16().count()), 3);
-        assert_eq!(emoji.inner.dump_visible_text()[0], "👨‍👩‍👧 https://example.com");
-    }
-    use crate::term::delta::{
-        encode_frame, CursorShape as DeltaCursorShape, DeltaCell, DeltaFrame, DeltaLine, GridDelta,
-    };
 
-    /// Drive a typical TUI repaint into a fresh kernel, set a host
-    /// selection over a known string, slam many no-op delta frames in
-    /// (mimicking Claude's per-frame cursor blink), assert the
-    /// selection text is unchanged.
-    #[test]
-    fn apply_delta_frame_preserves_selection_across_repaints() {
-        let mut t = JsTerminal::new(24, 80, 200);
-        t.feed(b"hello world\r\n");
-        // Select "hello" — abs row = scrollback_len() + 0 (live grid).
-        // Selection range is end-exclusive, so cols [0, 5) covers
-        // the five chars 'h','e','l','l','o'.
-        let sb = t.inner.scrollback_len();
-        t.set_selection_abs(sb, 0, sb, 5);
-        assert!(t.has_selection(), "precondition: selection set");
-        assert_eq!(t.get_selection_text(), "hello");
-
-        let cursor_frame = encode_frame(&DeltaFrame::new(
-            0,
-            vec![GridDelta::Cursor {
-                row: 0,
-                col: 12,
-                visible: true,
-                blink: true,
-                shape: DeltaCursorShape::Block,
-            }],
-        ))
-        .expect("encode cursor frame");
-        let cells_frame = encode_frame(&DeltaFrame::new(
-            1,
-            vec![GridDelta::Cells {
-                row: 1,
-                col: 0,
-                wrapped: false,
-                cells: (b"redraw-line".iter())
-                    .map(|&b| {
-                        let mut c = DeltaCell::blank();
-                        c.ch = b as char;
-                        c
-                    })
-                    .collect(),
-            }],
-        ))
-        .expect("encode cells frame");
-
-        // 30 repaint frames — matches the per-second blink burst the
-        // user reported as the trigger. Pre-fix this would clear
-        // selection on iteration 1.
-        for _ in 0..30 {
-            t.apply_delta_frame(&cursor_frame).unwrap();
-            t.apply_delta_frame(&cells_frame).unwrap();
-        }
-
-        assert!(
-            t.has_selection(),
-            "selection must survive 30 redraw frames (had cleared on iter 1 before §B.2 follow-up)"
-        );
-        assert_eq!(
-            t.get_selection_text(),
-            "hello",
-            "selection content must be byte-identical after redraw storm"
-        );
-    }
-
-    #[test]
-    fn apply_delta_frame_returns_presentation_hint_only_for_applied_frame() {
-        let mut t = JsTerminal::new(4, 8, 20);
-        let mut frame = DeltaFrame::new(7, vec![GridDelta::Bell]);
-        frame.requires_render_settle = true;
-        let bytes = encode_frame(&frame).expect("encode presentation frame");
-
-        assert!(t
-            .apply_delta_frame(&bytes)
-            .expect("apply presentation frame"));
-        assert!(
-            !t.apply_delta_frame(&bytes).expect("ignore replayed frame"),
-            "a replay cannot extend the compositor hold"
-        );
-    }
-
-    #[test]
-    fn apply_delta_frame_clears_selection_on_reset_delta() {
-        let mut t = JsTerminal::new(24, 80, 200);
-        t.feed(b"hello world\r\n");
-        let sb = t.inner.scrollback_len();
-        t.set_selection_abs(sb, 0, sb, 5);
-        assert!(t.has_selection());
-
-        let reset_frame =
-            encode_frame(&DeltaFrame::new(0, vec![GridDelta::Reset])).expect("encode reset frame");
-        t.apply_delta_frame(&reset_frame).unwrap();
-        assert!(
-            !t.has_selection(),
-            "Reset delta MUST drop selection — abs anchors point to wiped cells"
-        );
-    }
-
-    #[test]
-    fn apply_delta_frame_clears_selection_on_scrollback_eviction() {
-        // Tiny scrollback so we can trigger eviction with a single
-        // ScrollbackAppend that overflows capacity.
-        let mut t = JsTerminal::new(4, 8, 2);
-        // Push two rows into scrollback, then select something in the
-        // live grid (abs anchor sits above sb_len, stable target).
-        t.feed(b"row0\r\nrow1\r\n");
-        let sb_before = t.inner.scrollback_len();
-        t.set_selection_abs(sb_before, 0, sb_before, 3);
-        assert!(t.has_selection());
-        let evictions_before = t.inner.scrollback_eviction_count();
-
-        // Append more lines than capacity → at least one eviction.
-        let lines: Vec<DeltaLine> = (0..4)
-            .map(|_| {
-                let mut row = Vec::new();
-                for _ in 0..4 {
-                    row.push(DeltaCell::blank());
-                }
-                DeltaLine {
-                    cells: row,
-                    wrapped: false,
-                }
-            })
-            .collect();
-        let frame = encode_frame(&DeltaFrame::new(
-            0,
-            vec![GridDelta::ScrollbackAppend { lines }],
-        ))
-        .expect("encode append");
-        t.apply_delta_frame(&frame).unwrap();
-
-        assert!(
-            t.inner.scrollback_eviction_count() > evictions_before,
-            "precondition: append must have evicted at least one row"
-        );
-        assert!(
-            !t.has_selection(),
-            "eviction MUST drop selection — abs anchors point to evicted content"
-        );
-    }
-}
 
 // =====================================================================
 // Renderer (wasm-only)
 // =====================================================================
-
-#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-mod renderer_js {
-    use super::*;
-    use crate::render::backend::RenderBackend;
-    use crate::render::webgpu::WebGpuPaneBackend;
-    use crate::render::{FrameMetrics, Renderer, Theme};
-    use web_sys::HtmlCanvasElement;
-
-    #[wasm_bindgen]
-    pub struct RenderHandle {
-        renderer: Renderer<WebGpuPaneBackend>,
-    }
-
-    #[wasm_bindgen]
-    impl RenderHandle {
-        /// Async WebGPU-first constructor with wgpu WebGL2 fallback.
-        /// `surface_host` owns the shared presentation surface; failures are returned to
-        /// JavaScript with the stable `WEBGPU_INIT_FAILED:` prefix.
-        #[wasm_bindgen(js_name = newWithWebgpuFirst)]
-        pub async fn new_with_webgpu_first(
-            _canvas: HtmlCanvasElement,
-            surface_host: SurfaceHostHandle,
-        ) -> Result<RenderHandle, JsValue> {
-            let backend = WebGpuPaneBackend::new(surface_host.host_rc())
-                .await
-                .map_err(|error| JsValue::from_str(&format!("WEBGPU_INIT_FAILED: {error}")))?;
-            let metrics = FrameMetrics {
-                cell_w: 8.0,
-                cell_h: 16.0,
-                dpr: 1.0,
-                tui_mode: false,
-            };
-            let renderer = Renderer::new(backend, metrics, Theme::default_dark());
-            Ok(RenderHandle { renderer })
-        }
-
-        /// Configure font + measure cell dimensions. Returns [cell_w, cell_h]
-        /// in CSS pixels so JS can calculate cols/rows for a target
-        /// container size.
-        pub fn configure(
-            &mut self,
-            font_family: String,
-            font_size_px: f32,
-            dpr: f32,
-        ) -> Result<Vec<f32>, JsValue> {
-            // Keep font family and size together so the glyph atlas uses
-            // the selected system-font fallback chain.
-            self.renderer
-                .backend_mut()
-                .set_font_config(font_family.clone(), font_size_px);
-            let (w, h) = self
-                .renderer
-                .backend_mut()
-                .measure_font(&font_family, font_size_px)
-                .map_err(JsValue::from)?;
-            self.renderer.set_metrics(FrameMetrics {
-                cell_w: w,
-                cell_h: h,
-                dpr,
-                tui_mode: false,
-            });
-            Ok(vec![w, h])
-        }
-
-        pub fn resize(&mut self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), JsValue> {
-            self.renderer
-                .backend_mut()
-                .resize_surface(width_css, height_css, dpr)
-                .map_err(JsValue::from)?;
-            self.renderer.set_dpr(dpr);
-            self.renderer.invalidate_all();
-            Ok(())
-        }
-
-        /// Phase B: record the pane's `(x, y)` position on the host
-        /// canvas in **device pixels**. JS calls this from
-        /// `manager.ts::_recomputeViewport` whenever the splitter drag
-        /// moves the pane's container without changing its size.
-        ///
-        /// Forward the host-canvas offset to WebGPU. Does **not**
-        /// trigger a redraw on its own — the pane content is unchanged
-        /// on a positional shift; JS calls `surfaceHost.invalidate()`
-        /// after layout settle to clear the old area.
-        #[wasm_bindgen(js_name = setViewportOffset)]
-        pub fn set_viewport_offset(&mut self, x: u32, y: u32) {
-            self.renderer.backend_mut().set_viewport_offset(x, y);
-        }
-
-        /// Apply a theme. Accepts a JS object with any subset of:
-        ///   { background, foreground, cursor, cursorAccent,
-        ///     black, red, green, yellow, blue, magenta, cyan, white,
-        ///     brightBlack, brightRed, brightGreen, brightYellow,
-        ///     brightBlue, brightMagenta, brightCyan, brightWhite }
-        /// Each value is a CSS hex color "#rgb" / "#rrggbb" / "#rrggbbaa".
-        /// Keys not provided keep their existing palette entry.
-        ///
-        /// Note: this is **partial overrides on top of the current theme**,
-        /// not a full replace. To reset, call `applyDefaultTheme()` first.
-        #[wasm_bindgen(js_name = applyTheme)]
-        pub fn apply_theme(&mut self, theme_obj: JsValue) -> Result<(), JsValue> {
-            // We use Reflect rather than serde-wasm-bindgen to avoid the
-            // dep cost — the API is small enough that field-by-field
-            // lookup is fine.
-            let mut t = self.current_theme();
-            t.apply_partial(|key| {
-                let val = js_sys::Reflect::get(&theme_obj, &JsValue::from_str(key)).ok()?;
-                val.as_string()
-            });
-            self.renderer.set_theme(t);
-            Ok(())
-        }
-
-        /// Reset to the default dark theme.
-        #[wasm_bindgen(js_name = applyDefaultTheme)]
-        pub fn apply_default_theme(&mut self) {
-            self.renderer.set_theme(Theme::default_dark());
-        }
-
-        /// Drive one frame from the kernel's current grid. Returns true
-        /// if anything was drawn (caller can use this to decide whether
-        /// to schedule another frame). Selection range comes from the
-        /// kernel's `selection` field — when set, the renderer paints a
-        /// translucent overlay over those cells. Wall-clock comes from
-        /// `Date.now()` for cursor-blink phase.
-        pub fn render(&mut self, kernel: &JsTerminal) -> bool {
-            let scroll_ops = kernel.take_render_scroll_ops();
-            self.renderer.tick_with_scroll(
-                &kernel.inner,
-                // range_in_viewport translates the stored abs-row
-                // selection through the current scroll state per
-                // frame, naturally clipping rows outside the viewport
-                // (§1.20). Renderer's last_selection comparator sees
-                // updated vp coords on scroll → triggers redraw with
-                // the highlight at its new position.
-                kernel.selection.range_in_viewport(&kernel.inner),
-                js_sys::Date::now(),
-                &scroll_ops,
-            )
-        }
-
-        /// Force a full redraw on the next render() — useful after
-        /// invalidating external state without using the dedicated setters.
-        #[wasm_bindgen(js_name = invalidateAll)]
-        pub fn invalidate_all(&mut self) {
-            self.renderer.invalidate_all();
-        }
-
-        /// Force one complete viewport repaint while preserving the shared
-        /// glyph atlas. Used after SurfaceHost structurally seeds its backing
-        /// store; unlike `invalidateAll`, this does not discard valid glyphs.
-        #[wasm_bindgen(js_name = repaintAll)]
-        pub fn repaint_all(&mut self) {
-            self.renderer.request_full_redraw();
-        }
-
-        /// Multi-pane hosts call this when the active pane changes. When
-        /// `focused` is false, the renderer skips cursor draw entirely so
-        /// only the truly active terminal blinks. Idempotent.
-        #[wasm_bindgen(js_name = setFocused)]
-        pub fn set_focused(&mut self, focused: bool) {
-            self.renderer.set_focused(focused);
-        }
-
-        /// Presentation-only gate for a short native inline-TUI repaint walk.
-        /// Grid cells still render immediately; while set, the renderer
-        /// freezes the cursor at its last presented position until the
-        /// browser compositor settles. Name retained for JS compatibility.
-        #[wasm_bindgen(js_name = setPresentationCursorSuppressed)]
-        pub fn set_presentation_cursor_suppressed(&mut self, suppressed: bool) {
-            self.renderer.set_presentation_cursor_suppressed(suppressed);
-        }
-
-        /// DEV/e2e probe for the cell currently presented, including a freeze.
-        /// `-1` means no cursor is on screen. Not used by the compositor loop.
-        #[wasm_bindgen(js_name = presentedCursorRow)]
-        pub fn presented_cursor_row(&self) -> i32 {
-            self.renderer
-                .presented_cursor_cell()
-                .map(|(row, _)| row as i32)
-                .unwrap_or(-1)
-        }
-
-        #[wasm_bindgen(js_name = presentedCursorCol)]
-        pub fn presented_cursor_col(&self) -> i32 {
-            self.renderer
-                .presented_cursor_cell()
-                .map(|(_, col)| col as i32)
-                .unwrap_or(-1)
-        }
-
-        /// Install an IME preedit overlay at the given cell. The renderer
-        /// will paint `text` on top of the cell grid each frame until
-        /// `clearPreedit` is called. Cells themselves are NOT modified,
-        /// so a TUI re-rendering into the overlay's row mid-composition
-        /// can't corrupt the preedit, and the preedit can't corrupt the
-        /// TUI's rendered cells. JS calls this on `compositionupdate`.
-        #[wasm_bindgen(js_name = setPreedit)]
-        pub fn set_preedit(&mut self, text: &str, row: usize, col: usize) {
-            self.renderer.set_preedit(text.to_string(), row, col);
-        }
-
-        /// Remove the preedit overlay (JS calls on `compositionend` after
-        /// shipping the committed string to the PTY).
-        #[wasm_bindgen(js_name = clearPreedit)]
-        pub fn clear_preedit(&mut self) {
-            self.renderer.clear_preedit();
-        }
-
-        /// §1.34 (2026-05-22) — install the shell-history popup overlay.
-        /// `items` is the JS-pre-windowed VISIBLE slice (filtered, newest
-        /// first). `selected_index` is `-1` for "no row picked" or a
-        /// slice-relative `0..items.len()-1`. `(anchor_row, anchor_col)`
-        /// is the input anchor in viewport cell coords; `place_above`
-        /// chooses growth direction.
-        ///
-        /// §history-scroll — `total_items` is the FULL filtered count and
-        /// `first_visible` is the index of `items[0]` within it; the
-        /// renderer draws a scrollbar thumb from these when the list is
-        /// longer than the window (Warp-style: many entries reachable by
-        /// scrolling, with a position indicator). JS owns the windowing so
-        /// the renderer just paints the slice + the thumb.
-        #[wasm_bindgen(js_name = setHistoryOverlay)]
-        pub fn set_history_overlay(
-            &mut self,
-            items: js_sys::Array,
-            selected_index: i32,
-            anchor_row: u32,
-            anchor_col: u32,
-            place_above: bool,
-            total_items: u32,
-            first_visible: u32,
-            viewport_cols: u32,
-            viewport_rows: u32,
-        ) {
-            let items: Vec<String> = items.iter().filter_map(|v| v.as_string()).collect();
-            // JS pre-windows to the visible slice; render all of it (capped
-            // to a sane ceiling as a floor-to-ceiling guard).
-            let max_visible_rows = items.len().min(40);
-            self.renderer
-                .set_history_overlay(crate::render::renderer::HistoryOverlay {
-                    items,
-                    selected_index,
-                    anchor_row: anchor_row as usize,
-                    anchor_col: anchor_col as usize,
-                    place_above,
-                    max_visible_rows,
-                    total_items: total_items as usize,
-                    first_visible: first_visible as usize,
-                    viewport_cols: viewport_cols as usize,
-                    viewport_rows: viewport_rows as usize,
-                });
-        }
-
-        /// §1.34 — remove the history overlay (Enter / ArrowRight / Esc).
-        #[wasm_bindgen(js_name = clearHistoryOverlay)]
-        pub fn clear_history_overlay(&mut self) {
-            self.renderer.clear_history_overlay();
-        }
-
-        /// Non-mutating mirror of `render`'s early-exit conditions:
-        /// returns `true` when the next `render` call would do any
-        /// drawing work, `false` when the renderer has nothing to
-        /// redraw and the JS caller can sleep its RAF loop. `now_ms`
-        /// must use the same epoch as the value passed to `render`
-        /// (`Date.now()` in JS).
-        ///
-        /// Cost: one row-revision compare per visible row plus selection /
-        /// scroll / blink checks. A revision-mismatched row additionally
-        /// compares its exact painted content so a settled TUI rewrite does
-        /// not schedule a redundant compositor frame.
-        #[wasm_bindgen(js_name = isDirty)]
-        pub fn is_dirty(&self, kernel: &JsTerminal, now_ms: f64) -> bool {
-            if !kernel.render_scroll_ops.borrow().is_empty() {
-                return true;
-            }
-            self.renderer.is_dirty(
-                &kernel.inner,
-                kernel.selection.range_in_viewport(&kernel.inner),
-                now_ms,
-            )
-        }
-
-        /// Milliseconds until the next cursor-blink phase boundary. JS
-        /// callers use this to schedule a `setTimeout` wake-up while
-        /// the RAF loop is paused. Returns a very large number
-        /// (effectively infinity) when the cursor isn't blinking — the
-        /// caller should treat any value > some reasonable cap (e.g.
-        /// 1000 ms) as "no blink, sleep at most a second on a watchdog".
-        #[wasm_bindgen(js_name = nextBlinkDeadlineMs)]
-        pub fn next_blink_deadline_ms(&self, kernel: &JsTerminal, now_ms: f64) -> f64 {
-            self.renderer.next_blink_deadline_ms(&kernel.inner, now_ms)
-        }
-
-        /// Internal: snapshot the current theme so apply_partial can layer
-        /// overrides on top of it. Renderer doesn't expose `theme()`
-        /// directly — we reach in via a fresh default + reapply isn't
-        /// right either (would lose previous overrides). Solution:
-        /// renderer needs a getter. Add one.
-        fn current_theme(&self) -> Theme {
-            self.renderer.theme().clone()
-        }
-
-        /// Diagnostic: return the kernel-side renderer.theme.{bg, fg,
-        /// cursor_color, tui_bg} as a Uint8Array of 16 bytes (4×RGBA).
-        /// Lets JS confirm whether `applyTheme` actually propagated into
-        /// the renderer state — the JS-side `opts.theme` snapshot only
-        /// proves the manager *received* the theme, not that the
-        /// wasm renderer accepted it. Cheap (one Theme clone, 16 bytes
-        /// copied) so callers may poll without harm.
-        #[wasm_bindgen(js_name = currentThemeProbe)]
-        pub fn current_theme_probe(&self) -> Box<[u8]> {
-            let t = self.current_theme();
-            let mut out = Vec::with_capacity(16);
-            out.extend_from_slice(&t.bg);
-            out.extend_from_slice(&t.fg);
-            out.extend_from_slice(&t.cursor_color);
-            out.extend_from_slice(&t.tui_bg);
-            out.into_boxed_slice()
-        }
-
-        /// Return the active rendering backend name.
-        #[wasm_bindgen(js_name = backendName)]
-        pub fn backend_name(&self) -> String {
-            self.renderer.backend().backend_name().to_string()
-        }
-    }
-
-    // ──────────────────────────────────────────────────────────────
-    // SurfaceHostHandle (§A.8 per-workspace)
-    //
-    // JS-facing wrapper around a `SurfaceHost`. One instance per
-    // workspace tab — `manager.ts` holds a Map<workspaceId, handle>
-    // and passes the matching handle to each pane's
-    // `RenderHandle.newWithWebgpuFirst(canvas, host)` so the pane's
-    // WebGPU draws land on its workspace's canvas.
-    //
-    // Per-frame protocol from JS RAF (active workspace only):
-    //   1. host.beginFrame(themeBg)         — acquire swap-chain texture
-    //   2. for each dirty pane in this workspace: handle.render(kernel)
-    //   3. host.endFrame()                   — submit + present
-    // ──────────────────────────────────────────────────────────────
-
-    #[cfg(feature = "webgpu")]
-    #[wasm_bindgen]
-    #[derive(Clone)]
-    pub struct SurfaceHostHandle {
-        host: std::rc::Rc<std::cell::RefCell<crate::render::surface_host::SurfaceHost>>,
-    }
-
-    #[cfg(feature = "webgpu")]
-    impl SurfaceHostHandle {
-        /// Internal accessor: the per-workspace SurfaceHost Rc. Used by
-        /// `RenderHandle::new_with_webgpu_first` so newly-constructed
-        /// `WebGpuPaneBackend`s share the same SurfaceHost (and thus
-        /// the same `<canvas data-rg-ws-host>`) as their workspace tab.
-        pub(crate) fn host_rc(
-            &self,
-        ) -> std::rc::Rc<std::cell::RefCell<crate::render::surface_host::SurfaceHost>> {
-            self.host.clone()
-        }
-    }
-
-    #[cfg(feature = "webgpu")]
-    #[wasm_bindgen]
-    impl SurfaceHostHandle {
-        /// JS-callable clone: produces a new `SurfaceHostHandle` JS
-        /// wrapper that bumps the inner `Rc` refcount. Required because
-        /// `RenderHandle::newWithWebgpuFirst(canvas, host)` consumes
-        /// its `host` parameter (wasm-bindgen `Option<T>` semantics —
-        /// the JS-side wrapper is freed after the call). When N panes
-        /// in the same workspace each call attach, JS must
-        /// `host.clone()` per call so the manager's stored handle
-        /// stays alive.
-        #[wasm_bindgen(js_name = clone)]
-        pub fn js_clone(&self) -> SurfaceHostHandle {
-            Clone::clone(self)
-        }
-    }
-
-    #[cfg(feature = "webgpu")]
-    #[wasm_bindgen]
-    impl SurfaceHostHandle {
-        /// Async constructor: create one swap chain bound to `canvas`.
-        /// One SurfaceHostHandle per workspace tab — JS holds a Map
-        /// keyed by workspace id and passes the matching handle to
-        /// each pane's `RenderHandle.newWithWebgpuFirst(canvas, host)`.
-        ///
-        /// Returns `Err` (rejected promise on the JS side) when both browser
-        /// GPU backends fail adapter/device acquisition or
-        /// `instance.create_surface` rejects the canvas. JS catches
-        /// and surfaces a structured initialization error to JavaScript.
-        #[wasm_bindgen(js_name = init)]
-        pub async fn init(canvas: HtmlCanvasElement) -> Result<SurfaceHostHandle, JsValue> {
-            let host = crate::render::surface_host::SurfaceHost::init(canvas)
-                .await
-                .map_err(JsValue::from)?;
-            Ok(SurfaceHostHandle { host })
-        }
-
-        /// Resize the host swap chain. JS drives this from a
-        /// ResizeObserver on the host canvas's parent so the surface
-        /// always matches the visible workspace area.
-        pub fn resize(&self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), JsValue> {
-            self.host
-                .borrow_mut()
-                .resize(width_css, height_css, dpr)
-                .map_err(JsValue::from)
-        }
-
-        /// Mark the next frame for a fresh `LoadOp::Clear`. JS calls
-        /// this when a pane detaches / parks / unparks (so departed
-        /// pixels don't linger), when the theme changes, and after
-        /// splitter settle moves pane boundaries.
-        pub fn invalidate(&self) {
-            self.host.borrow_mut().invalidate();
-        }
-
-        /// True when the compositor-owned frame store must be seeded before
-        /// the next present. This also covers device/surface recovery that did
-        /// not originate from a JS `invalidate()` call.
-        #[wasm_bindgen(js_name = needsFullSeed)]
-        pub fn needs_full_seed(&self) -> bool {
-            self.host.borrow().needs_full_seed()
-        }
-
-        /// Begin one host frame: acquire swap-chain texture + create
-        /// encoder. Returns `true` on success, `false` on surface-lost
-        /// — JS skips the rest of the frame and lets the next RAF
-        /// retry. `theme_bg` is a 4-byte RGBA buffer; values outside
-        /// `[0..255]` get clamped at the byte boundary by
-        /// `Uint8Array.set`.
-        ///
-        /// Idempotent guard: a second call without an intervening
-        /// `endFrame` drops the stale frame and starts fresh (defense
-        /// against JS bugs that skip the end half).
-        #[wasm_bindgen(js_name = beginFrame)]
-        pub fn begin_frame(&self, theme_bg: &[u8]) -> bool {
-            let mut rgba = [0u8; 4];
-            // Clamp short input to opaque-on-black so we never panic on
-            // a malformed slice; JS callers are expected to send
-            // exactly 4 bytes.
-            for (i, &b) in theme_bg.iter().take(4).enumerate() {
-                rgba[i] = b;
-            }
-            if theme_bg.len() < 4 {
-                rgba[3] = 255;
-            }
-            self.host.borrow_mut().begin_frame(rgba)
-        }
-
-        /// Finish the host's command encoder + queue.submit + present.
-        /// One call per frame after all dirty panes have rendered. Safe
-        /// to call without a matching `beginFrame` — internal guard
-        /// returns early.
-        #[wasm_bindgen(js_name = endFrame)]
-        pub fn end_frame(&self) {
-            self.host.borrow_mut().end_frame();
-        }
-
-        /// Upload a wallpaper image to the GPU and enable the wallpaper
-        /// pass. `rgba` must be a packed RGBA byte slice
-        /// (`width * height * 4` bytes). `opacity` is in `[0.0, 1.0]`;
-        /// 0 = full theme background colour, 1 = fully opaque image.
-        ///
-        /// Forwards to `SurfaceHost::set_wallpaper`, which in turn
-        /// delegates to `GpuContext::set_wallpaper` (texture upload +
-        /// bind-group rebuild) and calls `invalidate()` so the change
-        /// takes effect on the next `beginFrame`.
-        ///
-        /// Only available under `#[cfg(feature = "webgpu")]` — the JS
-        /// side must guard accordingly.
-        #[wasm_bindgen(js_name = setWallpaper)]
-        pub fn set_wallpaper(&self, rgba: &[u8], w: u32, h: u32, opacity: f32) {
-            self.host.borrow_mut().set_wallpaper(rgba, w, h, opacity);
-        }
-
-        /// Remove the wallpaper and revert to plain theme-colour clear
-        /// on the next `beginFrame`. Idempotent — safe to call even
-        /// when no wallpaper is currently loaded.
-        ///
-        /// Forwards to `SurfaceHost::clear_wallpaper` → `GpuContext::
-        /// clear_wallpaper` (drops texture + bind group) and calls
-        /// `invalidate()`.
-        #[wasm_bindgen(js_name = clearWallpaper)]
-        pub fn clear_wallpaper(&self) {
-            self.host.borrow_mut().clear_wallpaper();
-        }
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-pub use renderer_js::RenderHandle;
-
-#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-pub use renderer_js::SurfaceHostHandle;
 
 #[cfg(test)]
 mod shell_history_gate_tests {

@@ -4,35 +4,7 @@
   import { RemoteConnection, type ConnectionState } from '@ridge/remote';
   import { getRemoteDeviceId } from '@ridge/remote';
   import CertTrustGuide from './CertTrustGuide.svelte';
-
-  const TOKEN_KEY = 'ridge_remote_token';
-
-  // §persist-login（任务 A 问题2）：登录态持久化。后端 device/user token 长期有效（user
-  // 30 天 / device 180 天），所以 token 应「写一次、长期复用、刷新不丢」。localStorage 为
-  // 主（跨刷新/跨标签页关闭仍在）；隐私模式或配额禁用 localStorage 时回退 sessionStorage
-  // 兜底（至少当前会话内刷新不丢）。读取时两处都查，优先 localStorage。
-  function readToken(): string | null {
-    try {
-      const v = localStorage.getItem(TOKEN_KEY);
-      if (v) return v;
-    } catch { /* localStorage blocked — fall through to sessionStorage */ }
-    try { return sessionStorage.getItem(TOKEN_KEY); } catch { return null; }
-  }
-  function writeToken(token: string): void {
-    let ok = false;
-    try { localStorage.setItem(TOKEN_KEY, token); ok = true; } catch { /* blocked */ }
-    // localStorage 不可用时才写 sessionStorage 兜底；可用则不重复写（避免两处不一致）。
-    if (!ok) { try { sessionStorage.setItem(TOKEN_KEY, token); } catch { /* ignore */ } }
-  }
-  function clearToken(): void {
-    try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
-    try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
-  }
-  // Give up on a token (auto)connect after this long and fall back to the code
-  // input — a stale/invalid token makes the server reject the /ws upgrade, and
-  // wsRemote then RETRIES the drop forever ('disconnected', never 'error'), which
-  // left the screen stuck on "connecting" indefinitely.
-  const AUTH_CONNECT_TIMEOUT_MS = 9000;
+  import { readRemoteToken, writeRemoteToken, clearRemoteToken, remoteSessionValidity } from './lib/remoteSession';
 
   let { ws, onverified }: { ws: RemoteConnection; onverified: () => void } = $props();
 
@@ -46,7 +18,9 @@
   let connectionDetail = $state('');
 
   let unsubState: (() => void) | undefined;
-  let connectTimer: ReturnType<typeof setTimeout> | undefined;
+  let sessionCheck: AbortController | undefined;
+  let alive = true;
+  let attempt = 0;
 
   function submitCode() {
     const numeric = code.replace(/\D/g, '').slice(0, 6);
@@ -54,11 +28,15 @@
     code = '';
     loading = true;
     error = '';
+    const current = ++attempt;
+    sessionCheck?.abort();
+    const check = sessionCheck = new AbortController();
 
     const host = location.hostname;
     const port = parseInt(location.port) || (location.protocol === 'https:' ? 443 : 80);
 
     fetch('/verify', {
+      signal: check.signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       // §L-3: bind the issued token to this device (in addition to its IP).
@@ -66,8 +44,9 @@
     })
       .then(r => r.json())
       .then(d => {
+        if (!alive || current !== attempt) return;
         if (d.success && d.token) {
-          writeToken(d.token);
+          writeRemoteToken(d.token);
           connectWithToken(host, port, d.token);
         } else {
           loading = false;
@@ -75,125 +54,89 @@
         }
       })
       .catch(() => {
+        if (!alive || current !== attempt) return;
         loading = false;
         error = tr('mobile.networkError');
       });
   }
 
-  // Abandon a failed (auto)connect: stop wsRemote's silent reconnect loop and fall
-  // back to the manual code-entry screen.
-  // §persist-login（任务 A 问题2）：只在确属「用户/鉴权类」失败（token 真的无效——
-  // USERNAME_MISMATCH / DEVICE_* / NOT_PREMIUM / 4403 等，ws.lastFailure().category
-  // === 'user'）时才清 token。纯通道/网络抖动导致的失败保留 token，这样刷新页面仍能
-  // autoReconnect，不会因为一次网络波动就把一个其实长期有效的登录态丢掉。
-  // detailOverride：调用方给出的具体失败原因（超时 / 被拒等）。之前这些文案在调用
-  // fallbackToManual() 前写入 connectionDetail，却被本函数无条件覆盖成通用兜底 → 死代码；
-  // 现改为传参，优先级高于分类兜底，确保「连接超时 / 连接被拒绝」等能真正显示。
-  function fallbackToManual(detailOverride?: string) {
-    if (connectTimer) { clearTimeout(connectTimer); connectTimer = undefined; }
-    unsubState?.();
-    unsubState = undefined;
+  function connectionFailed(detailOverride?: string) {
     const failure = ws.lastFailure();
-    const cat = failure?.category;
-    ws.disconnect(); // §stop-retry: otherwise it keeps retrying forever
-    if (cat === 'user') clearToken(); // 凭据无效才丢弃；通道类保留以便刷新自动重连
     loading = false;
-    showManual = true;
-    // 可见错误提示（本地化，随 locale 走）
-    if (cat === 'user') {
-      error = tr('mobile.authFailed', { detail: failure?.code || tr('mobile.checkTokenValid') });
-    } else if (cat === 'parked') {
-      error = tr('mobile.deviceParked');
-    } else {
-      error = tr('mobile.connectFail');
-    }
-    // 诊断细节：调用方具体原因 > 失败携带的 message > 分类兜底。
     connectionStatus = 'failed';
-    if (detailOverride) {
-      connectionDetail = detailOverride;
-    } else if (failure?.message) {
-      connectionDetail = failure.message;
-    } else if (cat === 'user') {
-      connectionDetail = tr('mobile.authTokenInvalidHint');
-    } else {
-      connectionDetail = tr('mobile.connectHostFail');
+    connectionDetail = detailOverride || failure?.message || tr('mobile.connectHostFail');
+    showManual = failure?.category === 'user';
+    if (showManual) {
+      clearRemoteToken();
+      error = tr('mobile.authTokenInvalidHint');
     }
   }
 
-  function connectWithToken(host: string, port: number, token: string, retryCount = 0) {
+  async function connectWithToken(host: string, port: number, token: string) {
+    const current = ++attempt;
     unsubState?.();
-    if (connectTimer) clearTimeout(connectTimer);
-    let sawConnected = false;
-    let disconnects = 0;
+    sessionCheck?.abort();
+    const check = sessionCheck = new AbortController();
+    const deadline = setTimeout(() => check.abort(), 5000);
+    loading = true;
+    showManual = false;
     connectionStatus = 'connecting';
     connectionDetail = tr('mobile.connectingTo', { target: `${host}:${port}` });
-    // Safety net: a connect that never reaches 'connected' (hung upgrade / rejected
-    // token) falls back to manual entry instead of an endless "connecting" spinner.
-    connectTimer = setTimeout(
-      () => fallbackToManual(tr('mobile.connectTimeout')),
-      AUTH_CONNECT_TIMEOUT_MS
-    );
-    unsubState = ws.onStateChange((s: ConnectionState) => {
-      if (s === 'connected') {
-        sawConnected = true;
-        if (connectTimer) { clearTimeout(connectTimer); connectTimer = undefined; }
+    const valid = await remoteSessionValidity(token, check.signal);
+    clearTimeout(deadline);
+    if (!alive || current !== attempt) return;
+    if (valid === false) {
+      clearRemoteToken();
+      loading = false;
+      showManual = true;
+      connectionStatus = 'failed';
+      connectionDetail = tr('mobile.authTokenInvalidHint');
+      return;
+    }
+    unsubState = ws.onStateChange((state: ConnectionState) => {
+      if (!alive || current !== attempt) return;
+      if (state === 'connected') {
         loading = false;
         connectionStatus = 'connected';
         connectionDetail = '';
         unsubState?.();
         onverified();
-      } else if (s === 'error') {
-        // §B3: 非用户类失败（网络/通道抖动）→ backoff 重试，不立即退 manual。
-        const failure = ws.lastFailure();
-        const cat = failure?.category;
-        if (cat !== 'user' && retryCount < 3) {
-          const delay = 1000 * Math.pow(2, retryCount); // 1s / 2s / 4s
-          connectionDetail = tr('mobile.connectRetry', { attempt: retryCount + 1 });
-          connectTimer = setTimeout(() => {
-            connectWithToken(host, port, token, retryCount + 1);
-          }, delay);
-          return;
-        }
-        fallbackToManual();
-      } else if (s === 'disconnected' && !sawConnected) {
-        // §B3: 非用户类断连也走重试。
-        if (++disconnects >= 2) {
-          const failure = ws.lastFailure();
-          const cat = failure?.category;
-          if (cat !== 'user' && retryCount < 3) {
-            const delay = 1000 * Math.pow(2, retryCount);
-            connectionDetail = tr('mobile.connectRetry', { attempt: retryCount + 1 });
-            connectTimer = setTimeout(() => {
-              connectWithToken(host, port, token, retryCount + 1);
-            }, delay);
-            return;
-          }
-          fallbackToManual(tr('mobile.connectRejected'));
-        }
+      } else if (state === 'error') {
+        connectionFailed();
       }
     });
     ws.connect(host, port, token, 'token');
   }
 
   function autoReconnect() {
-    const saved = readToken();
-    if (!saved) {
+    const token = readRemoteToken();
+    if (!token) {
       showManual = true;
       connectionStatus = 'idle';
       connectionDetail = tr('mobile.noSavedToken');
       return;
     }
-    loading = true;
-    const host = location.hostname;
     const port = parseInt(location.port) || (location.protocol === 'https:' ? 443 : 80);
-    connectionDetail = tr('mobile.connectingWithToken', { target: `${host}:${port}` });
-    connectWithToken(host, port, saved);
+    void connectWithToken(location.hostname, port, token);
   }
 
   onMount(() => {
     autoReconnect();
-    setTimeout(() => inputEl?.focus(), 400);
-    return () => { unsubState?.(); if (connectTimer) clearTimeout(connectTimer); };
+    const focusTimer = setTimeout(() => inputEl?.focus(), 400);
+    const resume = () => {
+      if (!document.hidden && connectionStatus === 'failed' && !showManual) autoReconnect();
+    };
+    window.addEventListener('online', resume);
+    document.addEventListener('visibilitychange', resume);
+    return () => {
+      alive = false;
+      attempt++;
+      sessionCheck?.abort();
+      unsubState?.();
+      clearTimeout(focusTimer);
+      window.removeEventListener('online', resume);
+      document.removeEventListener('visibilitychange', resume);
+    };
   });
 </script>
 
@@ -227,6 +170,15 @@
       <button onclick={submitCode} disabled={code.length < 6 || loading}>
         {loading ? $t('mobile.verifying') : $t('mobile.verifyAndConnect')}
       </button>
+    </div>
+    <CertTrustGuide />
+  </div>
+{:else if connectionStatus === 'failed'}
+  <div class="screen" role="alert">
+    <h1>Ridge Remote</h1>
+    <p class="connection-detail">{connectionDetail}</p>
+    <div class="card">
+      <button onclick={autoReconnect}>{$t('mobile.refresh')}</button>
     </div>
     <CertTrustGuide />
   </div>

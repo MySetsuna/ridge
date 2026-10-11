@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HostTopologyLink } from './hostForest';
 
-const { feed } = vi.hoisted(() => ({ feed: vi.fn() }));
+const { feed } = vi.hoisted(() => ({ feed: vi.fn(() => true) }));
 vi.mock('@ridge/remote/shared/terminal/manager', () => ({
-  TerminalManager: { instance: vi.fn(() => ({ feed, enqueueFeed: feed })) },
+  TerminalManager: { instance: vi.fn(() => ({ applyRemoteFrame: feed, getKernel: () => null })) },
 }));
 
 import {
@@ -29,6 +29,7 @@ function link(): HostTopologyLink {
     closePane: vi.fn(),
     closeWorkspace: vi.fn(),
     onRawBytes: vi.fn(() => () => {}),
+    onTerminalFrame: vi.fn(() => () => {}),
     subscribePane: vi.fn(),
     sendStdin: vi.fn(),
     refreshPane: vi.fn(),
@@ -69,11 +70,10 @@ describe('remotePaneBindings', () => {
     unbindRemotePane('missing');
   });
 
-  it('buffers matching output, drops old bytes at the cap, then flushes on activation', () => {
+  it('subscribes only after mount; obtains a fresh snapshot rather than replaying raw history', () => {
     const remote = link();
-    const onRawBytes = vi.mocked(remote.onRawBytes);
-    let receive: Parameters<NonNullable<HostTopologyLink['onRawBytes']>>[0];
-    onRawBytes.mockImplementationOnce((listener) => {
+    let receive: (bytes: Uint8Array) => void;
+    vi.mocked(remote.onTerminalFrame!).mockImplementationOnce((listener) => {
       receive = listener;
       return () => {};
     });
@@ -88,22 +88,26 @@ describe('remotePaneBindings', () => {
     ids.push('local-buffered');
     expect(remotePaneBinding('local-buffered')?.remotePaneId).toBe('remote-buffered');
 
-    const first = new Uint8Array(600_000).fill(1);
-    const second = new Uint8Array(600_000).fill(2);
-    receive!({ paneId: 'other', workspaceId: 'workspace-buffered' }, first);
-    receive!({ paneId: 'remote-buffered', workspaceId: 'workspace-buffered' }, first);
-    receive!({ paneId: 'remote-buffered', workspaceId: 'workspace-buffered' }, second);
-
+    expect(remote.subscribePane).not.toHaveBeenCalled();
+    expect(remote.getPaneOutput).not.toHaveBeenCalled();
+    receive!(new Uint8Array([0x13]));
+    expect(feed).not.toHaveBeenCalled();
     activateRemotePaneBinding('local-buffered');
+    activateRemotePaneBinding('local-buffered');
+    expect(remote.subscribePane).toHaveBeenCalledOnce();
+    const activation = vi.mocked(remote.subscribePane).mock.calls[0][1]!.activationId;
+    expect(activation).toBeGreaterThan(0);
+    const frame = new Uint8Array([0x13, 1]);
+    receive!(frame);
     expect(feed).toHaveBeenCalledTimes(1);
-    expect(feed).toHaveBeenCalledWith('local-buffered', second);
+    expect(feed).toHaveBeenCalledWith('local-buffered', frame, 'workspace-buffered', 'remote-buffered', activation);
     expect(remote.promotePane).not.toBeDefined();
   });
 
   it('forwards active bytes and promotes the remote pane', () => {
     const remote = link();
     const receive = vi.fn();
-    vi.mocked(remote.onRawBytes).mockImplementationOnce((listener) => {
+    vi.mocked(remote.onTerminalFrame!).mockImplementationOnce((listener) => {
       receive.mockImplementation(listener);
       return () => {};
     });
@@ -120,8 +124,8 @@ describe('remotePaneBindings', () => {
     promoteRemotePaneBinding('local-active');
 
     const bytes = Uint8Array.from([7, 8]);
-    receive({ paneId: 'remote-active', workspaceId: 'workspace-active' }, bytes);
-    expect(feed).toHaveBeenCalledWith('local-active', bytes);
+    receive(bytes);
+    expect(feed).toHaveBeenCalledWith('local-active', bytes, 'workspace-active', 'remote-active', expect.any(Number));
     expect(remote.promotePane).toHaveBeenCalledWith({ workspaceId: 'workspace-active', paneId: 'remote-active' });
   });
 

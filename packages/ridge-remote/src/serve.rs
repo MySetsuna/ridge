@@ -152,8 +152,9 @@ pub struct UiTarget {
 /// 且 `exe 旁`（深 1 级，NSIS/打包把资源拷到 exe 旁）也被覆盖。
 fn probe_ui_root() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(root) = std::env::var_os("RIDGE_REMOTE_UI_ROOT") {
-        candidates.push(PathBuf::from(root));
+    let explicit = std::env::var_os("RIDGE_REMOTE_UI_ROOT").map(PathBuf::from);
+    if let Some(root) = &explicit {
+        candidates.push(root.clone());
     }
     candidates.push(PathBuf::from("remote-dist"));
     // 从 exe 目录逐级上溯（最多 6 级）：`ancestors()` 首项是 exe 自身，`skip(1)` 起于其
@@ -178,7 +179,7 @@ fn probe_ui_root() -> Option<PathBuf> {
                 .map(|mtime| (c, Some(mtime)))
         })
         .collect();
-    match pick_freshest(&hits) {
+    match pick_ui_root(explicit.as_deref(), &hits) {
         Some(dir) => {
             tracing::debug!(target: "ridge::remote::serve", path = %dir.display(), "UI dir found");
             Some(dir)
@@ -188,6 +189,11 @@ fn probe_ui_root() -> Option<PathBuf> {
             None
         }
     }
+}
+
+fn pick_ui_root(explicit: Option<&Path>, hits: &[(PathBuf, Option<std::time::SystemTime>)]) -> Option<PathBuf> {
+    explicit.and_then(|root| hits.iter().find(|(path, _)| path == root).map(|(path, _)| path.clone()))
+        .or_else(|| pick_freshest(hits))
 }
 
 /// 在**已命中**的候选目录里挑一个：取 `index.html` 最新的那份；时间戳读不到或
@@ -631,6 +637,16 @@ mod tests {
             Some(PathBuf::from("b"))
         );
         assert_eq!(pick_freshest(&[]), None);
+    }
+
+    #[test]
+    fn explicit_built_ui_root_wins_over_newer_discovery_candidates() {
+        let older = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1);
+        let newer = older + std::time::Duration::from_secs(1);
+        let hits = vec![(PathBuf::from("configured"), Some(older)), (PathBuf::from("discovered"), Some(newer))];
+        assert_eq!(pick_ui_root(Some(Path::new("configured")), &hits), Some(PathBuf::from("configured")));
+        assert_eq!(pick_ui_root(Some(Path::new("missing")), &hits), Some(PathBuf::from("discovered")));
+        assert_eq!(pick_ui_root(None, &hits), Some(PathBuf::from("discovered")));
     }
 
     #[test]

@@ -27,12 +27,15 @@ code_targets:
   - src-tauri/src/engine/pty.rs
   - src/remote/lib/FileViewer.svelte
   - packages/ridge-term/src/term/delta.rs
-  - packages/ridge-term/src/remote_v2.rs
+  - packages/ridge-term/src/semantic.rs
   - packages/ridge-term/src/term/modes.rs
   - src/lib/monaco/ridgeTheme.ts
   - src/lib/monaco/trustedThemeStyles.ts
   - packages/ridge-term/src/input.rs
   - packages/ridge-term/src/term/cell.rs
+  - packages/ridge-term/src/links.rs
+  - packages/remote/src/shared/terminal/linkAffordance.ts
+  - packages/remote/src/shared/terminal/renderTransaction.ts
 test_targets:
   - packages/remote/src/shared/terminal/manager.test.ts
   - packages/remote/src/shared/terminal/manager.attach.test.ts
@@ -44,22 +47,22 @@ test_targets:
   - tests/e2e-shell/selection-tui-refresh.spec.ts
   - tests/e2e-shell/input-echo.spec.ts
   - scripts/terminal-five-fixes-e2e.mjs
-  - src/lib/monaco/ridgeTheme.test.ts
+  - packages/remote/src/shared/terminal/linkAffordance.test.ts
 ---
 
 # Terminal visual coordinates and input fidelity
 
 ## Scope
 
-Repair the five reported terminal/editor defects on the current branch. Preserve shell execution semantics, byte order, authentication, transport framing, persistence and unrelated work. Existing wire fields carry the additional presentation metadata; older consumers may ignore unknown mode codes.
+Repair the five reported terminal/editor defects on the current branch. Preserve shell execution semantics, byte order, authentication, transport framing, persistence and unrelated work. Desktop, LAN and Cloud use the approved canonical terminal contract from ridge-signaling/src/terminal.rs. Incompatible peers fail explicitly; rendering consumes the bounded read-only viewport handoff without introducing another VT parser.
 
 ## Cursor
 
-Anchor every painted cursor to its content row and cell, including across presentation freezes, blink-off frames, viewport scrolling, output scrolling and partial scroll regions. Preserve the last content coordinate rather than a stale viewport coordinate. Hide the cursor when its content leaves the viewport or is discarded. Structural reflow/screen changes invalidate obsolete anchors. Coalesced scrolls retain their actual movement count; the physical viewport transform still clamps to its height. Split native records at the existing u16 count limit instead of losing movement information.
+Anchor every painted cursor to its content row and cell, including across blink-off frames, viewport scrolling, output scrolling and partial scroll regions. During held-key navigation, every presentation frame reflects the current authoritative cursor cell immediately. Do not freeze the cursor until a guessed TUI quiet interval; only explicit VT synchronized-output transactions may defer presentation, with bounded recovery for an unclosed transaction. Preserve the last content coordinate rather than a stale viewport coordinate. Hide the cursor when its content leaves the viewport or is discarded. Structural reflow/screen changes invalidate obsolete anchors. Coalesced scrolls retain their actual movement count; the physical viewport transform still clamps to its height. Split native records at the existing u16 count limit instead of losing movement information.
 
 ## Links
 
-Scan complete logical lines before projecting targets to visual segments. Join only authoritative soft wraps, including bounded context beyond viewport edges (8192 cells per edge plus one boundary row). Keep hard breaks and real spaces separate. Wide-character wrap gaps carry an empty text override through the existing cell sidecar, contributing no logical character. Preserve grapheme text and map UTF-16 offsets directly to visible cells without a per-code-unit mapping allocation. Every visible segment opens the same complete validated target; preserve OSC8 precedence and existing URL/path validation.
+ridge-term owns logical link detection, cell hit testing and link underline presentation for desktop and Remote; host adapters validate origin resources and execute opening. Scan complete logical lines before projecting targets to visual segments. Plain prose, MIME types and numeric ratios are not actionable file links. Preserve balanced URL/path punctuation. Only the validated target under the pointer receives link affordance on the existing modifier gesture; OSC8 metadata alone must not underline the whole terminal. Normal SGR text underline remains independent. Join only authoritative soft wraps, including bounded context beyond viewport edges (8192 cells per edge plus one boundary row). Keep hard breaks and real spaces separate. Wide-character wrap gaps carry an empty text override through the existing cell sidecar, contributing no logical character. Preserve grapheme text and map UTF-16 offsets directly to visible cells without a per-code-unit mapping allocation. Every visible segment opens the same complete validated target; preserve OSC8 precedence and existing URL/path validation.
 
 ## Editor styles
 

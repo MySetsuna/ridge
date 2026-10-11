@@ -1,36 +1,12 @@
-// Ridge Cloud — 桌面 host 端帧桥（host=answerer 的应用层）。
-//
-// 角色与定位（契约 §0/§5.1）：桌面 ridge app 是 **host = answerer**。
-// `RidgeCloudProvider`（ridgeCloudProvider.ts）负责信令/ICE/DTLS + §7.1 E2EE
-// 握手 + §7.2 解密，把**已解密的明文帧**经 `onFrame(plaintext)` 上抛。本桥就是
-// 那个 `onFrame` 的消费者：它把明文帧 **demux**，对 controller（浏览器）发来的
-// JSON-RPC 控制/invoke 请求在**本地真实执行**（host 是 Tauri 桌面 app），回结果，
-// 并把 pane 的 PTY 裸字节推回 controller。
-//
-// 这是 cloud 路径"未端到端打通"的根因修复（计划 R5）：CloudPanel 的 onFrame 原本
-// 是空 stub，本桥把它接成一个与 LAN host（server.rs `dispatch_invoke_jsonrpc` /
-// `negotiate_hello`）**同形**的 host 行为：同样的 JSON-RPC 2.0 信封、$/hello 能力
-// 协商、能力白名单、error 透传（{code,message,data}）。
-//
-// 线协议字节格式（契约 §7 / D-GM-7）：本桥**直接复用** `cloudMux.ts` 的
-// `demuxFrame`/`encodeJsonFrame`/`encodePaneFrame` —— 即 controller 端 mux/demux
-// 用的同一套编解码器。复用同一模块是"逐字一致"最强的保证：双方共享 `0x11`=JSON、
-// `0x10 || paneIdLen(u8) || paneId(UTF-8) || raw` 的实现，不存在两套实现漂移的可能。
-//
-// 依赖注入（保持本桥纯、可单测、不硬绑 Tauri）：
-//   - `invoke`：执行本地命令（生产环境由 CloudPanel 注入 `@tauri-apps/api/core`
-//     的 `invoke`；测试注入 mock）。
-//   - `sendFrame`：把一帧明文经 provider 加密发回 controller（注入
-//     `provider.sendFrame`）。
-//
-// 不在本桥职责内（归属别处）：E2EE 加解密（provider 内部，§7.2）、JWT/设备配对
-// 鉴权（auth.ts + provider），以及把 host WebRTC 迁到 Rust(webrtc-rs)（契约 §8 终态）。
+import terminalHello from './signaling/fixtures/terminal/hello.json';
+// Per-controller Cloud application bridge. Verified JSON-RPC requests use the
+// host command boundary; terminal packets retain their canonical 0x13 envelope.
+// Providers own WebRTC, authenticated encryption and bounded lane scheduling.
 
 import {
   demuxFrame,
   encodeControlFrame,
   encodeJsonFrame,
-  encodePaneFrame,
 } from '@ridge/remote';
 import { base64ToBytes, bytesToBase64 } from './e2ee';
 import { ed25519 } from '@noble/curves/ed25519.js';
@@ -99,8 +75,6 @@ export interface ChannelBackpressure {
  * → OOM/卡死）。单一 ordered channel 必须给控制/输入留出低延迟预算，故上水位为 256 KiB，
  * 低水位为 64 KiB；provider 回落经 `bufferedamountlow` 触发 onDrained。
  */
-/** Split pane bursts so a queued control frame can run between output frames. */
-export const PANE_OUTPUT_FRAME_BYTES = 32 * 1024;
 
 /**
  * 执行本地命令的注入点。生产环境为 `@tauri-apps/api/core` 的 `invoke`。
@@ -122,7 +96,7 @@ export type PaneOutputSource = (
   paneId: string,
   workspaceId: string | undefined,
   onOutput: (raw: Uint8Array) => void,
-  options?: { activationId?: number },
+  options?: { activationId?: number; onError?: () => void },
 ) => Unsubscribe;
 
 export type Unsubscribe = () => void;
@@ -161,7 +135,7 @@ export interface CloudHostBridgeConfig {
   invoke: InvokeFn;
   /** 把明文帧加密发回 controller（注入 `provider.sendFrame`）。 */
   sendFrame: SendFrameFn;
-  /** 可选：pane PTY 输出源（pane 流接入点）。未提供时仅登记订阅意图。 */
+  /** 可选：canonical terminal source; missing sources fail visibly. */
   paneOutputSource?: PaneOutputSource;
   /**
    * 可选：云端 TOTP 二次验证（契约 §4）。提供则桥在验证通过前**门控业务帧**
@@ -796,6 +770,10 @@ export class CloudHostBridge {
       && rec.activationId > 0
       ? rec.activationId
       : undefined;
+    if (!workspaceId || activationId === undefined) {
+      this.log('warn', 'canonical terminal binding required');
+      return;
+    }
     const existingActivation = this.paneActivations.get(paneId);
     const existingWorkspace = this.paneWorkspaces.get(paneId);
     if (
@@ -813,45 +791,36 @@ export class CloudHostBridge {
     if (this.paneSubs.has(paneId)) return; // 幂等：已订阅
 
     if (!this.paneOutputSource) {
-      // 仅登记意图（占位），无真实流。记一个占位 unsub 以保持幂等语义。
-      this.paneSubs.set(paneId, () => {});
-      this.log(
-        'warn',
-        `subscribe-pane(${paneId}) registered without paneOutputSource; live stream unavailable`,
-      );
+      this.failTerminalSubscription(paneId, workspaceId, activationId);
       return;
     }
 
     let unsub: Unsubscribe;
     try {
       unsub = this.paneOutputSource(paneId, workspaceId, (raw) => {
+        if (this.paneWorkspaces.get(paneId) !== workspaceId || this.paneActivations.get(paneId) !== activationId) return;
         this.pushPaneOutput(paneId, raw);
-      }, { activationId });
+      }, { activationId, onError: () => this.failTerminalSubscription(paneId, workspaceId, activationId) });
     } catch (error) {
       // A source failure must not escape the notification handler or strand a
       // half-registered Pane subscription in the bridge.
       this.log('warn', `paneOutputSource(${paneId}) failed`, error);
-      this.paneSubs.set(paneId, () => {});
+      this.failTerminalSubscription(paneId, workspaceId, activationId);
       return;
     }
     if (typeof unsub !== 'function') {
       this.log('warn', `paneOutputSource(${paneId}) returned no unsubscribe`);
-      this.paneSubs.set(paneId, () => {});
+      this.failTerminalSubscription(paneId, workspaceId, activationId);
       return;
     }
+    if (this.paneWorkspaces.get(paneId) !== workspaceId || this.paneActivations.get(paneId) !== activationId) { unsub(); return; }
     this.paneSubs.set(paneId, unsub);
 
-    // §history-pull（2026-07-02）：host **不再**在订阅时推 `RIS + 256KiB` 初始回放。
-    // 历史由**每个 controller 自己**经 seq 游标命令拉取（`get_pane_scrollback_tail`
-    // 首屏约 1.5 屏 + 滚顶 `get_pane_scrollback_before` 分批），在各自内核本地渲染。
-    // 好处：①首屏小（不卡死）；②切 pane 不重灌全量；③天然多控制端隔离——host 不再
-    // 广播 RIS，多个 controller 看同一 pane 不会互相冲屏（旧 replay 广播是主症结）。
-    // 本订阅只保留 **live 新字节** fan-out（各 bridge 只 listen 自己订阅的 pane 事件）。
-    // 背压自愈仍走 onChannelDrained → resync_pane_raw（限频），与首屏正交。
+
   }
 
   /**
-   * 把一个 pane 的 PTY 裸字节推回 controller：`0x10 || paneIdLen || paneId || raw`。
+   * Relay one complete canonical terminal envelope.
    * 公开以便真实 PTY 源（或测试）直接驱动。
    */
   pushPaneOutput(paneId: string, raw: Uint8Array): void {
@@ -859,9 +828,9 @@ export class CloudHostBridge {
     // SECURITY (audit #3): never leak pane bytes before TOTP passes. handleSubscribePane
     // already gates subscription, but guard the push path too (defense in depth) so a
     // pre-verification race / direct caller can't emit PTY output ahead of the gate.
-    if (!this.verified) return;
+    if (!this.verified || !this.paneWorkspaces.get(paneId) || !this.paneActivations.has(paneId)) return;
     // §背压（弱网 P1）：DataChannel 缓冲过高 → 丢帧（而非无界堆积撑爆 SCTP 缓冲 → OOM/卡死），
-    // 记录待重同步；缓冲回落后 onChannelDrained 请求 host 重放 RIS+scrollback 修复空洞。
+    // 记录待重同步；缓冲回落后请求权威终端快照。
     // Ordered SCTP cannot overtake bytes already queued. Background therefore
     // admits only when the channel is empty: at most one low frame can precede
     // a newly-active frame. Active retains only the 256 KiB latency reserve.
@@ -874,38 +843,26 @@ export class CloudHostBridge {
       this.backpressuredPanes.add(paneId);
       return;
     }
-    // A v2 envelope is one atomic postcard value. Keep it intact inside the
+    // A canonical envelope is one atomic postcard value. Keep it intact inside the
     // encrypted pane lane; splitting it would turn every chunk into a malformed
     // terminal frame at the controller. It still obeys the same channel
     // backpressure gate; recovery below asks Rust for a fresh exact snapshot.
     if (raw[0] === 0x13) {
+      if (raw.byteLength > terminalHello.maxFrameBytes) {
+        this.backpressuredPanes.add(paneId);
+        return;
+      }
       try {
-        this.sendFrame(encodePaneFrame(paneId, raw));
+        this.sendFrame(raw);
       } catch (e) {
         this.log('error', `failed to encode semantic pane frame for ${paneId}; dropped`, e);
       }
       return;
     }
-    try {
-      // Split before E2EE sealing. Counters remain frame-ordered, while the
-      // provider can schedule control/input between bounded pane frames.
-      for (let offset = 0; offset < raw.byteLength; offset += PANE_OUTPUT_FRAME_BYTES) {
-        if (this.channel && this.channel.bufferedAmount() > limit) {
-          this.backpressuredPanes.add(paneId);
-          break;
-        }
-        this.sendFrame(
-          encodePaneFrame(
-            paneId,
-            raw.subarray(offset, Math.min(raw.byteLength, offset + PANE_OUTPUT_FRAME_BYTES)),
-          ),
-        );
-      }
-      if (raw.byteLength === 0) this.sendFrame(encodePaneFrame(paneId, raw));
-    } catch (e) {
-      // paneId 过长等编码错误：丢弃该帧但不断连。
-      this.log('error', `failed to encode pane frame for ${paneId}; dropped`, e);
-    }
+    this.log('warn', 'noncanonical terminal output rejected');
+    const workspace = this.paneWorkspaces.get(paneId);
+    const activation = this.paneActivations.get(paneId);
+    if (workspace && activation !== undefined) this.failTerminalSubscription(paneId, workspace, activation);
   }
 
   /**
@@ -931,44 +888,37 @@ export class CloudHostBridge {
     if (this.recoveringPanes.has(paneId) || this.activePaneId !== paneId) return;
     this.recoveringPanes.add(paneId);
     const workspaceId = this.paneWorkspaces.get(paneId);
+    const activationId = this.paneActivations.get(paneId);
     try {
-      const activationId = this.paneActivations.get(paneId);
       if (activationId !== undefined && workspaceId) {
-        const encoded = await this.invoke('get_pane_terminal_snapshot_v2', {
+        const encoded = await this.invoke('get_terminal_snapshot', {
           paneId,
           workspaceId,
           activationId,
         });
-        if (this.activePaneId !== paneId || typeof encoded !== 'string') return;
+        if (this.rejected || !this.verified || this.activePaneId !== paneId || this.paneWorkspaces.get(paneId) !== workspaceId || this.paneActivations.get(paneId) !== activationId) return;
+        if (typeof encoded !== 'string' || encoded.length > Math.ceil(terminalHello.maxFrameBytes / 3) * 4) throw new Error('invalid terminal recovery frame');
         const bytes = base64ToBytes(encoded);
-        if (!bytes) return;
-        if (bytes[0] !== 0x13) return;
-        this.sendFrame(encodePaneFrame(paneId, bytes));
+        if (!bytes || bytes[0] !== 0x13) throw new Error('invalid terminal recovery tag');
+        this.sendFrame(bytes);
         this.backpressuredPanes.delete(paneId);
         return;
       }
-      const frame = await this.invoke('get_pane_resync_frame', {
-        paneId,
-        workspaceId,
-        maxBytes: 256 * 1024,
-      }) as { frame?: unknown };
-      if (this.activePaneId !== paneId || typeof frame?.frame !== 'string') return;
-      const bytes = new TextEncoder().encode(frame.frame);
-      for (let offset = 0; offset < bytes.byteLength; offset += PANE_OUTPUT_FRAME_BYTES) {
-        this.sendFrame(
-          encodePaneFrame(
-            paneId,
-            bytes.subarray(offset, Math.min(bytes.byteLength, offset + PANE_OUTPUT_FRAME_BYTES)),
-          ),
-        );
-      }
-      if (bytes.byteLength === 0) this.sendFrame(encodePaneFrame(paneId, bytes));
-      this.backpressuredPanes.delete(paneId);
+
     } catch (e) {
       this.log('warn', `private pane recovery(${paneId}) failed`, e);
+      if (workspaceId && activationId !== undefined) this.failTerminalSubscription(paneId, workspaceId, activationId);
     } finally {
-      this.recoveringPanes.delete(paneId);
+      if (this.paneWorkspaces.get(paneId) === workspaceId && this.paneActivations.get(paneId) === activationId) {
+        this.recoveringPanes.delete(paneId);
+      }
     }
+  }
+
+  private failTerminalSubscription(paneId: string, workspaceId: string, activationId: number): void {
+    if (this.rejected || this.paneWorkspaces.get(paneId) !== workspaceId || this.paneActivations.get(paneId) !== activationId) return;
+    this.unsubscribePane(paneId);
+    this.sendControl({ type: 'event', name: 'pane-terminal-error', payload: { paneId, workspaceId, activationId } });
   }
 
   /** 取消一个 pane 的订阅（host 侧主动，或 pane 关闭时）。 */
@@ -1092,7 +1042,7 @@ export function negotiateHello(params: unknown): Record<string, unknown> {
       params: { reason: 'protocol-version-mismatch' },
     };
   }
-  if (p.terminalProtocolVersion !== 2) {
+  if (p.terminalProtocolVersion !== terminalHello.protocolVersion) {
     return {
       jsonrpc: '2.0',
       method: BYE_METHOD,
@@ -1109,7 +1059,7 @@ export function negotiateHello(params: unknown): Record<string, unknown> {
     method: HELLO_METHOD,
     params: {
       protocolVersion: HOST_PROTOCOL_VERSION,
-      terminalProtocolVersion: 2,
+      terminalProtocolVersion: terminalHello.protocolVersion,
       terminalMaxFrameBytes: 16 * 1024 * 1024,
       capabilities: agreed,
     },

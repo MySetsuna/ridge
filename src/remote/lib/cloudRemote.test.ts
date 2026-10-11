@@ -3,15 +3,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ── Mock the tauriShim-aliased Tauri API (in the real mobile build these resolve
 //    to the WebRTC bridge shims; here we drive them directly). vi.mock factories
 //    are hoisted, so the mocks must be created via vi.hoisted to be referenceable. ──
-const { invokeMock, listenMock, ChannelMock } = vi.hoisted(() => {
+const { invokeMock, listenMock, ChannelMock, controlMock } = vi.hoisted(() => {
   class ChannelMock {
     onmessage: (v: unknown) => void = () => {};
   }
-  return { invokeMock: vi.fn(), listenMock: vi.fn(), ChannelMock };
+  return { invokeMock: vi.fn(), listenMock: vi.fn(), ChannelMock, controlMock: vi.fn() };
 });
 
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args: unknown[]) => invokeMock(...args),
+  invoke: (...args: unknown[]) => Promise.resolve(invokeMock(...args)).then((result) => {
+    if (args[0] === 'write_terminal_input' && result === undefined) {
+      return { sequence: (args[1] as { input: { sequence: number } }).input.sequence, alreadyApplied: false };
+    }
+    return result;
+  }),
   Channel: ChannelMock,
 }));
 vi.mock('@tauri-apps/api/event', () => ({
@@ -19,6 +24,10 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 import { CloudRemoteConnection } from './cloudRemote';
+import { readFileSync } from 'node:fs';
+import { CloudHostBridge } from '@ridge/remote/shared/cloud/cloudHostBridge';
+import { createCloudWebrtcTransportWith } from '@ridge/remote/shared/transport/cloudWebrtcAdapter';
+import type { CloudConnectionCallbacks } from '@ridge/remote/shared/transport/connectionProvider';
 import type { PaneNode } from '$lib/types';
 import {
   RpcClient,
@@ -52,7 +61,13 @@ function fakeHandle() {
   disconnectSpy = vi.fn();
   verifyTotpSpy = vi.fn(async () => true);
   return {
-    adapter: {} as never,
+    adapter: {
+      sendControl: controlMock,
+      onTerminalFrame: (receive: (packet: Uint8Array) => void) => {
+        handlers['terminal-frame'] = event => receive(event.payload as Uint8Array);
+        return () => { delete handlers['terminal-frame']; };
+      },
+    } as never,
     hostDevice: 'dev',
     verifyTotp: verifyTotpSpy,
     tryTrustGrant: vi.fn(async () => false) as unknown as (timeoutMs?: number) => Promise<boolean>,
@@ -69,7 +84,7 @@ function rpcBackedBridge() {
       if (
         'id' in frame
         && 'method' in frame
-        && frame.method !== 'write_to_pty'
+        && frame.method !== 'write_terminal_input'
         && frame.method !== 'resize_pane'
       ) {
         queueMicrotask(() => {
@@ -115,6 +130,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 beforeEach(() => {
   handlers = {};
   invokeMock.mockReset();
+  controlMock.mockReset();
   listenMock.mockReset();
   invokeMock.mockImplementation(async (cmd: string) => {
     switch (cmd) {
@@ -217,6 +233,52 @@ describe('CloudRemoteConnection.init', () => {
 });
 
 describe('CloudRemoteConnection panes', () => {
+  it('shows active terminal source failure and ignores obsolete activations', async () => {
+    const conn = await connected();
+    const pane = { workspaceId: 'ws1', paneId: 'pane-a' };
+    conn.subscribePane(pane, { activationId: 7, active: true });
+    handlers['pane-terminal-error']({ payload: { ...pane, activationId: 6 } });
+    expect(conn.lastFailure()).toBeNull();
+    handlers['pane-terminal-error']({ payload: { ...pane, activationId: 7 } });
+    expect(conn.lastFailure()).toMatchObject({ category: 'channel', message: expect.stringContaining('Terminal connection failed') });
+    conn.disconnect();
+    expect(handlers['pane-terminal-error']).toBeUndefined();
+  });
+
+  it('routes the authoritative snapshot through the real host bridge, adapter, client and WASM decoder', async () => {
+    const { default: init, TerminalKernel } = await import('../../../packages/ridge-term/pkg/ridge_term.js');
+    await init({ module_or_path: readFileSync(new URL('../../../packages/ridge-term/pkg/ridge_term_bg.wasm', import.meta.url)) });
+    const packet = new Uint8Array(Buffer.from(readFileSync(new URL('../../../packages/remote/src/shared/cloud/signaling/fixtures/terminal/snapshot.hex', import.meta.url), 'utf8').trim(), 'hex'));
+    let callbacks!: CloudConnectionCallbacks;
+    let host!: CloudHostBridge;
+    const adapter = createCloudWebrtcTransportWith('fixture-host', cb => {
+      callbacks = cb;
+      return {
+        connect: async () => {}, disconnect: () => {}, getState: () => 'connected',
+        sendFrame: frame => host.handleFrame(frame),
+      };
+    });
+    host = new CloudHostBridge({
+      preauthorized: true,
+      invoke: async () => null,
+      sendFrame: frame => callbacks.onFrame?.(frame),
+      paneOutputSource: (_pane, _workspace, emit) => { emit(packet); return () => {}; },
+    });
+    const conn = new CloudRemoteConnection({ ...fakeHandle(), adapter } as never);
+    const kernel = new TerminalKernel(2, 3, 256);
+    const frames: Uint8Array[] = [];
+    conn.onTerminalFrame(frame => {
+      frames.push(frame);
+      expect(kernel.applyRemoteFrame(frame, 'work', 'pane', 7)).toBe(true);
+    });
+    try {
+      conn.activatePane({ workspaceId: 'work', paneId: 'pane' }, { activationId: 7 });
+      expect(frames).toEqual([packet]);
+      expect(kernel.terminalInputContext()).toEqual([{ workspaceId: 'work', paneId: 'pane' }, 'epoch-A', 7]);
+      expect([kernel.cursorRow(), kernel.cursorCol()]).toEqual([1, 1]);
+      expect(kernel.applyRemoteFrame(packet, 'work', 'pane', 8)).toBe(false);
+    } finally { conn.disconnect(); host.reset(); adapter.dispose(); kernel.free(); }
+  });
   it('listPanes flattens the tree into a panes message + metadata', async () => {
     const conn = await connected();
     const msgs: WsMessage[] = [];
@@ -260,410 +322,106 @@ describe('CloudRemoteConnection panes', () => {
     expect(msgs.at(-1)).toMatchObject({ type: 'panes', workspaceId: 'ws1' });
   });
 
-  it('subscribePane seeds a scrollback tail (RIS + history) then streams live pty bytes', async () => {
+  it('delivers canonical adapter packets directly and never reads raw history', async () => {
     const conn = await connected();
-    const got: Array<[PaneRef, Uint8Array]> = [];
-    conn.onRawBytes((pane, bytes) => got.push([pane, bytes]));
-
-    conn.subscribePane(PANE);
-    await flush();
-
-    // §R-CLOUD-CONVERGE: controller pulls ONE host-built resync frame (no client
-    // assembly, no separate preamble invoke)…
-    expect(invokeMock).toHaveBeenCalledWith(
-      'get_pane_resync_frame',
-      expect.objectContaining({ paneId: 'pane-a' }),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-    // …and feeds `frame` verbatim as the first frame (RIS + preamble + history).
-    expect(got).toHaveLength(1);
-    expect(got[0][0]).toEqual(PANE);
-    expect(new TextDecoder().decode(got[0][1])).toBe('\x1bcHIST');
-
-    // Then the live stream is wired via register_pane_delta_channel (→ subscribe-pane).
-    expect(invokeMock).toHaveBeenCalledWith(
-      'register_pane_delta_channel',
-      expect.objectContaining({ paneId: 'pane-a', workspaceId: 'ws1' }),
-    );
-    const evt = 'pty-output-ws1-pane-a';
-    expect(handlers[evt]).toBeTypeOf('function');
-
-    handlers[evt]({ payload: { data: 'hi' } });
-    expect(got).toHaveLength(2);
-    expect(new TextDecoder().decode(got[1][1])).toBe('hi');
+    const frames: Uint8Array[] = [];
+    conn.onTerminalFrame(frame => frames.push(frame));
+    conn.activatePane(PANE, { active: true, activationId: 29 });
+    const packet = new Uint8Array([0x13, 4, 5, 6]);
+    handlers['terminal-frame']({ payload: packet });
+    expect(frames).toEqual([packet]);
+    expect(controlMock).toHaveBeenCalledWith({ jsonrpc: '2.0', method: 'subscribe-pane', params: { ...PANE, active: true, activationId: 29 } });
+    expect(listenMock.mock.calls.every(call => !String(call[0]).startsWith('pty-output'))).toBe(true);
+    expect(invokeMock.mock.calls.some(call => /scrollback|resync_frame/.test(String(call[0])))).toBe(false);
+    conn.disconnect();
+    expect(handlers['terminal-frame']).toBeUndefined();
   });
 
-  it('keeps live bytes ordered while the bounded visual seed RPC is pending', async () => {
+  it('rejects subscriptions without a valid activation instead of replaying history', async () => {
     const conn = await connected();
-    const got: Uint8Array[] = [];
-    conn.onRawBytes((_pane, bytes) => got.push(bytes));
-    let releaseSeed!: (frame: { frame: string; start_seq: number; at_oldest: boolean; head_seq: number }) => void;
-    invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'get_pane_resync_frame') {
-        return new Promise((resolve) => { releaseSeed = resolve; });
-      }
-      return undefined;
-    });
-
-    conn.subscribePane(PANE);
-    for (let i = 0; i < 20 && !releaseSeed; i += 1) await Promise.resolve();
-    expect(handlers['pty-output-ws1-pane-a']).toBeTypeOf('function');
-    expect(releaseSeed).toBeTypeOf('function');
-    handlers['pty-output-ws1-pane-a']({ payload: { data: 'LIVE' } });
-    expect(got.map((bytes) => new TextDecoder().decode(bytes))).toEqual(['LIVE']);
-
-    releaseSeed({ frame: '\x1bcSEED', start_seq: 10, at_oldest: false, head_seq: 14 });
-    await flush();
-    expect(got.map((bytes) => new TextDecoder().decode(bytes))).toEqual(['LIVE', '\x1bcSEED', 'LIVE']);
+    for (const activationId of [undefined, 0, -1, Number.NaN, 1.5]) {
+      expect(() => conn.subscribePane(PANE, { activationId })).toThrow('terminal activation required');
+    }
+    expect(controlMock).not.toHaveBeenCalled();
+    conn.disconnect();
   });
 
-  it('passes cloud raw bytes through without UTF-8 replacement', async () => {
+  it('changes activation on an already subscribed pane and preserves it on focus promotion', async () => {
     const conn = await connected();
-    const got: Uint8Array[] = [];
-    conn.onRawBytes((_pane, bytes) => got.push(bytes));
-
-    conn.subscribePane(PANE);
+    conn.subscribePane(PANE, { activationId: 7, active: false });
+    conn.subscribePane(PANE, { activationId: 8, active: false });
+    conn.subscribePane(PANE, { active: true });
     await flush();
-
-    const binary = new Uint8Array([0xff, 0x00, 0xe2, 0x28, 0xa1]);
-    handlers['pty-output-ws1-pane-a']({ payload: { bytes: binary } });
-
-    expect(got.at(-1)).toBe(binary);
+    expect(controlMock.mock.calls.map(([frame]) => frame.params.activationId)).toEqual([7, 8, 8]);
+    expect(controlMock.mock.calls.at(-1)![0].params.active).toBe(true);
+    conn.disconnect();
   });
 
-  it('requests host resync without replacing the live listener', async () => {
+  it('unsubscribes the old composite pane before activating its replacement', async () => {
     const conn = await connected();
-    conn.subscribePane(PANE);
-    await flush();
-    const listener = handlers['pty-output-ws1-pane-a'];
-    expect(listener).toBeTypeOf('function');
-    invokeMock.mockClear();
+    const next = { workspaceId: 'ws2', paneId: PANE.paneId };
+    conn.activatePane(PANE, { activationId: 7 });
+    controlMock.mockClear();
+    conn.activatePane(next, { activationId: 8 });
+    expect(controlMock.mock.calls.map(([frame]) => [frame.method, frame.params])).toEqual([
+      ['unsubscribe-pane', PANE],
+      ['subscribe-pane', { ...next, active: true, activationId: 8 }],
+    ]);
+    conn.disconnect();
+  });
 
+  it('recovers only the current activation and discards late snapshots', async () => {
+    const conn = await connected();
+    const frames: Uint8Array[] = [];
+    conn.onTerminalFrame(frame => frames.push(frame));
+    conn.activatePane(PANE, { activationId: 7 });
+    let resolve!: (encoded: string) => void;
+    invokeMock.mockImplementationOnce(() => new Promise<string>(r => { resolve = r; }));
+    conn.resyncPane(PANE);
+    conn.activatePane(PANE, { activationId: 8 });
+    const packet = new Uint8Array([0x13, 1, 2]);
+    resolve(btoa(String.fromCharCode(...packet)));
+    await flush();
+    expect(frames).toEqual([]);
+    invokeMock.mockResolvedValueOnce(btoa(String.fromCharCode(...packet)));
     conn.resyncPane(PANE);
     await flush();
-
-    expect(invokeMock).toHaveBeenCalledWith(
-      'resync_pane_raw',
-      { paneId: PANE.paneId, workspaceId: PANE.workspaceId },
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-    expect(handlers['pty-output-ws1-pane-a']).toBe(listener);
+    expect(frames).toEqual([packet]);
+    expect(invokeMock).toHaveBeenCalledWith('get_terminal_snapshot', { ...PANE, activationId: 8 }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    conn.disconnect();
   });
 
-  it('§R-CLOUD-CONVERGE version-skew: falls back to RIS + tail when the host lacks get_pane_resync_frame', async () => {
-    const conn = await connected();
-    const got: Array<[PaneRef, Uint8Array]> = [];
-    conn.onRawBytes((pane, bytes) => got.push([pane, bytes]));
-
-    // Simulate an OLDER desktop host whose allow-list rejects the new command.
-    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
-      if (cmd === 'get_pane_resync_frame') throw new Error('METHOD_NOT_FOUND');
-      if (cmd === 'get_pane_scrollback_tail') return { bytes: 'HIST', start_seq: 100, at_oldest: false, head_seq: 116 };
-      if (cmd === 'register_pane_delta_channel') return undefined;
-      void args;
-      return undefined;
-    });
-
-    conn.subscribePane(PANE);
-    await flush();
-
-    // The new command was attempted first, then the legacy tail seeded RIS + history
-    // (no preamble — exactly the prior shipped cloud behavior, not a regression).
-    expect(invokeMock).toHaveBeenCalledWith(
-      'get_pane_resync_frame',
-      expect.objectContaining({ paneId: 'pane-a' }),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-    expect(invokeMock).toHaveBeenCalledWith(
-      'get_pane_scrollback_tail',
-      expect.objectContaining({ paneId: 'pane-a' }),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-    expect(got).toHaveLength(1);
-    expect(new TextDecoder().decode(got[0][1])).toBe('\x1bcHIST');
-  });
-
-  it('keeps the live subscription when both visual seed commands are unavailable', async () => {
-    const conn = await connected();
-    const got: string[] = [];
-    conn.onRawBytes((_pane, bytes) => got.push(new TextDecoder().decode(bytes)));
-    invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'get_pane_resync_frame' || cmd === 'get_pane_scrollback_tail') {
-        throw new Error('seed command unavailable');
-      }
-      return undefined;
-    });
-
-    conn.subscribePane(PANE);
-    await flush();
-    handlers['pty-output-ws1-pane-a']({ payload: { data: 'LIVE' } });
-    expect(got).toEqual(['LIVE']);
-    expect(handlers['pty-output-ws1-pane-a']).toBeTypeOf('function');
-  });
-
-  it('retries when listener registration succeeds but host subscription fails', async () => {
+  it('retries notification admission with bounded backoff and stops after disconnect', async () => {
     const conn = await connected();
     vi.useFakeTimers();
-    let registrations = 0;
-    invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'register_pane_delta_channel') {
-        registrations += 1;
-        if (registrations === 1) throw new Error('registration unavailable');
-      }
-      return undefined;
-    });
-
+    controlMock.mockImplementation(() => { throw new Error('transport queue full'); });
     try {
-      conn.subscribePane(PANE);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(registrations).toBe(1);
-
-      await vi.advanceTimersByTimeAsync(100);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(registrations).toBe(2);
-      expect(handlers['pty-output-ws1-pane-a']).toBeTypeOf('function');
-    } finally {
+      conn.subscribePane(PANE, { activationId: 7 });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(controlMock).toHaveBeenCalledTimes(5);
       conn.disconnect();
-      vi.useRealTimers();
-    }
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(controlMock).toHaveBeenCalledTimes(5);
+    } finally { vi.useRealTimers(); }
   });
 
-  it('resume subscriptions skip the destructive visual seed', async () => {
+  it('fetches semantic history by absolute row range and rejects wrong tags', async () => {
     const conn = await connected();
-    invokeMock.mockClear();
-
-    conn.subscribePane(PANE, { resume: true });
-    await flush();
-
-    expect(invokeMock).not.toHaveBeenCalledWith('get_pane_resync_frame', expect.anything(), expect.anything());
-    expect(invokeMock).not.toHaveBeenCalledWith('get_pane_scrollback_tail', expect.anything(), expect.anything());
-    expect(handlers['pty-output-ws1-pane-a']).toBeTypeOf('function');
-  });
-
-  it('fetchOlderScrollback pages one older batch, advances the cursor, then stops at oldest', async () => {
-    const conn = await connected();
-    conn.subscribePane(PANE);
-    await flush();
-
-    // First scroll-up: pages older history (bytes < tail.start_seq) and returns it.
-    const older = await conn.fetchOlderScrollback(PANE);
-    expect(invokeMock).toHaveBeenCalledWith(
-      'get_pane_scrollback_before',
-      expect.objectContaining({ paneId: 'pane-a', beforeSeq: 100 }),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-    expect(older && new TextDecoder().decode(older.bytes)).toBe('OLDER');
-    expect(older?.commit(() => true)).toBe(true);
-
-    // The mock's page reported at_oldest → a further scroll-up is a no-op (null),
-    // and doesn't fire another before-fetch.
-    const before = invokeMock.mock.calls.filter((c) => c[0] === 'get_pane_scrollback_before').length;
-    expect(await conn.fetchOlderScrollback(PANE)).toBeNull();
-    const after = invokeMock.mock.calls.filter((c) => c[0] === 'get_pane_scrollback_before').length;
-    expect(after).toBe(before); // stopped — no redundant fetch at oldest
-  });
-
-  it('advances the older cursor only with a successful atomic prepend', async () => {
-    const conn = await connected();
-    conn.subscribePane(PANE);
-    await flush();
-
-    const first = await conn.fetchOlderScrollback(PANE);
-    const rejectedApply = vi.fn(() => false);
-    expect(first?.commit(rejectedApply)).toBe(false);
-    expect(rejectedApply).toHaveBeenCalledOnce();
-    first?.discard();
-
-    const retry = await conn.fetchOlderScrollback(PANE);
-    expect(invokeMock).toHaveBeenLastCalledWith(
-      'get_pane_scrollback_before',
-      expect.objectContaining({ beforeSeq: 100 }),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-    expect(retry?.commit(() => true)).toBe(true);
-  });
-
-  it('fetchOlderScrollback returns null when the pane was never subscribed (no cursor)', async () => {
-    const conn = await connected();
-    expect(await conn.fetchOlderScrollback({ workspaceId: 'ws1', paneId: 'pane-z' })).toBeNull();
-  });
-
-  it('rejects malformed older pages and records an empty oldest page', async () => {
-    const conn = await connected();
-    conn.subscribePane(PANE);
-    await flush();
-    let mode: 'malformed' | 'empty' = 'malformed';
-    invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'get_pane_scrollback_before') {
-        return mode === 'malformed'
-          ? { bytes: 'BAD', start_seq: 100, end_seq: 100, at_oldest: false }
-          : { bytes: '', start_seq: 0, end_seq: 100, at_oldest: true };
-      }
-      return undefined;
-    });
-
-    expect(await conn.fetchOlderScrollback(PANE)).toBeNull();
-    mode = 'empty';
-    expect(await conn.fetchOlderScrollback(PANE)).toBeNull();
-    const calls = invokeMock.mock.calls.filter((call) => call[0] === 'get_pane_scrollback_before');
-    expect(calls).toHaveLength(2);
-    expect(await conn.fetchOlderScrollback(PANE)).toBeNull();
-    expect(invokeMock.mock.calls.filter((call) => call[0] === 'get_pane_scrollback_before')).toHaveLength(2);
-  });
-
-  it('clears the older-page flight after a host rejection so a later fetch can recover', async () => {
-    const conn = await connected();
-    conn.subscribePane(PANE);
-    await flush();
-    let attempts = 0;
-    invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'get_pane_scrollback_before') {
-        attempts += 1;
-        if (attempts === 1) throw new Error('history temporarily unavailable');
-        return { bytes: 'OLDER', start_seq: 60, end_seq: 100, at_oldest: false };
-      }
-      return undefined;
-    });
-
-    expect(await conn.fetchOlderScrollback(PANE)).toBeNull();
-    const page = await conn.fetchOlderScrollback(PANE);
-    expect(page && new TextDecoder().decode(page.bytes)).toBe('OLDER');
-    expect(page?.discard()).toBeUndefined();
-    expect(attempts).toBe(2);
-  });
-
-  it('subscribePane is idempotent per pane', async () => {
-    const conn = await connected();
-    conn.subscribePane(PANE);
-    await flush();
-    conn.subscribePane(PANE);
-    await flush();
-    const regCalls = invokeMock.mock.calls.filter((c) => c[0] === 'register_pane_delta_channel');
-    expect(regCalls).toHaveLength(1);
-  });
-
-  it('activatePane tears down the old composite stream before seeding the new pane', async () => {
-    const conn = await connected();
-    const next = { workspaceId: 'ws2', paneId: 'pane-b' };
-    conn.activatePane?.(PANE, { active: true });
-    await flush();
-    invokeMock.mockClear();
-
-    conn.activatePane?.(next, { active: true });
-    await flush();
-
-    expect(handlers['pty-output-ws1-pane-a']).toBeUndefined();
-    expect(invokeMock).toHaveBeenCalledWith('unsubscribe_pane_raw', {
-      paneId: PANE.paneId,
-      workspaceId: PANE.workspaceId,
-    });
-    expect(invokeMock).toHaveBeenCalledWith(
-      'register_pane_delta_channel',
-      expect.objectContaining({ paneId: 'pane-b', workspaceId: 'ws2', active: true }),
-    );
-  });
-
-  it('routes terminal-v2 bytes as one frame and subscribes with the activation fence', async () => {
-    const sendControl = vi.fn();
-    const handle = { ...fakeHandle(), adapter: { sendControl } };
-    const conn = new CloudRemoteConnection(handle as never);
-    await conn.init();
-    const frames: Uint8Array[] = [];
-    conn.onTerminalFrame((frame) => frames.push(frame));
-
-    conn.activatePane?.(PANE, { active: true, activationId: 29 });
-    await flush();
-    expect(sendControl).toHaveBeenCalledWith({
-      jsonrpc: '2.0',
-      method: 'subscribe-pane',
-      params: {
-        paneId: PANE.paneId,
-        workspaceId: PANE.workspaceId,
-        active: true,
-        activationId: 29,
-      },
-    });
-
-    const semantic = new Uint8Array([0x13, 4, 5, 6]);
-    handlers['pty-output-ws1-pane-a']({ payload: { bytes: semantic } });
-    expect(frames).toEqual([semantic]);
-    expect(invokeMock).not.toHaveBeenCalledWith('get_pane_resync_frame', expect.anything());
-  });
-
-  it('retries a transient subscribe failure with bounded backoff', async () => {
-    const conn = await connected();
-    vi.useFakeTimers();
-    let attempts = 0;
-    listenMock.mockImplementation(async (name: string, handler: (e: { payload: unknown }) => void) => {
-      if (name === 'pty-output-ws1-pane-a') {
-        attempts += 1;
-        if (attempts === 1) throw new Error('transient subscribe failure');
-      }
-      handlers[name] = handler;
-      return () => { delete handlers[name]; };
-    });
-    try {
-      conn.subscribePane(PANE);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(attempts).toBe(1);
-
-      await vi.advanceTimersByTimeAsync(99);
-      expect(attempts).toBe(1);
-      await vi.advanceTimersByTimeAsync(1);
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(attempts).toBe(2);
-      expect(handlers['pty-output-ws1-pane-a']).toBeTypeOf('function');
-    } finally {
-      conn.disconnect();
-      vi.useRealTimers();
-    }
-  });
-
-  it('stops subscribe retries after the bounded attempt cap', async () => {
-    const conn = await connected();
-    vi.useFakeTimers();
-    let attempts = 0;
-    listenMock.mockImplementation(async (name: string) => {
-      if (name === 'pty-output-ws1-pane-a') {
-        attempts += 1;
-        throw new Error('persistent subscribe failure');
-      }
-      return () => {};
-    });
-    try {
-      conn.subscribePane(PANE);
-      await Promise.resolve();
-      await Promise.resolve();
-      for (const delay of [100, 200, 400, 800]) {
-        await vi.advanceTimersByTimeAsync(delay);
-        await Promise.resolve();
-        await Promise.resolve();
-      }
-      expect(attempts).toBe(5); // initial attempt + four retries
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(attempts).toBe(5);
-    } finally {
-      conn.disconnect();
-      vi.useRealTimers();
-    }
+    const request = { pane: PANE, terminalEpoch: 'epoch', activationId: 7, historyEpoch: 2, before: 100, maxRows: 128 };
+    const packet = new Uint8Array([0x13, 1, 2]);
+    invokeMock.mockResolvedValueOnce(btoa(String.fromCharCode(...packet)));
+    expect(await conn.fetchTerminalHistory(request)).toEqual(packet);
+    expect(invokeMock).toHaveBeenCalledWith('get_terminal_history', { request }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    invokeMock.mockResolvedValueOnce(btoa('raw VT'));
+    await expect(conn.fetchTerminalHistory(request)).rejects.toThrow('invalid terminal history tag');
+    conn.disconnect();
   });
 
   it('sendStdin writes to the pty', async () => {
     const conn = await connected();
-    conn.sendStdin(PANE, 'ls\n');
+    conn.sendStdin(PANE, 'ls\n', [{ ...PANE }, 'epoch', 1] as const);
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(invokeMock).toHaveBeenCalledWith('write_to_pty', {
-      workspaceId: 'ws1',
-      paneId: 'pane-a',
-      data: 'ls\n',
-      inputSourceId: expect.any(String),
-      inputSequence: 1,
-    }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(invokeMock).toHaveBeenCalledWith('write_terminal_input', { input: { pane: { workspaceId: 'ws1', paneId: 'pane-a' }, terminalEpoch: 'epoch', activationId: 1, bytes: Array.from(new TextEncoder().encode('ls\n')), sequence: 1, sourceId: expect.any(String) } }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
   });
 
   it('sends the first key immediately and coalesces later input without reordering', async () => {
@@ -671,31 +429,27 @@ describe('CloudRemoteConnection panes', () => {
     invokeMock.mockClear();
     let releaseFirst!: () => void;
     invokeMock.mockImplementation((cmd: string) => {
-      if (cmd !== 'write_to_pty') return Promise.resolve(undefined);
+      if (cmd !== 'write_terminal_input') return Promise.resolve(undefined);
       if (!releaseFirst) return new Promise<void>((resolve) => { releaseFirst = resolve; });
       return Promise.resolve(undefined);
     });
 
-    conn.sendStdin(PANE, 'a');
+    conn.sendStdin(PANE, 'a', [{ ...PANE }, 'epoch', 1] as const);
     // Zero input window: the first byte is admitted in the same turn.
-    expect(invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty')).toHaveLength(1);
-    conn.sendStdin(PANE, 'b');
+    expect(invokeMock.mock.calls.filter((call) => call[0] === 'write_terminal_input')).toHaveLength(1);
+    conn.sendStdin(PANE, 'b', [{ ...PANE }, 'epoch', 1] as const);
     await new Promise((resolve) => setTimeout(resolve, 10));
-    conn.sendStdin(PANE, 'c');
-    conn.sendStdin(PANE, 'd');
+    conn.sendStdin(PANE, 'c', [{ ...PANE }, 'epoch', 1] as const);
+    conn.sendStdin(PANE, 'd', [{ ...PANE }, 'epoch', 1] as const);
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty')).toHaveLength(1);
+    expect(invokeMock.mock.calls.filter((call) => call[0] === 'write_terminal_input')).toHaveLength(1);
 
     releaseFirst();
     await new Promise((resolve) => setTimeout(resolve, 10));
-    const writes = invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty');
+    const writes = invokeMock.mock.calls.filter((call) => call[0] === 'write_terminal_input');
     expect(writes).toHaveLength(2);
-    expect(writes[0][1]).toMatchObject({ data: 'a', inputSequence: 1 });
-    expect(writes[1][1]).toMatchObject({
-      data: 'bcd',
-      inputSourceId: writes[0][1].inputSourceId,
-      inputSequence: 2,
-    });
+    expect(writes[0][1]).toMatchObject({ input: { bytes: Array.from(new TextEncoder().encode('a')), sequence: 1 } });
+    expect(writes[1][1]).toMatchObject({ input: { bytes: Array.from(new TextEncoder().encode('bcd')), sequence: 2, sourceId: writes[0][1].input.sourceId } });
   });
 
   it('keeps a 1,000-event input burst bounded after the immediate first RPC', async () => {
@@ -703,21 +457,16 @@ describe('CloudRemoteConnection panes', () => {
     invokeMock.mockClear();
     vi.useFakeTimers();
     try {
-      for (let i = 0; i < 1_000; i += 1) conn.sendStdin(PANE, 'x');
+      for (let i = 0; i < 1_000; i += 1) conn.sendStdin(PANE, 'x', [{ ...PANE }, 'epoch', 1] as const);
 
-      expect(invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty')).toHaveLength(1);
+      expect(invokeMock.mock.calls.filter((call) => call[0] === 'write_terminal_input')).toHaveLength(1);
       await vi.runAllTicks();
+      for (let i = 0; i < 6; i++) await Promise.resolve();
 
-      const writes = invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty');
+      const writes = invokeMock.mock.calls.filter((call) => call[0] === 'write_terminal_input');
       expect(writes).toHaveLength(2);
-      expect(writes[0][1]).toMatchObject({
-        data: 'x',
-        inputSequence: 1,
-      });
-      expect(writes[1][1]).toMatchObject({
-        data: 'x'.repeat(999),
-        inputSequence: 2,
-      });
+      expect(writes[0][1]).toMatchObject({ input: { bytes: Array.from(new TextEncoder().encode('x')), sequence: 1 } });
+      expect(writes[1][1]).toMatchObject({ input: { bytes: Array.from(new TextEncoder().encode('x'.repeat(999))), sequence: 2 } });
     } finally {
       conn.disconnect();
       vi.useRealTimers();
@@ -729,15 +478,15 @@ describe('CloudRemoteConnection panes', () => {
     invokeMock.mockClear();
     let attempts = 0;
     invokeMock.mockImplementation((cmd: string) => {
-      if (cmd !== 'write_to_pty') return Promise.resolve(undefined);
+      if (cmd !== 'write_terminal_input') return Promise.resolve(undefined);
       attempts += 1;
       return attempts === 1
-        ? Promise.reject(new RpcTimeoutError('write_to_pty', 1_000))
+        ? Promise.reject(new RpcTimeoutError('write_terminal_input', 1_000))
         : Promise.resolve(undefined);
     });
     vi.useFakeTimers();
     try {
-      conn.sendStdin(PANE, 'x');
+      conn.sendStdin(PANE, 'x', [{ ...PANE }, 'epoch', 1] as const);
       // The first request is immediate; let its rejection schedule the 100 ms
       // exponential-backoff timer before advancing the fake clock.
       await Promise.resolve();
@@ -747,13 +496,9 @@ describe('CloudRemoteConnection panes', () => {
       expect(attempts).toBe(1);
       await vi.advanceTimersByTimeAsync(1);
       expect(attempts).toBe(2);
-      const writes = invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty');
-      expect(writes[0][1]).toMatchObject({ data: 'x', inputSequence: 1 });
-      expect(writes[1][1]).toMatchObject({
-        data: 'x',
-        inputSourceId: writes[0][1].inputSourceId,
-        inputSequence: 1,
-      });
+      const writes = invokeMock.mock.calls.filter((call) => call[0] === 'write_terminal_input');
+      expect(writes[0][1]).toMatchObject({ input: { bytes: Array.from(new TextEncoder().encode('x')), sequence: 1 } });
+      expect(writes[1][1]).toMatchObject({ input: { bytes: Array.from(new TextEncoder().encode('x')), sequence: 1, sourceId: writes[0][1].input.sourceId } });
     } finally {
       vi.useRealTimers();
     }
@@ -764,13 +509,13 @@ describe('CloudRemoteConnection panes', () => {
     invokeMock.mockClear();
     let attempts = 0;
     invokeMock.mockImplementation((cmd: string) => {
-      if (cmd !== 'write_to_pty') return Promise.resolve(undefined);
+      if (cmd !== 'write_terminal_input') return Promise.resolve(undefined);
       attempts += 1;
-      return Promise.reject(new RpcTimeoutError('write_to_pty', 1_000));
+      return Promise.reject(new RpcTimeoutError('write_terminal_input', 1_000));
     });
     vi.useFakeTimers();
     try {
-      conn.sendStdin(PANE, 'x');
+      conn.sendStdin(PANE, 'x', [{ ...PANE }, 'epoch', 1] as const);
       await vi.advanceTimersByTimeAsync(4);
       await vi.advanceTimersByTimeAsync(100);
       await vi.advanceTimersByTimeAsync(200);
@@ -933,19 +678,24 @@ describe('CloudRemoteConnection panes', () => {
 
   it('closePane closes and stops streaming the pane', async () => {
     const conn = await connected();
-    conn.subscribePane(PANE);
+    const frames = vi.fn();
+    conn.onTerminalFrame(frames);
+    conn.subscribePane(PANE, { activationId: 1 });
     await flush();
-    expect(handlers['pty-output-ws1-pane-a']).toBeTypeOf('function');
+    expect(controlMock).toHaveBeenCalledWith(expect.objectContaining({ method: 'subscribe-pane', params: expect.objectContaining(PANE) }));
 
     const ok = await conn.closePane(PANE);
     expect(ok).toBe(true);
     expect(invokeMock).toHaveBeenCalledWith('close_pane', { workspaceId: 'ws1', paneId: 'pane-a' });
-    expect(handlers['pty-output-ws1-pane-a']).toBeUndefined();
+    handlers['terminal-frame']({ payload: new Uint8Array([0x13, 1]) });
+    expect(frames).not.toHaveBeenCalled();
+    expect(conn.sendStdin(PANE, 'after-close', [PANE, 'epoch', 1])).toBe(false);
+    conn.disconnect();
   });
 
   it('pruneOutputs releases listeners for panes the host dropped', async () => {
     const conn = await connected();
-    conn.subscribePane(PANE);
+    conn.subscribePane(PANE, { activationId: 1 });
     await flush();
     conn.pruneOutputs(new Set(['pane-b'])); // pane-a no longer live
     expect(handlers['pty-output-ws1-pane-a']).toBeUndefined();
@@ -998,9 +748,9 @@ describe('CloudRemoteConnection workspaces', () => {
     expect(await conn.switchWorkspace('ws2')).toBe(true);
     expect(invokeMock).toHaveBeenCalledWith('switch_workspace', { workspaceId: 'ws2' });
     // Subsequent pane subscription targets the new workspace's event name.
-    conn.subscribePane({ workspaceId: 'ws2', paneId: 'pane-a' });
+    conn.subscribePane({ workspaceId: 'ws2', paneId: 'pane-a' }, { activationId: 1 });
     await flush();
-    expect(handlers['pty-output-ws2-pane-a']).toBeTypeOf('function');
+    expect(controlMock).toHaveBeenCalledWith(expect.objectContaining({ method: 'subscribe-pane', params: expect.objectContaining({ workspaceId: 'ws2', paneId: 'pane-a' }) }));
   });
 });
 
@@ -1060,10 +810,10 @@ describe('CloudRemoteConnection reconnect', () => {
     try {
       await conn.init();
       conn.setVerifiedCode('123456');
-      conn.sendStdin(PANE, 'kept');
+      conn.sendStdin(PANE, 'kept', [{ ...PANE }, 'epoch', 1] as const);
       await vi.advanceTimersByTimeAsync(4);
       const first = sent.find(
-        (frame) => 'method' in frame && frame.method === 'write_to_pty',
+        (frame) => 'method' in frame && frame.method === 'write_terminal_input',
       );
       expect(first).toBeDefined();
 
@@ -1072,7 +822,7 @@ describe('CloudRemoteConnection reconnect', () => {
       for (let i = 0; i < 8; i += 1) await Promise.resolve();
 
       const writes = sent.filter(
-        (frame) => 'method' in frame && frame.method === 'write_to_pty',
+        (frame) => 'method' in frame && frame.method === 'write_terminal_input',
       );
       expect(writes).toHaveLength(2);
       expect(writes[1]).toMatchObject({ params: (first as { params: unknown }).params });
@@ -1112,7 +862,7 @@ describe('A — CloudRemoteConnection recovery: trust-grant 静默授权 + 撤�
     // 1) 没有 setVerifiedCode（用户从未在本次会话输过 TOTP — 旧 OTP 已过期）
     // 2) tryTrustGrant → true（trust 仍有效）
     (handle.tryTrustGrant as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(true);
-    const conn = new CloudRemoteConnection(handle as never, { invoke: vi.fn() } as never);
+    const conn = new CloudRemoteConnection(handle as never, { invoke: vi.fn(), listen: vi.fn(async () => () => {}) } as never);
     await conn.init();
     let reconnected = 0;
     conn.onReconnect(() => reconnected++);
@@ -1129,7 +879,7 @@ describe('A — CloudRemoteConnection recovery: trust-grant 静默授权 + 撤�
   it('trust-grant 也被撤销 → 恢复失败，进 \'error\' 终态，UI 走刷新拿新码', async () => {
     const handle = fakeHandle();
     (handle.tryTrustGrant as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(false);
-    const conn = new CloudRemoteConnection(handle as never, { invoke: vi.fn() } as never);
+    const conn = new CloudRemoteConnection(handle as never, { invoke: vi.fn(), listen: vi.fn(async () => () => {}) } as never);
     await conn.init();
     let reconnected = 0;
     conn.onReconnect(() => reconnected++);
@@ -1147,7 +897,7 @@ describe('A — CloudRemoteConnection recovery: trust-grant 静默授权 + 撤�
     const handle = fakeHandle();
     (handle.tryTrustGrant as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(true);
     verifyTotpSpy.mockResolvedValue(true);
-    const conn = new CloudRemoteConnection(handle as never, { invoke: vi.fn() } as never);
+    const conn = new CloudRemoteConnection(handle as never, { invoke: vi.fn(), listen: vi.fn(async () => () => {}) } as never);
     await conn.init();
     conn.setVerifiedCode('cached-code');
     conn.notifyState('disconnected');
@@ -1159,7 +909,7 @@ describe('A — CloudRemoteConnection recovery: trust-grant 静默授权 + 撤�
 
   it('不允许 setVerifiedCode 后被后续 reconnect 清掉（不持久化是文档契约，内存保留 OK）', () => {
     const handle = fakeHandle();
-    const conn = new CloudRemoteConnection(handle as never, { invoke: vi.fn() } as never);
+    const conn = new CloudRemoteConnection(handle as never, { invoke: vi.fn(), listen: vi.fn(async () => () => {}) } as never);
     conn.setVerifiedCode('123456');
     expect((conn as any)._verifiedCode).toBe('123456');
     // 文档契约：cached code 仅在内存；不写入 localStorage / sessionStorage
@@ -1197,7 +947,7 @@ describe('CloudRemoteConnection lifecycle', () => {
 
   it('disconnect tears down listeners and the WebRTC handle', async () => {
     const conn = await connected();
-    conn.subscribePane(PANE);
+    conn.subscribePane(PANE, { activationId: 1 });
     await flush();
     conn.disconnect();
     expect(conn.state()).toBe('disconnected');
@@ -1213,7 +963,7 @@ describe('CloudRemoteConnection lifecycle', () => {
     const { injectedBridge, rpc, sent } = rpcBackedBridge();
     const conn = new CloudRemoteConnection(fakeHandle() as never, injectedBridge);
     try {
-      conn.sendStdin(PANE, 'x');
+      conn.sendStdin(PANE, 'x', [{ ...PANE }, 'epoch', 1] as const);
       conn.refreshPane(PANE, 30, 100);
       await vi.advanceTimersByTimeAsync(40);
       expect(rpc.inFlight).toBe(2);
@@ -1228,14 +978,14 @@ describe('CloudRemoteConnection lifecycle', () => {
 
       const paneRequestsBefore = sent.filter(
         (frame) => 'method' in frame
-          && (frame.method === 'write_to_pty' || frame.method === 'resize_pane'),
+          && (frame.method === 'write_terminal_input' || frame.method === 'resize_pane'),
       ).length;
-      conn.sendStdin(PANE, 'after-destroy');
+      conn.sendStdin(PANE, 'after-destroy', [{ ...PANE }, 'epoch', 1] as const);
       conn.refreshPane(PANE, 40, 120);
       await vi.advanceTimersByTimeAsync(50);
       expect(sent.filter(
         (frame) => 'method' in frame
-          && (frame.method === 'write_to_pty' || frame.method === 'resize_pane'),
+          && (frame.method === 'write_terminal_input' || frame.method === 'resize_pane'),
       )).toHaveLength(paneRequestsBefore);
       expect(rpc.inFlight).toBe(0);
     } finally {
@@ -1262,15 +1012,15 @@ describe('CloudRemoteConnection lifecycle', () => {
 describe('CloudRemoteConnection bounded parity guards', () => {
   it('keeps invalid pane input and resize requests local', async () => {
     const conn = await connected();
-    expect(conn.sendStdin({ workspaceId: 'ws1', paneId: '' }, 'x')).toBe(false);
-    expect(conn.sendStdin(PANE, '')).toBe(false);
-    expect(conn.enqueueStdinTask({ workspaceId: 'ws1', paneId: '' }, () => 'x')).toBe(false);
-    expect(conn.enqueueStdinTask(PANE, () => null)).toBe(true);
+    expect(conn.sendStdin({ workspaceId: 'ws1', paneId: '' }, 'x', [{ ...{ workspaceId: 'ws1', paneId: '' } }, 'epoch', 1] as const)).toBe(false);
+    expect(conn.sendStdin(PANE, '', [{ ...PANE }, 'epoch', 1] as const)).toBe(false);
+    expect(conn.enqueueStdinTask({ workspaceId: 'ws1', paneId: '' }, () => 'x', [{ ...{ workspaceId: 'ws1', paneId: '' } }, 'epoch', 1] as const)).toBe(false);
+    expect(conn.enqueueStdinTask(PANE, () => null, [{ ...PANE }, 'epoch', 1] as const)).toBe(true);
     conn.refreshPane(PANE, 0, 80);
     conn.refreshPane(PANE, 24, 0);
     expect(conn.lastRefreshSeq()).toBe(0);
     await flush();
-    expect(invokeMock).not.toHaveBeenCalledWith('write_to_pty', expect.anything(), expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith('write_terminal_input', expect.anything(), expect.anything());
   });
 
   it('covers cloud parity commands and bounded history normalization', async () => {
@@ -1366,35 +1116,5 @@ describe('CloudRemoteConnection bounded parity guards', () => {
     conn.connect();
     conn.send();
     conn.pruneOutputs(new Set());
-  });
-
-  it('falls back from a resync frame to tail history and advances scrollback safely', async () => {
-    const conn = await connected();
-    const raw: string[] = [];
-    conn.onRawBytes((_pane, bytes) => raw.push(new TextDecoder().decode(bytes)));
-    invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'get_pane_resync_frame') throw new Error('new resync unsupported');
-      if (cmd === 'get_pane_scrollback_tail') {
-        return { bytes: 'TAIL', start_seq: 10, at_oldest: false, head_seq: 20 };
-      }
-      if (cmd === 'get_pane_scrollback_before') {
-        return { bytes: 'OLDER', start_seq: 1, end_seq: 10, at_oldest: true, head_seq: 20 };
-      }
-      if (cmd === 'register_pane_delta_channel') return undefined;
-      return undefined;
-    });
-
-    conn.subscribePane(PANE);
-    await flush();
-    expect(handlers['pty-output-ws1-pane-a']).toBeTypeOf('function');
-    handlers['pty-output-ws1-pane-a']({ payload: { data: 'LIVE' } });
-    expect(raw).toEqual(['\x1bcTAIL', 'LIVE']);
-
-    const page = await conn.fetchOlderScrollback(PANE);
-    expect(page?.startSeq).toBe(1);
-    expect(page?.bytes).toEqual(new TextEncoder().encode('OLDER'));
-    expect(page?.commit(() => true)).toBe(true);
-    expect(await conn.fetchOlderScrollback(PANE)).toBeNull();
-    expect(await conn.fetchOlderScrollback({ workspaceId: 'ws1', paneId: 'missing' })).toBeNull();
   });
 });

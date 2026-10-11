@@ -65,6 +65,7 @@ import {
 } from '../transport/remotePerfTrace';
 import { BUFFERED_HIGH_WATERMARK, BUFFERED_LOW_WATERMARK } from './cloudTransportLimits';
 import { PriorityFrameQueue } from './priorityFrameQueue';
+import { isPaneOutputFrame } from '../transport/cloudMux';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
 const KEY_BIND_GRACE_MS = 3000;
@@ -452,6 +453,9 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
         return;
       }
       if (!this.bindingAccepted) return;
+      // Controllers originate input as RPC, so terminal output must also
+      // trigger bulk-lane negotiation without waiting for a raw-byte send.
+      if (plaintext[0] === CHANNEL.TERMINAL) this.sendPaneLaneProbe();
       this.cb.onFrame?.(plaintext);
     } catch (error) {
       this.cb.onError?.(
@@ -575,13 +579,13 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
 
   sendFrame(plaintext: Uint8Array): void {
     if (this.state !== 'connected' || !this.session) return;
-    if (plaintext[0] === CHANNEL.PANE_RAW) this.sendPaneLaneProbe();
+    if (isPaneOutputFrame(plaintext)) this.sendPaneLaneProbe();
     this.outbound.enqueue(plaintext);
   }
 
   private sealAndSend(plaintext: Uint8Array): void {
     if (this.state !== 'connected') return;
-    const wantsPane = plaintext[0] === CHANNEL.PANE_RAW;
+    const wantsPane = isPaneOutputFrame(plaintext);
     const usePane = wantsPane && this.paneLaneReady && this.paneSession !== null && this.paneDc?.readyState === 'open';
     const session = usePane ? this.paneSession : this.session;
     const lane = usePane ? 'pane' : 'control';

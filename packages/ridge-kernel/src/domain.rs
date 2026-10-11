@@ -4,6 +4,9 @@
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
+use axum::extract::ws::{WebSocketUpgrade, Message};
+use axum::response::Response;
+use futures::{SinkExt, StreamExt};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -986,6 +989,82 @@ pub async fn domain_pty_list(
         "source": "ridge-kernel",
         "ptys": ptys,
     })))
+}
+
+#[derive(Deserialize)]
+pub struct TerminalStreamQuery { pub activation: u64 }
+
+pub async fn domain_terminal_stream(
+    State(st): State<AppState>, headers: HeaderMap, Path(pty_id): Path<String>,
+    Query(query): Query<TerminalStreamQuery>, upgrade: WebSocketUpgrade,
+) -> Result<Response, StatusCode> {
+    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
+    if query.activation == 0 || query.activation > 9_007_199_254_740_991 { return Err(StatusCode::BAD_REQUEST); }
+    let id = Uuid::parse_str(&pty_id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let info = st.ptys.list().into_iter().find(|info| info.id == id).ok_or(StatusCode::NOT_FOUND)?;
+    let workspace = info.workspace_id.ok_or(StatusCode::BAD_REQUEST)?;
+    let (initial, mut updates) = st.ptys.subscribe_semantic(id).map_err(|_| StatusCode::NOT_FOUND)?;
+    let pane = ridge_term::terminal_protocol::PaneRef::new(workspace.to_string(), id.to_string());
+    Ok(upgrade.on_upgrade(move |socket| async move {
+        let (mut sink, mut incoming) = socket.split();
+        let mut next = initial;
+        loop {
+            let bytes = match ridge_term::terminal_protocol::encode_frame(&next.into_frame(pane.clone(), query.activation)) {
+                Ok(bytes) => bytes, Err(_) => break,
+            };
+            if sink.send(Message::Binary(bytes)).await.is_err() { break; }
+            next = loop {
+                tokio::select! {
+                    message = incoming.next() => match message {
+                        Some(Ok(Message::Ping(bytes))) => { if sink.send(Message::Pong(bytes)).await.is_err() { return; } }
+                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
+                        _ => {}
+                    },
+                    update = updates.recv() => match update {
+                        Ok(update) => break update,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => match st.ptys.terminal_snapshot(id) {
+                            Ok(snapshot) => break snapshot, Err(_) => return,
+                        },
+                        Err(_) => return,
+                    },
+                }
+            };
+        }
+    }))
+}
+
+pub async fn domain_terminal_request(
+    State(st): State<AppState>, headers: HeaderMap, Path(pty_id): Path<String>, Json(args): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
+    let result = (|| -> Result<Value, String> {
+        let id = Uuid::parse_str(&pty_id).map_err(|_| "invalid terminal")?;
+        match args["method"].as_str().unwrap_or_default() {
+            "write_terminal_input" => {
+                let input: ridge_term::terminal_protocol::TerminalInput = serde_json::from_value(args["params"]["input"].clone()).map_err(|error| error.to_string())?;
+                if input.pane.pane_id != id.to_string() { return Err("terminal mismatch".into()); }
+                serde_json::to_value(st.ptys.terminal_input(&input).map_err(|error| error.to_string())?).map_err(|error| error.to_string())
+            }
+            "get_terminal_history" => {
+                let request: ridge_term::terminal_protocol::HistoryRequest = serde_json::from_value(args["params"]["request"].clone()).map_err(|error| error.to_string())?;
+                if request.pane.pane_id != id.to_string() { return Err("terminal mismatch".into()); }
+                let update = st.ptys.terminal_history(&request).map_err(|error| error.to_string())?;
+                let bytes = ridge_term::terminal_protocol::encode_frame(&update.into_frame(request.pane, request.activation_id)).map_err(|error| error.to_string())?;
+                Ok(Value::String(base64::engine::general_purpose::STANDARD.encode(bytes)))
+            }
+            "get_terminal_snapshot" => {
+                let pane: ridge_term::terminal_protocol::PaneRef = serde_json::from_value(json!({"workspaceId":args["params"]["workspaceId"],"paneId":args["params"]["paneId"]})).map_err(|error| error.to_string())?;
+                let activation = args["params"]["activationId"].as_u64().filter(|id| *id > 0).ok_or("invalid activation")?;
+                let info = st.ptys.list().into_iter().find(|info| info.id == id).ok_or("terminal unavailable")?;
+                if pane.pane_id != id.to_string() || info.workspace_id.map(|id| id.to_string()).as_deref() != Some(&pane.workspace_id) { return Err("terminal binding mismatch".into()); }
+                let update = st.ptys.terminal_snapshot(id).map_err(|error| error.to_string())?;
+                let bytes = ridge_term::terminal_protocol::encode_frame(&update.into_frame(pane, activation)).map_err(|error| error.to_string())?;
+                Ok(Value::String(base64::engine::general_purpose::STANDARD.encode(bytes)))
+            }
+            _ => Err("unsupported terminal method".into()),
+        }
+    })();
+    Ok(Json(match result { Ok(value) => json!({"ok":true,"value":value}), Err(error) => bad_request(&error).0 }))
 }
 
 #[derive(Deserialize)]

@@ -12,21 +12,22 @@ export interface RemotePaneBinding {
 
 interface LiveBinding extends RemotePaneBinding {
   active: boolean;
-  pending: Uint8Array[];
-  pendingBytes: number;
+  activationId: number;
+  recoveryAttempts: number;
   unlisten: () => void;
 }
 
-const MAX_PENDING_BYTES = 1024 * 1024;
 const bindings = new Map<string, LiveBinding>();
+let activationCounter = 0;
 
 export function bindRemotePane(binding: RemotePaneBinding): void {
+  if (!binding.link.onTerminalFrame) throw new Error('canonical terminal transport unavailable');
   dropBinding(binding.localPaneId, false);
   const live: LiveBinding = {
     ...binding,
     active: false,
-    pending: [],
-    pendingBytes: 0,
+    activationId: ++activationCounter,
+    recoveryAttempts: 0,
     unlisten: () => {},
   };
   const pane: PaneRef = {
@@ -34,17 +35,18 @@ export function bindRemotePane(binding: RemotePaneBinding): void {
     paneId: binding.remotePaneId,
   };
   const stops: Array<() => void> = [];
-  stops.push(binding.link.onRawBytes((incoming, bytes) => {
-    if (incoming.paneId !== pane.paneId || incoming.workspaceId !== pane.workspaceId) return;
-    if (live.active) {
+  stops.push(binding.link.onTerminalFrame(bytes => {
+    if (!live.active) return;
+    try {
       const manager = TerminalManager.instance();
-      manager.enqueueFeed?.(binding.localPaneId, bytes);
-      return;
-    }
-    live.pending.push(bytes.slice());
-    live.pendingBytes += bytes.byteLength;
-    while (live.pendingBytes > MAX_PENDING_BYTES && live.pending.length > 1) {
-      live.pendingBytes -= live.pending.shift()!.byteLength;
+      manager.applyRemoteFrame(binding.localPaneId, bytes, pane.workspaceId, pane.paneId, live.activationId);
+      const context = manager.getKernel(binding.localPaneId)?.terminalInputContext();
+      if (context?.[2] === live.activationId) live.recoveryAttempts = 0;
+    } catch (error) {
+      console.warn('[remote-pane] terminal snapshot required', error);
+      if (++live.recoveryAttempts > 3) return;
+      live.activationId = ++activationCounter;
+      binding.link.subscribePane(pane, { activationId: live.activationId, active: true });
     }
   }));
   if (binding.link.onPtyResize) {
@@ -54,13 +56,7 @@ export function bindRemotePane(binding: RemotePaneBinding): void {
     }));
   }
   live.unlisten = () => { for (const stop of stops) stop(); };
-  for (const text of binding.link.getPaneOutput(pane)) {
-    const bytes = new TextEncoder().encode(text);
-    live.pending.push(bytes);
-    live.pendingBytes += bytes.byteLength;
-  }
   bindings.set(binding.localPaneId, live);
-  binding.link.subscribePane(pane);
 }
 
 export function remotePaneBinding(localPaneId: string): RemotePaneBinding | undefined {
@@ -111,12 +107,11 @@ export async function deleteRemotePane(
 export function activateRemotePaneBinding(localPaneId: string): void {
   const live = bindings.get(localPaneId);
   if (!live) return;
-  live.active = true;
+  if (!live.active) {
+    live.active = true;
+    live.link.subscribePane({ workspaceId: live.workspaceId, paneId: live.remotePaneId }, { activationId: live.activationId, active: true });
+  }
   promoteRemotePaneBinding(localPaneId);
-  const manager = TerminalManager.instance();
-  for (const bytes of live.pending) manager.enqueueFeed?.(localPaneId, bytes);
-  live.pending = [];
-  live.pendingBytes = 0;
 }
 
 /** Promote a mounted foreign pane when the user takes focus. */

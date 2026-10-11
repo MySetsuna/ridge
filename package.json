@@ -65,6 +65,8 @@
     "@ridge/remote": "workspace:*",
     "@ridge/split": "workspace:*",
     "@ridge/term-wasm": "link:packages/ridge-term/pkg",
+    "@ridge/term-font-wasm": "link:packages/ridge-term-font/pkg",
+    "@ridge/term-render-wasm": "link:packages/ridge-term-render/pkg",
     "@tailwindcss/vite": "^4.2.2",
     "@tanstack/svelte-query": "^6.1.38",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",

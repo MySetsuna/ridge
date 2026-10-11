@@ -9,7 +9,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
-use ridge_term::term::terminal::Terminal;
+use ridge_term::producer::TerminalProducer;
+use ridge_term::semantic::SemanticUpdate;
+use ridge_term::terminal_protocol::{PaneRef, HistoryRequest, TerminalInput, TerminalInputAck};
+use ridge_term::input_sequence::TerminalInputLedger;
 use tokio::sync::{broadcast, mpsc, Notify};
 use uuid::Uuid;
 
@@ -482,7 +485,9 @@ struct LifecycleEntry {
 struct ManagedPty {
     bridge: Arc<PtyBridge>,
     scrollback: Arc<Mutex<Vec<u8>>>,
-    renderer: Arc<Mutex<Terminal>>,
+    renderer: Arc<Mutex<TerminalProducer>>,
+    semantic_tx: broadcast::Sender<SemanticUpdate>,
+    input: Arc<Mutex<TerminalInputLedger>>,
     output: Option<Arc<PtyOutputHub>>,
     closing: std::sync::atomic::AtomicBool,
     info: PtyInfo,
@@ -572,11 +577,11 @@ impl PtyRegistry {
         )?;
         let bridge = Arc::new(bridge);
         let scrollback = Arc::new(Mutex::new(Vec::new()));
-        let renderer = Arc::new(Mutex::new(Terminal::new(
-            rows as usize,
-            cols as usize,
-            RENDER_SCROLLBACK_ROWS,
-        )));
+        let mut producer = TerminalProducer::with_epoch(rows, cols, RENDER_SCROLLBACK_ROWS, Uuid::new_v4().to_string());
+        producer.set_initial_cwd(launch.cwd.unwrap_or_default().to_owned());
+        let renderer = Arc::new(Mutex::new(producer));
+        let (semantic_tx, _) = broadcast::channel(256);
+        let semantic_output = semantic_tx.clone();
         let output_hub = Arc::new(PtyOutputHub::new().with_owner_pty_id(launch.id));
         // Lifecycle: Starting → Running → Exited. The exit broadcast is wired
         // to both the reader-task end (PTY EOF) and explicit `destroy`.
@@ -615,7 +620,13 @@ impl PtyRegistry {
                         }
                     }
                 }
-                screen.lock().feed(&bytes);
+                let response = {
+                    let mut producer = screen.lock();
+                    let update = producer.feed_semantic(&bytes);
+                    let _ = semantic_output.send(update);
+                    producer.take_pending_response()
+                };
+                if !response.is_empty() { let _ = bridge_for_reader.write_input(&response); }
                 let mut retained = sink.lock();
                 retained.extend_from_slice(&bytes);
                 if retained.len() > SCROLLBACK_CAP {
@@ -673,6 +684,8 @@ impl PtyRegistry {
                 bridge,
                 scrollback,
                 renderer,
+                semantic_tx,
+                input: Arc::new(Mutex::new(TerminalInputLedger::default())),
                 output: Some(output_hub),
                 closing: std::sync::atomic::AtomicBool::new(false),
                 info,
@@ -753,11 +766,9 @@ impl PtyRegistry {
             ManagedPty {
                 bridge: Arc::new(bridge),
                 scrollback: Arc::new(Mutex::new(Vec::new())),
-                renderer: Arc::new(Mutex::new(Terminal::new(
-                    DEFAULT_ROWS as usize,
-                    DEFAULT_COLS as usize,
-                    RENDER_SCROLLBACK_ROWS,
-                ))),
+                renderer: Arc::new(Mutex::new(TerminalProducer::with_epoch(DEFAULT_ROWS, DEFAULT_COLS, RENDER_SCROLLBACK_ROWS, Uuid::new_v4().to_string()))),
+                semantic_tx: broadcast::channel(256).0,
+                input: Arc::new(Mutex::new(TerminalInputLedger::default())),
                 output: None,
                 closing: std::sync::atomic::AtomicBool::new(false),
                 info: PtyInfo {
@@ -880,7 +891,11 @@ impl PtyRegistry {
             managed.last_successful_resize = None;
             return Err(error);
         }
-        managed.renderer.lock().resize(rows as usize, cols as usize);
+        {
+            let mut producer = managed.renderer.lock();
+            let update = producer.resize_semantic(rows, cols);
+            let _ = managed.semantic_tx.send(update);
+        }
         managed.info.cols = cols;
         managed.info.rows = rows;
         managed.last_successful_resize = Some((cols, rows));
@@ -1102,11 +1117,50 @@ impl PtyRegistry {
             .ptys
             .lock()
             .get(&id)
-            .map(|managed| (managed.scrollback.clone(), managed.renderer.clone()))
+            .map(|managed| (managed.scrollback.clone(), managed.renderer.clone(), managed.semantic_tx.clone()))
             .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
         managed.0.lock().clear();
-        managed.1.lock().clear_terminal();
+        let mut producer = managed.1.lock();
+        producer.clear_terminal();
+        let _ = managed.2.send(producer.semantic_snapshot());
         Ok(())
+    }
+
+    pub fn subscribe_semantic(&self, id: Uuid) -> Result<(SemanticUpdate, broadcast::Receiver<SemanticUpdate>)> {
+        let ptys = self.ptys.lock();
+        let managed = ptys.get(&id).ok_or_else(|| anyhow::anyhow!("terminal unavailable"))?;
+        let producer = managed.renderer.lock();
+        Ok((producer.semantic_snapshot(), managed.semantic_tx.subscribe()))
+    }
+
+    pub fn terminal_snapshot(&self, id: Uuid) -> Result<SemanticUpdate> {
+        Ok(self.subscribe_semantic(id)?.0)
+    }
+
+    pub fn terminal_history(&self, request: &HistoryRequest) -> Result<SemanticUpdate> {
+        let id = Uuid::parse_str(&request.pane.pane_id)?;
+        let ptys = self.ptys.lock();
+        let managed = ptys.get(&id).ok_or_else(|| anyhow::anyhow!("terminal unavailable"))?;
+        if managed.info.workspace_id.map(|id| id.to_string()).as_deref() != Some(&request.pane.workspace_id) {
+            anyhow::bail!("workspace mismatch");
+        }
+        let result = managed.renderer.lock().semantic_history(request).map_err(anyhow::Error::msg);
+        result
+    }
+
+    pub fn terminal_input(&self, input: &TerminalInput) -> Result<TerminalInputAck> {
+        let id = Uuid::parse_str(&input.pane.pane_id)?;
+        let (pane, epoch, ledger, bridge) = {
+            let ptys = self.ptys.lock();
+            let managed = ptys.get(&id).filter(|entry| !entry.closing.load(Ordering::Acquire))
+                .ok_or_else(|| anyhow::anyhow!("terminal unavailable"))?;
+            let workspace = managed.info.workspace_id.ok_or_else(|| anyhow::anyhow!("workspace unavailable"))?;
+            let epoch = managed.renderer.lock().terminal_epoch().to_owned();
+            (PaneRef::new(workspace.to_string(), id.to_string()), epoch, managed.input.clone(), managed.bridge.clone())
+        };
+        let result = ledger.lock().apply(input, &pane, &epoch, None,
+            |bytes| bridge.write_input(bytes).map_err(|error| error.to_string())).map_err(anyhow::Error::msg);
+        result
     }
 
     pub fn rendered(&self, id: Uuid, lines: usize) -> Result<String> {
@@ -1116,7 +1170,7 @@ impl PtyRegistry {
             .get(&id)
             .map(|managed| managed.renderer.clone())
             .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
-        let mut rows = renderer.lock().dump_visible_text();
+        let mut rows = renderer.lock().terminal().dump_visible_text();
         while rows.last().is_some_and(|line| line.trim().is_empty()) {
             rows.pop();
         }
@@ -1522,6 +1576,61 @@ mod tests {
         assert_eq!(registry.len(), 0);
         assert!(!registry.contains(Uuid::new_v4()));
         assert!(registry.clear_scrollback(Uuid::new_v4()).is_err());
+    }
+
+    #[tokio::test]
+    async fn canonical_terminal_retains_identity_and_pages_real_pty_history() {
+        let registry = PtyRegistry::default();
+        let id = Uuid::new_v4();
+        let workspace = Uuid::new_v4();
+        #[cfg(windows)]
+        let (program, args, command) = ("cmd.exe", vec!["/d".into(), "/q".into()], "for /l %i in (1,1,300) do @echo semantic-row-%i\r\n");
+        #[cfg(not(windows))]
+        let (program, args, command) = ("/bin/sh", vec![], "i=1; while [ $i -le 300 ]; do echo semantic-row-$i; i=$((i+1)); done\n");
+        registry.spawn_command_for(PtyLaunch {
+            id, program: Some(program), args: &args, cwd: None,
+            workspace_id: Some(workspace), role: "shell", launch_profile: None,
+            env: None, initial_size: Some((80,24)),
+        }).expect("controlled real shell");
+        let (initial, mut updates) = registry.subscribe_semantic(id).unwrap();
+        let mut input = TerminalInput {
+            pane: PaneRef::new(workspace.to_string(), id.to_string()),
+            terminal_epoch: initial.terminal_epoch.clone(), activation_id: 1,
+            source_id: "kernel-contract-test".into(), sequence: 1,
+            bytes: command.as_bytes().to_vec(),
+        };
+        assert!(!registry.terminal_input(&input).unwrap().already_applied);
+        assert!(registry.terminal_input(&input).unwrap().already_applied);
+        input.sequence = 3;
+        assert!(registry.terminal_input(&input).is_err());
+        input.sequence = 2;
+        input.terminal_epoch = "obsolete".into();
+        assert!(registry.terminal_input(&input).is_err());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if registry.rendered(id,24).unwrap().contains("semantic-row-300") { break; }
+            assert!(Instant::now() < deadline, "real shell final row missing");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let current = registry.terminal_snapshot(id).unwrap();
+        assert_eq!(current.terminal_epoch, initial.terminal_epoch);
+        assert!(current.revision() > initial.revision());
+        let ridge_term::terminal_protocol::TerminalBody::Snapshot(snapshot) = current.body else { panic!("snapshot required") };
+        assert!(snapshot.scrollback.len() <= 48);
+        assert!(snapshot.history.end > 128);
+        let request = HistoryRequest {
+            pane: input.pane, terminal_epoch: current.terminal_epoch,
+            activation_id: 1, history_epoch: snapshot.history.epoch,
+            before: snapshot.scrollback_start, max_rows: 128,
+        };
+        let page = registry.terminal_history(&request).unwrap();
+        let ridge_term::terminal_protocol::TerminalBody::HistoryPage(page) = page.body else { panic!("history required") };
+        assert!(!page.lines.is_empty() && page.lines.len() <= 128);
+        assert_eq!(page.start + page.lines.len() as u64, request.before);
+        assert!(matches!(updates.try_recv(), Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_))));
+        registry.clear_scrollback(id).unwrap();
+        assert!(registry.terminal_history(&request).is_err());
+        registry.destroy(id).unwrap();
     }
 
     #[tokio::test]

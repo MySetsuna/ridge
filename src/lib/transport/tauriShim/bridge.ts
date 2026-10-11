@@ -58,6 +58,10 @@ export class TauriBridge {
   private readonly ptyListeners = new Map<string, Map<number, EventCallback<PtyOutputPayload>>>();
   // Panes we've subscribed to, so we can re-subscribe after a reconnect.
   private readonly subscribedPanes = new Map<string, { workspaceId?: string; active?: boolean }>();
+  private readonly terminalChannels = new Map<string, {
+    paneId: string; workspaceId: string; activationId: number;
+    channel: { onmessage: (bytes: Uint8Array) => void };
+  }>();
   // Decode only when a legacy listener reads `payload.data`; raw consumers stay
   // on the zero-copy byte path. One decoder per pane also prevents a split UTF-8
   // sequence from leaking across two independent PTY streams.
@@ -89,8 +93,20 @@ export class TauriBridge {
         for (const [paneId, options] of this.subscribedPanes) {
           this.rpc?.notify('subscribe-pane', { paneId, ...options });
         }
+        for (const subscription of this.terminalChannels.values()) {
+          this.rpc?.notify('subscribe-pane', {
+            paneId: subscription.paneId, workspaceId: subscription.workspaceId,
+            activationId: subscription.activationId, active: true,
+          });
+        }
       }),
     );
+    if (transport.onTerminalFrame) {
+      this.disposers.push(transport.onTerminalFrame(bytes => {
+        // Pane and activation fencing belongs to the canonical kernel decoder.
+        for (const { channel } of this.terminalChannels.values()) channel.onmessage(bytes);
+      }));
+    }
 
     // D9 handshake (contract §7.3): greet the host first so protocol version +
     // capabilities are negotiated before any pane/invoke traffic. On the LAN-WS
@@ -121,6 +137,7 @@ export class TauriBridge {
     this.ptyListeners.clear();
     this.ptyDecoders.clear();
     this.subscribedPanes.clear();
+    this.terminalChannels.clear();
   }
 
   /** True if the host advertised `capability` in the D9 `$/hello` intersection
@@ -151,7 +168,14 @@ export class TauriBridge {
     // / `{Err: error}` inside the otherwise normal invoke-result envelope.
     // Normalize that compatibility shape once at the transport boundary so
     // every caller receives the Tauri-compatible value it already expects.
-    return rpc.request<unknown>(cmd, args, options).then((value) => unwrapHostResult<T>(value));
+    return rpc.request<unknown>(cmd, args, options).then((value) => {
+      const result = unwrapHostResult<T>(value);
+      if (cmd === 'close_pane') {
+        this.terminalChannels.delete(`${args.workspaceId}/${args.paneId}`);
+        rpc.notify('unsubscribe-pane', { paneId: args.paneId, workspaceId: args.workspaceId });
+      }
+      return result;
+    });
   }
 
   // ── events ──────────────────────────────────────────────────────────────
@@ -193,6 +217,16 @@ export class TauriBridge {
     const options = { workspaceId, active };
     this.subscribedPanes.set(paneId, options);
     this.rpc?.notify('subscribe-pane', { paneId, ...options });
+  }
+
+  registerTerminalChannel(paneId: string, workspaceId: string, activationId: number,
+    channel: { onmessage: (bytes: Uint8Array) => void }): void {
+    if (!this.rpc || !this.transport?.onTerminalFrame) throw new Error('canonical terminal transport unavailable');
+    if (!paneId || !workspaceId || !Number.isSafeInteger(activationId) || activationId < 1 || typeof channel?.onmessage !== 'function') {
+      throw new Error('invalid terminal channel registration');
+    }
+    this.terminalChannels.set(`${workspaceId}/${paneId}`, { paneId, workspaceId, activationId, channel });
+    this.rpc.notify('subscribe-pane', { paneId, workspaceId, activationId, active: true });
   }
 
   // ── internal dispatch ─────────────────────────────────────────────────────

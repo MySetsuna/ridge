@@ -29,7 +29,7 @@ class FakeRpc {
         method,
         params,
         options,
-        resolve: (value) => resolve(value as T),
+        resolve: (value) => resolve((method === 'write_terminal_input' && value === undefined ? { sequence: (params as { input: { sequence: number } }).input.sequence, alreadyApplied: false } : value) as T),
         reject,
       });
     });
@@ -63,32 +63,26 @@ describe('PaneRpcScheduler input admission', () => {
     const rpc = new FakeRpc();
     const scheduler = createScheduler(rpc);
 
-    expect(scheduler.enqueueInput(pane, 'a')).toBe(true);
-    expect(scheduler.enqueueInput(pane, 'b')).toBe(true);
-    expect(scheduler.enqueueInput(pane, 'c')).toBe(true);
+    expect(scheduler.enqueueInput(pane, 'a', [{ ...pane }, 'epoch', 1] as const)).toBe(true);
+    expect(scheduler.enqueueInput(pane, 'b', [{ ...pane }, 'epoch', 1] as const)).toBe(true);
+    expect(scheduler.enqueueInput(pane, 'c', [{ ...pane }, 'epoch', 1] as const)).toBe(true);
     expect(rpc.calls).toHaveLength(1);
     expect(rpc.calls[0]).toMatchObject({
-      method: 'write_to_pty',
+      method: 'write_terminal_input',
       params: {
-        workspaceId: 'workspace-a',
-        paneId: 'pane-a',
-        data: 'a',
-        inputSourceId: 'test-source_1',
-        inputSequence: 1,
+        input: { pane, terminalEpoch: 'epoch', activationId: 1, bytes: [97], sourceId: 'test-source_1', sequence: 1 },
       },
       options: { scope: 'workspace-a:pane-a' },
     });
 
-    rpc.calls[0].resolve(undefined);
+    rpc.calls[0].resolve({ sequence: 1, alreadyApplied: false });
     await flushPromises();
     expect(rpc.calls).toHaveLength(2);
     expect(rpc.calls[1].params).toMatchObject({
-      data: 'bc',
-      inputSourceId: 'test-source_1',
-      inputSequence: 2,
+      input: { bytes: [98, 99], sourceId: 'test-source_1', sequence: 2 },
     });
 
-    rpc.calls[1].resolve(undefined);
+    rpc.calls[1].resolve({ sequence: 2, alreadyApplied: false });
     await flushPromises();
     expect(scheduler.diagnostics).toMatchObject({
       inputCalls: 3,
@@ -99,13 +93,75 @@ describe('PaneRpcScheduler input admission', () => {
     });
   });
 
+  it('preserves non-UTF8 mouse bytes and owns admitted buffers', async () => {
+    const rpc = new FakeRpc();
+    const scheduler = createScheduler(rpc, { inputBatchWindowMs: 4 });
+    const bytes = new Uint8Array([27, 91, 77, 32, 255, 128]);
+    scheduler.enqueueInput(pane, bytes, [pane, 'epoch', 1]);
+    bytes.fill(0);
+    await vi.advanceTimersByTimeAsync(4);
+    expect(rpc.calls[0].params).toMatchObject({ input: { bytes: [27, 91, 77, 32, 255, 128] } });
+  });
+
+  it('splits large paste on the canonical byte limit without changing order', async () => {
+    const rpc = new FakeRpc();
+    const scheduler = createScheduler(rpc);
+    const bytes = new Uint8Array(70_000).map((_, index) => index % 256);
+    scheduler.enqueueInput(pane, bytes, [pane, 'epoch', 1]);
+    const first = (rpc.calls[0].params as { input: { bytes: number[] } }).input.bytes;
+    expect(first).toHaveLength(65_536);
+    rpc.calls[0].resolve(undefined);
+    await flushPromises();
+    const second = (rpc.calls[1].params as { input: { bytes: number[] } }).input.bytes;
+    expect([...first, ...second]).toEqual(Array.from(bytes));
+    expect(rpc.calls[1].params).toMatchObject({ input: { sequence: 2 } });
+  });
+
+  it('retires uncertain bytes on a new activation and rejects late old tasks', async () => {
+    const rpc = new FakeRpc();
+    const scheduler = createScheduler(rpc);
+    scheduler.enqueueInput(pane, 'old-active', [pane, 'old', 1]);
+    scheduler.enqueueInput(pane, 'old-queued', [pane, 'old', 1]);
+    scheduler.enqueueInput(pane, 'new', [pane, 'new', 2]);
+    expect(scheduler.enqueueInput(pane, 'late', [pane, 'old', 1])).toBe(false);
+    expect(scheduler.enqueueInput(pane, 'wrong', [pane, 'replacement', 2])).toBe(false);
+    rpc.calls[0].resolve(undefined);
+    await flushPromises();
+    expect(rpc.calls).toHaveLength(2);
+    expect(rpc.calls[1].params).toMatchObject({ input: { terminalEpoch: 'new', activationId: 2, sequence: 1, sourceId: 'test-source_2' } });
+    expect(scheduler.diagnostics.inputRejected).toBe(2);
+  });
+
+  it('keeps confirmed sequence identity across more than 64 view activations', async () => {
+    const rpc = new FakeRpc();
+    const scheduler = createScheduler(rpc);
+    for (let activation = 1; activation <= 80; activation++) {
+      expect(scheduler.enqueueInput(pane, 'x', [pane, 'epoch', activation])).toBe(true);
+      expect(rpc.calls[activation - 1].params).toMatchObject({ input: { sourceId: 'test-source_1', sequence: activation, activationId: activation } });
+      rpc.calls[activation - 1].resolve({ sequence: activation, alreadyApplied: false });
+      await flushPromises();
+    }
+    expect(scheduler.diagnostics.inputBytesCompleted).toBe(80);
+  });
+
+  it('pauses on malformed acknowledgement without dispatching further input', async () => {
+    const rpc = new FakeRpc();
+    const scheduler = createScheduler(rpc);
+    scheduler.enqueueInput(pane, 'a', [pane, 'epoch', 1]);
+    scheduler.enqueueInput(pane, 'b', [pane, 'epoch', 1]);
+    rpc.calls[0].resolve({ sequence: 2, alreadyApplied: false });
+    await flushPromises();
+    expect(rpc.calls).toHaveLength(1);
+    expect(scheduler.diagnostics).toMatchObject({ inputBytesCompleted: 0, queuedInputBytes: 2, pausedLanes: 1 });
+  });
+
   it('exposes bounded input latency and queue high-water diagnostics', async () => {
     const rpc = new FakeRpc();
     const scheduler = createScheduler(rpc);
-    scheduler.enqueueInput(pane, 'abc');
+    scheduler.enqueueInput(pane, 'abc', [{ ...pane }, 'epoch', 1] as const);
     expect(scheduler.diagnostics.inputQueueHighWaterBytes).toBe(3);
     await vi.advanceTimersByTimeAsync(12);
-    rpc.calls[0].resolve(undefined);
+    rpc.calls[0].resolve({ sequence: 1, alreadyApplied: false });
     await flushPromises();
     expect(scheduler.diagnostics).toMatchObject({
       inputLatencyP50Ms: 12,
@@ -118,21 +174,21 @@ describe('PaneRpcScheduler input admission', () => {
     const rpc = new FakeRpc();
     const scheduler = createScheduler(rpc, { inputBatchWindowMs: 4 });
 
-    scheduler.enqueueInput(pane, 'a');
-    scheduler.enqueueInput(pane, 'b');
-    scheduler.enqueueInput(pane, 'c');
+    scheduler.enqueueInput(pane, 'a', [{ ...pane }, 'epoch', 1] as const);
+    scheduler.enqueueInput(pane, 'b', [{ ...pane }, 'epoch', 1] as const);
+    scheduler.enqueueInput(pane, 'c', [{ ...pane }, 'epoch', 1] as const);
     expect(rpc.calls).toHaveLength(0);
 
     await vi.advanceTimersByTimeAsync(4);
     expect(rpc.calls).toHaveLength(1);
-    expect(rpc.calls[0].params).toMatchObject({ data: 'abc', inputSequence: 1 });
+    expect(rpc.calls[0].params).toMatchObject({ input: { bytes: [97, 98, 99], sequence: 1 } });
   });
 
   it('retries a timed-out batch with the same idempotency identity', async () => {
     const rpc = new FakeRpc();
     const scheduler = createScheduler(rpc, { backoffBaseMs: 100 });
 
-    scheduler.enqueueInput(pane, 'hello');
+    scheduler.enqueueInput(pane, 'hello', [{ ...pane }, 'epoch', 1] as const);
     const first = rpc.calls[0];
     first.reject(new RpcTimeoutError('write_to_pty', 1_000));
     await flushPromises();
@@ -147,7 +203,7 @@ describe('PaneRpcScheduler input admission', () => {
       timeoutFailures: 1,
     });
 
-    rpc.calls[1].resolve(undefined);
+    rpc.calls[1].resolve({ sequence: 1, alreadyApplied: true });
     await flushPromises();
     expect(scheduler.diagnostics.queuedInputBytes).toBe(0);
   });
@@ -160,9 +216,9 @@ describe('PaneRpcScheduler input admission', () => {
       onError: (error) => errors.push(error),
     });
 
-    expect(scheduler.enqueueInput(pane, 'ab')).toBe(true);
-    expect(scheduler.enqueueInput(pane, 'c')).toBe(true);
-    expect(scheduler.enqueueInput(pane, 'de')).toBe(false);
+    expect(scheduler.enqueueInput(pane, 'ab', [{ ...pane }, 'epoch', 1] as const)).toBe(true);
+    expect(scheduler.enqueueInput(pane, 'c', [{ ...pane }, 'epoch', 1] as const)).toBe(true);
+    expect(scheduler.enqueueInput(pane, 'de', [{ ...pane }, 'epoch', 1] as const)).toBe(false);
     expect(rpc.calls).toHaveLength(1);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(PaneInputQueueFullError);
@@ -180,7 +236,7 @@ describe('PaneRpcScheduler input admission', () => {
       pauseAfterFailures: 2,
     });
 
-    scheduler.enqueueInput(pane, 'x');
+    scheduler.enqueueInput(pane, 'x', [{ ...pane }, 'epoch', 1] as const);
     const identity = rpc.calls[0].params;
     rpc.calls[0].reject(new RpcTimeoutError('write_to_pty', 1_000));
     await flushPromises();
@@ -206,9 +262,9 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
     const rpc = new FakeRpc();
     const scheduler = createScheduler(rpc, { rpcTimeoutMs: 75, resizeDebounceMs: 0 });
 
-    scheduler.enqueueInput(pane, 'x');
+    scheduler.enqueueInput(pane, 'x', [{ ...pane }, 'epoch', 1] as const);
     expect(rpc.calls[0].options).toMatchObject({ scope: 'workspace-a:pane-a', timeoutMs: 75 });
-    rpc.calls[0].resolve(undefined);
+    rpc.calls[0].resolve({ sequence: 1, alreadyApplied: false });
     await flushPromises();
 
     scheduler.scheduleResize(pane, 24, 80);
@@ -235,7 +291,7 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
 
     scheduler.scheduleResize(pane, 40, 120);
     scheduler.scheduleResize(pane, 50, 140);
-    rpc.calls[0].resolve(undefined);
+    rpc.calls[0].resolve({ sequence: 1, alreadyApplied: false });
     await flushPromises();
     await vi.advanceTimersByTimeAsync(40);
     expect(rpc.calls).toHaveLength(2);
@@ -275,7 +331,7 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
     void first.then(() => { firstSettled = true; });
     void latest.then(() => { latestSettled = true; });
 
-    rpc.calls[0].resolve(undefined);
+    rpc.calls[0].resolve({ sequence: 1, alreadyApplied: false });
     await flushPromises();
     expect(firstSettled).toBe(true);
     expect(latestSettled).toBe(true);
@@ -300,7 +356,7 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(rpc.calls).toHaveLength(1);
 
-    rpc.calls[0].resolve(undefined);
+    rpc.calls[0].resolve({ sequence: 1, alreadyApplied: false });
     await flushPromises();
     scheduler.scheduleResize(pane, 24, 80);
     await vi.advanceTimersByTimeAsync(10);
@@ -320,7 +376,7 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
     await vi.runOnlyPendingTimersAsync();
     expect(rpc.calls).toHaveLength(1);
     expect(rpc.calls[0].params).toMatchObject({ rows: 36, cols: 110 });
-    rpc.calls[0].resolve(undefined);
+    rpc.calls[0].resolve({ sequence: 1, alreadyApplied: false });
     await flushPromises();
 
     expect(scheduler.scheduleResize(pane, 36, 110)).toBe(false);
@@ -346,7 +402,7 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
     expect(rpc.calls).toHaveLength(1);
 
     scheduler.scheduleResize(pane, 24, 80, { isInlineTui: true, isAlt: false });
-    rpc.calls[0].resolve(undefined);
+    rpc.calls[0].resolve({ sequence: 1, alreadyApplied: false });
     await flushPromises();
     await vi.runOnlyPendingTimersAsync();
 
@@ -369,7 +425,7 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
     expect(rpc.calls).toHaveLength(1);
 
     expect(scheduler.scheduleResize(pane, 24, 80, { ...context })).toBe(false);
-    rpc.calls[0].resolve(undefined);
+    rpc.calls[0].resolve({ sequence: 1, alreadyApplied: false });
     await flushPromises();
     await vi.runOnlyPendingTimersAsync();
 
@@ -381,7 +437,7 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
     const rpc = new FakeRpc();
     const scheduler = createScheduler(rpc, { resizeDebounceMs: 40 });
 
-    scheduler.enqueueInput(pane, 'x');
+    scheduler.enqueueInput(pane, 'x', [{ ...pane }, 'epoch', 1] as const);
     scheduler.scheduleResize(pane, 24, 80);
     scheduler.retire(pane);
     expect(rpc.cancelledScopes).toEqual(['workspace-a:pane-a']);
@@ -399,8 +455,8 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
     const livePane: PaneRef = { workspaceId: 'workspace-a', paneId: 'live' };
     const stalePane: PaneRef = { workspaceId: 'workspace-a', paneId: 'stale' };
 
-    scheduler.enqueueInput(livePane, 'a');
-    scheduler.enqueueInput(stalePane, 'b');
+    scheduler.enqueueInput(livePane, 'a', [{ ...livePane }, 'epoch', 1] as const);
+    scheduler.enqueueInput(stalePane, 'b', [{ ...stalePane }, 'epoch', 1] as const);
     const retired = scheduler.prune(new Set(['workspace-a:live']));
 
     expect(retired).toEqual(['workspace-a:stale']);

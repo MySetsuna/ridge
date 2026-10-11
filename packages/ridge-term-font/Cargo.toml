@@ -1,0 +1,22 @@
+[package]
+name = "ridge-term-font"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+[lib]
+crate-type = ["cdylib", "rlib"]
+[features]
+default = ["rasterizer"]
+rasterizer = ["dep:cosmic-text", "dep:wasm-bindgen", "dep:postcard"]
+browser = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys"]
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash", "monospace_fallback"], optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+postcard = { version = "1", default-features = false, features = ["alloc"], optional = true }
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+cosmic-text = { version = "0.19", default-features = false, features = ["wasm-web"], optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", optional = true, features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement"] }
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

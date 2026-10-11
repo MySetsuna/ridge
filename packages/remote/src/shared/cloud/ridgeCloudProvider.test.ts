@@ -462,7 +462,7 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     host.goOffline();
   });
 
-  it('pane raw output uses ridge-pane bulk lane after handshake', async () => {
+  it.each([CHANNEL.PANE_RAW, CHANNEL.TERMINAL])('pane output tag %i uses the bulk lane after handshake', async (tag) => {
     const { host, bridges } = await makeHost({ signContext, identityPub: ID_PUB });
     const { ws, dc, pc } = await driveToOpenChannel(host);
     const paneDc = pc.attachControllerPaneChannel();
@@ -484,12 +484,12 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     dc.deliver(wrapSingle(controllerSend.seal(encodePaneLaneProbeFrame())));
     expect(dc.sent).toHaveLength(2); // signed handshake + pane-lane ready marker
     expect(controllerMainReceive.open(unwrapSingle(dc.lastSent()))[0]).toBe(CHANNEL.CONTROL);
-    bridges[0].send(new Uint8Array([CHANNEL.PANE_RAW, 1, 2, 3]));
+    bridges[0].send(new Uint8Array([tag, 1, 2, 3]));
 
     expect(paneDc.sent.length).toBeGreaterThan(0);
     expect(dc.sent).toHaveLength(2); // signed handshake + pane-lane ready marker
     const plaintext = controllerPaneReceive.open(unwrapSingle(paneDc.lastSent()));
-    expect(Array.from(plaintext)).toEqual([CHANNEL.PANE_RAW, 1, 2, 3]);
+    expect(Array.from(plaintext)).toEqual([tag, 1, 2, 3]);
     host.goOffline();
   });
 

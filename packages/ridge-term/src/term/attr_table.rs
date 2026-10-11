@@ -13,7 +13,7 @@ use super::attrs::Attrs;
 /// Stable index into `AttrTable`. `0` is reserved for `Attrs::DEFAULT`,
 /// which means a freshly-allocated `Cell { attr: AttrId::DEFAULT, .. }`
 /// is correct without consulting the table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct AttrId(pub u16);
 
 impl AttrId {
@@ -26,6 +26,7 @@ impl Default for AttrId {
     }
 }
 
+#[derive(Clone)]
 pub struct AttrTable {
     /// Index → Attrs. Entry 0 is always `Attrs::DEFAULT`.
     by_id: Vec<Attrs>,

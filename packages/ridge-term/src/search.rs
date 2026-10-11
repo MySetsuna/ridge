@@ -40,6 +40,13 @@ pub struct SearchState {
 }
 
 impl SearchState {
+    pub fn prepend_rows(&mut self, count: usize) {
+        for found in &mut self.matches {
+            found.abs_row = found.abs_row.saturating_add(count);
+        }
+        self.last_query.clear();
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

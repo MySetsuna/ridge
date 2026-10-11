@@ -1,8 +1,9 @@
-// Host-side cloud pane PTY byte source. The bridge subscribes to one pane,
-// forwards raw bytes from the Tauri event channel, and tears the host stream
+// Activation-scoped canonical terminal source. The bridge subscribes to one pane,
+// forwards canonical packets from the Tauri event channel, and tears the host stream
 // down in the same order in which it was started.
 
 import type { PaneOutputSource, Unsubscribe } from './cloudHostBridge';
+import terminalHello from './signaling/fixtures/terminal/hello.json';
 
 /** Minimal Tauri event.listen shape, kept injectable for deterministic tests. */
 export type ListenFn = <T = unknown>(
@@ -35,7 +36,7 @@ export function base64ToBytes(b64: string): Uint8Array {
  * Build the host PTY source used by CloudHostBridge. Listener registration is
  * completed before subscribing so the first output frame cannot be lost.
  * Unsubscribe is serialized after subscribe, preventing a close/reconnect race
- * from leaving a remote raw stream alive after its pane is destroyed.
+ * from leaving a remote stream alive after its pane is destroyed.
  */
 export function makeCloudHostPaneSource(deps: CloudHostPaneSourceDeps): PaneOutputSource {
   const log = deps.log ?? (() => {});
@@ -43,24 +44,20 @@ export function makeCloudHostPaneSource(deps: CloudHostPaneSourceDeps): PaneOutp
     paneId: string,
     workspaceId: string | undefined,
     onOutput: (raw: Uint8Array) => void,
-    options?: { activationId?: number },
+    options?: Parameters<PaneOutputSource>[3],
   ): Unsubscribe => {
     let active = true;
     let unlisten: (() => void) | null = null;
     let subscribePromise: Promise<void> | null = null;
     let stopRequested = false;
     let stopSent = false;
-    const semantic = options?.activationId !== undefined && workspaceId !== undefined;
-    const eventName = semantic
-      ? `pane-terminal-v2-${workspaceId}-${paneId}-${options.activationId}`
-      : workspaceId
-        ? `pane-raw-${workspaceId}-${paneId}`
-        : `pane-raw-${paneId}`;
-    const subscribeCommand = semantic ? 'subscribe_pane_terminal_v2' : 'subscribe_pane_raw';
-    const unsubscribeCommand = semantic ? 'unsubscribe_pane_terminal_v2' : 'unsubscribe_pane_raw';
-    const commandArgs = semantic
-      ? { paneId, workspaceId, activationId: options!.activationId }
-      : { paneId, workspaceId };
+    if (!workspaceId || !paneId || !Number.isSafeInteger(options?.activationId) || options!.activationId! <= 0) {
+      throw new Error('canonical terminal binding required');
+    }
+    const eventName = `pane-terminal-${workspaceId}-${paneId}-${options!.activationId}`;
+    const subscribeCommand = 'subscribe_pane_terminal';
+    const unsubscribeCommand = 'unsubscribe_pane_terminal';
+    const commandArgs = { paneId, workspaceId, activationId: options!.activationId };
 
     const sendStop = () => {
       if (stopSent || subscribePromise === null) return;
@@ -74,13 +71,21 @@ export function makeCloudHostPaneSource(deps: CloudHostPaneSourceDeps): PaneOutp
       if (subscribePromise !== null) void subscribePromise.then(sendStop);
     };
 
+    const fail = () => {
+      if (!active) return;
+      active = false;
+      unlisten?.(); unlisten = null;
+      requestStop();
+      options?.onError?.();
+    };
+
     void deps
       .listen<{ b64?: unknown }>(eventName, (event) => {
         if (!active) return;
         const b64 = event.payload?.b64;
-        if (typeof b64 !== 'string') return;
+        if (typeof b64 !== 'string' || b64.length > Math.ceil(terminalHello.maxFrameBytes / 3) * 4) return;
         const bytes = base64ToBytes(b64);
-        if (bytes.length === 0) return;
+        if (bytes[0] !== 0x13 || bytes.length > terminalHello.maxFrameBytes) return;
         try {
           onOutput(bytes);
         } catch (e) {
@@ -99,13 +104,14 @@ export function makeCloudHostPaneSource(deps: CloudHostPaneSourceDeps): PaneOutp
           () => undefined,
           (e) => {
             log(`${subscribeCommand} failed`, e);
+            fail();
           },
         );
         if (stopRequested) void subscribePromise.then(sendStop);
       })
       .catch((e) => {
         log(`listen(${eventName}) failed`, e);
-        requestStop();
+        fail();
       });
 
     return () => {

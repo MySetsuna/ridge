@@ -94,6 +94,14 @@ describe('isMutatingMethod', () => {
 });
 
 describe('mirror integrity (vs capability.rs)', () => {
+  it('admits the rebuilt terminal RPCs while protecting input from read-only sessions', () => {
+    for (const method of ['write_terminal_input','get_terminal_snapshot','get_terminal_history']) expect(isRemoteAllowed(method)).toBe(true);
+    expect(isMutatingMethod('write_terminal_input')).toBe(true);
+    expect(isMutatingMethod('get_terminal_snapshot')).toBe(false);
+    expect(isMutatingMethod('get_terminal_history')).toBe(false);
+    expect(isRemoteAllowed('get_remote_info')).toBe(false);
+  });
+
   it('matches the canonical Rust allow-list item-for-item', () => {
     expect(REMOTE_ALLOWLIST).toEqual(rustStringArray('REMOTE_ALLOWLIST'));
   });

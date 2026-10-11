@@ -10,6 +10,7 @@ depends_on:
   - L2-TERM-001
 ---
 
+
 ## §1 范围
 
 统一 Ridge 终端交互 wire 协议，独立于 WebSocket / WebRTC / HTTP。
@@ -255,3 +256,8 @@ payload_len = u32 LE; realtime frame ≤ 64 KiB（见 §3.7）
 - 任何 attach/detach 在 wire 上对应 `attach/attach_ack/detach/detach_ack`；状态机记录在 `(host_id, runtime_epoch, session_id)` 上而非 wire。
 - `runtime_epoch` 是 SPEC-REMOTE-001 §3.4.3（Host 重启）场景的权威信号；新 epoch = host 重启；runtime_epoch 生成与 authentication token 解耦（见 SPEC-REMOTE-001 §3.5）。
 - input_seq identity `(terminal_id, controller_id)` 与 SPEC-REMOTE-001 §3.4.5 Input Ownership 字段一致。
+
+
+## CHG-069 terminal contract replacement
+
+The rebuilt contract is owned by ridge-signaling/src/terminal.rs and L3-REMOTE-INTERACTION-RELIABILITY. Terminal-v2 descriptions above are historical implementation evidence during replacement, not a second supported contract. Desktop, LAN and Cloud consume the same semantic frame and byte-input contract, with lifetime/activation/revision fences and generation-based semantic history paging. Superseded codecs/adapters are archived. This replacement does not migrate business ownership or weaken Kernel/auth boundaries; CHG-070 performs the separate migration and reruns this contract.

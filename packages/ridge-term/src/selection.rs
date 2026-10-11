@@ -26,13 +26,13 @@
 
 use crate::term::Terminal;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Pos {
     pub row: usize,
     pub col: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct Range {
     pub start: Pos,
     pub end: Pos,
@@ -99,6 +99,13 @@ pub struct Selection {
 }
 
 impl Selection {
+    pub fn prepend_rows(&mut self, count: usize) {
+        if let Some(range) = &mut self.range_abs {
+            range.start_abs_row = range.start_abs_row.saturating_add(count);
+            range.end_abs_row = range.end_abs_row.saturating_add(count);
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

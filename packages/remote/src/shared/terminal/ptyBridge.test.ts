@@ -63,6 +63,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 // gracefully through `?.`.
 const managerStub = {
 	feed: vi.fn(),
+    setNativeActivation: vi.fn(),
 	enqueueDeltaFrame: vi.fn(),
 	leaveAltScreen: vi.fn(),
 	setLocalGridAuthority: vi.fn(),
@@ -151,13 +152,13 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		const { ensurePtyBridge } = await freshBridge();
 		const merged = new Uint8Array([4, 5, 6]);
 		invokeMock.mockImplementation(async (cmd: string) =>
-			cmd === 'take_pane_delta_frame' ? merged : undefined,
+			cmd === 'take_terminal_frames' ? [merged] : undefined,
 		);
 		await ensurePtyBridge(PANE, WS);
 
 		channels[0].__deliver([]);
 		await vi.waitFor(() => {
-			expect(invokeMock).toHaveBeenCalledWith('take_pane_delta_frame', {
+			expect(invokeMock).toHaveBeenCalledWith('take_terminal_frames', {
 				workspaceId: WS,
 				paneId: PANE,
 			});
@@ -194,7 +195,7 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		expect(Array.from(bytesArg)).toEqual([10, 20, 30]);
 	});
 
-	it('falls back to set_pane_delta_mode(false) when queued decode fails (R5 self-heal)', async () => {
+	it('requests a new activation and snapshot when queued decode fails', async () => {
 		const { ensurePtyBridge } = await freshBridge();
 		managerStub.enqueueDeltaFrame.mockImplementation((_pane, _bytes, onError) => {
 			onError?.(new Error('decode failed'));
@@ -206,15 +207,8 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		channels[0].__deliver(new Uint8Array([0xff]));
 		await Promise.resolve();
 
-		const fallback = invokeMock.mock.calls.find(
-			([cmd]) => cmd === 'set_pane_delta_mode',
-		);
-		expect(fallback).toBeTruthy();
-		expect(fallback![1]).toMatchObject({
-			workspaceId: WS,
-			paneId: PANE,
-			enabled: false,
-		});
+        expect(invokeMock).toHaveBeenCalledWith('register_pane_delta_channel', expect.objectContaining({ workspaceId: WS, paneId: PANE, activationId: expect.any(Number) }));
+        expect(invokeMock.mock.calls.some(([cmd, args]) => cmd === 'set_pane_delta_mode' && args?.enabled === false)).toBe(false);
 
 		// warn was called at least once with the diagnostic context object.
 		expect(warnSpy).toHaveBeenCalled();
@@ -292,37 +286,19 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		expect(managerStub.fitPaneNow).toHaveBeenCalledWith(PANE, true);
 	});
 
-	it('still installs listeners when register_pane_delta_channel fails', async () => {
-		// freshBridge() resets the invoke mock, so the rejection has to be
-		// configured AFTER the module is loaded.
+	it('releases a failed registration and permits a later canonical retry', async () => {
 		const { ensurePtyBridge, hasPtyBridge } = await freshBridge();
-
-		// Backend rejects the registration (e.g. pane not yet activated).
-		// The bridge must keep the listen() paths so the pane is usable on
-		// legacy pty-output-* events.
-		invokeMock.mockImplementation(async (cmd: string) => {
-			if (cmd === 'register_pane_delta_channel') {
-				throw new Error('pane not found');
-			}
-			return undefined;
-		});
-		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
+		const stopClosed = vi.fn();
+		listenMock.mockImplementationOnce(async () => stopClosed);
+		invokeMock.mockRejectedValueOnce(new Error('pane not found'));
+		await expect(ensurePtyBridge(PANE, WS)).rejects.toThrow('pane not found');
+		expect(hasPtyBridge(PANE)).toBe(false);
+		expect(stopClosed).toHaveBeenCalledOnce();
+		expect(listenMock.mock.calls.map(([name]) => name)).toEqual(['pane-pty-closed']);
+		invokeMock.mockResolvedValue(undefined);
 		await ensurePtyBridge(PANE, WS);
-
-		// Bridge entry is present even though registration failed.
 		expect(hasPtyBridge(PANE)).toBe(true);
-		// Both listen() subscriptions still ran (pty-output + pane-pty-closed).
-		const listenedNames = listenMock.mock.calls.map(([n]) => n);
-		expect(listenedNames).toEqual(
-			expect.arrayContaining([
-				`pty-output-${WS}-${PANE}`,
-				'pane-pty-closed',
-			]),
-		);
-		// A diagnostic warning surfaced (not silently swallowed).
-		expect(warnSpy).toHaveBeenCalled();
-		warnSpy.mockRestore();
+		expect(invokeMock.mock.calls.filter(([name]) => name === 'register_pane_delta_channel')).toHaveLength(2);
 	});
 
 	it('is idempotent — second ensurePtyBridge call is a no-op', async () => {
@@ -350,7 +326,7 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		await Promise.all([first, second]);
 
 		expect(channels).toHaveLength(1);
-		expect(listenMock).toHaveBeenCalledTimes(2);
+		expect(listenMock).toHaveBeenCalledTimes(1);
 		expect(invokeMock.mock.calls.filter(([cmd]) => cmd === 'register_pane_delta_channel'))
 			.toHaveLength(1);
 	});
@@ -405,15 +381,11 @@ describe('ptyBridge.teardownPtyBridge', () => {
 			.toBe(false);
 	});
 
-	it('releases the output listener when the close listener fails', async () => {
+	it('does not register a channel when the lifecycle listener fails', async () => {
 		const { ensurePtyBridge, hasPtyBridge } = await freshBridge();
-		const outUnlisten = vi.fn();
-		listenMock
-			.mockImplementationOnce(async () => outUnlisten)
-			.mockImplementationOnce(async () => { throw new Error('event bus closed'); });
-
+		listenMock.mockRejectedValueOnce(new Error('event bus closed'));
 		await expect(ensurePtyBridge(PANE, WS)).rejects.toThrow('event bus closed');
-		expect(outUnlisten).toHaveBeenCalledOnce();
+		expect(invokeMock).not.toHaveBeenCalled();
 		expect(hasPtyBridge(PANE)).toBe(false);
 	});
 });

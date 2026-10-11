@@ -66,7 +66,8 @@ function invokeFrames(ws: FakeWebSocket, method: string): Record<string, unknown
 }
 
 function resolveInvoke(ws: FakeWebSocket, frame: Record<string, unknown>, result: unknown = null): void {
-  ws.receive({ type: 'invoke-result', _reqId: frame._reqId, _result: result });
+  const input = (frame.args as { input?: { sequence: number } }).input;
+  ws.receive({ type: 'invoke-result', _reqId: frame._reqId, _result: input && result === null ? { sequence: input.sequence, alreadyApplied: false } : result });
 }
 
 async function flushPromises(): Promise<void> {
@@ -75,6 +76,36 @@ async function flushPromises(): Promise<void> {
 }
 
 describe('RemoteConnection LAN pane RPC scheduler', () => {
+  it('correlates concurrent semantic history packets across pane identities', async () => {
+    const { conn, ws } = connect();
+    const requestA = { pane, terminalEpoch: 'epoch-a', activationId: 7, historyEpoch: 1, before: 200, maxRows: 128 };
+    const requestB = { ...requestA, pane: { workspaceId: 'workspace-b', paneId: 'pane-b' }, terminalEpoch: 'epoch-b' };
+    const first = conn.fetchTerminalHistory(requestA);
+    const second = conn.fetchTerminalHistory(requestB);
+    const requests = invokeFrames(ws, 'get_terminal_history');
+    expect(requests).toHaveLength(2);
+    expect(requests[0]._reqId).not.toBe(requests[1]._reqId);
+    expect(requests.map(frame => frame.args)).toEqual([{ request: requestA }, { request: requestB }]);
+    resolveInvoke(ws, requests[1], btoa(String.fromCharCode(0x13, 2)));
+    resolveInvoke(ws, requests[0], btoa(String.fromCharCode(0x13, 1)));
+    await expect(first).resolves.toEqual(new Uint8Array([0x13, 1]));
+    await expect(second).resolves.toEqual(new Uint8Array([0x13, 2]));
+    conn.disconnect();
+  });
+
+  it('rejects malformed history without an implicit raw replay; a later request can recover', async () => {
+    const { conn, ws } = connect();
+    const request = { pane, terminalEpoch: 'epoch', activationId: 7, historyEpoch: 1, before: 200, maxRows: 128 };
+    const failed = conn.fetchTerminalHistory(request);
+    const rejected = expect(failed).rejects.toThrow('invalid terminal history tag');
+    resolveInvoke(ws, invokeFrames(ws, 'get_terminal_history')[0], btoa('raw VT'));
+    await rejected;
+    const retry = conn.fetchTerminalHistory(request);
+    resolveInvoke(ws, invokeFrames(ws, 'get_terminal_history')[1], btoa(String.fromCharCode(0x13, 1)));
+    await expect(retry).resolves.toEqual(new Uint8Array([0x13, 1]));
+    expect(ws.sent.some(frame => frame.type === 'scrollback-before')).toBe(false);
+    conn.disconnect();
+  });
   beforeEach(() => {
     vi.useFakeTimers();
     vi.stubGlobal('WebSocket', FakeWebSocket);
@@ -124,8 +155,8 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
     const { conn, ws } = connect();
     const reconnects: number[] = [];
     conn.onReconnect(() => reconnects.push(1));
-    expect(conn.sendStdin(pane, 'during-drop')).toBe(true);
-    expect(invokeFrames(ws, 'write_to_pty')).toHaveLength(1);
+    expect(conn.sendStdin(pane, 'during-drop', [{ ...pane }, 'epoch', 1] as const)).toBe(true);
+    expect(invokeFrames(ws, 'write_terminal_input')).toHaveLength(1);
 
     ws.close();
     await flushPromises();
@@ -221,7 +252,7 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
       type: 'hello',
       version: 1,
       protocol: 'ridge-remote-ws',
-      terminalProtocolVersion: 2,
+      terminalProtocolVersion: 1,
       capabilities: ['pane', 'fs', 'search', 'workspace'],
     });
     expect(conn.hasCapability('pane')).toBe(true);
@@ -301,31 +332,6 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
     conn.disconnect();
   });
 
-  it('correlates concurrent scrollback pages by request id across panes', async () => {
-    const { conn, ws } = connect();
-    const paneB = { workspaceId: 'workspace-b', paneId: 'pane-b' };
-    conn.subscribePane(pane, { active: false });
-    conn.subscribePane(paneB, { active: false });
-    ws.receive({ type: 'scrollback-meta', workspaceId: pane.workspaceId, paneId: pane.paneId, startSeq: 10, atOldest: false });
-    ws.receive({ type: 'scrollback-meta', workspaceId: paneB.workspaceId, paneId: paneB.paneId, startSeq: 20, atOldest: false });
-
-    const first = conn.fetchOlderScrollback(pane);
-    const second = conn.fetchOlderScrollback(paneB);
-    const pages = ws.sent.filter((frame) => frame.type === 'scrollback-before');
-    expect(pages).toHaveLength(2);
-    expect(pages[0]._reqId).not.toBe(pages[1]._reqId);
-
-    ws.receive({ type: 'scrollback-before-result', _reqId: pages[1]._reqId, bytes: 'b', startSeq: 11, endSeq: 20, atOldest: true });
-    ws.receive({ type: 'scrollback-before-result', _reqId: pages[0]._reqId, bytes: 'a', startSeq: 1, endSeq: 10, atOldest: true });
-    const pageA = await first;
-    const pageB = await second;
-    expect(pageA?.bytes).toEqual(new TextEncoder().encode('a'));
-    expect(pageB?.bytes).toEqual(new TextEncoder().encode('b'));
-    expect(pageA?.commit(() => true)).toBe(true);
-    expect(pageB?.commit(() => true)).toBe(true);
-    conn.disconnect();
-  });
-
   it('serializes different legacy payloads instead of sharing the wrong reply', async () => {
     const { conn, ws } = connect();
 
@@ -370,23 +376,23 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
   it('keeps input ordered behind one acknowledged invoke request', async () => {
     const { conn, ws } = connect();
 
-    expect(conn.sendStdin(pane, 'a')).toBe(true);
-    expect(conn.sendStdin(pane, 'b')).toBe(true);
-    expect(conn.sendStdin(pane, 'c')).toBe(true);
+    expect(conn.sendStdin(pane, 'a', [{ ...pane }, 'epoch', 1] as const)).toBe(true);
+    expect(conn.sendStdin(pane, 'b', [{ ...pane }, 'epoch', 1] as const)).toBe(true);
+    expect(conn.sendStdin(pane, 'c', [{ ...pane }, 'epoch', 1] as const)).toBe(true);
 
-    const writes = invokeFrames(ws, 'write_to_pty');
+    const writes = invokeFrames(ws, 'write_terminal_input');
     expect(writes).toHaveLength(1);
     expect(writes[0]).toMatchObject({
-      args: { workspaceId: pane.workspaceId, paneId: pane.paneId, data: 'a' },
+      args: { input: { pane: { workspaceId: pane.workspaceId, paneId: pane.paneId }, bytes: Array.from(new TextEncoder().encode('a')) } },
     });
 
     resolveInvoke(ws, writes[0]);
     await flushPromises();
     await flushPromises();
-    const retried = invokeFrames(ws, 'write_to_pty');
+    const retried = invokeFrames(ws, 'write_terminal_input');
     expect(retried).toHaveLength(2);
     expect(retried[1]).toMatchObject({
-      args: { workspaceId: pane.workspaceId, paneId: pane.paneId, data: 'bc' },
+      args: { input: { pane: { workspaceId: pane.workspaceId, paneId: pane.paneId }, bytes: Array.from(new TextEncoder().encode('bc')) } },
     });
 
     resolveInvoke(ws, retried[1]);
@@ -457,9 +463,9 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
   it('turns an invoke timeout into bounded backoff and retry', async () => {
     const { conn, ws } = connect();
 
-    conn.sendStdin(pane, 'retry-me');
-    expect(invokeFrames(ws, 'write_to_pty')).toHaveLength(1);
-    const first = invokeFrames(ws, 'write_to_pty')[0];
+    conn.sendStdin(pane, 'retry-me', [{ ...pane }, 'epoch', 1] as const);
+    expect(invokeFrames(ws, 'write_terminal_input')).toHaveLength(1);
+    const first = invokeFrames(ws, 'write_terminal_input')[0];
 
     await vi.advanceTimersByTimeAsync(5_000);
     expect(ws.sent).toContainEqual({ type: 'invoke-cancel', _reqId: first._reqId });
@@ -468,10 +474,10 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
       timeoutFailures: 1,
       retries: 1,
     });
-    expect(invokeFrames(ws, 'write_to_pty')).toHaveLength(1);
+    expect(invokeFrames(ws, 'write_terminal_input')).toHaveLength(1);
 
     await vi.advanceTimersByTimeAsync(100);
-    const retry = invokeFrames(ws, 'write_to_pty');
+    const retry = invokeFrames(ws, 'write_terminal_input');
     expect(retry).toHaveLength(2);
     expect(retry[1].args).toEqual(retry[0].args);
     resolveInvoke(ws, retry[1]);
@@ -483,13 +489,13 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
   it('retires pending pane work on prune without resurrecting a request', async () => {
     const { conn, ws } = connect();
 
-    conn.sendStdin(pane, 'stale');
-    expect(invokeFrames(ws, 'write_to_pty')).toHaveLength(1);
+    conn.sendStdin(pane, 'stale', [{ ...pane }, 'epoch', 1] as const);
+    expect(invokeFrames(ws, 'write_terminal_input')).toHaveLength(1);
     conn.pruneOutputs(new Set());
     await flushPromises();
     await vi.advanceTimersByTimeAsync(10_000);
 
-    expect(invokeFrames(ws, 'write_to_pty')).toHaveLength(1);
+    expect(invokeFrames(ws, 'write_terminal_input')).toHaveLength(1);
     expect(conn.rpcSchedulingDiagnostics.queuedInputBytes).toBe(0);
     conn.disconnect();
   });
@@ -497,8 +503,8 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
   it('cancels pending pane RPCs before LAN pane destruction', async () => {
     const { conn, ws } = connect();
 
-    conn.sendStdin(pane, 'stale-before-close');
-    expect(invokeFrames(ws, 'write_to_pty')).toHaveLength(1);
+    conn.sendStdin(pane, 'stale-before-close', [{ ...pane }, 'epoch', 1] as const);
+    expect(invokeFrames(ws, 'write_terminal_input')).toHaveLength(1);
 
     const closing = conn.closePane(pane);
     const closeFrame = ws.sent.find((frame) => frame.type === 'close-pane');
@@ -510,7 +516,7 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
     await closing;
     await flushPromises();
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(invokeFrames(ws, 'write_to_pty')).toHaveLength(1);
+    expect(invokeFrames(ws, 'write_terminal_input')).toHaveLength(1);
     expect(conn.rpcSchedulingDiagnostics.queuedInputBytes).toBe(0);
     conn.disconnect();
   });
@@ -545,7 +551,8 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
       const frame = [...ws.sent].reverse().find((item) =>
         item.type === 'invoke-request' && (!method || item.cmd === method));
       if (!frame) throw new Error(`missing invoke frame ${method ?? ''}`);
-      ws.receive({ type: 'invoke-result', _reqId: frame._reqId, _result: result });
+      const input = (frame.args as { input?: { sequence: number } }).input;
+  ws.receive({ type: 'invoke-result', _reqId: frame._reqId, _result: input && result === null ? { sequence: input.sequence, alreadyApplied: false } : result });
       return promise;
     };
 

@@ -54,6 +54,7 @@ import {
   BUFFERED_HIGH_WATERMARK,
 } from './cloudTransportLimits';
 import { PriorityFrameQueue } from './priorityFrameQueue';
+import { isPaneOutputFrame } from '../transport/cloudMux';
 import type { WorkspaceScopeAssertion } from './workspaceScope';
 import { backoffMs } from '../reconnectPolicy';
 import { remotePerfMark, remotePerfSamplePeerConnection } from '../transport/remotePerfTrace';
@@ -685,7 +686,7 @@ export class RidgeCloudHost {
 
   private sealAndSend(conn: ControllerConn, plaintext: Uint8Array): void {
     if (conn.state !== 'connected') return;
-    const wantsPane = plaintext[0] === CHANNEL.PANE_RAW;
+    const wantsPane = isPaneOutputFrame(plaintext);
     const usePane = wantsPane && conn.paneLaneReady && conn.paneSession !== null && conn.paneDc?.readyState === 'open';
     const session = usePane ? conn.paneSession : conn.session;
     const lane = usePane ? 'pane' : 'control';

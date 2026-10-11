@@ -1,5 +1,6 @@
+import terminalHello from '../cloud/signaling/fixtures/terminal/hello.json';
 import { getRemoteDeviceId } from './deviceId';
-import { PaneRpcScheduler } from './paneRpcScheduler';
+import { PaneRpcScheduler, type TerminalInputContext, type TerminalInputData } from './paneRpcScheduler';
 import { remotePerfMark } from './remotePerfTrace';
 import { paneRefKey, type PaneRef, type PaneRenderOwner } from './paneRef';
 import {
@@ -488,13 +489,7 @@ export interface RemoteLink {
   ): void;
   /** Re-seed one pane after local render backpressure shed output. */
   resyncPane?(pane: PaneRef): void;
-  /**
-   * §history-pull（cloud-only）: fetch the next older batch of a pane's scrollback
-   * (seq-cursor paging via get_pane_scrollback_before) to PREPEND above the current
-   * buffer when the viewport nears the top. Returns the raw bytes, or null when
-   * there's nothing more to load. The LAN link omits it (optional) → no-op there.
-   */
-  fetchOlderScrollback?(pane: PaneRef): Promise<PendingScrollbackPage | null>;
+  fetchTerminalHistory?(request: import('../cloud/signaling/generated/HistoryRequest').HistoryRequest): Promise<Uint8Array>;
   /**
    * iter-61：把某 pane 标记 / 取消标记为 agent（远端工作区弹层的标记按钮）。
    * 两条腿（LAN invoke-request / cloud RPC）都实现；老 host 会以错误拒绝，UI 提示即可。
@@ -508,11 +503,11 @@ export interface RemoteLink {
   listShells?(): Promise<RemoteShellInfo[]>;
   /** 原地换 shell：拆该 pane 的 PTY → 按新 program/args 重建 → 重新激活。 */
   changePaneShell?(workspaceId: string, paneId: string, shell: RemoteShellInfo): Promise<void>;
-  sendStdin(pane: PaneRef, data: string): void;
+  sendStdin(pane: PaneRef, data: TerminalInputData, context: TerminalInputContext): void;
   /** Queue a structured Hub message; PTY remains a separate compatibility path. */
   sendAgentMessage(target: AgentMessageTarget, message: string): Promise<AgentMessageReceipt>;
   /** Reserve input order before an asynchronous source resolves. */
-  enqueueStdinTask?(pane: PaneRef, task: () => Promise<string | null> | string | null): boolean;
+  enqueueStdinTask?(pane: PaneRef, task: () => Promise<TerminalInputData | null> | TerminalInputData | null, context: TerminalInputContext): boolean;
   refreshPane(
     pane: PaneRef,
     rows: number,
@@ -581,16 +576,6 @@ export interface SavedWorkspaceFile {
   mtimeSecs: number;
 }
 
-/** A scrollback page whose cursor advances only after kernel prepend succeeds. */
-export interface PendingScrollbackPage {
-  bytes: Uint8Array;
-  startSeq: number;
-  endSeq: number;
-  atOldest: boolean;
-  commit(apply: () => boolean): boolean;
-  discard(): void;
-}
-
 export function remoteWebSocketUrl(input: {
   host: string;
   port: number;
@@ -610,6 +595,7 @@ export class RemoteConnection implements RemoteLink {
   private readonly binaryDeltaListeners: Set<RawByteListener> = new Set();
   private readonly rawByteListeners: Set<RawByteListener> = new Set();
   private readonly terminalFrameListeners: Set<TerminalFrameListener> = new Set();
+  private readonly terminalActivations = new Map<string, number>();
   private readonly metaListeners: Set<MetaListener> = new Set();
   private readonly resizeListeners: Set<PtyResizeListener> = new Set();
   private readonly themeListeners: Set<ThemeListener> = new Set();
@@ -638,7 +624,6 @@ export class RemoteConnection implements RemoteLink {
         this._requestPaneRpc<T>(method, params, options),
       cancelScope: (scope: string) => this._cancelPaneRpcScope(scope),
     },
-    { inputSourceId: 'lan_remote' },
   );
   private _host: string = '';
   private _port: number = 0;
@@ -651,6 +636,8 @@ export class RemoteConnection implements RemoteLink {
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private _reconnectAttempts = 0;
   private _initialConnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private _socketConnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private _socketConnectStarted = 0;
   private _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private _pongDeadline: ReturnType<typeof setTimeout> | null = null;
   /** §A last outbound ping timestamp (epoch ms); 0 if never sent. Diagnostic. */
@@ -673,13 +660,11 @@ export class RemoteConnection implements RemoteLink {
   // ── §history-pull（LAN 对齐 cloudRemote）──
   // 每 pane 的 seq 游标：订阅时由 host 的 `scrollback-meta` 帧播种（首屏 tail 的最旧字节），
   // 用户滚顶时经 `scrollback-before` 分批向更旧推进。atOldest 后停止分页。
-  private readonly scrollbackCursor = new Map<string, { oldestSeq: number; atOldest: boolean }>();
   /** Binary pane frames carry paneId; bind them to an explicit composite ref. */
   private readonly paneRefs = new Map<string, PaneRef>();
   /** Reverse index keeps binary PTY dispatch O(1) in the number of refs. */
   private readonly paneKeysById = new Map<string, Set<string>>();
   // 正在拉取更旧历史的 pane（去重快速连续的滚顶加载）。
-  private readonly fetchingOlder = new Set<string>();
 
   // ── §perf: three-segment latency instrumentation (B 方案诊断埋点) ──
   // All marks are performance.now() (ms, monotonic). Mirrors the server's
@@ -726,6 +711,7 @@ export class RemoteConnection implements RemoteLink {
     const pane = this.paneRefs.get(key);
     if (!pane) return;
     this.paneRefs.delete(key);
+    this.terminalActivations.delete(key);
     const keys = this.paneKeysById.get(pane.paneId);
     if (!keys) return;
     keys.delete(key);
@@ -762,6 +748,7 @@ export class RemoteConnection implements RemoteLink {
   /** 进入 'error' 终态并记录失败分级（供 UI 区分用户问题 / 通道异常 / 设备停用）。 */
   private failWith(failure: ConnectionFailure) {
     this._clearInitialConnectTimer();
+    this._clearSocketConnectTimer();
     this._failure = failure;
     this.setState('error');
   }
@@ -880,6 +867,9 @@ export class RemoteConnection implements RemoteLink {
    *  — first and reconnect — funnel through here so they share heartbeat,
    *  resync, and backoff handling. */
   private _open() {
+    this._clearSocketConnectTimer();
+    this._stopHeartbeat();
+    this._pendingServerError = null;
     if (this.ws) {
       // Detach handlers so the old socket's close can't trigger a reconnect.
       this.ws.onopen = this.ws.onclose = this.ws.onerror = this.ws.onmessage = null;
@@ -914,8 +904,15 @@ export class RemoteConnection implements RemoteLink {
     const ws = new WebSocket(url);
     this.ws = ws;
     ws.binaryType = 'arraybuffer';
+    this._socketConnectStarted = Date.now();
+    this._socketConnectTimer = setTimeout(() => {
+      this._socketConnectTimer = null;
+      if (this.ws === ws) this._handleDrop();
+    }, FIRST_CONNECT_TIMEOUT_MS);
 
     ws.onopen = () => {
+      if (this.ws !== ws) return;
+      this._clearSocketConnectTimer();
       this._clearInitialConnectTimer();
       // §perf: onopen ≈ server-side ws_upgrade — stamp it and log the client's
       // view of the connect/upgrade latency (connectStart → onopen).
@@ -939,9 +936,9 @@ export class RemoteConnection implements RemoteLink {
       }
       this._hasConnectedOnce = true;
     };
-    ws.onclose = (ev) => this._handleClose(ev.code);
-    ws.onerror = () => this._handleDrop();
-    ws.onmessage = (event) => this._handleMessage(event);
+    ws.onclose = (ev) => { if (this.ws === ws) this._handleClose(ev.code); };
+    ws.onerror = () => { if (this.ws === ws) this._handleDrop(); };
+    ws.onmessage = (event) => { if (this.ws === ws) this._handleMessage(event); };
   }
 
 	private _handleBinaryMessage(data: ArrayBuffer): void {
@@ -998,17 +995,6 @@ export class RemoteConnection implements RemoteLink {
     return true;
   }
 
-  private _handleScrollbackMeta(rec: Record<string, unknown>): void {
-    if (typeof rec.workspaceId !== 'string' || typeof rec.paneId !== 'string') return;
-    this.scrollbackCursor.set(paneRefKey({
-      workspaceId: rec.workspaceId,
-      paneId: rec.paneId,
-    }), {
-      oldestSeq: Number(rec.startSeq),
-      atOldest: !!rec.atOldest,
-    });
-  }
-
   private _resolvePendingMessage(msg: WsMessage, type: string): boolean {
     const isResult = type.endsWith('-result') || type === 'workspaces' || type === 'current-project' || type === 'workspace-panes';
     if (!isResult) return false;
@@ -1030,7 +1016,7 @@ export class RemoteConnection implements RemoteLink {
     }
     if (type === 'pong') return true;
     if (type === 'hello' && rec.protocol === 'ridge-remote-ws') {
-      if (rec.terminalProtocolVersion !== 2) {
+      if (rec.terminalProtocolVersion !== terminalHello.protocolVersion) {
         this._intentionalClose = true;
         if (this.ws) {
           this.ws.onopen = this.ws.onclose = this.ws.onerror = this.ws.onmessage = null;
@@ -1046,10 +1032,6 @@ export class RemoteConnection implements RemoteLink {
     }
     if (type === 'hello' && Array.isArray(rec.capabilities)) this.applyAdvertisedCapabilities(rec.capabilities);
     if (this._handlePtyEvent(msg, type, rec)) return true;
-    if (type === 'scrollback-meta') {
-      this._handleScrollbackMeta(rec);
-      return true;
-    }
     return this._resolvePendingMessage(msg, type);
   }
 
@@ -1111,6 +1093,7 @@ export class RemoteConnection implements RemoteLink {
    * 注：匿名/伪造在握手阶段就被不透明 403 挡住（WS 根本不 open），不会到这里。
     */
   private _handleClose(code?: number) {
+    this._clearSocketConnectTimer();
     const pending = this._pendingServerError;
     if (code === WS_CLOSE_AUTHENTICATED_FORBIDDEN || pending) {
       this._rejectPaneRpcRequests((method) => new RpcCancelledError(method));
@@ -1133,10 +1116,12 @@ export class RemoteConnection implements RemoteLink {
   }
 
   private _handleDrop() {
+    this._clearSocketConnectTimer();
     this._rejectPaneRpcRequests((method) => new RpcReconnectError(method));
     this._stopHeartbeat();
     if (this.ws) {
       this.ws.onopen = this.ws.onclose = this.ws.onerror = this.ws.onmessage = null;
+      try { this.ws.close(); } catch { /* already closed */ }
       this.ws = null;
     }
     this._isReconnecting = true;
@@ -1188,8 +1173,9 @@ export class RemoteConnection implements RemoteLink {
 
   /** Send a ping and arm a deadline; if no inbound traffic arrives before it
    *  fires, the socket is dead (frozen/half-open) → force a drop + reconnect. */
-  private _pingNow(deadlineMs: number) {
+  private _pingNow(deadlineMs: number, foregroundProbe = false) {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
+    if (this._pongDeadline) return;
     this._lastPingAt = Date.now();
     this.send({ type: 'ping' });
     if (this._pongDeadline) clearTimeout(this._pongDeadline);
@@ -1200,7 +1186,10 @@ export class RemoteConnection implements RemoteLink {
       // consecutive threshold. The next interval ping continues to probe;
       // any inbound frame in between resets the counter without action.
       this._consecutivePongMisses += 1;
-      if (this._consecutivePongMisses < MAX_CONSECUTIVE_PONG_MISSES) return;
+      if (this._consecutivePongMisses < MAX_CONSECUTIVE_PONG_MISSES) {
+        if (foregroundProbe) this._pingNow(deadlineMs, true);
+        return;
+      }
       if (this.ws) { try { this.ws.close(); } catch { /* noop */ } }
       this._handleDrop();
     }, deadlineMs);
@@ -1215,10 +1204,10 @@ export class RemoteConnection implements RemoteLink {
     const rs = this.ws?.readyState;
     if (rs === WebSocket.OPEN) {
       // Looks open, but a backgrounded socket can be half-dead — probe it fast.
-      this._pingNow(LIVENESS_PROBE_TIMEOUT_MS);
+      this._pingNow(LIVENESS_PROBE_TIMEOUT_MS, true);
       return;
     }
-    if (rs === WebSocket.CONNECTING) return;
+    if (rs === WebSocket.CONNECTING && Date.now() - this._socketConnectStarted < FIRST_CONNECT_TIMEOUT_MS) return;
     // closed/closing → reconnect now and reset backoff for a snappy resume.
     this._clearReconnectTimer();
     this._reconnectAttempts = 0;
@@ -1467,7 +1456,10 @@ export class RemoteConnection implements RemoteLink {
     if (opts?.resume) msg.resume = true;
     if (opts?.sinceSeq !== undefined) msg.sinceSeq = opts.sinceSeq;
     if (opts?.active !== undefined) msg.active = opts.active;
-    if (opts?.activationId !== undefined) msg.activationId = opts.activationId;
+    if (opts?.activationId !== undefined) {
+      msg.activationId = opts.activationId;
+      this.terminalActivations.set(paneRefKey(pane), opts.activationId);
+    }
     this.send(msg);
   }
 
@@ -1483,7 +1475,17 @@ export class RemoteConnection implements RemoteLink {
   }
 
   resyncPane(pane: PaneRef) {
-    this.subscribePane(pane, { active: true });
+    this.subscribePane(pane, { active: true, activationId: this.terminalActivations.get(paneRefKey(pane)) });
+  }
+
+  async fetchTerminalHistory(request: import('../cloud/signaling/generated/HistoryRequest').HistoryRequest): Promise<Uint8Array> {
+    const encoded = await this._requestPaneRpc<string>('get_terminal_history', { request }, {
+      scope: `terminal-history:${paneRefKey(request.pane)}`, timeoutMs: 10_000,
+    });
+    if (typeof encoded !== 'string' || encoded.length > Math.ceil(terminalHello.maxFrameBytes / 3) * 4) throw new Error('invalid terminal history frame');
+    const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+    if (bytes[0] !== 0x13) throw new Error('invalid terminal history tag');
+    return bytes;
   }
 
   /**
@@ -1496,92 +1498,22 @@ export class RemoteConnection implements RemoteLink {
     if (!pane.paneId || !pane.workspaceId) return;
     this._deletePaneRef(paneRefKey(pane));
   }
-
-  /**
-   * §history-pull（LAN 对齐 cloudRemote）: fetch the next older batch of this
-   * pane's scrollback (bytes with `seq < cursor`) to PREPEND above the current
-   * buffer when the viewport nears the top. Returns the raw bytes, or `null`
-   * when there's nothing to load (no cursor yet, already at oldest, a fetch is
-   * in flight, or the host rejected/timed out). fetchingOlder dedup + atOldest
-   * stop keep it safe under rapid scroll-up. Mirrors
-   * CloudRemoteConnection.fetchOlderScrollback.
-   */
-  async fetchOlderScrollback(pane: PaneRef): Promise<PendingScrollbackPage | null> {
-    const key = paneRefKey(pane);
-    const cursor = this.scrollbackCursor.get(key);
-    if (!cursor || cursor.atOldest || this.fetchingOlder.has(key)) return null;
-    this.fetchingOlder.add(key);
-    try {
-      const result = await this._sendAndWait(
-        {
-          type: 'scrollback-before',
-          paneId: pane.paneId,
-          workspaceId: pane.workspaceId,
-          beforeSeq: cursor.oldestSeq,
-          maxBytes: 64 * 1024,
-          // The host echoes this id. Without it, simultaneous history pulls
-          // for two panes would share the legacy response-type slot and one
-          // pane could consume the other pane's page.
-          _reqId: ++this._reqCounter,
-        },
-        'scrollback-before-result',
-      ) as { bytes?: string; startSeq?: number; endSeq?: number; atOldest?: boolean };
-      const startSeq = Number(result.startSeq);
-      const endSeq = Number(result.endSeq);
-      const bytes = result.bytes ? new TextEncoder().encode(String(result.bytes)) : new Uint8Array();
-      if (startSeq >= endSeq || endSeq !== cursor.oldestSeq || bytes.length === 0) {
-        if (bytes.length === 0 && endSeq === cursor.oldestSeq && result.atOldest) {
-          this.scrollbackCursor.set(key, { ...cursor, atOldest: true });
-        }
-        this.fetchingOlder.delete(key);
-        return null;
-      }
-      let settled = false;
-      const finish = () => {
-        if (!settled) {
-          settled = true;
-            this.fetchingOlder.delete(key);
-        }
-      };
-      return {
-        bytes,
-        startSeq,
-        endSeq,
-        atOldest: !!result.atOldest,
-        commit: (apply) => {
-          if (settled || this.scrollbackCursor.get(key)?.oldestSeq !== endSeq) return false;
-          try {
-            if (!apply()) return false;
-          } catch {
-            return false;
-          }
-          this.scrollbackCursor.set(key, { oldestSeq: startSeq, atOldest: !!result.atOldest });
-          finish();
-          return true;
-        },
-        discard: finish,
-      };
-    } catch {
-      this.fetchingOlder.delete(key);
-      return null;
-    }
-  }
   listFiles(path?: string) { this.send({ type: 'list-files', path: path || '' }); }
   listGitStatus() { this.send({ type: 'list-git-status' }); }
-  sendStdin(pane: PaneRef, data: string): boolean {
+  sendStdin(pane: PaneRef, data: TerminalInputData, context: TerminalInputContext): boolean {
     if (!pane.paneId || !data) return false;
     const key = paneRefKey(pane);
     return tryEnqueuePaneInputImmediate(key, () => {
-      this.paneScheduler.enqueueInput(pane, data);
+      this.paneScheduler.enqueueInput(pane, data, context);
     });
   }
 
-  enqueueStdinTask(pane: PaneRef, task: () => Promise<string | null> | string | null): boolean {
+  enqueueStdinTask(pane: PaneRef, task: () => Promise<TerminalInputData | null> | TerminalInputData | null, context: TerminalInputContext): boolean {
     if (!pane.paneId) return false;
     const key = paneRefKey(pane);
     return tryEnqueuePaneInput(key, async () => {
       const data = await task();
-      if (data) this.paneScheduler.enqueueInput(pane, data);
+      if (data) this.paneScheduler.enqueueInput(pane, data, context);
     });
   }
   /** @deprecated Host-side bookkeeping only — records a fallback size but never
@@ -1974,8 +1906,6 @@ export class RemoteConnection implements RemoteLink {
     if (closed) {
       this.paneOutputs.delete(key);
       this._deletePaneRef(key);
-      this.scrollbackCursor.delete(key);
-      this.fetchingOlder.delete(key);
     }
     return closed;
   }
@@ -2015,6 +1945,7 @@ export class RemoteConnection implements RemoteLink {
   // ───────────────────────────────────────────────────────────────────
 
   disconnect() {
+    this._clearSocketConnectTimer();
     this._clearInitialConnectTimer();
     for (const pane of this.paneRefs.values()) retirePaneInput(paneRefKey(pane));
     this._intentionalClose = true;
@@ -2044,10 +1975,9 @@ export class RemoteConnection implements RemoteLink {
     this._legacyRequests.clear();
     // §history-pull: drop per-pane seq cursors + in-flight flags so a fresh
     // transport re-seeds from the host's next `scrollback-meta`.
-    this.scrollbackCursor.clear();
     this.paneRefs.clear();
+    this.terminalActivations.clear();
     this.paneKeysById.clear();
-    this.fetchingOlder.clear();
   }
 
   private setState(s: ConnectionState) {
@@ -2062,5 +1992,10 @@ export class RemoteConnection implements RemoteLink {
       clearTimeout(this._initialConnectTimer);
       this._initialConnectTimer = null;
     }
+  }
+
+  private _clearSocketConnectTimer() {
+    if (this._socketConnectTimer) clearTimeout(this._socketConnectTimer);
+    this._socketConnectTimer = null;
   }
 }

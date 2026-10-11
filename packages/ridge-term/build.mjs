@@ -23,6 +23,30 @@ import { cargoTool } from '../../scripts/lib/toolPath.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.argv.includes('--dev');
+const fontDir = path.resolve(__dirname, '../ridge-term-font');
+const fontBuild = spawnSync(cargoTool('wasm-pack'), [
+    'build', '--target', 'web', '--out-dir', 'pkg', '--out-name', 'ridge_term_font',
+    isDev ? '--dev' : '--release',
+], { stdio: 'inherit', cwd: fontDir, shell: false });
+if (fontBuild.status !== 0) process.exit(fontBuild.status ?? 1);
+const fontPackagePath = path.join(fontDir, 'pkg', 'package.json');
+const fontPackage = JSON.parse(fs.readFileSync(fontPackagePath, 'utf8'));
+fontPackage.name = '@ridge/term-font-wasm';
+fontPackage.sideEffects = ['./ridge_term_font.js', './snippets/*'];
+fs.writeFileSync(fontPackagePath, JSON.stringify(fontPackage, null, 2));
+if (process.argv.includes('--font-only')) process.exit(0);
+const renderDir = path.resolve(__dirname, '../ridge-term-render');
+const renderBuild = spawnSync(cargoTool('wasm-pack'), [
+    'build', '--target', 'web', '--out-dir', 'pkg', '--out-name', 'ridge_term_render',
+    isDev ? '--dev' : '--release',
+], { stdio: 'inherit', cwd: renderDir, shell: false });
+if (renderBuild.status !== 0) process.exit(renderBuild.status ?? 1);
+const renderPackagePath = path.join(renderDir, 'pkg', 'package.json');
+const renderPackage = JSON.parse(fs.readFileSync(renderPackagePath, 'utf8'));
+renderPackage.name = '@ridge/term-render-wasm';
+renderPackage.sideEffects = ['./ridge_term_render.js', './snippets/*'];
+fs.writeFileSync(renderPackagePath, JSON.stringify(renderPackage, null, 2));
+if (process.argv.includes('--render-only')) process.exit(0);
 if (process.argv.includes('--no-webgpu')) {
 	console.error('[ridge-term] --no-webgpu is unsupported: the shared GPU renderer is required');
 	process.exit(2);

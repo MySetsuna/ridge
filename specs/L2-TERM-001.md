@@ -8,6 +8,7 @@ origin: authored
 migration_state: PROPOSED
 ---
 
+
 ## §1 范围
 
 覆盖自 PTY 子进程字节流出，至前端 grid 像素呈现的整条数据通路。
@@ -159,3 +160,8 @@ migration_state: PROPOSED
 - 迁移边界：shell `terminal::create_pane` 改为调用 `kernel client::pty_create`，PtyHandle 改为 lease-backed（仅持 lease_id + cursor）；`native_ref/_child` 字段标 deprecated 但保留编译期可用；新代码禁止使用。
 - 影响范围：`commands/terminal.rs`、`engine/pty.rs`、`state.rs`（PtyHandle 字段）、`hosts/mod.rs` 的 foreign attach、teammate `summon` 路径。
 - 不本轮执行。
+
+
+## CHG-069 terminal contract replacement
+
+The rebuilt contract is owned by ridge-signaling/src/terminal.rs and L3-REMOTE-INTERACTION-RELIABILITY. Terminal-v2 descriptions above are historical implementation evidence during replacement, not a second supported contract. Desktop, LAN and Cloud consume the same semantic frame and byte-input contract, with lifetime/activation/revision fences and generation-based semantic history paging. Superseded codecs/adapters are archived. This replacement does not migrate business ownership or weaken Kernel/auth boundaries; CHG-070 performs the separate migration and reruns this contract.

@@ -1,0 +1,6 @@
+{
+  "protocolVersion": 1,
+  "maxFrameBytes": 16777216,
+  "maxHistoryRows": 256,
+  "maxInputBytes": 65536
+}

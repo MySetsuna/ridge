@@ -23,34 +23,25 @@ const VENDORED_GENERATED = join(here, 'generated');
 const VENDORED_FIXTURES = join(here, 'fixtures');
 const SRC_BINDINGS = join(srcRepo, 'bindings');
 const SRC_FIXTURES = join(srcRepo, 'fixtures', 'signaling');
-const SRC_TERMINAL_FIXTURES = join(srcRepo, 'fixtures', 'terminal-v2');
-const SRC_TERMINAL_CODEC = join(srcRepo, 'src', 'terminal_v2.rs');
+const SRC_TERMINAL_FIXTURES = join(srcRepo, 'fixtures', 'terminal');
+const SRC_TERMINAL_CODEC = join(srcRepo, 'src', 'terminal.rs');
 const VENDORED_TERMINAL_CODEC = join(
   windRoot,
   'packages',
   'ridge-term',
   'src',
-  'remote_protocol_generated.rs',
+  'terminal_protocol_generated.rs',
 );
 
-const siblingPresent =
-  existsSync(srcRepo) &&
-  existsSync(SRC_BINDINGS) &&
-  existsSync(SRC_FIXTURES) &&
-  existsSync(SRC_TERMINAL_FIXTURES) &&
-  existsSync(SRC_TERMINAL_CODEC);
+const siblingPresent = existsSync(srcRepo);
 
-/** ts-rs 生成的 bindings 相对路径（与 sync 脚本一致）。 */
-const BINDING_FILES = [
-  'SignalMsg.ts',
-  'Role.ts',
-  'PaneRef.ts',
-  'ActivateTerminalParams.ts',
-  'TerminalHello.ts',
-  'PointerAction.ts',
-  'PointerEvent.ts',
-  join('serde_json', 'JsonValue.ts'),
-];
+function bindingFiles(dir: string, prefix = ''): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+    const relative = prefix ? join(prefix, entry.name) : entry.name;
+    if (entry.isDirectory()) return bindingFiles(join(dir, entry.name), relative);
+    return entry.name.endsWith('.ts') ? [relative] : [];
+  }).sort();
+}
 
 const RESYNC_HINT = '与同级 ridge-signaling 漂移——运行 `pnpm sync:signaling` 重新 vendor。';
 
@@ -61,7 +52,8 @@ function readBytes(path: string): Buffer {
 
 describe.skipIf(!siblingPresent)('signaling drift guard（同级 ridge-signaling 在场）', () => {
   it('generated/ 与源 bindings/ 逐字节一致', () => {
-    for (const rel of BINDING_FILES) {
+    expect(bindingFiles(VENDORED_GENERATED)).toEqual(bindingFiles(SRC_BINDINGS));
+    for (const rel of bindingFiles(SRC_BINDINGS)) {
       const vendored = join(VENDORED_GENERATED, rel);
       const source = join(SRC_BINDINGS, rel);
       expect(existsSync(vendored), `缺 vendored 文件 ${rel}：${RESYNC_HINT}`).toBe(true);
@@ -85,22 +77,22 @@ describe.skipIf(!siblingPresent)('signaling drift guard（同级 ridge-signaling
     }
   });
 
-  it('terminal-v2 golden fixture 与 Rust codec 均逐字节来自协议仓库', () => {
-    const vendoredDir = join(VENDORED_FIXTURES, 'terminal-v2');
-    const vendoredNames = readdirSync(vendoredDir).filter((f) => f.endsWith('.hex')).sort();
-    const sourceNames = readdirSync(SRC_TERMINAL_FIXTURES).filter((f) => f.endsWith('.hex')).sort();
-    expect(new Set(vendoredNames), `terminal-v2 fixture 集合不一致：${RESYNC_HINT}`).toEqual(
+  it('terminal golden fixture 与 Rust codec 均逐字节来自协议仓库', () => {
+    const vendoredDir = join(VENDORED_FIXTURES, 'terminal');
+    const vendoredNames = readdirSync(vendoredDir).filter((f) => (f.endsWith('.hex') || f.endsWith('.json'))).sort();
+    const sourceNames = readdirSync(SRC_TERMINAL_FIXTURES).filter((f) => (f.endsWith('.hex') || f.endsWith('.json'))).sort();
+    expect(new Set(vendoredNames), `terminal fixture 集合不一致：${RESYNC_HINT}`).toEqual(
       new Set(sourceNames),
     );
     for (const name of sourceNames) {
       expect(
         readBytes(join(vendoredDir, name)).equals(readBytes(join(SRC_TERMINAL_FIXTURES, name))),
-        `terminal-v2 fixture ${name} 不一致：${RESYNC_HINT}`,
+        `terminal fixture ${name} 不一致：${RESYNC_HINT}`,
       ).toBe(true);
     }
     expect(
       readBytes(VENDORED_TERMINAL_CODEC).equals(readBytes(SRC_TERMINAL_CODEC)),
-      `terminal v2 Rust codec 不一致：${RESYNC_HINT}`,
+      `terminal Rust codec 不一致：${RESYNC_HINT}`,
     ).toBe(true);
   });
 

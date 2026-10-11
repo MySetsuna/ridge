@@ -256,9 +256,9 @@ describe('Cloud Remote provider → adapter → RpcClient recovery', () => {
 
 describe('CloudHostBridge deterministic pane backpressure', () => {
   it('reserves drain recovery for active pane; dirty background recovers on promotion', async () => {
-    const invoke = vi.fn(async () => ({ frame: '\x1bcRECOVERED' }));
+    const invoke = vi.fn(async () => btoa(String.fromCharCode(0x13,9,8,7)));
     const sent: Uint8Array[] = [];
-    const bridge = new CloudHostBridge({ invoke, sendFrame: (frame) => sent.push(frame) });
+    const bridge = new CloudHostBridge({ invoke, paneOutputSource: () => () => {}, sendFrame: (frame) => sent.push(frame) });
     let buffered = 9 * 1024 * 1024;
     let drain: (() => void) | null = null;
     bridge.attachChannelControl({
@@ -274,37 +274,37 @@ describe('CloudHostBridge deterministic pane backpressure', () => {
     bridge.handleFrame(encodeJsonFrame({
       jsonrpc: '2.0',
       method: 'subscribe-pane',
-      params: { paneId: 'pane-a', active: true },
+      params: { paneId: 'pane-a', workspaceId: 'ws', activationId: 1, active: true },
     }));
     bridge.handleFrame(encodeJsonFrame({
       jsonrpc: '2.0',
       method: 'subscribe-pane',
-      params: { paneId: 'pane-b', active: false },
+      params: { paneId: 'pane-b', workspaceId: 'ws', activationId: 1, active: false },
     }));
-    bridge.pushPaneOutput('pane-a', new Uint8Array([1]));
-    bridge.pushPaneOutput('pane-a', new Uint8Array([2]));
-    bridge.pushPaneOutput('pane-b', new Uint8Array([3]));
+    bridge.pushPaneOutput('pane-a', new Uint8Array([0x13,1]));
+    bridge.pushPaneOutput('pane-a', new Uint8Array([0x13,2]));
+    bridge.pushPaneOutput('pane-b', new Uint8Array([0x13,3]));
     buffered = 0;
     drain?.();
     drain?.();
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
-    expect(invoke.mock.calls[0][0]).toBe('get_pane_resync_frame');
+    expect(invoke.mock.calls[0][0]).toBe('get_terminal_snapshot');
     expect(invoke.mock.calls[0][1]).toEqual({
       paneId: 'pane-a',
-      workspaceId: undefined,
-      maxBytes: 256 * 1024,
+      workspaceId: 'ws',
+      activationId: 1,
     });
 
     bridge.handleFrame(encodeJsonFrame({
       jsonrpc: '2.0',
       method: 'subscribe-pane',
-      params: { paneId: 'pane-b', active: true },
+      params: { paneId: 'pane-b', workspaceId: 'ws', activationId: 1, active: true },
     }));
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
     expect(invoke.mock.calls[1][1]).toEqual({
       paneId: 'pane-b',
-      workspaceId: undefined,
-      maxBytes: 256 * 1024,
+      workspaceId: 'ws',
+      activationId: 1,
     });
     expect(sent).toHaveLength(2);
   });

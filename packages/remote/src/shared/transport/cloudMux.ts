@@ -42,7 +42,23 @@ export const CHANNEL = {
    * ride this channel later without touching the RPC/pane framing.
    */
   CONTROL: 0x12,
+  /** Canonical terminal packet; identity and activation are inside the packet. */
+  TERMINAL: 0x13,
 } as const;
+
+export function isPaneOutputFrame(frame: Uint8Array): boolean {
+  if (frame[0] === CHANNEL.PANE_RAW || frame[0] === CHANNEL.TERMINAL) return true;
+  // Large read results use the existing fragmented data lane; small ACK/input
+  // traffic retains control priority. RPC correlation and byte shape stay intact.
+  if (frame[0] !== CHANNEL.JSON || frame.length <= BULK_RPC_THRESHOLD_BYTES || frame.length > MAX_JSON_FRAME_BYTES) return false;
+  try {
+    const reply = JSON.parse(textDecoder.decode(frame.subarray(1)));
+    return reply?.jsonrpc === '2.0' && (typeof reply.id === 'string' || typeof reply.id === 'number')
+      && !('method' in reply) && ('result' in reply || 'error' in reply);
+  } catch { return false; }
+}
+
+export const BULK_RPC_THRESHOLD_BYTES = 128 * 1024;
 
 /** Max bytes a paneId may occupy on the wire (1-byte length prefix). */
 export const MAX_PANE_ID_BYTES = 255;

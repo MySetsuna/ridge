@@ -13,14 +13,14 @@
 /// module so the parser can flip it without depending on the render layer.
 /// vim sets Bar in insert mode and Block in normal mode; many readline
 /// configs do the same.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CursorShape {
     Block,
     Underline,
     Bar,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct Modes {
     /// DECAWM (mode ?7) — autowrap on right margin. xterm default = on.
     pub autowrap: bool,

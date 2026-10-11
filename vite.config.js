@@ -151,7 +151,7 @@ export default defineConfig({
       '@tauri-apps/api',
       'qrcode',
     ],
-    exclude: ['@ridge/term-wasm'],
+    exclude: ['@ridge/term-wasm', '@ridge/term-font-wasm', '@ridge/term-render-wasm'],
   },
   ssr: {
     noExternal: ['qrcode'],

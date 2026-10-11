@@ -1,4 +1,7 @@
 <script lang="ts">
+  import type { TerminalInputContext, TerminalInputData } from "@ridge/remote/shared/transport/paneRpcScheduler";
+  import { clearRemoteToken } from './lib/remoteSession';
+  import terminalHello from '@ridge/remote/shared/cloud/signaling/fixtures/terminal/hello.json';
   import { onDestroy, onMount, untrack } from 'svelte';
   import { t, tr } from '$lib/i18n';
   import { Folder, GitBranch, Search, Bot, Keyboard, TextCursorInput } from 'lucide-svelte';
@@ -14,7 +17,13 @@
   let remoteSidebarPromise: Promise<typeof import('./lib/RemoteSidebar.svelte')> | null = $state(null);
   let remoteTeamRosterPromise: Promise<typeof import('./lib/SidebarTeamRoster.svelte')> | null = $state(null);
   let fileViewerPromise: Promise<typeof import('./lib/FileViewer.svelte')> | null = $state(null);
+  const loadTerminalCanvas = retryableLazyImport(() => import('./lib/TerminalCanvas.svelte'));
+  const loadVirtualKeyboard = retryableLazyImport(() => import('./lib/VirtualKeyboard.svelte'));
+  const loadRemoteSidebar = retryableLazyImport(() => import('./lib/RemoteSidebar.svelte'));
+  const loadRemoteTeamRoster = retryableLazyImport(() => import('./lib/SidebarTeamRoster.svelte'));
+  const loadFileViewer = retryableLazyImport(() => import('./lib/FileViewer.svelte'));
   import BottomTabBar from './BottomTabBar.svelte';
+  import { retryableLazyImport } from './lib/retryableLazyImport';
   import {
     getRemotePanelAvailability,
     paneRefKey,
@@ -29,12 +38,9 @@
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
   import { createWsSidebarProvider } from './lib/sidebarProvider';
   import { readDeviceClass, watchDeviceClass } from './lib/deviceClass';
-  import { ScrollbackDecoder } from './lib/scrollbackWorker';
   import { onceCleanup } from './lib/listenerCleanup';
   import { createGenerationGuard } from './lib/generationGuard';
   import { detachPaneRefs } from './lib/paneLifecycle';
-  import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
-  import { PaneFeedScheduler } from './lib/paneFeedScheduler';
   import {
     remotePerfEnd,
     remotePerfMark,
@@ -89,7 +95,6 @@
   let wsState = $state<ConnectionState>('disconnected');
   const queryClient = useQueryClient();
   const sessionId = () => remoteSessionId(ws);
-  const scrollbackDecoder = new ScrollbackDecoder();
   let remoteAppAlive = true;
   let stopConnection: (() => void) | null = null;
   let _refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -110,11 +115,8 @@
     void detachPaneKernels(ownedPanes);
     ws.pruneOutputs(new Set());
     clearAllFeedResync();
-    paneFeedScheduler.dispose();
-    pendingRawFrames.clear();
     paneSwitchPerf.clear();
     attachedPanes.clear();
-    scrollbackDecoder.dispose();
   });
   const workspacesQuery = createQuery(() => ({
     queryKey: remoteQueryKeys.workspaces(sessionId()),
@@ -407,35 +409,27 @@
     target.pasteClipboard?.();
   }
 
-  // §history-pull（2026-07-02）: the host no longer dumps full scrollback on
-  // subscribe — it seeds ~1.5 screens and we lazily page older history as the user
-  // scrolls up. TerminalCanvas fires onNearTop when the viewport nears the buffer
-  // top; fetch the next older batch (cloud link only) and prepend it. Guard against
-  // a pane switch mid-fetch so we never prepend one pane's history onto another.
+  // Semantic rows come from the shared kernel; history never reparses VT bytes.
   async function loadOlderScrollback(pane: PaneRef) {
-    if (!remoteAppAlive || !canvasRef || !ws.fetchOlderScrollback) return;
-    const targetCanvas = canvasRef;
+    if (!remoteAppAlive || !canvasRef || !ws.fetchTerminalHistory) return;
+    const target = canvasRef;
     const key = paneRefKey(pane);
-    if (scrollbackLoadingPaneIds.includes(key)) return;
-    scrollbackErrorPaneIds = scrollbackErrorPaneIds.filter((id) => id !== key);
+    const activation = activeTerminalActivation;
+    const request = target.terminalHistoryRequest();
+    if (!request || !activation || activation.key !== key || scrollbackLoadingPaneIds.includes(key)) return;
+    scrollbackErrorPaneIds = scrollbackErrorPaneIds.filter(id => id !== key);
     scrollbackLoadingPaneIds = [...scrollbackLoadingPaneIds, key];
-    let page: Awaited<ReturnType<NonNullable<RemoteLink['fetchOlderScrollback']>>> = null;
     try {
-      page = await ws.fetchOlderScrollback(pane);
-      if (!page || !remoteAppAlive) return;
-      const bytes = await scrollbackDecoder.decode(pane, page.startSeq, page.endSeq, page.bytes);
-      if (!remoteAppAlive || !bytes) return;
-      if (!page.commit(() => targetCanvas.prependScrollbackForPane(key, bytes))) {
-        throw new Error('scrollback page changed before prepend commit');
-      }
+      const frame = await ws.fetchTerminalHistory(request);
+      if (!remoteAppAlive || canvasRef !== target || activeTerminalActivation?.id !== activation.id || activeTerminalActivation.key !== key) return;
+      if (!target.applyRemoteFrameForPane(key, frame, pane, activation.id)) throw new Error('terminal history target unavailable');
     } catch {
-      if (remoteAppAlive && !scrollbackErrorPaneIds.includes(key)) {
-        scrollbackErrorPaneIds = [...scrollbackErrorPaneIds, key];
-      }
+      if (remoteAppAlive && activeTerminalActivation?.id === activation.id) scrollbackErrorPaneIds = [...scrollbackErrorPaneIds, key];
     } finally {
-      page?.discard();
-      if (remoteAppAlive) {
-        scrollbackLoadingPaneIds = scrollbackLoadingPaneIds.filter((id) => id !== key);
+      if (remoteAppAlive) scrollbackLoadingPaneIds = scrollbackLoadingPaneIds.filter(id => id !== key);
+      if (remoteAppAlive && canvasRef === target && activeTerminalActivation?.id === activation.id
+        && !scrollbackErrorPaneIds.includes(key) && target.historyRecoveryPending()) {
+        queueMicrotask(() => { void loadOlderScrollback(pane); });
       }
     }
   }
@@ -474,7 +468,6 @@
    * TerminalCanvas and attaching the newly selected pane. Keep that gap lossless
    * so a fast pane switch never rewinds the visible input/output tail.
    */
-  const pendingRawFrames = new PaneSwitchBuffer();
   const paneSwitchPerf = new Map<string, ReturnType<typeof remotePerfStart>>();
 
   function markPaneFirstPaint(paneKey: string): void {
@@ -482,12 +475,6 @@
     paneSwitchPerf.delete(paneKey);
     remotePerfEnd(token, { paneKey });
     remotePerfMark('pane-first-paint', { paneKey });
-  }
-
-  function drainPendingRawFrames(key: string): Uint8Array[] {
-    const { frames, needsResync } = pendingRawFrames.drain(key);
-    if (needsResync) requestFeedResync(key);
-    return frames;
   }
 
   function drainPendingSemanticFrames(key: string) {
@@ -525,7 +512,9 @@
     queueMicrotask(() => {
       if (!remoteAppAlive || !feedResyncPending.has(key)) return;
       try {
-        ws.resyncPane?.(pane);
+        pendingSemanticFrames.delete(key);
+        const activationId = nextTerminalActivation(key);
+        (ws.activatePane ?? ws.subscribePane).call(ws, pane, { active: true, activationId, resume: false });
       } finally {
         const timer = setTimeout(() => {
           feedResyncPending.delete(key);
@@ -541,33 +530,9 @@
    * frame slice, with the focused pane first. This prevents a PTY burst from
    * monopolising the browser task queue and starving keyboard events.
    */
-  const paneFeedScheduler = new PaneFeedScheduler((key, data) => {
-    const stats = canvasRef?.feedPane(key, data);
-    remotePerfMark('raw-feed', {
-      paneKey: key,
-      bytes: data.byteLength,
-      queueBytes: (stats?.queuedBytes ?? 0) + paneFeedScheduler.queuedBytes(key),
-    });
-    if (!stats) {
-      // The keyed surface may be between mounts. Keep this short gap in the
-      // existing bounded hand-off buffer; the next surface drains it once.
-      pendingRawFrames.enqueue(key, data);
-      return { accepted: true };
-    }
-    if (stats.needsResync) {
-      canvasRef?.clearPendingFeed(key);
-      requestFeedResync(key);
-    }
-    return { accepted: true, stats };
-  }, {
-    onDrop: (key) => requestFeedResync(key),
-  });
-
   function releasePaneRuntime(pane: PaneRef): void {
     const key = paneRefKey(pane);
     attachedPanes.delete(key);
-    paneFeedScheduler.clear(key);
-    pendingRawFrames.drop(key);
     pendingSemanticFrames.delete(key);
     paneSwitchPerf.delete(key);
     clearFeedResync(key);
@@ -686,12 +651,12 @@
     kernelTheme = buildKernelTheme(colors);
   }
 
-  function onStdin(pane: PaneRef, data: string) {
-    ws.sendStdin(pane, data);
+  function onStdin(pane: PaneRef, data: TerminalInputData, context: TerminalInputContext) {
+    ws.sendStdin(pane, data, context);
   }
 
-  function onInputTask(pane: PaneRef, task: () => Promise<string | null>): boolean {
-    return ws.enqueueStdinTask?.(pane, task) ?? false;
+  function onInputTask(pane: PaneRef, task: () => Promise<TerminalInputData | null>, context: TerminalInputContext): boolean {
+    return ws.enqueueStdinTask?.(pane, task, context) ?? false;
   }
 
   function onPaneFocus(pane: PaneRef): void {
@@ -724,8 +689,7 @@
       // bytes queued against the pre-claim geometry race ahead of the host's
       // full-screen replay.
       const key = paneRefKey(pane);
-      paneFeedScheduler.clear(key);
-      pendingRawFrames.drop(key);
+      pendingSemanticFrames.delete(key);
       canvasRef?.clearPendingFeed(key);
       clearFeedResync(key);
       ws.resyncPane?.(pane);
@@ -825,7 +789,7 @@
   // CloudAuthScreen 的 location.replace 同源）。
   function handleBackToLogin() {
     try { ws.disconnect(); } catch { /* already torn down */ }
-    try { localStorage.removeItem('ridge_remote_token'); } catch { /* ignore */ }
+    clearRemoteToken();
     location.reload();
   }
 
@@ -976,27 +940,6 @@
         );
       }
     }));
-    stops.push(ws.onRawBytes((pane, data) => {
-      // The frame-budgeted scheduler below owns terminal parsing; this callback
-      // only copies bytes into its bounded queue.
-      // §keep-alive (P4): feed the frame into its pane's alive kernel via the
-      // active pane's TerminalCanvas. The host single-subscribes so this is the
-      // active pane; a straggler for a just-unsubscribed pane is dropped (it
-      // isn't the mounted TerminalCanvas). No cache, no reconcile, no wipe — the
-      // host's on-subscribe replay is absorbed by the alive kernel.
-      const key = paneRefKey(pane);
-      const active = activePaneRef();
-      // §cold-boot-race (P5): active 未确立前（activeWorkspaceId='' / activePaneId=null）
-      // 不能 drop，否则 cold boot 期 host 先到的 PTY bytes 永久丢失。bytes 仍按
-      // per-pane 入 PaneFeedScheduler 队列（既有隔离，跨 pane 不串）；active binding
-      // 由 refreshWorkspaces / panes handler 落定后 setActive(subscriptionKey) →
-      // queue 正常 drain 到 active canvas。active 已确立且 key 不匹配 → drop straggler。
-      if (active && key !== paneRefKey(active)) return;
-      paneFeedScheduler.enqueue(key, data);
-      // During a keyed pane switch the old canvas may already be parked and
-      // the new one not yet attached. Do not drop this frame: the next canvas
-      // drains it into the same keep-alive kernel before its first paint.
-    }));
     if (ws.onTerminalFrame) {
       stops.push(ws.onTerminalFrame((data) => {
         const pane = activePaneRef();
@@ -1004,11 +947,22 @@
         const key = paneRefKey(pane);
         const activation = activeTerminalActivation;
         if (!activation || activation.key !== key) return;
-        if (canvasRef?.applyRemoteFrameForPane?.(key, data, pane, activation.id)) return;
+        try {
+          if (canvasRef?.applyRemoteFrameForPane?.(key, data, pane, activation.id)) return;
+        } catch {
+          requestFeedResync(key);
+          return;
+        }
         const queued = pendingSemanticFrames.get(key) ?? [];
         // Activation begins with a full snapshot, so retaining a short ordered
         // burst is sufficient during the keyed component's mount gap.
-        if (queued.length < 64) queued.push({ bytes: data.slice(), pane, activationId: activation.id });
+        const queuedBytes = queued.reduce((total, frame) => total + frame.bytes.byteLength, 0);
+        if (queued.length >= 64 || queuedBytes + data.byteLength > terminalHello.maxFrameBytes) {
+          pendingSemanticFrames.delete(key);
+          requestFeedResync(key);
+          return;
+        }
+        queued.push({ bytes: data.slice(), pane, activationId: activation.id });
         pendingSemanticFrames.set(key, queued);
       }));
     }
@@ -1076,8 +1030,6 @@
     stops.push(ws.onReconnect(() => {
       const pid = ui.activePaneId;
       clearAllFeedResync();
-      paneFeedScheduler.clearAll();
-      pendingRawFrames.clear();
       pendingSemanticFrames.clear();
       // §keep-alive after reconnect: a disconnect leaves a gap in every mirror kernel,
       // so force a full RIS resync on the next visit to each pane (clear the replayed
@@ -1126,14 +1078,12 @@
   $effect(() => {
     const pid = ui.activePaneId;
     const workspaceId = ui.activeWorkspaceId;
-    if (!pid || !workspaceId) paneFeedScheduler.setActive(null);
     if (!pid || !workspaceId) { subscribedPaneId = null; return; } // null gap → force re-subscribe next
     untrack(() => {
       const pane = { workspaceId, paneId: pid };
       const subscriptionKey = paneRefKey(pane);
       if (subscriptionKey === subscribedPaneId) return;
       subscribedPaneId = subscriptionKey;
-      paneFeedScheduler.setActive(subscriptionKey);
       paneSwitchPerf.set(subscriptionKey, remotePerfStart('pane-switch', {
         paneKey: subscriptionKey,
       }));
@@ -1268,27 +1218,27 @@
   // pane/sidebar switch never creates duplicate module requests.
   $effect(() => {
     if (wsState === 'connected' && ui.activePaneId) {
-      terminalCanvasPromise ??= import('./lib/TerminalCanvas.svelte');
+      terminalCanvasPromise ??= loadTerminalCanvas();
     }
   });
   $effect(() => {
     if (wsState === 'connected' && showVirtualKeyboardUi && ui.showKeyboard) {
-      virtualKeyboardPromise ??= import('./lib/VirtualKeyboard.svelte');
+      virtualKeyboardPromise ??= loadVirtualKeyboard();
     }
   });
   $effect(() => {
     if (wsState === 'connected' && ui.sidebarTab !== null) {
-      remoteSidebarPromise ??= import('./lib/RemoteSidebar.svelte');
+      remoteSidebarPromise ??= loadRemoteSidebar();
     }
   });
   $effect(() => {
     if (wsState === 'connected' && panelAvailability.team) {
-      remoteTeamRosterPromise ??= import('./lib/SidebarTeamRoster.svelte');
+      remoteTeamRosterPromise ??= loadRemoteTeamRoster();
     }
   });
   $effect(() => {
     if (wsState === 'connected' && ui.viewer) {
-      fileViewerPromise ??= import('./lib/FileViewer.svelte');
+      fileViewerPromise ??= loadFileViewer();
     }
   });
 
@@ -1436,7 +1386,12 @@
               <div class="vk-loading">{$t('mobile.initializingTerminal')}</div>
             {:then module}
               <module.default onKey={(k: string, c: boolean, a: boolean, s: boolean) => canvasRef?.handleVirtualKey(k, c, a, s)} />
-            {/await}
+            {:catch}
+          <div role="alert" class="load-error">
+            <span>键盘加载失败。</span>
+            <button onclick={() => { virtualKeyboardPromise = loadVirtualKeyboard(); }}>重试</button>
+          </div>
+        {/await}
           {:else}
             <div class="vk-loading">{$t('mobile.initializingTerminal')}</div>
           {/if}
@@ -1469,8 +1424,8 @@
               {onInputTask}
               onFocus={onPaneFocus}
               {onResize}
-              onDrainPending={drainPendingRawFrames}
               onDrainSemantic={drainPendingSemanticFrames}
+              onSemanticResync={(pane) => requestFeedResync(paneRefKey(pane))}
               onFirstPaint={markPaneFirstPaint}
               onHostClipboard={(text) => ws.setHostClipboard(text)}
               onNearTop={loadOlderScrollback}
@@ -1482,6 +1437,11 @@
               sentenceBuffer={ui.sentenceBuffer}
             />
           {/key}
+        {:catch}
+          <div role="alert" class="load-error">
+            <span>终端加载失败。</span>
+            <button onclick={() => { terminalCanvasPromise = loadTerminalCanvas(); }}>重试</button>
+          </div>
         {/await}
       {:else}
         <div class="terminal-loading">{$t('mobile.initializingTerminal')}</div>
@@ -1516,16 +1476,21 @@
           onSelectPane={selectAgentPane}
           onAttentionChange={updateAgentAttention}
         />
-      {/await}
+      {:catch}
+          <div role="alert" class="load-error">
+            <span>侧栏加载失败。</span>
+            <button onclick={() => { remoteSidebarPromise = loadRemoteSidebar(); }}>重试</button>
+          </div>
+        {/await}
     {:else}
       <div class="sidebar-loading">{$t('mobile.loading')}</div>
     {/if}
   {/if}
 
   {#if panelAvailability.team && wsState === 'connected' && ui.sidebarTab !== 'team'}
-    <div class="agent-attention-monitor" aria-hidden="true">
       {#if remoteTeamRosterPromise}
         {#await remoteTeamRosterPromise then module}
+          <div class="agent-attention-monitor" aria-hidden="true">
           <module.default
             {ws}
             workspaceId={ui.activeWorkspaceId}
@@ -1535,9 +1500,15 @@
             onSelectPane={selectAgentPane}
             onAttentionChange={updateAgentAttention}
           />
+        </div>
+        {:catch}
+          <div role="alert" class="load-error">
+            <span>成员状态加载失败。</span>
+            <button onclick={() => { remoteTeamRosterPromise = loadRemoteTeamRoster(); }}>重试</button>
+          </div>
         {/await}
       {/if}
-    </div>
+
   {/if}
 
   {#if ui.viewer}
@@ -1551,7 +1522,12 @@
           line={v.line}
           onClose={closeViewer}
         />
-      {/await}
+      {:catch}
+          <div role="alert" class="load-error">
+            <span>文件预览加载失败。</span>
+            <button onclick={() => { fileViewerPromise = loadFileViewer(); }}>重试</button>
+          </div>
+        {/await}
     {/if}
   {/if}
 

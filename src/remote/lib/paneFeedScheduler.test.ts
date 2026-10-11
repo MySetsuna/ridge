@@ -2,6 +2,19 @@ import { describe, expect, it, vi } from 'vitest';
 import { MAX_PANE_FEED_FRAME_BUDGET_MS, PaneFeedScheduler } from './paneFeedScheduler';
 
 describe('PaneFeedScheduler', () => {
+  it('never lets one oversized step exceed the remaining frame byte budget', () => {
+    const delivered: number[] = [];
+    const scheduler = new PaneFeedScheduler((_key, bytes) => {
+      delivered.push(...bytes);
+      return { accepted: true };
+    }, { maxBytesPerFrame: 3, stepBytes: 8, schedule: () => {}, now: () => 0 });
+    scheduler.enqueue('pane', new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]));
+    scheduler.drainNow();
+    expect(delivered).toEqual([1, 2, 3]);
+    expect(scheduler.queuedBytes()).toBe(5);
+    scheduler.drainNow();
+    expect(delivered).toEqual([1, 2, 3, 4, 5, 6]);
+  });
   it('schedules one frame for a burst and drains it through the callback', () => {
     let run: (() => void) | undefined;
     let scheduled = 0;

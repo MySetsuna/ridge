@@ -159,6 +159,9 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "activate_pane_pty",
     "change_pane_shell",
     "write_to_pty",
+    "write_terminal_input",
+    "get_terminal_snapshot",
+    "get_terminal_history",
     "resize_pane",
     "detect_available_shells",
     "get_shell_history",
@@ -290,6 +293,7 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
 /// an access gate — remote sessions are always read-write (there is no read-only
 /// session mode).
 pub const MUTATING_METHODS: &[&str] = &[
+    "write_terminal_input",
     // ── Filesystem writes ──
     "write_file",
     "apply_file_edits",

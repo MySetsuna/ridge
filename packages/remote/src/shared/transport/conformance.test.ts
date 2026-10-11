@@ -105,7 +105,7 @@ function freshHost(): HostState {
     responders: {},
     hostCapabilities: ['pane', 'invoke', 'fs', 'git', 'search', 'workspace', 'theme'],
     hostProtocolVersion: 1,
-    terminalProtocolVersion: 2,
+    terminalProtocolVersion: 1,
   };
 }
 
@@ -244,7 +244,7 @@ describe.each(ARMS)('S7 conformance (%s) — D9 $/hello handshake', (_name, make
       method: '$/hello',
       params: {
         protocolVersion: 1,
-        terminalProtocolVersion: 2,
+        terminalProtocolVersion: 1,
         capabilities: [...CLIENT_CAPABILITIES],
       },
     });

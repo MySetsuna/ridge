@@ -11,8 +11,13 @@ export type { SignalMsg } from './generated/SignalMsg';
 export type { PaneRef as SignalingPaneRef } from './generated/PaneRef';
 export type { ActivateTerminalParams } from './generated/ActivateTerminalParams';
 export type { TerminalHello } from './generated/TerminalHello';
-export type { PointerAction } from './generated/PointerAction';
-export type { PointerEvent as TerminalPointerEvent } from './generated/PointerEvent';
+export type { TerminalFrame } from './generated/TerminalFrame';
+export type { TerminalSnapshot } from './generated/TerminalSnapshot';
+export type { TerminalDeltaFrame } from './generated/TerminalDeltaFrame';
+export type { HistoryPage } from './generated/HistoryPage';
+export type { HistoryRequest } from './generated/HistoryRequest';
+export type { TerminalInput } from './generated/TerminalInput';
+export type { TerminalInputAck } from './generated/TerminalInputAck';
 export type { Role } from './generated/Role';
 // serde_json::Value 的 TS 形：`ice.candidate` 的线类型。provider 在 WebRTC API 边界处用它收窄。
 export type { JsonValue } from './generated/serde_json/JsonValue';

@@ -7,16 +7,12 @@
 
 import { bridge } from './bridge';
 import type { RpcRequestOptions } from '@ridge/remote';
-
-const TOKEN_KEY = 'ridge_remote_token';
+import { readRemoteToken } from '../../../remote/lib/remoteSession';
 
 /**
  * Tauri `Channel<T>` replacement. The desktop's `ptyBridge.ts` creates one for
- * PTY delta bytes and hands it to `register_pane_delta_channel`. In the browser
- * the host can't push into a JS Channel, so we never feed it — PTY bytes arrive
- * through the binary raw-byte fan-out and are routed to the `pty-output-*`
- * listener instead (see bridge.dispatchRawBytes). The class only needs to exist
- * so `new Channel()` and `channel.onmessage = …` don't blow up.
+ * canonical terminal packets and hands it to `register_pane_delta_channel`.
+ * The bridge feeds complete packets to the same kernel path as native IPC.
  */
 export class Channel<T = unknown> {
   id = 0;
@@ -43,13 +39,13 @@ export function invoke<T = unknown>(
   // means "start streaming this pane". Map it onto the subscribe-pane fan-out.
   if (cmd === 'register_pane_delta_channel') {
     const paneId = typeof args.paneId === 'string' ? args.paneId : '';
-    const workspaceId = typeof args.workspaceId === 'string' ? args.workspaceId : undefined;
-    const active = typeof args.active === 'boolean' ? args.active : undefined;
-    if (paneId) bridge.subscribePane(paneId, workspaceId, active);
+    const workspaceId = typeof args.workspaceId === 'string' ? args.workspaceId : '';
+    bridge.registerTerminalChannel(paneId, workspaceId, typeof args.activationId === 'number' ? args.activationId : NaN, args.channel as Channel<Uint8Array>);
     return Promise.resolve(undefined as T);
   }
-  // The browser consumes raw PTY bytes (not postcard deltas), so the delta-mode
-  // toggle is a no-op here.
+  // Browser channels deliver complete packets directly, with no native mailbox.
+  if (cmd === 'take_terminal_frames') return Promise.resolve([] as T);
+  // Remote subscriptions always stream canonical frames; no native mode toggle.
   if (cmd === 'set_pane_delta_mode') {
     return Promise.resolve(undefined as T);
   }
@@ -62,13 +58,7 @@ export function invoke<T = unknown>(
  * `/file` endpoint (added in server.rs).
  */
 export function convertFileSrc(filePath: string, _protocol = 'asset'): string {
-  const token = (() => {
-    try {
-      return localStorage.getItem(TOKEN_KEY) ?? '';
-    } catch {
-      return '';
-    }
-  })();
+  const token = readRemoteToken() ?? '';
   const qs = new URLSearchParams({ path: filePath });
   if (token) qs.set('token', token);
   return `/file?${qs.toString()}`;

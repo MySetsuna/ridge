@@ -113,14 +113,16 @@ mod tests {
         let writer: Box<dyn Write + Send> = Box::new(ChannelWriter(tx));
         let sink = PtyInputSink::new(Arc::new(Mutex::new(writer)), "engine:pty-reader");
 
-        sink.send(b"first".to_vec()).await.unwrap();
+        let first = vec![27, 91, 77, 32, 255, 128];
+        sink.send(first.clone()).await.unwrap();
         sink.send(b"second".to_vec()).await.unwrap();
 
         let mut received = Vec::new();
-        while received.len() < "firstsecond".len() {
+        let expected = [first.as_slice(), b"second"].concat();
+        while received.len() < expected.len() {
             received.extend(rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap());
         }
-        assert_eq!(received, b"firstsecond");
+        assert_eq!(received, expected);
         drop(sink);
     }
 
@@ -255,9 +257,7 @@ mod tests {
 }
 
 enum NativeDeltaRoute {
-    Mailbox,
-    Fallback(ridge_term::term::delta::DeltaFrame),
-    Disabled,
+    Mailbox,    Disabled,
 }
 
 fn normalize_cwd_str(raw: &str) -> String {
@@ -617,8 +617,7 @@ struct PtyReaderThread {
     native_ref_info: Option<(String, usize)>,
     native_parser: Option<Arc<Mutex<PaneParser>>>,
     native_delta_mode: Arc<AtomicBool>,
-    native_writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    pending_delta: Option<(ridge_term::term::delta::DeltaFrame, String)>,
+    native_writer: Arc<Mutex<Box<dyn Write + Send>>>,    kernel_owns_responses: bool,
     my_pty_generation: u64,
 }
 
@@ -745,16 +744,16 @@ impl PtyReaderThread {
                                 ) {
                                     NativeDeltaRoute::Mailbox
                                 } else {
-                                    NativeDeltaRoute::Fallback(full)
+                                    NativeDeltaRoute::Mailbox
                                 }
                             }
-                            PaneDeltaEnqueue::NoChannel(frame) => NativeDeltaRoute::Fallback(frame),
+                            PaneDeltaEnqueue::NoChannel(_) => NativeDeltaRoute::Mailbox,
                         }
                     } else {
                         NativeDeltaRoute::Disabled
                     };
                     let response = parser.take_pending_response();
-                    if !response.is_empty() {
+                    if !response.is_empty() && !self.kernel_owns_responses {
                         let mut writer = self.native_writer.lock();
                         let _ = writer.write_all(&response);
                         let _ = writer.flush();
@@ -770,12 +769,7 @@ impl PtyReaderThread {
                 self.state
                     .forward_remote_pty_bytes(self.workspace_id(), self.pane_id, &payload);
                 return true;
-            }
-            NativeDeltaRoute::Fallback(frame) => return self.queue_delta_output(payload, frame),
-            NativeDeltaRoute::Disabled => {}
-        }
-        if self.pending_delta.is_some() && !self.flush_pending_delta(true) {
-            return false;
+            }            NativeDeltaRoute::Disabled => {}
         }
         // The native parser has already consumed `payload`; blocking instead
         // of retaining/replaying a string avoids parsing the same bytes twice
@@ -790,56 +784,6 @@ impl PtyReaderThread {
             .is_ok()
     }
 
-    /// Keep parsing independent from the UI/event-forwarder queue. When that
-    /// queue is full, successive frames are merged in parser order and only
-    /// the final sequence number is retained. `GridDelta` mutations are
-    /// ordered and therefore concatenating them is equivalent to applying
-    /// each intermediate frame; the PTY reader never waits for WebView2.
-    fn queue_delta_output(
-        &mut self,
-        data: String,
-        frame: ridge_term::term::delta::DeltaFrame,
-    ) -> bool {
-        if let Some((pending, pending_data)) = &mut self.pending_delta {
-            ridge_term::term::delta::merge_ordered_frames(pending, frame);
-            pending_data.push_str(&data);
-        } else {
-            self.pending_delta = Some((frame, data));
-        }
-        self.flush_pending_delta(false)
-    }
-
-    fn flush_pending_delta(&mut self, blocking: bool) -> bool {
-        let Some((frame, data)) = self.pending_delta.take() else {
-            return true;
-        };
-        let encoded = match ridge_term::term::delta::encode_frame(&frame) {
-            Ok(encoded) => encoded,
-            Err(error) => {
-                eprintln!("[ridge] native PTY delta encode failed: {error}");
-                return false;
-            }
-        };
-        let event = GlobalEvent::PtyDeltaOutput {
-            workspace_id: self.workspace_id(),
-            pane_id: self.pane_id,
-            data,
-            frame: encoded,
-        };
-        if blocking {
-            return self.state.event_tx.blocking_send(event).is_ok();
-        }
-        match self.state.event_tx.try_send(event) {
-            Ok(()) => true,
-            Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                if let GlobalEvent::PtyDeltaOutput { data, .. } = event {
-                    self.pending_delta = Some((frame, data));
-                }
-                true
-            }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
-        }
-    }
 
     fn send_prompt_if_seen(&self, prompt_seen: bool) {
         if !prompt_seen {
@@ -936,9 +880,7 @@ impl PtyReaderThread {
         });
     }
 
-    fn finish(&mut self) {
-        let _ = self.flush_pending_delta(true);
-        if let Some((socket, gid)) = &self.native_ref_info {
+    fn finish(&mut self) {        if let Some((socket, gid)) = &self.native_ref_info {
             finish_native_pane(
                 &self.state,
                 self.workspace_id(),
@@ -1044,6 +986,7 @@ fn reader_snapshot(
     Arc<AtomicBool>,
     Arc<Mutex<Box<dyn Write + Send>>>,
     Arc<Mutex<Uuid>>,
+    bool,
 ) {
     let map = state.workspaces.read();
     let Some(handle) = map
@@ -1060,6 +1003,7 @@ fn reader_snapshot(
                 Box::new(std::io::sink()) as Box<dyn Write + Send>
             )),
             Arc::new(Mutex::new(workspace_id)),
+            false,
         );
     };
     (
@@ -1072,6 +1016,7 @@ fn reader_snapshot(
         handle.delta_mode.clone(),
         handle.writer.clone(),
         handle.workspace.clone(),
+        handle.kernel_ref.is_some(),
     )
 }
 
@@ -1090,6 +1035,7 @@ pub fn spawn_pty_reader(
         native_delta_mode,
         native_writer,
         workspace,
+        kernel_owns_responses,
     ) = reader_snapshot(&state, workspace_id, pane_id);
     let _ = std::thread::Builder::new()
         .name(format!("pty-reader-{pane_id}"))
@@ -1111,8 +1057,7 @@ pub fn spawn_pty_reader(
                 native_ref_info,
                 native_parser,
                 native_delta_mode,
-                native_writer,
-                pending_delta: None,
+                native_writer,                kernel_owns_responses,
                 my_pty_generation,
             };
             reader.run();

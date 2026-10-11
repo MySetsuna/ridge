@@ -2,7 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use ridge_core::workspace::pane_tree::{Direction, PaneTree, SplitDirection};
-use ridge_term::remote_v2::{RemoteTerminalProducer, RemoteTerminalUpdate};
+use ridge_term::producer::TerminalProducer;
+use ridge_term::semantic::SemanticUpdate;
 use ridge_term::term::modes::Modes;
 use ridge_term::term::ModeTracker;
 use tokio::sync::broadcast;
@@ -20,10 +21,11 @@ pub struct SessionHandle {
     pub cwd: Option<String>,
     pub session: Arc<LocalPtySession>,
     output_tx: broadcast::Sender<Vec<u8>>,
-    semantic_tx: broadcast::Sender<RemoteTerminalUpdate>,
+    semantic_tx: broadcast::Sender<SemanticUpdate>,
     scrollback: Arc<Mutex<ScrollbackRing>>,
     modes: Arc<Mutex<ModeTracker>>,
-    semantic: Arc<Mutex<RemoteTerminalProducer>>,
+    semantic: Arc<Mutex<TerminalProducer>>,
+    input: Arc<Mutex<ridge_term::input_sequence::TerminalInputLedger>>,
 }
 
 impl SessionHandle {
@@ -39,15 +41,24 @@ impl SessionHandle {
     pub fn subscribe_semantic(
         &self,
     ) -> (
-        ridge_term::terminal_v2::TerminalSnapshot,
-        broadcast::Receiver<RemoteTerminalUpdate>,
+        SemanticUpdate,
+        broadcast::Receiver<SemanticUpdate>,
     ) {
         let producer = self.semantic.lock().unwrap();
-        (producer.snapshot(), self.semantic_tx.subscribe())
+        (producer.semantic_snapshot(), self.semantic_tx.subscribe())
     }
 
-    pub fn semantic_snapshot(&self) -> ridge_term::terminal_v2::TerminalSnapshot {
-        self.semantic.lock().unwrap().snapshot()
+    pub fn semantic_snapshot(&self) -> SemanticUpdate {
+        self.semantic.lock().unwrap().semantic_snapshot()
+    }
+
+    pub fn semantic_history(&self, request: &ridge_term::terminal_protocol::HistoryRequest) -> Result<SemanticUpdate, String> {
+        self.semantic.lock().unwrap().semantic_history(request).map_err(str::to_owned)
+    }
+
+    pub fn terminal_input(&self, input: &ridge_term::terminal_protocol::TerminalInput, pane: &ridge_term::terminal_protocol::PaneRef) -> Result<ridge_term::terminal_protocol::TerminalInputAck, String> {
+        let epoch = self.semantic.lock().unwrap().terminal_epoch().to_owned();
+        self.input.lock().unwrap().apply(input, pane, &epoch, None, |bytes| self.send_input(bytes).map_err(|error| error.to_string()))
     }
 
     pub fn modes_snapshot(&self) -> (Modes, bool) {
@@ -60,7 +71,7 @@ impl SessionHandle {
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         self.session.resize(cols, rows)?;
-        let update = self.semantic.lock().unwrap().resize(rows, cols);
+        let update = self.semantic.lock().unwrap().resize_semantic(rows, cols);
         let _ = self.semantic_tx.send(update);
         Ok(())
     }
@@ -122,12 +133,9 @@ impl Workspace {
         let (semantic_tx, _) = broadcast::channel(BROADCAST_CAP);
         let scrollback = Arc::new(Mutex::new(ScrollbackRing::new(DEFAULT_SCROLLBACK_CAP)));
         let modes = Arc::new(Mutex::new(ModeTracker::new()));
-        let semantic = Arc::new(Mutex::new(RemoteTerminalProducer::new(
-            24,
-            80,
-            5_000,
-            actual_cwd.clone().unwrap_or_default(),
-        )));
+        let mut producer = TerminalProducer::with_epoch(24, 80, 5_000, Uuid::new_v4().to_string());
+        producer.set_initial_cwd(actual_cwd.clone().unwrap_or_default());
+        let semantic = Arc::new(Mutex::new(producer));
         let tx2 = tx.clone();
         let semantic_tx2 = semantic_tx.clone();
         let scrollback2 = scrollback.clone();
@@ -143,7 +151,7 @@ impl Workspace {
                 modes2.lock().unwrap().feed(&bytes);
                 let (update, response) = {
                     let mut producer = semantic2.lock().unwrap();
-                    let update = producer.feed(&bytes);
+                    let update = producer.feed_semantic(&bytes);
                     let response = producer.take_pending_response();
                     (update, response)
                 };
@@ -165,6 +173,7 @@ impl Workspace {
             scrollback,
             modes,
             semantic,
+            input: Arc::new(Mutex::new(ridge_term::input_sequence::TerminalInputLedger::default())),
         });
         Ok(id)
     }

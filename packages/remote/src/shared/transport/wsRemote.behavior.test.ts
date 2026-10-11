@@ -64,6 +64,25 @@ async function settle(): Promise<void> {
 }
 
 describe('RemoteConnection public communication contract', () => {
+  it('uses distinct input sources for fresh controllers of the same pane', async () => {
+    const first = connect();
+    first.conn.sendStdin(pane, 'a', [{ ...pane }, 'epoch', 1] as const);
+    await vi.advanceTimersByTimeAsync(0);
+    const firstFrame = first.ws.sent.find(frame => frame.cmd === 'write_terminal_input');
+    const second = connect();
+    second.conn.sendStdin(pane, 'b', [{ ...pane }, 'epoch', 1] as const);
+    await vi.advanceTimersByTimeAsync(0);
+    const secondFrame = second.ws.sent.find(frame => frame.cmd === 'write_terminal_input');
+    expect(firstFrame).toBeDefined();
+    expect(secondFrame).toBeDefined();
+    const firstParams = (firstFrame!.args as { input: Record<string, unknown> }).input;
+    const secondParams = (secondFrame!.args as { input: Record<string, unknown> }).input;
+    expect(firstParams.sequence).toBe(1);
+    expect(secondParams.sequence).toBe(1);
+    expect(secondParams.sourceId).not.toBe(firstParams.sourceId);
+    first.conn.disconnect();
+    second.conn.disconnect();
+  });
 	beforeEach(() => {
 		vi.useFakeTimers();
 		vi.stubGlobal('WebSocket', FakeWebSocket);
@@ -150,12 +169,12 @@ describe('RemoteConnection public communication contract', () => {
 		conn.disconnect();
 	});
 
-	it('fails with an explicit upgrade message when a real host advertises an older terminal protocol', () => {
+	it('fails with an explicit upgrade message when a real host advertises an incompatible terminal protocol', () => {
 		const { conn, ws } = connect();
 		ws.receive({
 			type: 'hello',
 			protocol: 'ridge-remote-ws',
-			terminalProtocolVersion: 1,
+			terminalProtocolVersion: 2,
 		});
 		expect(conn.state()).toBe('error');
 		expect(conn.lastFailure()?.message).toContain('升级 Ridge/rdg');
@@ -323,56 +342,14 @@ describe('RemoteConnection public communication contract', () => {
     conn.disconnect();
   });
 
-	it('fails closed on malformed scrollback pages and stale page commits', async () => {
-		const { conn, ws } = connect();
-		expect(await conn.fetchOlderScrollback(pane)).toBeNull();
-		ws.receive({ type: 'scrollback-meta', workspaceId: pane.workspaceId, paneId: pane.paneId, startSeq: 10, atOldest: false });
-
-		const empty = conn.fetchOlderScrollback(pane);
-		const emptyFrame = [...ws.sent].reverse().find((item) => item.type === 'scrollback-before');
-		if (!emptyFrame) throw new Error('missing empty scrollback request');
-		ws.receive({ type: 'scrollback-before-result', _reqId: emptyFrame._reqId, bytes: '', startSeq: 10, endSeq: 10, atOldest: true });
-		expect(await empty).toBeNull();
-		expect(await conn.fetchOlderScrollback(pane)).toBeNull();
-
-		ws.receive({ type: 'scrollback-meta', workspaceId: pane.workspaceId, paneId: pane.paneId, startSeq: 10, atOldest: false });
-		const stale = conn.fetchOlderScrollback(pane);
-		const staleFrame = [...ws.sent].reverse().find((item) => item.type === 'scrollback-before');
-		if (!staleFrame) throw new Error('missing stale scrollback request');
-		ws.receive({ type: 'scrollback-before-result', _reqId: staleFrame._reqId, bytes: 'old', startSeq: 1, endSeq: 9, atOldest: false });
-		expect(await stale).toBeNull();
-
-		ws.receive({ type: 'scrollback-meta', workspaceId: pane.workspaceId, paneId: pane.paneId, startSeq: 10, atOldest: false });
-		const pagePromise = conn.fetchOlderScrollback(pane);
-		const pageFrame = [...ws.sent].reverse().find((item) => item.type === 'scrollback-before');
-		if (!pageFrame) throw new Error('missing valid scrollback request');
-		ws.receive({ type: 'scrollback-before-result', _reqId: pageFrame._reqId, bytes: 'old', startSeq: 1, endSeq: 10, atOldest: false });
-		const page = await pagePromise;
-		if (!page) throw new Error('missing scrollback page');
-		const rejectedApply = vi.fn(() => false);
-		expect(page.commit(rejectedApply)).toBe(false);
-		expect(rejectedApply).toHaveBeenCalledOnce();
-		page.discard();
-		expect(page.commit(() => true)).toBe(false);
-
-		const retryPromise = conn.fetchOlderScrollback(pane);
-		const retryFrame = [...ws.sent].reverse().find((item) => item.type === 'scrollback-before');
-		if (!retryFrame) throw new Error('missing retry scrollback request');
-		expect(retryFrame.beforeSeq).toBe(10);
-		ws.receive({ type: 'scrollback-before-result', _reqId: retryFrame._reqId, bytes: 'old', startSeq: 1, endSeq: 10, atOldest: true });
-		const retryPage = await retryPromise;
-		expect(retryPage?.commit(() => true)).toBe(true);
-		conn.disconnect();
-	});
-
 	it('handles capability downgrades, invalid inputs, queued messages, and auth close', async () => {
 		const { conn, ws } = connect();
 		const capabilityChanges = vi.fn();
 		conn.onCapabilitiesChanged(capabilityChanges);
 		conn.subscribePane({ workspaceId: '', paneId: '' });
-		expect(conn.sendStdin({ workspaceId: 'workspace-a', paneId: '' }, 'x')).toBe(false);
-		expect(conn.sendStdin(pane, '')).toBe(false);
-		expect(conn.enqueueStdinTask({ workspaceId: 'workspace-a', paneId: '' }, 'x')).toBe(false);
+		expect(conn.sendStdin({ workspaceId: 'workspace-a', paneId: '' }, 'x', [{ ...{ workspaceId: 'workspace-a', paneId: '' } }, 'epoch', 1] as const)).toBe(false);
+		expect(conn.sendStdin(pane, '', [{ ...pane }, 'epoch', 1] as const)).toBe(false);
+		expect(conn.enqueueStdinTask({ workspaceId: 'workspace-a', paneId: '' }, 'x', [{ ...{ workspaceId: 'workspace-a', paneId: '' } }, 'epoch', 1] as const)).toBe(false);
 		ws.receive({ type: 'hello', capabilities: ['pane', 'pane', 7] });
 		expect(conn.hasCapability('pane')).toBe(true);
 		expect(conn.hasCapability('teammate')).toBe(false);
@@ -429,6 +406,56 @@ describe('RemoteConnection public communication contract', () => {
 	});
 
 	// §A bounded liveness detection: a single missed pong must NOT force-close
+	it('keeps the semantic activation fence on resync and removes it when retired', () => {
+		const { conn, ws } = connect();
+		conn.activatePane(pane, { activationId: 7 });
+		conn.resyncPane(pane);
+		expect(ws.sent.at(-1)).toMatchObject({ type: 'subscribe-pane', activationId: 7 });
+		conn.unregisterPane(pane);
+		conn.subscribePane(pane);
+		conn.resyncPane(pane);
+		expect(ws.sent.at(-1)).not.toHaveProperty('activationId');
+		conn.disconnect();
+	});
+
+	it('recovers a silently dead foreground socket without repeated user events', () => {
+		const { conn, ws } = connect();
+		const onReconnect = vi.fn();
+		conn.onReconnect(onReconnect);
+		conn.ensureConnected();
+		vi.advanceTimersByTime(12_000);
+		expect(ws.readyState).toBe(WebSocket.CLOSED);
+		vi.advanceTimersByTime(2_000);
+		const restored = FakeWebSocket.latest!;
+		expect(restored).not.toBe(ws);
+		expect(new URL(restored.url).searchParams.get('token')).toBe('token');
+		restored.open();
+		expect(conn.state()).toBe('connected');
+		expect(onReconnect).toHaveBeenCalledOnce();
+		conn.disconnect();
+	});
+
+	it('bounds a reconnect handshake and fences late callbacks from its old socket', () => {
+		const { conn, ws } = connect();
+		const lateOpen = ws.onopen!;
+		ws.close();
+		vi.advanceTimersByTime(2_000);
+		const stuck = FakeWebSocket.latest!;
+		stuck.readyState = WebSocket.CONNECTING;
+		lateOpen();
+		expect(conn.state()).toBe('connecting');
+		vi.advanceTimersByTime(10_000);
+		expect(stuck.readyState).toBe(WebSocket.CLOSED);
+		conn.ensureConnected();
+		const restored = FakeWebSocket.latest!;
+		expect(restored).not.toBe(stuck);
+		restored.open();
+		expect(conn.state()).toBe('connected');
+		conn.disconnect();
+		vi.advanceTimersByTime(60_000);
+		expect(FakeWebSocket.latest).toBe(restored);
+	});
+
 	// the socket. The transport should observe the heartbeat, increment the
 	// miss counter, and only escalate to a forced close after the configured
 	// consecutive threshold — by which point the dead-socket hypothesis is
@@ -455,7 +482,7 @@ describe('RemoteConnection public communication contract', () => {
 		for (let i = 0; i < 3; i++) {
 			documentStub.hidden = false;
 			visibility();
-			vi.advanceTimersByTime(4_500);
+			vi.advanceTimersByTime(4_000);
 		}
 		expect(ws.readyState).toBe(WebSocket.CLOSED);
 		expect((conn as unknown as { consecutivePongMisses: number }).consecutivePongMisses).toBeGreaterThanOrEqual(3);

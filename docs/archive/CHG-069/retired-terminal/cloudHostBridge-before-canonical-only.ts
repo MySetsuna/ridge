@@ -1,0 +1,1137 @@
+import terminalHello from './signaling/fixtures/terminal/hello.json';
+// Ridge Cloud — 桌面 host 端帧桥（host=answerer 的应用层）。
+//
+// 角色与定位（契约 §0/§5.1）：桌面 ridge app 是 **host = answerer**。
+// `RidgeCloudProvider`（ridgeCloudProvider.ts）负责信令/ICE/DTLS + §7.1 E2EE
+// 握手 + §7.2 解密，把**已解密的明文帧**经 `onFrame(plaintext)` 上抛。本桥就是
+// 那个 `onFrame` 的消费者：它把明文帧 **demux**，对 controller（浏览器）发来的
+// JSON-RPC 控制/invoke 请求在**本地真实执行**（host 是 Tauri 桌面 app），回结果，
+// 并把 pane 的 PTY 裸字节推回 controller。
+//
+// 这是 cloud 路径"未端到端打通"的根因修复（计划 R5）：CloudPanel 的 onFrame 原本
+// 是空 stub，本桥把它接成一个与 LAN host（server.rs `dispatch_invoke_jsonrpc` /
+// `negotiate_hello`）**同形**的 host 行为：同样的 JSON-RPC 2.0 信封、$/hello 能力
+// 协商、能力白名单、error 透传（{code,message,data}）。
+//
+// 线协议字节格式（契约 §7 / D-GM-7）：本桥**直接复用** `cloudMux.ts` 的
+// `demuxFrame`/`encodeJsonFrame`/`encodePaneFrame` —— 即 controller 端 mux/demux
+// 用的同一套编解码器。复用同一模块是"逐字一致"最强的保证：双方共享 `0x11`=JSON、
+// `0x10 || paneIdLen(u8) || paneId(UTF-8) || raw` 的实现，不存在两套实现漂移的可能。
+//
+// 依赖注入（保持本桥纯、可单测、不硬绑 Tauri）：
+//   - `invoke`：执行本地命令（生产环境由 CloudPanel 注入 `@tauri-apps/api/core`
+//     的 `invoke`；测试注入 mock）。
+//   - `sendFrame`：把一帧明文经 provider 加密发回 controller（注入
+//     `provider.sendFrame`）。
+//
+// 不在本桥职责内（归属别处）：E2EE 加解密（provider 内部，§7.2）、JWT/设备配对
+// 鉴权（auth.ts + provider），以及把 host WebRTC 迁到 Rust(webrtc-rs)（契约 §8 终态）。
+
+import {
+  demuxFrame,
+  encodeControlFrame,
+  encodeJsonFrame,
+  encodePaneFrame,
+} from '@ridge/remote';
+import { base64ToBytes, bytesToBase64 } from './e2ee';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { isRemoteAllowed } from './remoteAllowlist';
+import { decideRemoteInvoke } from '../transport/remoteInvokeAdmit';
+import { unknownText } from '../transport/unknownText';
+import {
+  BUFFERED_HIGH_WATERMARK,
+} from './cloudTransportLimits';
+export {
+  BUFFERED_HIGH_WATERMARK,
+  BUFFERED_LOW_WATERMARK,
+} from './cloudTransportLimits';
+
+/** §7.3 D9：本 host 实现的协议版本（与 server.rs `REMOTE_PROTOCOL_VERSION` 对齐）。 */
+export const HOST_PROTOCOL_VERSION = 1;
+
+/**
+ * §7.3 D9：本 host 公告的能力集（与 server.rs `HOST_CAPABILITIES`、客户端
+ * `rpcClient.CLIENT_CAPABILITIES` 逐字一致）。controller 取交集后灰掉缺失面板。
+ */
+export const HOST_CAPABILITIES: readonly string[] = [
+  'pane',
+  'invoke',
+  'fs',
+  'git',
+  'search',
+  'workspace',
+  'theme',
+  'teammate',
+] as const;
+
+/** D9 握手方法名（契约 §7.3）。 */
+const HELLO_METHOD = '$/hello';
+/** D9 版本不匹配 teardown 方法名（契约 §7.3）。 */
+const BYE_METHOD = '$/bye';
+/** 取消长任务方法名（契约 §7.0）。 */
+const CANCEL_METHOD = '$/cancel';
+
+/** JSON-RPC 2.0 标准保留错误码（host 腿用到的子集）。 */
+const JSON_RPC_INVALID_REQUEST = -32600;
+const JSON_RPC_METHOD_NOT_FOUND = -32601;
+const JSON_RPC_INTERNAL_ERROR = -32603;
+
+/**
+ * SECURITY (audit #3): 单桥 `totp-verify` 失败上限。达到后锁死本连接的 TOTP 通道
+ * （后续 `totp-verify` 一律回 `{ok:false,locked:true}` 不再调校验器），杜绝经永开的
+ * CONTROL 通道对 6 位码（±90s 窗口）爆破。重连建新桥 / `reset()` 后才清零（硬上限，
+ * 无指数退避——爆破面已封死，无需更复杂的退避）。
+ */
+const MAX_TOTP_ATTEMPTS = 5;
+
+/**
+ * DataChannel 背压流控（弱网 P1）：由 provider 在 acceptConn 后经 {@link CloudHostBridge.attachChannelControl}
+ * 注入；未注入则不做背压（行为不变，向后兼容既有构造点 / 测试）。
+ */
+export interface ChannelBackpressure {
+  /** 当前 DataChannel 发送缓冲字节数（provider 读 `conn.dc.bufferedAmount`）。 */
+  bufferedAmount(): number;
+  /** 订阅「缓冲已回落到低水位」（`bufferedamountlow`）；返回退订函数。 */
+  onDrained(cb: () => void): () => void;
+}
+
+/**
+ * DataChannel 背压上水位：`bufferedAmount` 超过即丢 pane 帧（防 SCTP 发送缓冲无界增长
+ * → OOM/卡死）。单一 ordered channel 必须给控制/输入留出低延迟预算，故上水位为 256 KiB，
+ * 低水位为 64 KiB；provider 回落经 `bufferedamountlow` 触发 onDrained。
+ */
+/** Split pane bursts so a queued control frame can run between output frames. */
+export const PANE_OUTPUT_FRAME_BYTES = 32 * 1024;
+
+/**
+ * 执行本地命令的注入点。生产环境为 `@tauri-apps/api/core` 的 `invoke`。
+ * 返回任意 result；抛错则映射成 JSON-RPC error。
+ */
+export type InvokeFn = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+
+/** 把一帧明文发回 controller 的注入点（包装 `provider.sendFrame`，内部加密）。 */
+export type SendFrameFn = (plaintext: Uint8Array) => void;
+
+/**
+ * 订阅一个 pane 的 PTY 输出源 —— **pane 流接入点**（见类文档「pane 流」一节）。
+ * 实现方在收到 `subscribe-pane` 时被调用：应开始把该 pane 的裸字节经
+ * `onOutput(raw)` 回调推出，并返回一个取消订阅函数。
+ *
+ * v1 未接入真实 PTY 源时为 `undefined`（桥仅登记意图，不推流）。
+ */
+export type PaneOutputSource = (
+  paneId: string,
+  workspaceId: string | undefined,
+  onOutput: (raw: Uint8Array) => void,
+  options?: { activationId?: number },
+) => Unsubscribe;
+
+export type Unsubscribe = () => void;
+
+// §5.5 keyBindingVerifier 钩子已退役删除（iteration 8 G4 / S1-F5）：生产从未接线，
+// 其目标场景（对端公钥 ↔ 设备身份绑定）已由 0x02 设备身份签名帧 + B3 信令公钥比对覆盖
+//（见 docs/security/cloud-fallback-matrix.md F5 行）。若未来需要带外校验通道，按矩阵重新设计。
+
+/**
+ * 云端 TOTP 二次验证钩子（契约 §4）。controller 经 CONTROL 通道发来 6 位 code，
+ * 桥用本机 `RemoteAuth::verify(code)`（±1 窗口，与 LAN 同源）判定。生产环境注入
+ * `(code) => invoke('verify_remote_totp', { code })`；测试注入 mock。
+ *
+ * 未注入时桥**默认放行**（verified=true，向后兼容已有 cloud 连接路径，不回归）。
+ */
+export type TotpVerifier = (code: string) => Promise<boolean>;
+
+/**
+ * 零信任 #1（概念 5）：信道绑定 TOTP 校验钩子。controller 在收到 host 0x02 后改发
+ * `{t:'totp-bind', tag}`（tag = HMAC over the bind transcript，明文 6 位码**不上线**）替代
+ * `totp-verify`。host 用本会话 bindTranscript + 本机种子在 ±1 窗口重算 tag 恒定时间比对。
+ * 生产环境注入 `(tag) => invoke('verify_remote_totp_bind', { transcript, tag })`（transcript 由
+ * provider 经 createBridge 闭包注入）；测试注入 mock。与 {@link TotpVerifier} 共享 verified
+ * 门控 + 5 次锁定计数（爆破面统一封死）。
+ */
+export type TotpBindVerifier = (tag: Uint8Array) => Promise<boolean>;
+
+/** Host-side persistent trust lookup. Kept separate from the restricted RPC path. */
+type TotpTrustChecker = (ctrlPub: Uint8Array) => Promise<boolean>;
+
+/** Host-side persistent trust write. Kept separate from the restricted RPC path. */
+type TotpTrustRecorder = (ctrlPub: Uint8Array) => Promise<void>;
+
+export interface CloudHostBridgeConfig {
+  /** 执行本地命令（注入 Tauri `invoke` 或 mock）。 */
+  invoke: InvokeFn;
+  /** 把明文帧加密发回 controller（注入 `provider.sendFrame`）。 */
+  sendFrame: SendFrameFn;
+  /** 可选：pane PTY 输出源（pane 流接入点）。未提供时仅登记订阅意图。 */
+  paneOutputSource?: PaneOutputSource;
+  /**
+   * 可选：云端 TOTP 二次验证（契约 §4）。提供则桥在验证通过前**门控业务帧**
+   * （拒绝 invoke / pane 订阅），仅放行 CONTROL 通道的 totp 握手。未提供则默认
+   * 放行（verified=true），保持既有 cloud 连接路径不回归。
+   */
+  totpVerifier?: TotpVerifier;
+  /**
+   * 可选：零信任 #1（概念 5）信道绑定 TOTP 校验（{@link TotpBindVerifier}）。注入则桥接受
+   * controller 的 `totp-bind`（HMAC tag）作为 totp-verify 的等价/替代验证路径，与 totpVerifier
+   * 共享 verified 门控 + 失败锁定。未注入则收到 totp-bind 视为失败（除非两种校验器都未注入 =
+   * 完全不门控，向后兼容）。
+   */
+  totpBindVerifier?: TotpBindVerifier;
+  /** Direct host command for the 24h controller-grant lookup. */
+  totpTrustCheck?: TotpTrustChecker;
+  /** Direct host command for recording a successful controller grant. */
+  totpTrustRecord?: TotpTrustRecorder;
+  /**
+   * 可选：§7.3 信道绑定 transcript（hostEphPub ‖ controllerEphPub）。用于 §7.4
+   * trusted-controller grant 握手的 Ed25519 签名消息构造。未注入时 trust-proof **不是**
+   * 直接失败：签名消息退化为 prefix‖nonce（无信道绑定），由 totp_trust_check 裁决
+   * （S1 回落面，有门禁测试钉死；fail-closed 退役后应要求 transcript 必在）。
+   */
+  bindTranscript?: Uint8Array | null;
+  /** 可选：诊断日志回调（默认 console）。 */
+  log?: (level: 'warn' | 'error' | 'info', message: string, detail?: unknown) => void;
+  /**
+   * iter-60 G9：host 侧事件源（注入 Tauri `listen` 聚合）。桥把每个 (name,payload)
+   * 以 `{type:'event', name, payload}` 控制帧推给 controller（bridge.ts 的 listen()
+   * shim 按名分发）——补齐 cloud 腿此前完全没有的事件推送（pane-meta-changed /
+   * pane-tree-changed 等）。verified 前静默丢弃；返回函数在 `reset()` 时调用退订。
+   */
+  hostEventSource?: (emit: (name: string, payload: unknown) => void) => () => void;
+  /** Scope-grant sessions are already authenticated by the owner-host Cloud check. */
+  preauthorized?: boolean;
+}
+
+/** 一个待执行/已发出请求的取消令牌（$/cancel 尽力中止用）。 */
+interface InflightInvoke {
+  readonly method: string;
+  cancelled: boolean;
+  readonly abort: AbortController;
+}
+
+/**
+ * cloud host 端帧桥。一个连接一个实例；`reset()` 在重连/断开时清状态。
+ *
+ * 收发对称性（与 server.rs 一致）：controller 发 JSON-RPC request（带 id）→ host
+ * 回同 id 的 result/error；controller 发 notification（无 id，如 $/hello、$/cancel、
+ * subscribe-pane）→ host 按语义处理，必要时回 notification（$/hello / $/bye）。
+ */
+export class CloudHostBridge {
+  private readonly invoke: InvokeFn;
+  private readonly sendFrame: SendFrameFn;
+  private readonly paneOutputSource?: PaneOutputSource;
+  private readonly totpVerifier?: TotpVerifier;
+  private readonly totpBindVerifier?: TotpBindVerifier;
+  private readonly totpTrustCheck?: TotpTrustChecker;
+  private readonly totpTrustRecord?: TotpTrustRecorder;
+  /** §7.4 信道绑定 transcript（来自 config）。 */
+  private readonly bindTranscript: Uint8Array | null;
+  private readonly log: (level: 'warn' | 'error' | 'info', message: string, detail?: unknown) => void;
+  /** §7.4 正在进行的 trust 握手：临时存放对端 ctrlPub（totp-trust-hello 时写入）。 */
+  private trustCtrlPub: Uint8Array | null = null;
+  // §B2: TOTP 成功但 trust-hello 尚未到达时，标记待补记 trust grant。
+  private pendingTrustRecord = false;
+  /** §7.4 正在进行的 trust 握手：一次性 nonce（totp-trust-challenge 时写入，proof 时消耗）。 */
+  private trustNonce: Uint8Array | null = null;
+
+  /** 在途 invoke（id → 令牌），供 $/cancel 尽力中止。 */
+  private readonly inflight = new Map<string, InflightInvoke>();
+  /** Same terminal input sequence retries share one host invoke until it settles. */
+  private readonly inputInvokes = new Map<string, { data: unknown; promise: Promise<unknown> }>();
+  /** 已订阅 pane（paneId → 取消订阅）。host-global 多 pane：每 pane 登记一次。 */
+  private readonly paneSubs = new Map<string, Unsubscribe>();
+  /** 会话是否已终止（0x11 bye；置位后丢弃一切业务帧）。 */
+  private rejected = false;
+  /**
+   * §4 云端 TOTP 门控旗标：本连接是否已通过 TOTP 二次验证。
+   *   - 注入了 `totpVerifier` ⇒ 默认 false，验证通过前拒绝业务帧（仅放行 CONTROL 握手）。
+   *   - 未注入 `totpVerifier` ⇒ 默认 true（向后兼容，不门控）。
+   */
+  private verified: boolean;
+  private readonly preauthorized: boolean;
+  /**
+   * SECURITY (audit #3): 本连接累计 TOTP 失败次数；≥ {@link MAX_TOTP_ATTEMPTS} 即锁死
+   * TOTP 通道（防 CONTROL 通道爆破）。`reset()` 清零。
+   */
+  private totpFailures = 0;
+  /** S1 遥测第一阶段（F1）：trust-proof 中 transcript 在/缺计数（人工读数；reset 不清零）。 */
+  readonly fallbackCounters = { trustProofWithTranscript: 0, trustProofWithoutTranscript: 0 };
+
+  /** iter-60 G9：host 事件 tap 的退订句柄（reset 时调用并置空）。 */
+  private hostEventStop: (() => void) | null = null;
+
+  // ── DataChannel 背压流控（弱网 P1；未注入则不背压）──
+  /** provider 注入的背压接口（bufferedAmount 读取 + drain 订阅）。 */
+  private channel: ChannelBackpressure | null = null;
+  /** drain 订阅的退订句柄（attach 替换 / reset 时调）。 */
+  private channelUnsub: (() => void) | null = null;
+  /** 背压期间丢帧的 pane：缓冲回落后请求 host 重放 RIS+scrollback。 */
+  private readonly backpressuredPanes = new Set<string>();
+  private activePaneId: string | null = null;
+  private readonly paneWorkspaces = new Map<string, string | undefined>();
+  private readonly paneActivations = new Map<string, number>();
+  private readonly recoveringPanes = new Set<string>();
+
+  constructor(config: CloudHostBridgeConfig) {
+    this.invoke = config.invoke;
+    this.sendFrame = config.sendFrame;
+    this.paneOutputSource = config.paneOutputSource;
+    this.totpVerifier = config.totpVerifier;
+    this.totpBindVerifier = config.totpBindVerifier;
+    this.totpTrustCheck = config.totpTrustCheck;
+    this.totpTrustRecord = config.totpTrustRecord;
+    this.bindTranscript = config.bindTranscript ?? null;
+    // iter-60 G9：安装 host 事件 tap；verified 门控在转发点（TOTP 前不外泄）。
+    this.hostEventStop =
+      config.hostEventSource?.((name, payload) => {
+        if (this.verified && !this.rejected) {
+          this.sendControl({ type: 'event', name, payload });
+        }
+      }) ?? null;
+    // 未注入**任何** TOTP 校验器 ⇒ 不门控（向后兼容既有 cloud 路径）。注入了任一种
+    // （明文 totp-verify 或信道绑定 totp-bind）即门控业务帧，直至其一通过。
+    this.verified = !config.totpVerifier && !config.totpBindVerifier;
+    this.preauthorized = config.preauthorized === true;
+    this.log =
+      config.log ??
+      ((level, message, detail) => {
+        // eslint-disable-next-line no-console
+        console[level](`[cloudHostBridge] ${message}`, detail ?? '');
+      });
+  }
+
+  /** Called by the provider after the DataChannel is marked connected. */
+  onConnected(): void {
+    if (this.preauthorized && this.verified && !this.rejected) {
+      this.sendControl({ t: 'totp-result', ok: true, source: 'workspace-share' });
+    }
+  }
+
+  /**
+   * provider 在 acceptConn 后注入 DataChannel 背压流控（弱网 P1）。可选——未注入则
+   * {@link pushPaneOutput} 不做背压（向后兼容既有构造点 / 测试）。再次调用会替换并退订旧订阅。
+   */
+  attachChannelControl(ctrl: ChannelBackpressure): void {
+    this.channelUnsub?.();
+    this.channel = ctrl;
+    this.channelUnsub = ctrl.onDrained(() => this.onChannelDrained());
+  }
+
+  /**
+   * provider 解密后的明文帧入口。CloudPanel 把 `provider.onFrame` 接到这里。
+   *
+   * 永不抛错：结构性坏帧/解析失败一律记日志后丢弃（与 provider 的"拒绝坏帧但不
+   * 一定断连"立场一致）。
+   */
+  handleFrame(plaintext: Uint8Array): void {
+    if (this.rejected) return; // 会话已终止（0x11 bye）：丢弃一切业务帧
+
+    let result;
+    try {
+      result = demuxFrame(plaintext);
+    } catch (e) {
+      // 0x11 JSON 体解析失败（demuxFrame 在 JSON 分支会抛）→ 丢弃该帧。
+      this.log('error', 'failed to demux inbound frame; dropped', e);
+      return;
+    }
+
+    switch (result.kind) {
+      case 'control':
+        // §4 CONTROL 通道（0x12）：TOTP 握手。**门控前唯一放行**的通道。
+        if (result.json !== null && typeof result.json === 'object') {
+          void this.handleSessionControl(result.json as Record<string, unknown>);
+        } else {
+          this.log('warn', 'non-object CONTROL frame ignored');
+        }
+        return;
+      case 'json':
+        // §4 门控：未通过 TOTP 验证前拒绝业务 JSON-RPC（带 id 的回错误帧，
+        // 否则静默丢弃 notification）。
+        if (!this.verified) {
+          this.rejectUnverified(result.json);
+          return;
+        }
+        if (result.json !== null && typeof result.json === 'object') {
+          void this.handleControl(result.json as Record<string, unknown>);
+        } else {
+          this.log('warn', 'non-object JSON control frame ignored');
+        }
+        return;
+      case 'pane':
+        // host 一般不收 pane-bytes（controller 不发 PTY 裸字节）。忽略（契约语义）。
+        this.log('warn', `unexpected inbound PANE_RAW frame for pane ${result.paneId}; ignored`);
+        return;
+      case 'unknown':
+        // 前向兼容：未知通道 tag → 忽略。
+        return;
+    }
+  }
+
+  // ── §4 云端 TOTP 二次验证（CONTROL 通道 0x12）──────────────────────────────────
+  /**
+   * 处理一帧 CONTROL 信封（§4 + 零信任 #1）。两种 TOTP 二次验证路径：
+   *   - 明文：controller → host `{ t: 'totp-verify', code }`（经 {@link TotpVerifier}）。
+   *   - 信道绑定：controller → host `{ t: 'totp-bind', tag }`（base64 HMAC，经
+   *     {@link TotpBindVerifier}；明文码不上线）。controller 收到 host 0x02 后改走此路。
+   * 两者都回 `{ t: 'totp-result', ok }`，共享 `verified` 门控 + 5 次失败锁定计数。ok ⇒ 置
+   * `verified=true`，放行后续业务帧。
+   */
+  private async handleSessionControl(frame: Record<string, unknown>): Promise<void> {
+    switch (frame.t) {
+      case 'totp-trust-hello':
+        this.handleTrustHello(frame);
+        return;
+      case 'totp-trust-proof':
+        return this.handleTrustProof(frame);
+      case 'totp-verify':
+      case 'totp-bind':
+        await this.handleTotpControl(frame);
+        return;
+      default:
+        this.log('warn', `unknown CONTROL frame t=${unknownText(frame.t, 'unknown')}; ignored`);
+    }
+  }
+
+  private handleTrustHello(frame: Record<string, unknown>): void {
+    const pub = base64ToBytes(typeof frame.pub === 'string' ? frame.pub : '');
+    if (pub?.length !== 32) {
+      this.log('warn', 'totp-trust-hello: invalid pub field; ignored');
+      return;
+    }
+    this.trustCtrlPub = pub;
+    // §B2: TOTP 已成功但 trust-hello 迟到 → 现在补记 trust grant。
+    if (this.pendingTrustRecord) {
+      this.pendingTrustRecord = false;
+      this.recordTrustedController();
+    }
+    const nonce = new Uint8Array(32);
+    crypto.getRandomValues(nonce);
+    this.trustNonce = nonce;
+    this.sendSessionControl({ t: 'totp-trust-challenge', nonce: bytesToBase64(nonce) });
+  }
+
+  private async handleTrustProof(frame: Record<string, unknown>): Promise<void> {
+    const ctrlPub = this.trustCtrlPub;
+    const nonce = this.trustNonce;
+    this.trustNonce = null;
+    if (!ctrlPub || !nonce) {
+      this.log('warn', 'totp-trust-proof: no active trust challenge; ignored');
+      return;
+    }
+    if (this.totpFailures >= MAX_TOTP_ATTEMPTS) {
+      this.log('warn', 'totp-trust-proof: locked out; rejecting');
+      this.sendSessionControl({ t: 'totp-trust-result', trusted: false });
+      return;
+    }
+    if (this.bindTranscript) this.fallbackCounters.trustProofWithTranscript += 1;
+    else {
+      this.fallbackCounters.trustProofWithoutTranscript += 1;
+      this.log('warn', 'totp-trust-proof without bindTranscript (F1 fallback: unbound signature)');
+    }
+
+    const valid = this.verifyTrustSignature(frame, ctrlPub, nonce);
+    if (!valid) {
+      this.totpFailures += 1;
+      this.sendSessionControl({ t: 'totp-trust-result', trusted: false });
+      return;
+    }
+
+    let trusted = false;
+    if (!this.totpTrustCheck) {
+      this.log('warn', 'totp_trust_check callback is not configured; treating as not trusted');
+    } else {
+      try {
+        trusted = await this.totpTrustCheck(ctrlPub);
+      } catch (error) {
+        this.log('error', 'totp_trust_check callback threw; treating as not trusted', error);
+      }
+    }
+    if (trusted && (this.totpVerifier ?? this.totpBindVerifier)) {
+      this.verified = true;
+      this.trustCtrlPub = ctrlPub;
+    }
+    this.sendSessionControl({ t: 'totp-trust-result', trusted });
+  }
+
+  private verifyTrustSignature(
+    frame: Record<string, unknown>,
+    ctrlPub: Uint8Array,
+    nonce: Uint8Array,
+  ): boolean {
+    const sig = base64ToBytes(typeof frame.sig === 'string' ? frame.sig : '');
+    if (sig?.length !== 64) return false;
+    try {
+      const prefix = new TextEncoder().encode('ridge-totp-trust-v1');
+      const transcript = this.bindTranscript;
+      const msg = new Uint8Array(prefix.length + nonce.length + (transcript?.length ?? 0));
+      msg.set(prefix);
+      msg.set(nonce, prefix.length);
+      if (transcript) msg.set(transcript, prefix.length + nonce.length);
+      return ed25519.verify(sig, msg, ctrlPub);
+    } catch (error) {
+      this.log('error', 'totp-trust-proof: Ed25519 verify threw; treating as invalid', error);
+      return false;
+    }
+  }
+
+  private async handleTotpControl(frame: Record<string, unknown>): Promise<void> {
+    if (!this.totpVerifier && !this.totpBindVerifier) {
+      this.verified = true;
+      this.sendSessionControl({ t: 'totp-result', ok: true });
+      return;
+    }
+    if (this.verified) {
+      this.sendSessionControl({ t: 'totp-result', ok: true });
+      return;
+    }
+    if (this.totpFailures >= MAX_TOTP_ATTEMPTS) {
+      this.log('warn', 'TOTP locked out (too many failed attempts); rejecting');
+      this.sendSessionControl({ t: 'totp-result', ok: false, locked: true });
+      return;
+    }
+
+    const ok = await this.verifyTotpFrame(frame);
+    if (ok) {
+      this.verified = true;
+      if (this.trustCtrlPub) {
+        this.recordTrustedController();
+      } else {
+        // §B2: trust-hello 尚未到达 → 标记待补记，handleTrustHello 到时再记。
+        this.pendingTrustRecord = true;
+        this.log('info', 'TOTP verified but trustCtrlPub not yet available; deferring grant record');
+      }
+    } else {
+      this.totpFailures += 1;
+    }
+    const locked = !ok && this.totpFailures >= MAX_TOTP_ATTEMPTS;
+    this.sendSessionControl({ t: 'totp-result', ok, ...(locked ? { locked: true } : {}) });
+  }
+
+  private async verifyTotpFrame(frame: Record<string, unknown>): Promise<boolean> {
+    try {
+      if (frame.t === 'totp-verify') {
+        const code = typeof frame.code === 'string' ? frame.code : '';
+        return this.totpVerifier ? await this.totpVerifier(code) : false;
+      }
+      const tag = base64ToBytes(typeof frame.tag === 'string' ? frame.tag : '');
+      return tag !== null && this.totpBindVerifier ? await this.totpBindVerifier(tag) : false;
+    } catch (error) {
+      this.log('error', 'TOTP verifier threw; treating as failed', error);
+      return false;
+    }
+  }
+
+  private recordTrustedController(): void {
+    if (!this.trustCtrlPub || !this.totpTrustRecord) {
+      if (this.trustCtrlPub) {
+        this.log('warn', 'totp_trust_record callback is not configured; grant not persisted');
+      }
+      return;
+    }
+    void this.totpTrustRecord(this.trustCtrlPub).catch((error: unknown) => {
+      this.log('error', 'totp_trust_record callback threw (ignored)', error);
+    });
+  }
+
+
+  private rejectUnverified(json: unknown): void {
+    if (json !== null && typeof json === 'object') {
+      const id = (json as { id?: unknown }).id;
+      if (typeof id === 'number' || typeof id === 'string') {
+        this.sendControl(
+          jsonrpcError(id, {
+            code: JSON_RPC_INVALID_REQUEST,
+            message: 'TOTP verification required',
+            data: { kind: 'totp-required' },
+          }),
+        );
+        return;
+      }
+    }
+    this.log('warn', 'business frame dropped before TOTP verification');
+  }
+
+  /** 把一帧 CONTROL 信封编码为 0x12 帧并发出。 */
+  private sendSessionControl(frame: Record<string, unknown>): void {
+    this.sendFrame(encodeControlFrame(frame));
+  }
+
+  /** 处理一帧 0x11 JSON 控制信封（JSON-RPC 2.0）。 */
+  private async handleControl(frame: Record<string, unknown>): Promise<void> {
+    if (frame.jsonrpc !== '2.0') {
+      this.log('warn', 'control frame missing jsonrpc:"2.0"; ignored');
+      return;
+    }
+    const method = typeof frame.method === 'string' ? frame.method : undefined;
+    const id = frame.id;
+    const hasId = typeof id === 'number' || typeof id === 'string';
+
+    // 无 method 但有 id 的帧不是请求（host 不向 controller 发请求，故收到的
+    // result/error 响应无意义）→ 忽略。
+    if (!method) {
+      if (!hasId) this.log('warn', 'control frame without method/id; ignored');
+      return;
+    }
+
+    // ── notification（无 id）：$/hello / $/cancel / subscribe-pane / 其它事件 ──
+    if (!hasId) {
+      this.handleNotification(method, frame.params);
+      return;
+    }
+
+    // ── request（有 id）：$/hello 也可能带 id（保守同时支持）；否则走 invoke ──
+    if (method === HELLO_METHOD) {
+      // 罕见：带 id 的 $/hello。回一帧 $/hello/$/bye notification（D9 语义），
+      // 并对 id 回一个空 result 以免 controller 端 request 悬挂。
+      this.replyHello(frame.params);
+      this.sendControl(jsonrpcResult(id as number | string, null));
+      return;
+    }
+    if (method === CANCEL_METHOD) {
+      // $/cancel 规范是 notification；若误带 id，仍尽力中止并回 ack。
+      this.cancelInvoke(frame.params);
+      this.sendControl(jsonrpcResult(id as number | string, null));
+      return;
+    }
+
+    await this.dispatchInvoke(id as number | string, method, frame.params);
+  }
+
+  /** notification 路由（无 id）。 */
+  private handleNotification(method: string, params: unknown): void {
+    switch (method) {
+      case HELLO_METHOD:
+        this.replyHello(params);
+        return;
+      case CANCEL_METHOD:
+        this.cancelInvoke(params);
+        return;
+      case BYE_METHOD:
+        this.handleBye(params);
+        return;
+      case 'subscribe-pane':
+        this.handleSubscribePane(params);
+        return;
+      case 'unsubscribe-pane': {
+        const paneId = (params as { paneId?: unknown } | null)?.paneId;
+        if (typeof paneId === 'string' && paneId) this.unsubscribePane(paneId);
+        return;
+      }
+      default:
+        // 其它 controller→host 事件（如 resize、switch-workspace）尚未在本桥落地：
+        // 作为 invoke 转发给本地命令（与 LAN host 把控制消息也走 dispatch 一致），
+        // 但 notification 无 id ⇒ fire-and-forget（不回响应）。
+        void this.dispatchInvokeFireAndForget(method, params);
+        return;
+    }
+  }
+
+  // ── §7.3 D9：$/hello 协商（与 server.rs negotiate_hello 同形）─────────────────
+  /**
+   * 收到 controller 的 $/hello → 回本 host 的 $/hello（取能力交集）或 $/bye
+   * （无公共版本）。逻辑与 server.rs `negotiate_hello` 逐字对齐。
+   */
+  private replyHello(params: unknown): void {
+    this.sendControl(negotiateHello(params));
+  }
+
+  // ── 概念 6：对端经 0x11 通道发来的 $/bye（如 signature-invalid 验签失败）──────────
+  /**
+   * 对端（controller）经 **E2EE 0x11 通道**（不经 relay）通知会话终止。标记 `rejected`：
+   * 后续业务帧一律丢弃；DataChannel 关闭随后由
+   * provider teardown。无 id ⇒ 不回响应。恶意 controller 发 $/bye 只会终止其自身会话
+   * （每 cid 独立桥），无跨会话影响——等价于其直接关闭 DataChannel。
+   */
+  private handleBye(params: unknown): void {
+    const reason = (params as { reason?: unknown } | null | undefined)?.reason;
+    this.rejected = true;
+    this.log('warn', `peer sent $/bye (reason=${unknownText(reason, 'unknown')}); rejecting session`);
+  }
+
+  // ── §7.0：$/cancel 尽力中止 ───────────────────────────────────────────────────
+  private cancelInvoke(params: unknown): void {
+    const targetId = (params as { id?: unknown } | null | undefined)?.id;
+    if (typeof targetId !== 'number' && typeof targetId !== 'string') {
+      this.log('warn', '$/cancel without a valid target id; ignored');
+      return;
+    }
+    const key = String(targetId);
+    const entry = this.inflight.get(key);
+    if (entry) {
+      entry.cancelled = true;
+      entry.abort.abort();
+      // 不在此删除：dispatchInvoke 的 finally 统一清理，避免竞态丢令牌。
+    }
+  }
+
+  // ── invoke 路由（有 id 的 JSON-RPC request）──────────────────────────────────
+  /**
+   * 调本地 `invoke(method, params)` → 回 `0x11 || {jsonrpc,id,result|error}`。
+   * 错误映射（与 server.rs `dispatch_invoke_jsonrpc` 对齐）：
+   *   - invoke 抛 `{code,message,data}` 形错误 → 透传（保 D-GM-2/D-GM-8 结构）。
+   *   - 其它抛错 → JSON-RPC INTERNAL_ERROR(-32603)，message 取错误文本。
+   */
+  private async dispatchInvoke(
+    id: number | string,
+    method: string,
+    params: unknown,
+  ): Promise<void> {
+    // AC4-C10: protocol admission (canonicalize + desktop-privileged deny)
+    // before allowlist. Defense in depth vs mis-synced REMOTE_ALLOWLIST.
+    const admitted = decideRemoteInvoke(method);
+    if (!admitted.allow) {
+      this.log('warn', `rejected protocol-denied invoke "${method}" (${admitted.reason})`);
+      this.sendControl(
+        jsonrpcError(id, {
+          code: JSON_RPC_METHOD_NOT_FOUND,
+          message: `method not permitted remotely: ${method}`,
+          data: { kind: 'forbidden', reason: admitted.reason },
+        }),
+      );
+      return;
+    }
+    const methodCanon = admitted.method;
+    // §5.4 D8 能力门控（审计 ①-1）：controller 只能调远程白名单内命令。非白名单
+    // （尤其 host 特权命令如 get_remote_info → 泄露 LAN TOTP 密钥）一律拒，杜绝
+    // 云控制端任意命令 RCE。白名单镜像 ridge_core capability::REMOTE_ALLOWLIST。
+    if (!isRemoteAllowed(methodCanon)) {
+      this.log('warn', `rejected non-allowlisted invoke "${methodCanon}"`);
+      this.sendControl(
+        jsonrpcError(id, {
+          code: JSON_RPC_METHOD_NOT_FOUND,
+          message: `method not permitted remotely: ${methodCanon}`,
+          data: { kind: 'forbidden' },
+        }),
+      );
+      return;
+    }
+    const callParams = normalizeParams(params);
+    const key = String(id);
+    const token: InflightInvoke = { method: methodCanon, cancelled: false, abort: new AbortController() };
+    this.inflight.set(key, token);
+
+    try {
+      const result = await this.invokeWithInputDedupe(methodCanon, callParams);
+      if (token.cancelled) return; // 已 $/cancel：不回响应（client 已 reject）
+      this.sendControl(jsonrpcResult(id, result ?? null));
+    } catch (e) {
+      if (token.cancelled) return;
+      this.sendControl(jsonrpcError(id, toJsonRpcError(e)));
+    } finally {
+      this.inflight.delete(key);
+    }
+  }
+
+  private invokeWithInputDedupe(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    if (method !== 'write_to_pty') return this.invoke(method, params);
+    const source = params.inputSourceId;
+    const sequence = params.inputSequence;
+    const paneId = params.paneId;
+    if (
+      typeof source !== 'string'
+      || (typeof sequence !== 'number' && typeof sequence !== 'string')
+      || typeof paneId !== 'string'
+    ) {
+      return this.invoke(method, params);
+    }
+    const key = `${unknownText(params.workspaceId)}\0${paneId}\0${source}\0${unknownText(sequence)}`;
+    const existing = this.inputInvokes.get(key);
+    if (existing) {
+      if (existing.data !== params.data) {
+        return Promise.reject(new Error('terminal input sequence reused with different data'));
+      }
+      return existing.promise;
+    }
+    const request = Promise.resolve().then(() => this.invoke(method, params));
+    const tracked = request.finally(() => {
+      if (this.inputInvokes.get(key)?.promise === tracked) this.inputInvokes.delete(key);
+    });
+    this.inputInvokes.set(key, { data: params.data, promise: tracked });
+    return tracked;
+  }
+
+  /** notification 形态的命令转发（无 id，不回响应；中途出错仅记日志）。 */
+  private async dispatchInvokeFireAndForget(method: string, params: unknown): Promise<void> {
+    // §5.4 D8 能力门控（审计 ①-1）：notification 路径同样过白名单，丢弃非白名单方法。
+    if (!isRemoteAllowed(method)) {
+      this.log('warn', `dropped non-allowlisted notification "${method}"`);
+      return;
+    }
+    try {
+      await this.invoke(method, normalizeParams(params));
+    } catch (e) {
+      this.log('warn', `fire-and-forget notification "${method}" failed`, e);
+    }
+  }
+
+  // ── pane 流（契约 §7.4 / D-GM-7）─────────────────────────────────────────────
+  //
+  // controller 发 `subscribe-pane`（notification，params.paneId）→ host 应把该
+  // pane 的 PTY 裸字节经 `0x10 || paneIdLen || paneId || raw`（encodePaneFrame）
+  // 推回。host-global 多 pane：每个 paneId 登记一次（幂等）。
+  //
+  // **pane 流接入点（v1 未硬塞真实 PTY 源）**：本桥通过注入的 `paneOutputSource`
+  // 订阅一个 pane 的输出源并把 raw 字节经 `pushPaneOutput` 推出。真实接入需把
+  // `paneOutputSource` 接到桌面 host 的 PTY fan-out（server.rs 侧 `register_remote_sub`
+  // / `raw_tx` 等价物，或 AppState 的 per-pane scrollback + 增量流）。在 host WebRTC
+  // 仍跑在 WebView/TS（契约 §8 v1 scaffold）期间，这条 PTY 源要么经一个 Tauri
+  // event 通道（invoke 订阅 + onPaneRaw event）桥进来，要么等 host 迁到 Rust 后由
+  // Rust 侧直接编码。S5 的 D10 屏幕快照（先发快照再续 raw）在此处之前注入。
+  private handleSubscribePane(params: unknown): void {
+    const rec = params as {
+      paneId?: unknown;
+      workspaceId?: unknown;
+      active?: unknown;
+      activationId?: unknown;
+    } | null | undefined;
+    const paneId = rec?.paneId;
+    if (typeof paneId !== 'string' || paneId.length === 0) {
+      this.log('warn', 'subscribe-pane without a valid paneId; ignored');
+      return;
+    }
+    const workspaceId = typeof rec?.workspaceId === 'string' ? rec.workspaceId : undefined;
+    const activationId = typeof rec?.activationId === 'number'
+      && Number.isSafeInteger(rec.activationId)
+      && rec.activationId > 0
+      ? rec.activationId
+      : undefined;
+    const existingActivation = this.paneActivations.get(paneId);
+    const existingWorkspace = this.paneWorkspaces.get(paneId);
+    if (
+      this.paneSubs.has(paneId)
+      && (existingActivation !== activationId || existingWorkspace !== workspaceId)
+    ) {
+      this.unsubscribePane(paneId);
+    }
+    this.paneWorkspaces.set(paneId, workspaceId);
+    if (activationId !== undefined) this.paneActivations.set(paneId, activationId);
+    if (rec?.active === true) {
+      this.activePaneId = paneId;
+      if (this.backpressuredPanes.has(paneId)) void this.recoverPane(paneId);
+    }
+    if (this.paneSubs.has(paneId)) return; // 幂等：已订阅
+
+    if (!this.paneOutputSource) {
+      // 仅登记意图（占位），无真实流。记一个占位 unsub 以保持幂等语义。
+      this.paneSubs.set(paneId, () => {});
+      this.log(
+        'warn',
+        `subscribe-pane(${paneId}) registered without paneOutputSource; live stream unavailable`,
+      );
+      return;
+    }
+
+    let unsub: Unsubscribe;
+    try {
+      unsub = this.paneOutputSource(paneId, workspaceId, (raw) => {
+        this.pushPaneOutput(paneId, raw);
+      }, { activationId });
+    } catch (error) {
+      // A source failure must not escape the notification handler or strand a
+      // half-registered Pane subscription in the bridge.
+      this.log('warn', `paneOutputSource(${paneId}) failed`, error);
+      this.paneSubs.set(paneId, () => {});
+      return;
+    }
+    if (typeof unsub !== 'function') {
+      this.log('warn', `paneOutputSource(${paneId}) returned no unsubscribe`);
+      this.paneSubs.set(paneId, () => {});
+      return;
+    }
+    this.paneSubs.set(paneId, unsub);
+
+    // §history-pull（2026-07-02）：host **不再**在订阅时推 `RIS + 256KiB` 初始回放。
+    // 历史由**每个 controller 自己**经 seq 游标命令拉取（`get_pane_scrollback_tail`
+    // 首屏约 1.5 屏 + 滚顶 `get_pane_scrollback_before` 分批），在各自内核本地渲染。
+    // 好处：①首屏小（不卡死）；②切 pane 不重灌全量；③天然多控制端隔离——host 不再
+    // 广播 RIS，多个 controller 看同一 pane 不会互相冲屏（旧 replay 广播是主症结）。
+    // 本订阅只保留 **live 新字节** fan-out（各 bridge 只 listen 自己订阅的 pane 事件）。
+    // 背压自愈仍走 onChannelDrained → resync_pane_raw（限频），与首屏正交。
+  }
+
+  /**
+   * 把一个 pane 的 PTY 裸字节推回 controller：`0x10 || paneIdLen || paneId || raw`。
+   * 公开以便真实 PTY 源（或测试）直接驱动。
+   */
+  pushPaneOutput(paneId: string, raw: Uint8Array): void {
+    if (this.rejected) return;
+    // SECURITY (audit #3): never leak pane bytes before TOTP passes. handleSubscribePane
+    // already gates subscription, but guard the push path too (defense in depth) so a
+    // pre-verification race / direct caller can't emit PTY output ahead of the gate.
+    if (!this.verified) return;
+    // §背压（弱网 P1）：DataChannel 缓冲过高 → 丢帧（而非无界堆积撑爆 SCTP 缓冲 → OOM/卡死），
+    // 记录待重同步；缓冲回落后 onChannelDrained 请求 host 重放 RIS+scrollback 修复空洞。
+    // Ordered SCTP cannot overtake bytes already queued. Background therefore
+    // admits only when the channel is empty: at most one low frame can precede
+    // a newly-active frame. Active retains only the 256 KiB latency reserve.
+    const limit = paneId === this.activePaneId ? BUFFERED_HIGH_WATERMARK : 0;
+    if (this.channel && this.channel.bufferedAmount() > limit) {
+      this.backpressuredPanes.add(paneId);
+      return;
+    }
+    if (this.recoveringPanes.has(paneId)) {
+      this.backpressuredPanes.add(paneId);
+      return;
+    }
+    // A canonical envelope is one atomic postcard value. Keep it intact inside the
+    // encrypted pane lane; splitting it would turn every chunk into a malformed
+    // terminal frame at the controller. It still obeys the same channel
+    // backpressure gate; recovery below asks Rust for a fresh exact snapshot.
+    if (raw[0] === 0x13) {
+      if (raw.byteLength > terminalHello.maxFrameBytes) {
+        this.backpressuredPanes.add(paneId);
+        return;
+      }
+      try {
+        this.sendFrame(raw);
+      } catch (e) {
+        this.log('error', `failed to encode semantic pane frame for ${paneId}; dropped`, e);
+      }
+      return;
+    }
+    try {
+      // Split before E2EE sealing. Counters remain frame-ordered, while the
+      // provider can schedule control/input between bounded pane frames.
+      for (let offset = 0; offset < raw.byteLength; offset += PANE_OUTPUT_FRAME_BYTES) {
+        if (this.channel && this.channel.bufferedAmount() > limit) {
+          this.backpressuredPanes.add(paneId);
+          break;
+        }
+        this.sendFrame(
+          encodePaneFrame(
+            paneId,
+            raw.subarray(offset, Math.min(raw.byteLength, offset + PANE_OUTPUT_FRAME_BYTES)),
+          ),
+        );
+      }
+      if (raw.byteLength === 0) this.sendFrame(encodePaneFrame(paneId, raw));
+    } catch (e) {
+      // paneId 过长等编码错误：丢弃该帧但不断连。
+      this.log('error', `failed to encode pane frame for ${paneId}; dropped`, e);
+    }
+  }
+
+  /**
+   * DataChannel 缓冲回落到低水位（provider 经 onDrained 通知）：对背压期间丢帧的 pane
+   * 请求 host 重放 RIS+scrollback（`invoke('resync_pane_raw')`）。复用 cloud_pane.rs 的
+   * desync→RIS+scrollback 恢复原语（与 LAN server.rs 同一套）。fire-and-forget。
+   */
+  private onChannelDrained(): void {
+    if (this.backpressuredPanes.size === 0) return;
+    const panes = this.activePaneId && this.backpressuredPanes.has(this.activePaneId)
+      ? [this.activePaneId]
+      : [];
+    for (const paneId of panes) {
+      void this.recoverPane(paneId);
+    }
+  }
+
+  /**
+   * Recover only this controller. The old Tauri event resync broadcast reset
+   * every controller subscribed to the same pane.
+   */
+  private async recoverPane(paneId: string): Promise<void> {
+    if (this.recoveringPanes.has(paneId) || this.activePaneId !== paneId) return;
+    this.recoveringPanes.add(paneId);
+    const workspaceId = this.paneWorkspaces.get(paneId);
+    const activationId = this.paneActivations.get(paneId);
+    try {
+      if (activationId !== undefined && workspaceId) {
+        const encoded = await this.invoke('get_terminal_snapshot', {
+          paneId,
+          workspaceId,
+          activationId,
+        });
+        if (this.rejected || !this.verified || this.activePaneId !== paneId || this.paneWorkspaces.get(paneId) !== workspaceId || this.paneActivations.get(paneId) !== activationId || typeof encoded !== 'string'
+          || encoded.length > Math.ceil(terminalHello.maxFrameBytes / 3) * 4) return;
+        const bytes = base64ToBytes(encoded);
+        if (!bytes) return;
+        if (bytes[0] !== 0x13) return;
+        this.sendFrame(bytes);
+        this.backpressuredPanes.delete(paneId);
+        return;
+      }
+      const frame = await this.invoke('get_pane_resync_frame', {
+        paneId,
+        workspaceId,
+        maxBytes: 256 * 1024,
+      }) as { frame?: unknown };
+      if (this.activePaneId !== paneId || typeof frame?.frame !== 'string') return;
+      const bytes = new TextEncoder().encode(frame.frame);
+      for (let offset = 0; offset < bytes.byteLength; offset += PANE_OUTPUT_FRAME_BYTES) {
+        this.sendFrame(
+          encodePaneFrame(
+            paneId,
+            bytes.subarray(offset, Math.min(bytes.byteLength, offset + PANE_OUTPUT_FRAME_BYTES)),
+          ),
+        );
+      }
+      if (bytes.byteLength === 0) this.sendFrame(encodePaneFrame(paneId, bytes));
+      this.backpressuredPanes.delete(paneId);
+    } catch (e) {
+      this.log('warn', `private pane recovery(${paneId}) failed`, e);
+    } finally {
+      if (this.paneWorkspaces.get(paneId) === workspaceId && this.paneActivations.get(paneId) === activationId) {
+        this.recoveringPanes.delete(paneId);
+      }
+    }
+  }
+
+  /** 取消一个 pane 的订阅（host 侧主动，或 pane 关闭时）。 */
+  unsubscribePane(paneId: string): void {
+    const unsub = this.paneSubs.get(paneId);
+    if (unsub) {
+      this.paneSubs.delete(paneId);
+      try {
+        unsub();
+      } catch (e) {
+        this.log('warn', `pane unsubscribe(${paneId}) threw`, e);
+      }
+    }
+    if (this.activePaneId === paneId) this.activePaneId = null;
+    this.paneWorkspaces.delete(paneId);
+    this.paneActivations.delete(paneId);
+    this.recoveringPanes.delete(paneId);
+  }
+
+  /** 把一帧 JSON 控制信封编码为 0x11 帧并发出。 */
+  private sendControl(envelope: unknown): void {
+    this.sendFrame(encodeJsonFrame(envelope));
+  }
+
+  /**
+   * 重置桥状态（重连/断开时调）：中止所有在途 invoke、退订所有 pane、清拒绝标记。
+   * 幂等。
+   */
+  reset(): void {
+    for (const token of this.inflight.values()) {
+      token.cancelled = true;
+      token.abort.abort();
+    }
+    this.inflight.clear();
+    this.inputInvokes.clear();
+    for (const [paneId] of this.paneSubs) this.unsubscribePane(paneId);
+    this.paneSubs.clear();
+    this.backpressuredPanes.clear(); // 弱网 P1：清背压待重同步集
+    this.paneWorkspaces.clear();
+    this.paneActivations.clear();
+    this.recoveringPanes.clear();
+    this.channelUnsub?.();
+    this.channelUnsub = null;
+    this.channel = null;
+    // iter-60 G9：断开/重连时退订 host 事件 tap（provider 每连接 createBridge 新桥）。
+    this.hostEventStop?.();
+    this.hostEventStop = null;
+    this.rejected = false;
+    // §4：重连须重新 TOTP 验证（注入了任一校验器时 re-arm 门控）。
+    this.verified = !this.totpVerifier && !this.totpBindVerifier;
+    // SECURITY (audit #3): 重连清零失败计数（新桥/新连接重新获得满额尝试次数）。
+    this.totpFailures = 0;
+    // §7.4：重连清空 trust 握手状态。
+    this.trustCtrlPub = null;
+    this.trustNonce = null;
+  }
+}
+
+// ── 纯函数：与 server.rs 对齐的协议帮手（导出供单测）─────────────────────────────
+
+/** 构造 JSON-RPC 成功响应。 */
+export function jsonrpcResult(id: number | string, result: unknown): Record<string, unknown> {
+  return { jsonrpc: '2.0', id, result };
+}
+
+/** 从 {code,message,data} 错误对象构造 JSON-RPC 错误响应。 */
+export function jsonrpcError(
+  id: number | string,
+  error: { code: number; message: string; data?: unknown },
+): Record<string, unknown> {
+  return { jsonrpc: '2.0', id, error };
+}
+
+/**
+ * 把 invoke 抛出的任意错误映射成 JSON-RPC `{code,message,data}`（与 server.rs
+ * `dispatch_invoke_jsonrpc` 的错误透传/降级语义对齐）：
+ *   - 已是 `{code:number,message:string,data?}` 形（ridge-core `CoreError.to_json_rpc()`
+ *     经 Tauri invoke 抛回）→ 原样透传，保 code/data（D-GM-2/D-GM-8）。
+ *   - 其它（Error / 字符串 / 未知）→ INTERNAL_ERROR(-32603)，data.kind="internal"。
+ */
+export function toJsonRpcError(e: unknown): { code: number; message: string; data?: unknown } {
+  // ridge-core 结构化错误：{ code, message, data:{kind} }。
+  if (
+    e !== null &&
+    typeof e === 'object' &&
+    'code' in e &&
+    typeof (e as { code: unknown }).code === 'number' &&
+    'message' in e &&
+    typeof (e as { message: unknown }).message === 'string'
+  ) {
+    const obj = e as { code: number; message: string; data?: unknown };
+    const out: { code: number; message: string; data?: unknown } = {
+      code: obj.code,
+      message: obj.message,
+    };
+    if ('data' in obj && obj.data !== undefined) out.data = obj.data;
+    return out;
+  }
+  let message = 'command failed';
+  if (e instanceof Error) message = e.message;
+  else if (typeof e === 'string') message = e;
+  return { code: JSON_RPC_INTERNAL_ERROR, message, data: { kind: 'internal' } };
+}
+
+/**
+ * §7.3 D9：根据 controller 的 $/hello params 计算 host 回复。返回 `$/hello`
+ * notification（兼容版本，能力取交集）或 `$/bye` notification（无公共版本）。
+ * 与 server.rs `negotiate_hello` 逐字对齐。
+ */
+export function negotiateHello(params: unknown): Record<string, unknown> {
+  const p = (params ?? {}) as {
+    protocolVersion?: unknown;
+    terminalProtocolVersion?: unknown;
+    capabilities?: unknown;
+  };
+  const peerVersion = typeof p.protocolVersion === 'number' ? p.protocolVersion : 0;
+  if (peerVersion < HOST_PROTOCOL_VERSION) {
+    return {
+      jsonrpc: '2.0',
+      method: BYE_METHOD,
+      params: { reason: 'protocol-version-mismatch' },
+    };
+  }
+  if (p.terminalProtocolVersion !== terminalHello.protocolVersion) {
+    return {
+      jsonrpc: '2.0',
+      method: BYE_METHOD,
+      params: { reason: 'terminal-protocol-upgrade-required' },
+    };
+  }
+  const peerCaps = Array.isArray(p.capabilities)
+    ? new Set(p.capabilities.filter((c): c is string => typeof c === 'string'))
+    : new Set<string>();
+  // peerCaps 为空 ⇒ 不约束（与 server.rs `peer_caps.is_empty()` 分支一致）。
+  const agreed = HOST_CAPABILITIES.filter((c) => peerCaps.size === 0 || peerCaps.has(c));
+  return {
+    jsonrpc: '2.0',
+    method: HELLO_METHOD,
+    params: {
+      protocolVersion: HOST_PROTOCOL_VERSION,
+      terminalProtocolVersion: terminalHello.protocolVersion,
+      terminalMaxFrameBytes: 16 * 1024 * 1024,
+      capabilities: agreed,
+    },
+  };
+}
+
+/** 把 JSON-RPC `params` 规整成 `invoke` 期望的对象（非对象 → 空对象）。 */
+function normalizeParams(params: unknown): Record<string, unknown> {
+  if (params !== null && typeof params === 'object' && !Array.isArray(params)) {
+    return params as Record<string, unknown>;
+  }
+  return {};
+}
+
+// 重新导出通道常量，便于消费者/测试断言字节布局与 cloudMux 同源。
+export { CHANNEL } from '@ridge/remote';
+export { JSON_RPC_INVALID_REQUEST };

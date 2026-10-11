@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -18,7 +18,7 @@ use crate::engine::pty::PtyHandle;
 use crate::types::{GlobalEvent, RemotePtyEvent};
 use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
 use ridge_remote::auth::{RemoteAuth, SessionStore, VerifyThrottle};
-use ridge_term::term::delta::{encode_frame, merge_ordered_frames, DeltaFrame};
+use ridge_term::term::delta::DeltaFrame;
 use ridge_term::term::modes::Modes;
 
 /// Two-stage PTY spawn record.
@@ -165,6 +165,7 @@ pub struct PaneScrollback {
 pub struct PtyInputSequenceState {
     pub last_sequence: u64,
     pub last_digest: Option<[u8; 32]>,
+    pub last_error: Option<String>,
 }
 
 /// One page of scrollback bytes returned by `get_pane_scrollback_tail` /
@@ -263,70 +264,51 @@ pub type PaneDeltaSender = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
 /// this keeps a Ctrl+C flood out of WebView's task queue without inserting a
 /// timer between terminal bytes and their next paint.
 const MAX_DELTA_MAILBOX_DELTAS: usize = 8_192;
+const MAX_TERMINAL_MAILBOX_FRAMES: usize = 64;
+const MAX_TERMINAL_MAILBOX_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Default)]
 struct PaneDeltaMailboxState {
-    pending: Option<DeltaFrame>,
+    pending: VecDeque<Vec<u8>>,
+    pending_bytes: usize,
     wake_armed: bool,
     last_sequence: Option<u64>,
 }
-
-#[derive(Default)]
 struct PaneDeltaMailbox {
     state: Mutex<PaneDeltaMailboxState>,
+    pane: ridge_term::terminal_protocol::PaneRef,
+    activation_id: u64,
 }
-
-enum PaneDeltaMailboxPush {
-    Queued { wake: bool },
-    NeedsResync,
-}
-
+enum PaneDeltaMailboxPush { Queued { wake: bool }, NeedsResync }
 impl PaneDeltaMailbox {
+    fn encode(&self, frame: DeltaFrame) -> Result<Vec<u8>, String> {
+        let update = frame.semantic_update.ok_or("uncaptured terminal update")?;
+        let frame = update.into_frame(self.pane.clone(), self.activation_id);
+        ridge_term::terminal_protocol::encode_frame(&frame).map_err(|error| error.to_string())
+    }
     fn push(&self, frame: DeltaFrame) -> PaneDeltaMailboxPush {
+        let sequence = frame.pane_seq;
+        let count = frame.deltas.len();
         let mut state = self.state.lock();
-        if state
-            .last_sequence
-            .is_some_and(|sequence| frame.pane_seq <= sequence)
-        {
-            return PaneDeltaMailboxPush::Queued { wake: false };
-        }
-        let pending_deltas = state
-            .pending
-            .as_ref()
-            .map_or(0, |pending| pending.deltas.len());
-        if pending_deltas.saturating_add(frame.deltas.len()) > MAX_DELTA_MAILBOX_DELTAS {
-            return PaneDeltaMailboxPush::NeedsResync;
-        }
-        state.last_sequence = Some(frame.pane_seq);
-        if let Some(pending) = &mut state.pending {
-            merge_ordered_frames(pending, frame);
-        } else {
-            state.pending = Some(frame);
-        }
-        let wake = !state.wake_armed;
-        state.wake_armed = true;
+        if state.last_sequence.is_some_and(|last| sequence <= last) { return PaneDeltaMailboxPush::Queued { wake: false }; }
+        if count > MAX_DELTA_MAILBOX_DELTAS || state.pending.len() >= MAX_TERMINAL_MAILBOX_FRAMES { return PaneDeltaMailboxPush::NeedsResync; }
+        let Ok(bytes) = self.encode(frame) else { return PaneDeltaMailboxPush::NeedsResync; };
+        if state.pending_bytes.saturating_add(bytes.len()) > MAX_TERMINAL_MAILBOX_BYTES { return PaneDeltaMailboxPush::NeedsResync; }
+        state.pending_bytes += bytes.len(); state.pending.push_back(bytes); state.last_sequence = Some(sequence);
+        let wake = !state.wake_armed; state.wake_armed = true;
         PaneDeltaMailboxPush::Queued { wake }
     }
-
-    fn replace(&self, frame: DeltaFrame) -> bool {
-        let mut state = self.state.lock();
-        state.last_sequence = Some(frame.pane_seq);
-        state.pending = Some(frame);
-        let wake = !state.wake_armed;
-        state.wake_armed = true;
-        wake
+    fn replace(&self, frame: DeltaFrame) -> Result<bool, String> {
+        let sequence = frame.pane_seq;
+        let bytes = self.encode(frame)?;
+        if bytes.len() > MAX_TERMINAL_MAILBOX_BYTES { return Err("terminal snapshot exceeds mailbox budget".into()); }
+        let mut state = self.state.lock(); state.pending.clear(); state.pending_bytes = bytes.len();
+        state.pending.push_back(bytes); state.last_sequence = Some(sequence);
+        let wake = !state.wake_armed; state.wake_armed = true; Ok(wake)
     }
-
-    fn take_encoded(&self) -> Result<Option<Vec<u8>>, postcard::Error> {
+    fn take_encoded(&self) -> Vec<Vec<u8>> {
         let mut state = self.state.lock();
-        let Some(frame) = state.pending.as_ref() else {
-            state.wake_armed = false;
-            return Ok(None);
-        };
-        let encoded = encode_frame(frame)?;
-        state.pending = None;
-        state.wake_armed = false;
-        Ok(Some(encoded))
+        let frames = state.pending.drain(..).collect(); state.pending_bytes = 0; state.wake_armed = false; frames
     }
 }
 
@@ -1200,11 +1182,12 @@ impl AppState {
         workspace_id: Uuid,
         pane_id: Uuid,
         sender: PaneDeltaSender,
+        activation_id: u64,
     ) {
         let mut registry = self.pty_pane_registry.write();
         let entry = registry.entry((workspace_id, pane_id)).or_default();
         entry.delta_cb = Some(sender);
-        entry.delta_mailbox = Some(Arc::new(PaneDeltaMailbox::default()));
+        entry.delta_mailbox = Some(Arc::new(PaneDeltaMailbox { state: Mutex::new(PaneDeltaMailboxState::default()), pane: ridge_term::terminal_protocol::PaneRef::new(workspace_id.to_string(), pane_id.to_string()), activation_id }));
     }
 
     pub fn retarget_pane_runtime(&self, from_ws: Uuid, to_ws: Uuid, pane: Uuid) {
@@ -1310,28 +1293,26 @@ impl AppState {
             };
             (mailbox, sender)
         };
-        if mailbox.replace(frame) {
-            sender(Vec::new());
+        match mailbox.replace(frame) {
+            Ok(wake) => { if wake { sender(Vec::new()); } true },
+            Err(_) => false,
         }
-        true
     }
 
-    pub fn take_pane_delta_frame(
+    pub fn take_terminal_frames(
         &self,
         workspace_id: Uuid,
         pane_id: Uuid,
-    ) -> Result<Option<Vec<u8>>, String> {
+    ) -> Result<Vec<Vec<u8>>, String> {
         let mailbox = self
             .pty_pane_registry
             .read()
             .get(&(workspace_id, pane_id))
             .and_then(|entry| entry.delta_mailbox.clone());
         let Some(mailbox) = mailbox else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
-        mailbox
-            .take_encoded()
-            .map_err(|error| format!("delta mailbox encode failed: {error}"))
+        Ok(mailbox.take_encoded())
     }
 
     /// Snapshot the pane's current terminal modes + alt-screen flag, for
@@ -1357,10 +1338,10 @@ impl AppState {
         &self,
         ws: Uuid,
         pane: Uuid,
-    ) -> Option<ridge_term::terminal_v2::TerminalSnapshot> {
+    ) -> Option<ridge_term::semantic::SemanticUpdate> {
         let workspaces = self.workspaces.read();
         let handle = workspaces.get(&ws)?.terminals.get(&pane)?;
-        let snapshot = handle.parser.lock().remote_v2_snapshot();
+        let snapshot = handle.parser.lock().semantic_snapshot();
         Some(snapshot)
     }
 
@@ -1743,7 +1724,7 @@ mod pty_delta_channel_tests {
         let pane = Uuid::new_v4();
         let (sender, count, last_len) = counting_sender();
 
-        state.register_pane_delta_channel(ws, pane, sender);
+        state.register_pane_delta_channel(ws, pane, sender, 1);
         let fetched = state
             .get_pane_delta_channel(ws, pane)
             .expect("registered sender must be retrievable");
@@ -1755,63 +1736,34 @@ mod pty_delta_channel_tests {
 
     #[test]
     fn mailbox_coalesces_ordered_frames_into_one_wake() {
-        use ridge_term::term::delta::{decode_frame, DeltaFrame, GridDelta};
-
-        let state = make_state();
-        let ws = Uuid::new_v4();
-        let pane = Uuid::new_v4();
+        use ridge_term::terminal_protocol::{decode_frame, TerminalBody};
+        let state = make_state(); let ws = Uuid::new_v4(); let pane = Uuid::new_v4();
         let (sender, count, last_len) = counting_sender();
-        state.register_pane_delta_channel(ws, pane, sender);
-
-        assert!(matches!(
-            state.enqueue_pane_delta_frame(ws, pane, DeltaFrame::new(4, vec![GridDelta::Bell])),
-            PaneDeltaEnqueue::Queued
-        ));
-        assert!(matches!(
-            state.enqueue_pane_delta_frame(
-                ws,
-                pane,
-                DeltaFrame::new(5, vec![GridDelta::ScrollbackClear]),
-            ),
-            PaneDeltaEnqueue::Queued
-        ));
-
-        assert_eq!(count.load(Ordering::SeqCst), 1, "one wake per mailbox fill");
-        assert_eq!(
-            last_len.load(Ordering::SeqCst),
-            0,
-            "wake carries no frame bytes"
-        );
-        let bytes = state
-            .take_pane_delta_frame(ws, pane)
-            .expect("mailbox encode")
-            .expect("merged frame");
-        let frame = decode_frame(&bytes).expect("mailbox frame decodes");
-        assert_eq!(frame.pane_seq, 5);
-        assert!(matches!(frame.deltas[0], GridDelta::Bell));
-        assert!(matches!(frame.deltas[1], GridDelta::ScrollbackClear));
-
-        let _ = state.enqueue_pane_delta_frame(ws, pane, DeltaFrame::new(6, vec![GridDelta::Bell]));
-        assert_eq!(count.load(Ordering::SeqCst), 2, "pull rearms the next wake");
+        state.register_pane_delta_channel(ws, pane, sender, 1);
+        let mut producer = ridge_term::producer::TerminalProducer::with_epoch(3, 20, 20, "mailbox".into());
+        assert!(matches!(state.enqueue_pane_delta_frame(ws, pane, producer.feed_and_diff(b"first")), PaneDeltaEnqueue::Queued));
+        assert!(matches!(state.enqueue_pane_delta_frame(ws, pane, producer.feed_and_diff(b"!")), PaneDeltaEnqueue::Queued));
+        assert_eq!(count.load(Ordering::SeqCst), 1); assert_eq!(last_len.load(Ordering::SeqCst), 0);
+        let packets = state.take_terminal_frames(ws, pane).unwrap(); assert_eq!(packets.len(), 2);
+        let first = decode_frame(&packets[0]).unwrap(); let second = decode_frame(&packets[1]).unwrap();
+        assert_eq!(first.activation_id, 1); assert_eq!(first.pane.pane_id, pane.to_string());
+        let TerminalBody::Snapshot(first) = first.body else { panic!("initial snapshot") };
+        let TerminalBody::Delta(second) = second.body else { panic!("ordered delta") };
+        assert_eq!((first.revision, second.base_revision, second.revision), (1, 1, 2));
+        assert!(state.take_terminal_frames(ws, pane).unwrap().is_empty());
+        state.enqueue_pane_delta_frame(ws, pane, producer.feed_and_diff(b"next"));
+        assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
     #[test]
     fn mailbox_requests_reframe_before_hidden_output_grows_unbounded() {
-        use ridge_term::term::delta::{DeltaFrame, GridDelta};
-
-        let state = make_state();
-        let ws = Uuid::new_v4();
-        let pane = Uuid::new_v4();
-        let (sender, _, _) = counting_sender();
-        state.register_pane_delta_channel(ws, pane, sender);
-        let burst = std::iter::repeat(GridDelta::Bell)
-            .take(MAX_DELTA_MAILBOX_DELTAS)
-            .collect();
-        let _ = state.enqueue_pane_delta_frame(ws, pane, DeltaFrame::new(1, burst));
-        assert!(matches!(
-            state.enqueue_pane_delta_frame(ws, pane, DeltaFrame::new(2, vec![GridDelta::Bell])),
-            PaneDeltaEnqueue::NeedsResync
-        ));
+        let state = make_state(); let ws = Uuid::new_v4(); let pane = Uuid::new_v4();
+        let (sender, _, _) = counting_sender(); state.register_pane_delta_channel(ws, pane, sender, 1);
+        let mut producer = ridge_term::producer::TerminalProducer::with_epoch(3, 20, 20, "mailbox".into());
+        for _ in 0..MAX_TERMINAL_MAILBOX_FRAMES {
+            assert!(matches!(state.enqueue_pane_delta_frame(ws, pane, producer.feed_and_diff(b"\x07")), PaneDeltaEnqueue::Queued));
+        }
+        assert!(matches!(state.enqueue_pane_delta_frame(ws, pane, producer.feed_and_diff(b"\x07")), PaneDeltaEnqueue::NeedsResync));
     }
 
     #[test]
@@ -1822,7 +1774,7 @@ mod pty_delta_channel_tests {
         let ws = Uuid::new_v4();
         let pane = Uuid::new_v4();
         let (sender, count, _) = counting_sender();
-        state.register_pane_delta_channel(ws, pane, sender);
+        state.register_pane_delta_channel(ws, pane, sender, 1);
         let burst = std::iter::repeat(GridDelta::Bell)
             .take(MAX_DELTA_MAILBOX_DELTAS + 1)
             .collect();
@@ -1859,11 +1811,11 @@ mod pty_delta_channel_tests {
             // Touch the flag so the closure owns it.
             let _ = first_flag.lock().is_some();
         });
-        state.register_pane_delta_channel(ws, pane, first);
+        state.register_pane_delta_channel(ws, pane, first, 1);
         assert_eq!(dropped.load(Ordering::SeqCst), 0);
 
         let (second, count, _) = counting_sender();
-        state.register_pane_delta_channel(ws, pane, second);
+        state.register_pane_delta_channel(ws, pane, second, 1);
 
         // After replacement, the first sender's Arc count reached zero and
         // the embedded DropFlag fired exactly once.
@@ -1883,8 +1835,8 @@ mod pty_delta_channel_tests {
         let (sender_a, count_a, _) = counting_sender();
         let (sender_b, count_b, _) = counting_sender();
 
-        state.register_pane_delta_channel(ws, pane_a, sender_a);
-        state.register_pane_delta_channel(ws, pane_b, sender_b);
+        state.register_pane_delta_channel(ws, pane_a, sender_a, 1);
+        state.register_pane_delta_channel(ws, pane_b, sender_b, 1);
 
         state.get_pane_delta_channel(ws, pane_a).expect("pane_a")(vec![0]);
         state.get_pane_delta_channel(ws, pane_a).expect("pane_a")(vec![0, 0]);
@@ -1906,8 +1858,8 @@ mod pty_delta_channel_tests {
         let (sender_a, count_a, _) = counting_sender();
         let (sender_b, count_b, _) = counting_sender();
 
-        state.register_pane_delta_channel(ws_a, pane, sender_a);
-        state.register_pane_delta_channel(ws_b, pane, sender_b);
+        state.register_pane_delta_channel(ws_a, pane, sender_a, 1);
+        state.register_pane_delta_channel(ws_b, pane, sender_b, 1);
 
         state.get_pane_delta_channel(ws_a, pane).expect("a")(vec![1]);
         state.get_pane_delta_channel(ws_b, pane).expect("b")(vec![2]);
@@ -1924,7 +1876,7 @@ mod pty_delta_channel_tests {
         let pane = Uuid::new_v4();
         let (sender, count, _) = counting_sender();
 
-        state.register_pane_delta_channel(ws, pane, sender);
+        state.register_pane_delta_channel(ws, pane, sender, 1);
         assert!(state.get_pane_delta_channel(ws, pane).is_some());
 
         state.unregister_pane_delta_channel(ws, pane);
@@ -1953,8 +1905,8 @@ mod pty_delta_channel_tests {
         let (keep, _, _) = counting_sender();
         let (drop_it, _, _) = counting_sender();
 
-        state.register_pane_delta_channel(ws, pane_keep, keep);
-        state.register_pane_delta_channel(ws, pane_drop, drop_it);
+        state.register_pane_delta_channel(ws, pane_keep, keep, 1);
+        state.register_pane_delta_channel(ws, pane_drop, drop_it, 1);
         state.unregister_pane_delta_channel(ws, pane_drop);
 
         assert!(state.get_pane_delta_channel(ws, pane_keep).is_some());
@@ -1974,7 +1926,7 @@ mod pty_delta_channel_tests {
         let pane = Uuid::new_v4();
         let (sender, count, _) = counting_sender();
 
-        state_a.register_pane_delta_channel(ws, pane, sender);
+        state_a.register_pane_delta_channel(ws, pane, sender, 1);
         let from_b = state_b
             .get_pane_delta_channel(ws, pane)
             .expect("clone must see registrations made on the original");

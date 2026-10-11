@@ -10,6 +10,7 @@
   import { setTransport } from '$lib/transport';
   import { TauriDataProvider } from '$lib/transport/tauri';
   import { onMount } from 'svelte';
+  import { clearRemoteToken, readRemoteToken, writeRemoteToken } from '../remote/lib/remoteSession';
   import { t, tr } from '$lib/i18n';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
@@ -248,7 +249,6 @@
     const { RemoteConnection, getRemoteDeviceId } = await import('@ridge/remote');
     const { bridge } = await import('$lib/transport/tauriShim/bridge');
     const { createLanWsTransport } = await import('@ridge/remote');
-    const TOKEN_KEY = 'ridge_remote_token';
     const conn = new RemoteConnection();
     let connectAttempt = 0;
 
@@ -293,16 +293,19 @@
         bridge.detach();
         conn.disconnect();
         loading = false;
-        try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
-        phase = 'need-code';
+        phase = 'error';
         errorMsg = tr('main.remoteGateErrReconnect');
       }
     };
 
-    const connectWith = (token: string, retryCount = 0) => {
+    let stopConnectListener = () => {};
+    const connectWith = (token: string) => {
+      stopConnectListener();
       const attempt = ++connectAttempt;
       loading = true;
       errorMsg = '';
+      phase = 'connecting';
+      retryConnection = () => connectWith(token);
       const unsub = conn.onStateChange((s) => {
         if (s === 'connected') {
           if (attempt !== connectAttempt) return;
@@ -311,31 +314,27 @@
           void finish(attempt);
         } else if (s === 'error') {
           if (attempt !== connectAttempt) return;
-          // §B3: 非用户类失败 → backoff 重试，不立即清 token。
           const failure = conn.lastFailure();
           const cat = failure?.category;
-          if (cat !== 'user' && retryCount < 3) {
-            const delay = 1000 * Math.pow(2, retryCount); // 1s / 2s / 4s
-            errorMsg = tr('main.remoteGateRetry', { attempt: retryCount + 1 });
-            setTimeout(() => {
-              if (attempt !== connectAttempt) return;
-              connectWith(token, retryCount + 1);
-            }, delay);
-            return;
-          }
           loading = false;
-          unsub();
-          try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
-          phase = 'need-code';
+          if (cat === 'user') {
+            unsub();
+            conn.disconnect();
+            clearRemoteToken();
+            phase = 'need-code';
+          } else {
+            // Socket retries and foreground recovery belong to the transport.
+            phase = 'error';
+          }
           errorMsg = tr('main.remoteGateErrReconnect');
         }
       });
+      stopConnectListener = unsub;
       conn.connect(host, port, token, 'token');
     };
 
     // Try saved token first; fall back to the 6-digit TOTP prompt.
-    let saved = null;
-    try { saved = localStorage.getItem(TOKEN_KEY); } catch { /* ignore */ }
+    const saved = readRemoteToken();
     if (saved) {
       connectWith(saved);
     } else {
@@ -359,7 +358,7 @@
         .then((r) => r.json())
         .then((d) => {
           if (d.success && d.token) {
-            try { localStorage.setItem(TOKEN_KEY, d.token); } catch { /* ignore */ }
+            writeRemoteToken(d.token);
             connectWith(d.token);
           } else {
             loading = false;
@@ -385,6 +384,7 @@
   }
 
   let submitCode = () => {};
+  let retryConnection = () => {};
 
   // §4 云端 TOTP：boot 句柄（连上后用于经 CONTROL 通道发码验证）。
   let cloudHandle: import('$lib/remote/cloud/cloudControllerBoot').CloudControllerHandle | null = null;
@@ -485,6 +485,7 @@
     {:else}
       <p class="wr-sub">{$t('main.remoteGateConnecting')}</p>
       {#if errorMsg}<p class="wr-error">{errorMsg}</p>{/if}
+      {#if phase === 'error'}<button onclick={() => retryConnection()}>{$t('main.remoteGateConnect')}</button>{/if}
     {/if}
   </div>
 {/if}

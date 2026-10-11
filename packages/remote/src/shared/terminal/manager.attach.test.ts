@@ -17,12 +17,14 @@ const wasm = vi.hoisted(() => {
 		scrollOffset = vi.fn(() => 0);
 		feed = vi.fn();
 		applyDeltaFrame = vi.fn();
+		applyRemoteFrame = vi.fn(() => true);
 		takePendingResponse = vi.fn(() => new Uint8Array());
 		takePendingEvents = vi.fn(() => []);
 		isFocusReporting = vi.fn(() => this.focusReporting);
 		mouseReportingModes = vi.fn(() => this.mouseMode);
 		encodeMouse = vi.fn(() => new Uint8Array([0x6d]));
 		hyperlinkAt = vi.fn(() => null);
+		linkSpans = vi.fn(() => []);
 		setSelectionAbs = vi.fn();
 		selectWordAt = vi.fn();
 		selectLineAt = vi.fn();
@@ -57,6 +59,7 @@ const wasm = vi.hoisted(() => {
 		repaintAll = vi.fn();
 		free = vi.fn();
 		setFocused = vi.fn();
+		setLinkUnderlines = vi.fn();
 		setPadding = vi.fn();
 		resize = vi.fn();
 		render = vi.fn();
@@ -110,10 +113,12 @@ vi.mock('@ridge/term-wasm', () => ({
 	TerminalKernel: wasm.FakeKernel,
 	RenderHandle: wasm.FakeRenderHandle,
 	SurfaceHostHandle: wasm.SurfaceHostHandle,
-	installFontData: wasm.installFontData,
+	installFontRasterizer: vi.fn(),
 	atlasOverwriteAfterCiteCount: wasm.atlasOverwriteAfterCiteCount,
 	setPresentFast: wasm.setPresentFast,
 }));
+
+vi.mock('./wasmRuntime', () => ({ RenderHandle: wasm.FakeRenderHandle, SurfaceHostHandle: wasm.SurfaceHostHandle, loadRendererRuntime: async () => ({ installFontRasterizer: vi.fn(), atlasOverwriteAfterCiteCount: wasm.atlasOverwriteAfterCiteCount, setPresentFast: wasm.setPresentFast }), loadSelectedFontRuntime: async () => ({ installFontData: wasm.installFontData, FontRasterizer: class {} }) }));
 
 import { TerminalManager } from './manager';
 
@@ -177,6 +182,8 @@ beforeEach(() => {
 		clipboard: { writeText: vi.fn() },
 	});
 	vi.stubGlobal('window', {
+		addEventListener: vi.fn(),
+		removeEventListener: vi.fn(),
 		devicePixelRatio: 1,
 		getComputedStyle: vi.fn(() => ({
 			paddingLeft: '0px', paddingRight: '0px', paddingTop: '0px', paddingBottom: '0px',
@@ -397,7 +404,11 @@ describe('TerminalManager attach lifecycle', () => {
 		expect(kernel.encodeMouse).toHaveBeenCalledWith(10, 3, 3, 2, false, false, false);
 		expect(sent.length).toBeGreaterThanOrEqual(2);
 		container.emit('pointerup', pointer);
-		expect(kernel.encodeMouse).toHaveBeenCalledWith(10, 3, 0, 1, false, false, false);
+		expect(kernel.encodeMouse.mock.calls.filter(call => call[3] === 1)).toHaveLength(0);
+		container.emit('pointerdown', pointer);
+		container.emit('pointerup', pointer);
+		container.emit('pointercancel', pointer);
+		expect(kernel.encodeMouse.mock.calls.filter(call => call[3] === 1)).toHaveLength(1);
 
 		kernel.mouseMode = 0;
 		container.emit('pointerdown', pointer);
@@ -411,6 +422,38 @@ describe('TerminalManager attach lifecycle', () => {
 		expect(target.releasePointerCapture).toHaveBeenCalledWith(7);
 		container.emit('pointerleave');
 		expect(container.style.cursor).toBe('');
+	});
+
+	it('releases only the owned press once outside the surface and cancels it before local selection', async () => {
+		const manager = TerminalManager.instance({ fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200 });
+		(manager as any).wasmReady = true;
+		const container = makeContainer();
+		await manager.attach('pane-a', container as unknown as HTMLElement, 'workspace-a');
+		const kernel = wasm.FakeKernel.instances[0]!;
+		kernel.mouseMode = 4;
+		manager.onData('pane-a', () => {});
+		const pointer = { clientX: 35, clientY: 65, pointerId: 7, button: 2, buttons: 2,
+			ctrlKey: true, shiftKey: false, altKey: true, metaKey: false, target: new FakeElement() };
+		container.emit('pointerdown', pointer);
+		kernel.encodeMouse.mockClear();
+		const add = window.addEventListener as unknown as ReturnType<typeof vi.fn>;
+		const up = add.mock.calls.find(([name]) => name === 'pointerup')![1] as (event: unknown) => void;
+		up({ ...pointer, pointerId: 99 });
+		expect(kernel.encodeMouse).not.toHaveBeenCalled();
+		up({ ...pointer, clientX: -10_000, clientY: -10_000, buttons: 0 });
+		container.emit('pointerup', pointer);
+		container.emit('pointercancel', pointer);
+		expect(kernel.encodeMouse.mock.calls.filter(call => call[3] === 1)).toHaveLength(1);
+		expect(kernel.encodeMouse).toHaveBeenLastCalledWith(expect.any(Number), expect.any(Number), 2, 1, false, true, true);
+
+		container.emit('pointerdown', pointer);
+		manager.setPointerSelectionMode('pane-a', true);
+		kernel.encodeMouse.mockClear();
+		container.emit('pointerdown', { ...pointer, button: 0, buttons: 1 });
+		expect(kernel.encodeMouse).not.toHaveBeenCalled();
+		expect(kernel.setSelectionAbs).toHaveBeenCalled();
+		manager.detach('pane-a');
+		expect(window.removeEventListener).toHaveBeenCalledWith('pointerup', up, true);
 	});
 
 	it('exposes development diagnostics for PTY, kernel, theme, and selection state', async () => {

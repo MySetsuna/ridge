@@ -14,7 +14,7 @@
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TerminalManager } from './manager';
-import { SurfaceHostHandle } from '@ridge/term-wasm';
+import { SurfaceHostHandle } from './wasmRuntime';
 
 const BASELINE_RESULTS: Record<string, unknown> = {};
 function recordBaseline(name: string, value: unknown) {
@@ -57,6 +57,7 @@ function makePane() {
 		cols: vi.fn(() => cols),
 		feed: vi.fn(),
 		applyDeltaFrame: vi.fn(),
+        applyRemoteFrame: vi.fn(() => true),
 		resize: vi.fn(),
 		prependScrollback: vi.fn(),
 		takePendingResponse: vi.fn(() => new Uint8Array()),
@@ -190,6 +191,8 @@ beforeEach(() => {
 	vi.stubGlobal('cancelAnimationFrame', vi.fn());
 	vi.stubGlobal('localStorage', { getItem: vi.fn(() => null), setItem: vi.fn(), removeItem: vi.fn() });
 	vi.stubGlobal('window', {
+		addEventListener: vi.fn(),
+		removeEventListener: vi.fn(),
 		devicePixelRatio: 1,
 		open: vi.fn(),
 		getComputedStyle: vi.fn(() => ({ paddingLeft: '0px', paddingRight: '0px', paddingTop: '0px', paddingBottom: '0px' })),

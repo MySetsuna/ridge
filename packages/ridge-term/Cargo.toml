@@ -43,7 +43,8 @@ crate-type = ["cdylib", "rlib"]
 # There is no Canvas2D or software presentation fallback.
 # (User feedback 2026-05-05: don't require a build flag or localStorage
 # opt-in to use the GPU; runtime adapter detection should drive it.)
-default = ["webgpu"]
+default = ["bindings"]
+bindings = []
 # Round 3 §4.1: include the WebGpuBackend module + pull wgpu, bytemuck,
 # wasm-bindgen-futures (for async adapter/device acquisition).
 # wgpu's `webgpu` feature targets the browser's WebGPU API only —
@@ -57,13 +58,14 @@ webgpu = [
     "dep:wgpu",
     "dep:wasm-bindgen-futures",
     "dep:bytemuck",
-    "dep:cosmic-text",
+    "ridge-term-font/browser",
 ]
 # The vendored ridge-signaling wire module gates ts-rs-only annotations behind
 # this feature. Ridge never enables it; declaring it keeps cfg checking clean.
 typescript = []
 
 [dependencies]
+ridge-term-font = { path = "../ridge-term-font", default-features = false }
 # VT/ANSI escape sequence parser. Same crate Alacritty uses; covers the full
 # Paul Williams state machine including DCS / OSC / CSI parameter parsing.
 vte = "0.13"
@@ -118,7 +120,6 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 # (TASKS §4.5.c). The `derive` feature lets CellInstance + FrameUniform
 # get `Pod` + `Zeroable` impls without hand-written unsafe blocks.
 bytemuck = { version = "1", features = ["derive"], optional = true }
-cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash", "wasm-web", "monospace_fallback"], optional = true }
 
 [dev-dependencies]
 # Native tests don't need wasm. Naga is the WGSL parser/validator wgpu
@@ -129,7 +130,6 @@ cosmic-text = { version = "0.19", default-features = false, features = ["std", "
 # `select`/`mix`) that would otherwise only surface at WebGPU
 # `device.create_shader_module` time in production.
 naga = { version = "23", features = ["wgsl-in"] }
-cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash", "monospace_fallback"] }
 
 # NOTE (S1, 2026-06-03): the size-optimised release profile that lived here
 # (`opt-level = "z"`, `lto = true`, `codegen-units = 1`) moved to the workspace

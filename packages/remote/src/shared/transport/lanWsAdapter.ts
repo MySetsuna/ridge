@@ -191,6 +191,10 @@ export class LanWsAdapter implements ChannelTransport {
     return () => this.paneListeners.delete(cb);
   }
 
+  onTerminalFrame(cb: (bytes: Uint8Array) => void): Unsubscribe {
+    return this.conn.onTerminalFrame(cb);
+  }
+
   // ── L1: lifecycle ───────────────────────────────────────────────────────────
   connect(): void {
     // RemoteConnection.connect(host, port, auth) is driven by the web-remote

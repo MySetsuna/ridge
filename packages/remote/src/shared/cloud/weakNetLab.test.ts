@@ -173,11 +173,9 @@ describe('弱网实验室 — B. DataChannel 背压水位扫描（输入延迟�
   for (const buffered of [64 * 1024, BUFFERED_HIGH_WATERMARK + 1, 1 * MIB]) {
     const overHigh = buffered > BUFFERED_HIGH_WATERMARK;
     it(`buffered=${(buffered / MIB).toFixed(0)}MiB → ${overHigh ? '丢帧并在 drain 后每 pane 恰一次 resync' : '直发不丢'}`, async () => {
-      const invoke = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({
-        frame: '\x1bcRECOVERED',
-      }));
+      const invoke = vi.fn(async (_method: string, _params?: Record<string, unknown>) => btoa(String.fromCharCode(0x13,9,8,7)));
       const sent: Uint8Array[] = [];
-      const bridge = new CloudHostBridge({ invoke, sendFrame: (frame) => sent.push(frame) });
+      const bridge = new CloudHostBridge({ invoke, paneOutputSource: () => () => {}, sendFrame: (frame) => sent.push(frame) });
       let level = buffered;
       let drain: (() => void) | null = null;
       bridge.attachChannelControl({
@@ -191,9 +189,9 @@ describe('弱网实验室 — B. DataChannel 背压水位扫描（输入延迟�
       bridge.handleFrame(encodeJsonFrame({
         jsonrpc: '2.0',
         method: 'subscribe-pane',
-        params: { paneId: panes[0], active: true },
+        params: { paneId: panes[0], workspaceId: 'ws', activationId: 1, active: true },
       }));
-      for (const paneId of panes) bridge.pushPaneOutput(paneId, new Uint8Array([1, 2, 3]));
+      for (const paneId of panes) bridge.pushPaneOutput(paneId, new Uint8Array([0x13,1,2,3]));
 
       if (!overHigh) {
         expect(sent).toHaveLength(1);
@@ -209,7 +207,7 @@ describe('弱网实验室 — B. DataChannel 背压水位扫描（输入延迟�
       level = 0;
       drain!();
       await vi.waitFor(() => expect(sent).toHaveLength(1));
-      const resyncs = invoke.mock.calls.filter(([m]) => m === 'get_pane_resync_frame');
+      const resyncs = invoke.mock.calls.filter(([m]) => m === 'get_terminal_snapshot');
       expect(resyncs).toHaveLength(1);
       expect((resyncs[0][1] as { paneId: string }).paneId).toBe(panes[0]);
       metrics.push({

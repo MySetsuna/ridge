@@ -138,6 +138,12 @@ impl Scrollback {
         self.entries[real].as_ref()
     }
 
+    pub fn get_mut(&mut self, idx: usize) -> Option<&mut Row> {
+        if idx >= self.len { return None; }
+        let real = (self.head + idx) % self.capacity;
+        self.entries[real].as_mut()
+    }
+
     pub fn clear(&mut self) {
         // §B.2 — bump eviction_count by `len` so any extant selection
         // anchor records get invalidated by the same delta-comparison

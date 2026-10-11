@@ -49,8 +49,9 @@ use crate::session_control::{self as ctrl, TrustState};
 use crate::signaling::{SignalMsg, SignalSender};
 use crate::totp::RemoteTotp;
 use ridge_core::DeviceIdentity;
-use ridge_term::remote_v2::{RemoteTerminalProducer, RemoteTerminalUpdate};
-use ridge_term::terminal_v2::{self, PaneRef, TerminalEnvelope};
+use ridge_term::producer::TerminalProducer;
+use ridge_term::semantic::SemanticUpdate;
+use ridge_term::terminal_protocol::{self, PaneRef};
 
 /// cli host 服务的固定 pane id。cli 是单 pane terminal host：controller 订阅这个
 /// 已知 paneId、对它 `write_to_pty`/`resize_pane`，host 用它给 PTY 字节打 0x10 帧。
@@ -173,9 +174,10 @@ impl RemoteSession {
 
         // 3. PTY。
         let (pty, mut pty_out_rx) = PtyBridge::spawn(shell.as_deref(), cwd.as_deref())?;
-        let mut semantic =
-            RemoteTerminalProducer::new(24, 80, 5_000, cwd.clone().unwrap_or_default());
+        let mut semantic = TerminalProducer::with_epoch(24, 80, 5_000, uuid::Uuid::new_v4().to_string());
+        semantic.set_initial_cwd(cwd.clone().unwrap_or_default());
         let mut semantic_activation: Option<u64> = None;
+        let mut terminal_input = ridge_term::input_sequence::TerminalInputLedger::default();
 
         // 4. E2EE 握手（**事件驱动，修 D-GM-10 握手时序死锁**）。
         //
@@ -295,7 +297,7 @@ impl RemoteSession {
                 maybe_out = pty_out_rx.recv() => {
                     match maybe_out {
                         Some(bytes) => {
-                            let semantic_update = semantic.feed(&bytes);
+                            let semantic_update = semantic.feed_semantic(&bytes);
                             let response = semantic.take_pending_response();
                             if !response.is_empty() {
                                 let _ = pty.write_input(&response);
@@ -403,11 +405,12 @@ impl RemoteSession {
                                 let crypto_ref =
                                     crypto.as_mut().expect("crypto present after handshake");
                                 let was_subscribed = subscribed;
-                                let effect = match Self::handle_inbound(
+                                let effect = match Self::handle_inbound_terminal(
                                     &frame, crypto_ref, &pty, &dc_io.tx, &roots,
                                     &totp, &mut verified, &mut subscribed,
                                     bind_transcript.as_deref(),
                                     &mut trust_state,
+                                    Some((&mut semantic, semantic_activation, &mut terminal_input)),
                                 ).await {
                                     Ok(effect) => effect,
                                     Err(e) => {
@@ -420,14 +423,14 @@ impl RemoteSession {
                                         semantic_activation = Some(activation_id);
                                         let _ = batch.take();
                                         Self::send_semantic_update(
-                                            RemoteTerminalUpdate::Snapshot(semantic.snapshot()),
+                                            semantic.semantic_snapshot(),
                                             activation_id,
                                             crypto_ref,
                                             &dc_io.tx,
                                         ).await?;
                                     }
                                     Some(InboundEffect::ResizeTerminal { rows, cols }) => {
-                                        let update = semantic.resize(rows, cols);
+                                        let update = semantic.resize_semantic(rows, cols);
                                         if let Some(activation_id) = semantic_activation {
                                             Self::send_semantic_update(
                                                 update,
@@ -560,24 +563,17 @@ impl RemoteSession {
     }
 
     async fn send_semantic_update(
-        update: RemoteTerminalUpdate,
+        update: SemanticUpdate,
         activation_id: u64,
         crypto: &mut CryptoSession,
         tx: &mpsc::Sender<Vec<u8>>,
     ) -> Result<()> {
         let pane = PaneRef::new(CLI_WORKSPACE_ID, CLI_PANE_ID);
-        let envelope = match update {
-            RemoteTerminalUpdate::Snapshot(snapshot) => {
-                TerminalEnvelope::snapshot(pane, activation_id, snapshot)
-            }
-            RemoteTerminalUpdate::Delta(delta) => {
-                TerminalEnvelope::delta(pane, activation_id, delta)
-            }
-        };
-        let frame = terminal_v2::encode_frame(&envelope)
-            .map_err(|error| anyhow!("terminal-v2 encode failed: {error}"))?;
+        let envelope = update.into_frame(pane, activation_id);
+        let frame = terminal_protocol::encode_frame(&envelope)
+            .map_err(|error| anyhow!("terminal encode failed: {error}"))?;
         let plaintext = mux::encode_pane(CLI_PANE_ID, &frame)
-            .map_err(|error| anyhow!("terminal-v2 pane mux failed: {error}"))?;
+            .map_err(|error| anyhow!("terminal pane mux failed: {error}"))?;
         let sealed = crypto.seal(&plaintext)?;
         tx.send(sealed)
             .await
@@ -628,7 +624,7 @@ impl RemoteSession {
     /// `$/hello` 与 `totp-verify`。trust-grant 信道状态由 `trust_state` 承载（见
     /// session_control.rs）。
     #[allow(clippy::too_many_arguments)]
-    async fn handle_inbound(
+    async fn handle_inbound_terminal(
         frame: &[u8],
         crypto: &mut CryptoSession,
         pty: &PtyBridge,
@@ -639,6 +635,7 @@ impl RemoteSession {
         subscribed: &mut bool,
         bind_transcript: Option<&[u8]>,
         trust_state: &mut TrustState,
+        terminal: Option<(&mut TerminalProducer, Option<u64>, &mut ridge_term::input_sequence::TerminalInputLedger)>,
     ) -> Result<Option<InboundEffect>> {
         let plaintext = crypto.open(frame)?;
         let identity = totp.identity();
@@ -662,6 +659,19 @@ impl RemoteSession {
                 let env = rpc::parse_envelope(&body);
                 match gate_envelope(env, *verified) {
                     Gate::Allow(env) => {
+                        if let Envelope::Request { id, method, params } = &env {
+                            if matches!(method.as_str(), "write_terminal_input" | "get_terminal_history" | "get_terminal_snapshot") {
+                                let result = terminal.ok_or_else(|| "terminal unavailable".to_string()).and_then(|(producer, activation, ledger)| {
+                                    Self::terminal_request(method, params, producer, activation, ledger, pty)
+                                });
+                                let response = match result {
+                                    Ok(value) => rpc::result_response(id, value),
+                                    Err(error) => rpc::error_response(id, &RpcError::new(rpc::JSON_RPC_INVALID_REQUEST, error)),
+                                };
+                                Self::send_json(crypto, tx, &response).await?;
+                                return Ok(None);
+                            }
+                        }
                         let effect = inbound_effect(&env);
                         Self::handle_envelope(env, crypto, pty, tx, roots, subscribed).await?;
                         Ok(effect)
@@ -692,6 +702,35 @@ impl RemoteSession {
             }
             Inbound::Empty => Ok(None),
         }
+    }
+
+    fn terminal_request(method: &str, params: &Value, producer: &TerminalProducer, activation: Option<u64>, ledger: &mut ridge_term::input_sequence::TerminalInputLedger, pty: &PtyBridge) -> Result<Value, String> {
+        use ridge_term::terminal_protocol::{encode_frame, HistoryRequest, PaneRef, TerminalInput};
+        let activation = activation.ok_or("terminal activation required")?;
+        let pane = PaneRef::new(CLI_WORKSPACE_ID, CLI_PANE_ID);
+        if method == "write_terminal_input" {
+            let input: TerminalInput = serde_json::from_value(params["input"].clone()).map_err(|error| error.to_string())?;
+            let ack = ledger.apply(&input, &pane, producer.terminal_epoch(), Some(activation), |bytes| pty.write_input(bytes).map_err(|error| error.to_string()))?;
+            return serde_json::to_value(ack).map_err(|error| error.to_string());
+        }
+        let update = if method == "get_terminal_history" {
+            let request: HistoryRequest = serde_json::from_value(params["request"].clone()).map_err(|error| error.to_string())?;
+            if request.pane != pane || request.activation_id != activation { return Err("terminal binding changed".into()); }
+            producer.semantic_history(&request).map_err(str::to_owned)?
+        } else {
+            if params["workspaceId"].as_str() != Some(CLI_WORKSPACE_ID) || params["paneId"].as_str() != Some(CLI_PANE_ID) || params["activationId"].as_u64() != Some(activation) {
+                return Err("terminal binding changed".into());
+            }
+            producer.semantic_snapshot()
+        };
+        let bytes = encode_frame(&update.into_frame(pane, activation)).map_err(|error| error.to_string())?;
+        Ok(Value::String(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)))
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_inbound(frame: &[u8], crypto: &mut CryptoSession, pty: &PtyBridge, tx: &mpsc::Sender<Vec<u8>>, roots: &[PathBuf], totp: &RemoteTotp, verified: &mut bool, subscribed: &mut bool, bind_transcript: Option<&[u8]>, trust_state: &mut TrustState) -> Result<Option<InboundEffect>> {
+        Self::handle_inbound_terminal(frame, crypto, pty, tx, roots, totp, verified, subscribed, bind_transcript, trust_state, None).await
     }
 
     /// 处理一帧已放行的 0x11 JSON-RPC 信封。

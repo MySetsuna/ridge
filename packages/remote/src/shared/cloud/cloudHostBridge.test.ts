@@ -18,7 +18,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   CloudHostBridge,
-  PANE_OUTPUT_FRAME_BYTES,
   negotiateHello,
   toJsonRpcError,
 } from './cloudHostBridge';
@@ -55,7 +54,7 @@ function makeRig(opts: {
   const bridge = new CloudHostBridge({
     invoke,
     sendFrame: (b) => sent.push(b),
-    paneOutputSource: opts.paneOutputSource,
+    paneOutputSource: 'paneOutputSource' in opts ? opts.paneOutputSource : () => () => {},
     totpVerifier: opts.totpVerifier,
     totpBindVerifier: opts.totpBindVerifier,
     totpTrustCheck: opts.totpTrustCheck,
@@ -67,7 +66,12 @@ function makeRig(opts: {
   });
 
   /** Push a JSON-RPC control frame as the controller would (0x11). */
-  const sendJson = (value: unknown) => bridge.handleFrame(encodeJsonFrame(value));
+  const sendJson = (value: unknown) => {
+    const frame = value as { method?: string; params?: Record<string, unknown> };
+    // Construct a complete current-contract subscription unless a test supplies an explicit invalid field.
+    if (frame.method === 'subscribe-pane') frame.params = { workspaceId: 'ws', activationId: 1, ...frame.params };
+    return bridge.handleFrame(encodeJsonFrame(value));
+  };
   /** Push a §4 session-CONTROL frame as the controller would (0x12). */
   const sendControl = (value: unknown) => bridge.handleFrame(encodeControlFrame(value));
   /** Decode every host-sent JSON frame the test has captured so far. */
@@ -239,14 +243,14 @@ describe('CloudHostBridge — $/hello (D9) negotiation', () => {
     rig.sendJson({
       jsonrpc: '2.0',
       method: '$/hello',
-      params: { protocolVersion: 1, terminalProtocolVersion: 2, capabilities: ['pane', 'invoke', 'fs'] },
+      params: { protocolVersion: 1, terminalProtocolVersion: 1, capabilities: ['pane', 'invoke', 'fs'] },
     });
     expect(rig.sentJson()[0]).toEqual({
       jsonrpc: '2.0',
       method: '$/hello',
       params: {
         protocolVersion: 1,
-        terminalProtocolVersion: 2,
+        terminalProtocolVersion: 1,
         terminalMaxFrameBytes: 16 * 1024 * 1024,
         capabilities: ['pane', 'invoke', 'fs'],
       },
@@ -255,7 +259,7 @@ describe('CloudHostBridge — $/hello (D9) negotiation', () => {
 
   it('advertises full host capabilities when the controller sends none', () => {
     const rig = makeRig();
-    rig.sendJson({ jsonrpc: '2.0', method: '$/hello', params: { protocolVersion: 1, terminalProtocolVersion: 2 } });
+    rig.sendJson({ jsonrpc: '2.0', method: '$/hello', params: { protocolVersion: 1, terminalProtocolVersion: 1 } });
     const reply = rig.sentJson()[0] as { params: { capabilities: string[] } };
     expect(reply.params.capabilities).toEqual([
       'pane',
@@ -281,12 +285,12 @@ describe('CloudHostBridge — $/hello (D9) negotiation', () => {
 
   it('negotiateHello() matches the server.rs negotiate_hello shape', () => {
     // Mirrors src-tauri/src/remote/server.rs::negotiate_hello — keep in lock-step.
-    expect(negotiateHello({ protocolVersion: 1, terminalProtocolVersion: 2, capabilities: ['git'] })).toEqual({
+    expect(negotiateHello({ protocolVersion: 1, terminalProtocolVersion: 1, capabilities: ['git'] })).toEqual({
       jsonrpc: '2.0',
       method: '$/hello',
       params: {
         protocolVersion: 1,
-        terminalProtocolVersion: 2,
+        terminalProtocolVersion: 1,
         terminalMaxFrameBytes: 16 * 1024 * 1024,
         capabilities: ['git'],
       },
@@ -316,7 +320,25 @@ describe('CloudHostBridge — $/cancel', () => {
 });
 
 describe('CloudHostBridge — pane stream (D-GM-7 layout)', () => {
-  it('pushes subscribed pane output back as 0x10 || paneIdLen || paneId || raw', () => {
+  it('surfaces source failure, permits a new activation and fences old callbacks', () => {
+    const stops = [vi.fn(), vi.fn()];
+    const failures: Array<() => void> = [];
+    const outputs: Array<(bytes: Uint8Array) => void> = [];
+    const paneOutputSource: NonNullable<ConstructorParameters<typeof CloudHostBridge>[0]['paneOutputSource']> = vi.fn((_pane, _workspace, output, options) => {
+      outputs.push(output); failures.push(options!.onError!); return stops[outputs.length-1];
+    });
+    const rig = makeRig({ paneOutputSource });
+    const subscribe = (activationId: number) => rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { workspaceId: 'ws', paneId: 'p', activationId } });
+    subscribe(7); failures[0]();
+    expect(stops[0]).toHaveBeenCalledOnce();
+    expect(rig.sentJson()).toContainEqual({ type: 'event', name: 'pane-terminal-error', payload: { workspaceId: 'ws', paneId: 'p', activationId: 7 } });
+    subscribe(8); failures[0](); outputs[0](new Uint8Array([0x13,1]));
+    const packet = new Uint8Array([0x13,2]); outputs[1](packet);
+    expect(stops[1]).not.toHaveBeenCalled();
+    expect(rig.sent.filter(frame=>frame[0]===0x13)).toEqual([packet]);
+  });
+
+  it('relays the scoped canonical packet without a raw wrapper', () => {
     let emit: (raw: Uint8Array) => void = () => {};
     const paneOutputSource = vi.fn((
       paneId: string,
@@ -337,15 +359,10 @@ describe('CloudHostBridge — pane stream (D-GM-7 layout)', () => {
     });
     expect(paneOutputSource).toHaveBeenCalledOnce();
 
-    const raw = new TextEncoder().encode('hello pty');
-    emit(raw);
-
-    const panes = rig.sentPane();
-    expect(panes).toHaveLength(1);
-    expect(panes[0].paneId).toBe('pane-1');
-    expect(panes[0].bytes).toEqual(raw);
-    // Byte-exact parity: the frame equals what cloudMux.encodePaneFrame produces.
-    expect(rig.sent[0]).toEqual(encodePaneFrame('pane-1', raw));
+    const packet = new Uint8Array([0x13,1,2,3]);
+    emit(packet);
+    expect(rig.sent).toEqual([packet]);
+    expect(rig.sentPane()).toHaveLength(0);
   });
 
   it('is idempotent across duplicate subscribe-pane', () => {
@@ -380,10 +397,9 @@ describe('CloudHostBridge — pane stream (D-GM-7 layout)', () => {
   });
 
   it('registers subscribe-pane intent when no source is configured', () => {
-    const rig = makeRig(); // no paneOutputSource
+    const rig = makeRig({ paneOutputSource: undefined }); // missing source must fail visibly
     rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'p' } });
-    // No frames sent (no real source), no throw.
-    expect(rig.sent).toHaveLength(0);
+    expect(rig.sentJson()).toEqual([{ type: 'event', name: 'pane-terminal-error', payload: { paneId: 'p', workspaceId: 'ws', activationId: 1 } }]);
   });
 
   it('contains a pane source failure without escaping the notification handler', () => {
@@ -416,7 +432,7 @@ describe('CloudHostBridge — pane stream (D-GM-7 layout)', () => {
 
     const longPane = makeRig({ log });
     expect(() => longPane.bridge.pushPaneOutput('p'.repeat(256), new Uint8Array([1]))).not.toThrow();
-    expect(log).toHaveBeenCalledWith('error', expect.stringContaining('failed to encode pane frame'), expect.any(Error));
+    expect(longPane.sent).toHaveLength(0);
   });
 });
 
@@ -424,7 +440,7 @@ describe('CloudHostBridge — inbound demux edge cases', () => {
   it('ignores an inbound PANE_RAW frame (controller never sends PTY bytes)', () => {
     const invoke = vi.fn();
     const rig = makeRig({ invoke });
-    rig.bridge.handleFrame(encodePaneFrame('p', new Uint8Array([1, 2, 3])));
+    rig.bridge.handleFrame(encodePaneFrame('p', new Uint8Array([0x13, 1, 2, 3])));
     expect(invoke).not.toHaveBeenCalled();
     expect(rig.sent).toHaveLength(0);
   });
@@ -457,7 +473,7 @@ describe('CloudHostBridge — inbound demux edge cases', () => {
     rig.bridge.handleFrame(encodeJsonFrame('not-an-object'));
     rig.bridge.handleFrame(new Uint8Array([0x7f, 0x01]));
 
-    rig.sendJson({ jsonrpc: '2.0', id: 10, method: '$/hello', params: { protocolVersion: 1, terminalProtocolVersion: 2 } });
+    rig.sendJson({ jsonrpc: '2.0', id: 10, method: '$/hello', params: { protocolVersion: 1, terminalProtocolVersion: 1 } });
     rig.sendJson({ jsonrpc: '2.0', id: 11, method: '$/cancel', params: {} });
     rig.sendJson({ jsonrpc: '2.0', id: 12, method: 'get_remote_info' });
     rig.sendJson({ jsonrpc: '2.0', id: 13, method: 'not-allowlisted' });
@@ -681,32 +697,24 @@ describe('CloudHostBridge — §4 TOTP brute-force lockout (audit #3)', () => {
     expect(rig.sentPane()).toHaveLength(0);
   });
 
-  it('pushPaneOutput emits once verified', async () => {
+  it('emits only subscribed canonical envelopes after verification', async () => {
     const rig = makeRig({ totpVerifier: vi.fn(async () => true) });
     rig.sendControl({ t: 'totp-verify', code: '123456' });
     await vi.waitFor(() => expect(rig.sentControl()).toHaveLength(1));
-
-    rig.bridge.pushPaneOutput('pane-1', new TextEncoder().encode('pty'));
-    expect(rig.sentPane()).toHaveLength(1);
-    expect(rig.sentPane()[0].paneId).toBe('pane-1');
+    rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'pane-1' } });
+    const packet = new Uint8Array([0x13,1,2,3]);
+    rig.bridge.pushPaneOutput('pane-1', packet);
+    expect(rig.sent.filter(frame => frame[0] === 0x13)).toEqual([packet]);
+    rig.bridge.pushPaneOutput('other', packet);
+    expect(rig.sent.filter(frame => frame[0] === 0x13)).toEqual([packet]);
   });
 
-  it('pushPaneOutput emits with no verifier configured (backward compat, no gating)', () => {
-    const rig = makeRig(); // no totpVerifier → verified=true from construction
-    rig.bridge.pushPaneOutput('pane-1', new TextEncoder().encode('pty'));
-    expect(rig.sentPane()).toHaveLength(1);
-  });
-
-  it('splits a burst before sealing so control frames can interleave', () => {
+  it('rejects raw terminal bytes without a replay fallback', () => {
     const rig = makeRig();
-    const raw = new Uint8Array(PANE_OUTPUT_FRAME_BYTES + 1);
-    raw.forEach((_, index) => raw[index] = index & 0xff);
-    rig.bridge.pushPaneOutput('pane-1', raw);
-    const frames = rig.sentPane();
-    expect(frames).toHaveLength(2);
-    expect(frames[0].bytes).toHaveLength(PANE_OUTPUT_FRAME_BYTES);
-    expect(frames[1].bytes).toHaveLength(1);
-    expect([...frames[0].bytes, ...frames[1].bytes]).toEqual([...raw]);
+    rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'pane-1' } });
+    rig.bridge.pushPaneOutput('pane-1', new Uint8Array([1,2,3]));
+    expect(rig.sentPane()).toHaveLength(0);
+    expect(rig.sentJson()).toContainEqual({ type: 'event', name: 'pane-terminal-error', payload: { workspaceId: 'ws', paneId: 'pane-1', activationId: 1 } });
   });
 
   // ── 零信任 #1：totp-bind（信道绑定 HMAC tag，明文码不上线）── 概念 5 ────────────
@@ -802,7 +810,8 @@ describe('CloudHostBridge — DataChannel 背压 + 丢帧重同步 (弱网 P1)',
   }
 
   it('bufferedAmount 高于上水位(256KiB) → 丢 pane 帧；回落后仅向当前控制端发私有快照', async () => {
-    const invoke = vi.fn(async () => ({ frame: '\x1bcRECOVERED' }));
+    const recovered = new Uint8Array([0x13,9,8,7]);
+    const invoke = vi.fn(async () => bytesToBase64(recovered));
     const rig = makeRig({ invoke });
     const ch = fakeChannel();
     rig.bridge.attachChannelControl(ch.ctrl);
@@ -810,20 +819,20 @@ describe('CloudHostBridge — DataChannel 背压 + 丢帧重同步 (弱网 P1)',
 
     // 高水位（>256 KiB）→ 丢帧，未发出 pane 帧。
     ch.setBuffered(9 * 1024 * 1024);
-    rig.bridge.pushPaneOutput('pane-1', new Uint8Array([1, 2, 3]));
+    rig.bridge.pushPaneOutput('pane-1', new Uint8Array([0x13, 1, 2, 3]));
     expect(rig.sentPane()).toHaveLength(0);
 
     // 缓冲回落 → 私有 canonical frame；不经广播式 Tauri resync。
     ch.setBuffered(0);
     ch.drain();
     await vi.waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('get_pane_resync_frame', {
+      expect(invoke).toHaveBeenCalledWith('get_terminal_snapshot', {
         paneId: 'pane-1',
-        workspaceId: undefined,
-        maxBytes: 256 * 1024,
+        workspaceId: 'ws',
+        activationId: 1,
       }),
     );
-    expect(new TextDecoder().decode(rig.sentPane()[0].bytes)).toBe('\x1bcRECOVERED');
+    expect(rig.sent.filter(frame => frame[0] === 0x13)).toEqual([recovered]);
   });
 
   it('bufferedAmount 低于上水位 → 正常发 pane 帧', () => {
@@ -836,17 +845,14 @@ describe('CloudHostBridge — DataChannel 背压 + 丢帧重同步 (弱网 P1)',
       params: { paneId: 'pane-1', active: true },
     });
     ch.setBuffered(1024); // 远低于上水位
-    rig.bridge.pushPaneOutput('pane-1', new Uint8Array([9, 9]));
-    const panes = rig.sentPane();
-    expect(panes).toHaveLength(1);
-    expect(panes[0].paneId).toBe('pane-1');
-    expect([...panes[0].bytes]).toEqual([9, 9]);
+    rig.bridge.pushPaneOutput('pane-1', new Uint8Array([0x13, 9, 9]));
+    expect(rig.sent.filter(frame => frame[0] === 0x13)).toEqual([new Uint8Array([0x13,9,9])]);
   });
 
-  it('keeps a terminal-v2 envelope atomic and recovers a dropped revision with an exact snapshot', async () => {
+  it('keeps a canonical envelope atomic and recovers a dropped revision with an exact snapshot', async () => {
     const recovered = new Uint8Array([0x13, 9, 8, 7]);
     const invoke = vi.fn(async (method: string) => {
-      if (method === 'get_pane_terminal_snapshot_v2') return bytesToBase64(recovered);
+      if (method === 'get_terminal_snapshot') return bytesToBase64(recovered);
       return null;
     });
     const rig = makeRig({ invoke });
@@ -870,11 +876,11 @@ describe('CloudHostBridge — DataChannel 背压 + 丢帧重同步 (弱网 P1)',
     ch.setBuffered(0);
     ch.drain();
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith(
-      'get_pane_terminal_snapshot_v2',
+      'get_terminal_snapshot',
       { paneId: 'pane-1', workspaceId: 'workspace-1', activationId: 17 },
     ));
-    expect(rig.sentPane()).toHaveLength(1);
-    expect(rig.sentPane()[0].bytes).toEqual(recovered);
+    expect(rig.sent.filter(frame => frame[0] === 0x13)).toEqual([recovered]);
+    expect(rig.sentPane()).toHaveLength(0);
   });
 
   it('background stops at zero while active stays within the input latency budget', () => {
@@ -884,13 +890,14 @@ describe('CloudHostBridge — DataChannel 背压 + 丢帧重同步 (弱网 P1)',
     rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'active', active: true } });
     rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'background' } });
     ch.setBuffered(128 * 1024);
-    rig.bridge.pushPaneOutput('background', new Uint8Array([1]));
-    rig.bridge.pushPaneOutput('active', new Uint8Array([2]));
-    expect(rig.sentPane().map((p) => p.paneId)).toEqual(['active']);
+    rig.bridge.pushPaneOutput('background', new Uint8Array([0x13,1]));
+    rig.bridge.pushPaneOutput('active', new Uint8Array([0x13,2]));
+    expect(rig.sent.filter(frame => frame[0] === 0x13)).toEqual([new Uint8Array([0x13,2])]);
   });
 
   it('recovers a pane when it becomes active after backpressure', async () => {
-    const invoke = vi.fn(async () => ({ frame: 'recovered' }));
+    const recovered = new Uint8Array([0x13,9,8,7]);
+    const invoke = vi.fn(async () => bytesToBase64(recovered));
     const rig = makeRig({ invoke });
     const ch = fakeChannel();
     rig.bridge.attachChannelControl(ch.ctrl);
@@ -900,10 +907,10 @@ describe('CloudHostBridge — DataChannel 背压 + 丢帧重同步 (弱网 P1)',
     expect(rig.sentPane()).toHaveLength(0);
 
     rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'pane-1', active: true } });
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('get_pane_resync_frame', {
-      paneId: 'pane-1', workspaceId: undefined, maxBytes: 256 * 1024,
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('get_terminal_snapshot', {
+      paneId: 'pane-1', workspaceId: 'ws', activationId: 1,
     }));
-    expect(new TextDecoder().decode(rig.sentPane()[0].bytes)).toBe('recovered');
+    expect(rig.sent.filter(frame => frame[0] === 0x13)).toEqual([recovered]);
   });
 
   it('ordered channel admits at most one background frame before active traffic', () => {
@@ -911,6 +918,7 @@ describe('CloudHostBridge — DataChannel 背压 + 丢帧重同步 (弱网 P1)',
     const sent: Uint8Array[] = [];
     const bridge = new CloudHostBridge({
       invoke: vi.fn(async () => null),
+      paneOutputSource: () => () => {},
       sendFrame: (frame) => {
         sent.push(frame);
         buffered += frame.byteLength;
@@ -923,29 +931,26 @@ describe('CloudHostBridge — DataChannel 背压 + 丢帧重同步 (弱网 P1)',
     bridge.handleFrame(encodeJsonFrame({
       jsonrpc: '2.0',
       method: 'subscribe-pane',
-      params: { paneId: 'active', active: true },
+      params: { paneId: 'active', workspaceId: 'ws', activationId: 1, active: true },
     }));
     bridge.handleFrame(encodeJsonFrame({
       jsonrpc: '2.0',
       method: 'subscribe-pane',
-      params: { paneId: 'background', active: false },
+      params: { paneId: 'background', workspaceId: 'ws', activationId: 1, active: false },
     }));
 
-    bridge.pushPaneOutput('background', new Uint8Array([1]));
-    bridge.pushPaneOutput('background', new Uint8Array([2]));
-    bridge.pushPaneOutput('active', new Uint8Array([3]));
+    bridge.pushPaneOutput('background', new Uint8Array([0x13,1]));
+    bridge.pushPaneOutput('background', new Uint8Array([0x13,2]));
+    bridge.pushPaneOutput('active', new Uint8Array([0x13,3]));
 
-    expect(sent.map((frame) => demuxFrame(frame)))
-      .toMatchObject([
-        { kind: 'pane', paneId: 'background' },
-        { kind: 'pane', paneId: 'active' },
-      ]);
+    expect(sent).toEqual([new Uint8Array([0x13,1]),new Uint8Array([0x13,3])]);
   });
 
   it('未注入 channel control → 不背压（向后兼容：总是直发）', () => {
     const rig = makeRig();
-    rig.bridge.pushPaneOutput('pane-1', new Uint8Array([7]));
-    expect(rig.sentPane()).toHaveLength(1);
+    rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'pane-1' } });
+    rig.bridge.pushPaneOutput('pane-1', new Uint8Array([0x13,7]));
+    expect(rig.sent.filter(frame=>frame[0]===0x13)).toEqual([new Uint8Array([0x13,7])]);
   });
 
   it('drain 但本无背压丢帧 → 不请求 resync', () => {

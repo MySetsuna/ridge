@@ -7,6 +7,8 @@
   import { WsDataProvider } from '$lib/transport/ws';
   import { bridge } from '$lib/transport/tauriShim/bridge';
   import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
+  import { onDestroy } from 'svelte';
+  import { retryableLazyImport } from './lib/retryableLazyImport';
 
   // §mobile-cloud (design 2026-06-16): the mobile app now has TWO transports —
   //   - LAN:   RemoteConnection (WebSocket, self-signed TLS) — phone on same network.
@@ -52,15 +54,24 @@
   let AuthScreenComp = $state<import('svelte').Component<{ ws: RemoteConnection; onverified: () => void }> | null>(null);
   let CloudAuthScreenComp = $state<import('svelte').Component<{ onready: (conn: RemoteLink) => void; onfallbacklan: () => void }> | null>(null);
   let MainAppComp = $state<import('svelte').Component<{ ws: RemoteLink }> | null>(null);
+  const loadAuthScreen = retryableLazyImport(() => import('./AuthScreen.svelte'));
+  const loadCloudAuthScreen = retryableLazyImport(() => import('./CloudAuthScreen.svelte'));
+  const loadMainApp = retryableLazyImport(() => import('./MainApp.svelte'));
+  let loadError = $state(false);
+  let alive = true;
+  onDestroy(() => { alive = false; ws?.disconnect(); });
 
   $effect(() => {
+    if (loadError) return;
+    const requestedMode = mode;
+    const failed = () => { if (alive && mode === requestedMode) loadError = true; };
     if (mode === 'cloud' && !verified && !CloudAuthScreenComp) {
-      void import('./CloudAuthScreen.svelte').then((m) => { CloudAuthScreenComp = m.default; });
+      void loadCloudAuthScreen().then((m) => { if (alive) CloudAuthScreenComp = m.default; }, failed);
     } else if (mode === 'lan' && !verified && !AuthScreenComp) {
-      void import('./AuthScreen.svelte').then((m) => { AuthScreenComp = m.default; });
+      void loadAuthScreen().then((m) => { if (alive) AuthScreenComp = m.default; }, failed);
     }
     if (verified && ws && !MainAppComp) {
-      void import('./MainApp.svelte').then((m) => { MainAppComp = m.default; });
+      void loadMainApp().then((m) => { if (alive) MainAppComp = m.default; }, failed);
     }
   });
 
@@ -101,6 +112,12 @@
 </script>
 
 <QueryClientProvider client={queryClient}>
+  {#if loadError}
+    <div role="alert" class="flex flex-col items-center justify-center gap-3 min-h-[100dvh]">
+      <p>界面加载失败，请重试。</p>
+      <button onclick={() => { loadError = false; }}>重试</button>
+    </div>
+  {:else}
   {#if mode === 'cloud'}
     {#if !verified}
       {#if CloudAuthScreenComp}
@@ -126,5 +143,6 @@
     <MainAppComp {ws} />
   {:else if ws}
     <div class="flex items-center justify-center min-h-[100dvh]">…</div>
+  {/if}
   {/if}
 </QueryClientProvider>

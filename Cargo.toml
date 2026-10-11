@@ -20,6 +20,8 @@ members = [
     "packages/ridge-mcp-bridge",
     "packages/ridge-remote",
     "packages/ridge-term",
+    "packages/ridge-term-font",
+    "packages/ridge-term-render",
     "packages/ridge-tmux",
     "packages/ridge-acp",
 ]
@@ -56,5 +58,13 @@ strip = true
 # wasm bundle 仍要尽量小：只给 wasm 主 crate 保留 size-opt（不影响原生构建——
 # ridge-term 是 wasm-only，原生 release 根本不编它）。
 [profile.release.package.ridge-term]
+opt-level = "z"
+codegen-units = 1
+
+[profile.release.package.ridge-term-font]
+opt-level = "z"
+codegen-units = 1
+
+[profile.release.package.ridge-term-render]
 opt-level = "z"
 codegen-units = 1

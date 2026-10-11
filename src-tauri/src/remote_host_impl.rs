@@ -30,6 +30,29 @@ use crate::state::{AppState, RemotePaneSub, RemoteSubId};
 
 type ScheduledPtyEvent = (bool, crate::types::RemotePtyEvent);
 
+fn recover_terminal_stream(
+    state: &AppState,
+    key: (Uuid, Uuid),
+    activation_id: u64,
+    desync: &AtomicBool,
+    tx: &mpsc::Sender<Message>,
+) -> Option<u64> {
+    // Claim before capture/send. Overflow while sending must remain pending.
+    if !desync.swap(false, Ordering::AcqRel) { return None; }
+    let result = (|| {
+        let snapshot = state.get_remote_terminal_snapshot(key.0, key.1)?;
+        let revision = snapshot.revision();
+        let frame = snapshot.into_frame(ridge_term::terminal_protocol::PaneRef::new(
+            key.0.to_string(), key.1.to_string(),
+        ), activation_id);
+        let bytes = ridge_term::terminal_protocol::encode_frame(&frame).ok()?;
+        tx.try_send(Message::Binary(bytes.into())).ok()?;
+        Some(revision)
+    })();
+    if result.is_none() { desync.store(true, Ordering::Release); }
+    result
+}
+
 const MAX_IN_FLIGHT_DATA_REQUESTS: usize = 32;
 const MAX_PRE_CANCELLED_DATA_REQUESTS: usize = 1024;
 /// Invoke requests (the browser desktop bridge and the legacy mobile
@@ -875,8 +898,8 @@ async fn handle_ws(
         "type": "hello",
         "version": 1,
         "protocol": "ridge-remote-ws",
-        "terminalProtocolVersion": ridge_term::terminal_v2::PROTOCOL_VERSION,
-        "terminalMaxFrameBytes": ridge_term::terminal_v2::MAX_FRAME_BYTES,
+        "terminalProtocolVersion": ridge_term::terminal_protocol::PROTOCOL_VERSION,
+        "terminalMaxFrameBytes": ridge_term::terminal_protocol::MAX_FRAME_BYTES,
     });
     if ws_tx
         .send(Message::Text(welcome.to_string()))
@@ -1016,6 +1039,11 @@ async fn handle_ws(
                                 (Some(m), true) => {
                                     let id = parsed.get("id").cloned().unwrap_or(serde_json::Value::Null);
                                     let key = InvokeRequestKey::jsonrpc(&id);
+                                    if m == "write_terminal_input" && !terminal_input_activation_matches(&params, &activation_by_pane) {
+                                        let error = serde_json::json!({ "code": JSON_RPC_INVALID_REQUEST, "message": "terminal activation changed" });
+                                        let _ = ws_tx.send(Message::Text(jsonrpc_error(&id, error).to_string())).await;
+                                        continue;
+                                    }
 
                                     // §rate-limit: shared token bucket with the legacy leg.
                                     if dr_window_start.elapsed() >= DR_WINDOW {
@@ -1232,18 +1260,14 @@ async fn handle_ws(
                                             state.get_remote_terminal_snapshot(target_ws, pane_id)
                                         {
                                             terminal_revision_by_pane
-                                                .insert(new_key, snapshot.revision);
+                                                .insert(new_key, snapshot.revision());
                                             activation_by_pane.insert(new_key, activation_id);
-                                            let envelope = ridge_term::terminal_v2::TerminalEnvelope::snapshot(
-                                                ridge_term::terminal_v2::PaneRef::new(
+                                            let envelope = snapshot.into_frame(ridge_term::terminal_protocol::PaneRef::new(
                                                     target_ws.to_string(),
                                                     pane_id.to_string(),
-                                                ),
-                                                activation_id,
-                                                snapshot,
-                                            );
+                                                ), activation_id);
                                             if let Ok(frame) =
-                                                ridge_term::terminal_v2::encode_frame(&envelope)
+                                                ridge_term::terminal_protocol::encode_frame(&envelope)
                                             {
                                                 let _ = ws_tx
                                                     .send(Message::Binary(frame.into()))
@@ -2053,6 +2077,11 @@ async fn handle_ws(
                                     } else {
                                         let empty = serde_json::json!({});
                                         let args = parsed.get("args").unwrap_or(&empty).clone();
+                                        if cmd == "write_terminal_input" && !terminal_input_activation_matches(&args, &activation_by_pane) {
+                                            let reply = serde_json::json!({ "type": "invoke-result", "_reqId": req_id, "_error": "terminal activation changed" });
+                                            let _ = ws_tx.send(Message::Text(reply.to_string())).await;
+                                            continue;
+                                        }
                                         let result_tx = invoke_result_tx.clone();
                                         let task_cmd = cmd.clone();
                                         let task_state = state.clone();
@@ -2185,31 +2214,14 @@ async fn handle_ws(
                                 let Some(desync) = desync_by_pane.get(&key) else {
                                     continue;
                                 };
+                                let previous_revision = terminal_revision_by_pane.get(&key).copied().unwrap_or(0);
+                                if frame.pane_seq > previous_revision && frame.semantic_update.as_deref().is_none_or(|update|
+                                    matches!(&update.body, ridge_term::terminal_protocol::TerminalBody::Delta(delta) if delta.base_revision != previous_revision)) {
+                                    desync.store(true, Ordering::Release);
+                                }
                                 if desync.load(Ordering::Acquire) {
-                                    if let Some(snapshot) =
-                                        state.get_remote_terminal_snapshot(workspace_id, pane_id)
-                                    {
-                                        let revision = snapshot.revision;
-                                        let envelope = ridge_term::terminal_v2::TerminalEnvelope::snapshot(
-                                            ridge_term::terminal_v2::PaneRef::new(
-                                                workspace_id.to_string(),
-                                                pane_id.to_string(),
-                                            ),
-                                            activation_id,
-                                            snapshot,
-                                        );
-                                        if let Ok(encoded) =
-                                            ridge_term::terminal_v2::encode_frame(&envelope)
-                                        {
-                                            if ws_tx
-                                                .send(Message::Binary(encoded.into()))
-                                                .await
-                                                .is_ok()
-                                            {
-                                                terminal_revision_by_pane.insert(key, revision);
-                                                desync.store(false, Ordering::Release);
-                                            }
-                                        }
+                                    if let Some(revision) = recover_terminal_stream(&state, key, activation_id, desync, &ws_tx) {
+                                        terminal_revision_by_pane.insert(key, revision);
                                     }
                                     continue;
                                 }
@@ -2221,28 +2233,15 @@ async fn handle_ws(
                                     continue;
                                 }
                                 let revision = frame.pane_seq;
-                                let delta = ridge_term::remote_v2::frame_from_local(
-                                    &frame,
-                                    base_revision,
-                                    if is_alt {
-                                        ridge_term::terminal_v2::ScreenKind::Alternate
-                                    } else {
-                                        ridge_term::terminal_v2::ScreenKind::Primary
-                                    },
-                                );
-                                let envelope = ridge_term::terminal_v2::TerminalEnvelope::delta(
-                                    ridge_term::terminal_v2::PaneRef::new(
+                                let Some(delta) = frame.semantic_update.as_deref().cloned() else { continue; };
+                                let envelope = delta.into_frame(ridge_term::terminal_protocol::PaneRef::new(
                                         workspace_id.to_string(),
                                         pane_id.to_string(),
-                                    ),
-                                    activation_id,
-                                    delta,
-                                );
-                                match ridge_term::terminal_v2::encode_frame(&envelope) {
+                                    ), activation_id);
+                                match ridge_term::terminal_protocol::encode_frame(&envelope) {
                                     Ok(encoded) => {
                                         if ws_tx
-                                            .send(Message::Binary(encoded.into()))
-                                            .await
+                                            .try_send(Message::Binary(encoded.into()))
                                             .is_ok()
                                         {
                                             terminal_revision_by_pane.insert(key, revision);
@@ -2530,6 +2529,17 @@ async fn handle_ws(
                                 }
                             ))).await;
                             break;
+                        }
+                        // The last event in a burst may itself be dropped. Recover
+                        // the foreground even when no later output arrives.
+                        if let Some(key) = current_pane {
+                            if let (Some(&activation), Some(desync)) =
+                                (activation_by_pane.get(&key), desync_by_pane.get(&key))
+                            {
+                                if let Some(revision) = recover_terminal_stream(&state, key, activation, desync, &ws_tx) {
+                                    terminal_revision_by_pane.insert(key, revision);
+                                }
+                            }
                         }
                     }
                 }
@@ -2896,8 +2906,14 @@ fn is_mutating_invoke(cmd: &str) -> bool {
     is_mutating_method(cmd)
         || matches!(
             cmd,
-            "replace_in_files" | "apply_file_edits" | "send_agent_message"
+            "replace_in_files" | "apply_file_edits" | "send_agent_message" | "write_terminal_input"
         )
+}
+
+fn terminal_input_activation_matches(args: &serde_json::Value, activations: &std::collections::HashMap<(Uuid, Uuid), u64>) -> bool {
+    let Ok(input) = serde_json::from_value::<ridge_term::terminal_protocol::TerminalInput>(args["input"].clone()) else { return false; };
+    let (Ok(ws), Ok(pane)) = (Uuid::parse_str(&input.pane.workspace_id), Uuid::parse_str(&input.pane.pane_id)) else { return false; };
+    activations.get(&(ws, pane)) == Some(&input.activation_id)
 }
 
 fn s(v: &serde_json::Value, k: &str) -> String {
@@ -3761,6 +3777,35 @@ async fn dispatch_invoke_request(
     if remote_path_rejected(args) {
         return serde_json::json!({ "_error": "path traversal rejected" });
     }
+    if cmd == "get_terminal_snapshot" {
+        let result = match (args["paneId"].as_str(), args["workspaceId"].as_str(), args["activationId"].as_u64()) {
+            (Some(pane), Some(workspace), Some(activation)) => crate::commands::cloud_pane::terminal_snapshot_reply(state, pane, workspace, activation),
+            _ => Err("invalid terminal snapshot binding".into()),
+        };
+        return match result {
+            Ok(frame) => serde_json::json!({ "_result": frame }),
+            Err(error) => serde_json::json!({ "_error": error }),
+        };
+    }
+    if cmd == "get_terminal_history" {
+        let result = serde_json::from_value::<ridge_term::terminal_protocol::HistoryRequest>(args["request"].clone())
+            .map_err(|error| error.to_string())
+            .and_then(|request| crate::commands::cloud_pane::terminal_history_reply(state, request));
+        return match result {
+            Ok(frame) => serde_json::json!({ "_result": frame }),
+            Err(error) => serde_json::json!({ "_error": error }),
+        };
+    }
+    if cmd == "write_terminal_input" {
+        let result = match serde_json::from_value::<ridge_term::terminal_protocol::TerminalInput>(args["input"].clone()) {
+            Ok(input) => crate::commands::terminal::terminal_input_reply(state, input).await,
+            Err(error) => Err(error.to_string()),
+        };
+        return match result {
+            Ok(ack) => serde_json::json!({ "_result": ack }),
+            Err(error) => serde_json::json!({ "_error": error }),
+        };
+    }
 
     // S1: map a `ridge_core::dispatch` result onto the legacy WS envelope.
     // `Ok(value)` → `{ "_result": value }`; `Err(core_err)` → `{ "_error":
@@ -4100,7 +4145,7 @@ fn negotiate_hello(params: &serde_json::Value) -> serde_json::Value {
         .get("terminalProtocolVersion")
         .and_then(|value| value.as_u64())
         .unwrap_or(0);
-    if terminal_version != ridge_term::terminal_v2::PROTOCOL_VERSION as u64 {
+    if terminal_version != ridge_term::terminal_protocol::PROTOCOL_VERSION as u64 {
         return serde_json::json!({
             "jsonrpc": "2.0",
             "method": "$/bye",
@@ -4126,8 +4171,8 @@ fn negotiate_hello(params: &serde_json::Value) -> serde_json::Value {
         "method": "$/hello",
         "params": {
             "protocolVersion": REMOTE_PROTOCOL_VERSION,
-            "terminalProtocolVersion": ridge_term::terminal_v2::PROTOCOL_VERSION,
-            "terminalMaxFrameBytes": ridge_term::terminal_v2::MAX_FRAME_BYTES,
+            "terminalProtocolVersion": ridge_term::terminal_protocol::PROTOCOL_VERSION,
+            "terminalMaxFrameBytes": ridge_term::terminal_protocol::MAX_FRAME_BYTES,
             "capabilities": agreed,
         },
     })
@@ -4370,7 +4415,7 @@ mod jsonrpc_tests {
     fn hello_negotiates_capability_intersection() {
         let reply = negotiate_hello(&serde_json::json!({
             "protocolVersion": 1,
-            "terminalProtocolVersion": 2,
+            "terminalProtocolVersion": ridge_term::terminal_protocol::PROTOCOL_VERSION,
             "capabilities": ["pane", "invoke", "fs"],
         }));
         assert_eq!(reply["method"], "$/hello");
@@ -4392,7 +4437,7 @@ mod jsonrpc_tests {
         // A peer that omits capabilities gets the host's full set (it can drive all).
         let reply = negotiate_hello(&serde_json::json!({
             "protocolVersion": 1,
-            "terminalProtocolVersion": 2,
+            "terminalProtocolVersion": ridge_term::terminal_protocol::PROTOCOL_VERSION,
         }));
         let caps = reply["params"]["capabilities"].as_array().unwrap();
         assert_eq!(caps.len(), HOST_CAPABILITIES.len());
@@ -4406,6 +4451,16 @@ mod jsonrpc_tests {
         }));
         assert_eq!(reply["method"], "$/bye");
         assert_eq!(reply["params"]["reason"], "protocol-version-mismatch");
+    }
+
+    #[test]
+    fn hello_rejects_superseded_terminal_contract() {
+        let reply = negotiate_hello(&serde_json::json!({
+            "protocolVersion": 1,
+            "terminalProtocolVersion": 2,
+        }));
+        assert_eq!(reply["method"], "$/bye");
+        assert_eq!(reply["params"]["reason"], "terminal-protocol-upgrade-required");
     }
 
     struct EmptyCoreState;

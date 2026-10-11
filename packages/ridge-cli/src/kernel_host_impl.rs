@@ -20,10 +20,10 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use ridge_kernel::client::{
-    attach_domain_pty_output, create_domain_pty, create_domain_pty_with_command,
-    destroy_domain_pty, list_domain_ptys, poll_domain_pty_output, read_domain_workspaces,
-    request_json, resize_domain_pty, resync_domain_pty_output, running_endpoint,
-    scrollback_domain_pty, write_domain_pty, DomainPtyLaunch, KernelPtyInfo, KernelPtyOutput,
+    create_domain_pty, create_domain_pty_with_command,
+    destroy_domain_pty, list_domain_ptys, read_domain_workspaces,
+    request_json, resize_domain_pty, running_endpoint,
+    write_domain_pty, DomainPtyLaunch, KernelPtyInfo,
 };
 use ridge_kernel::registry::{read_endpoint, KernelEndpoint};
 use ridge_remote::auth::{RemoteAuth, SessionStore, VerifyThrottle};
@@ -32,8 +32,7 @@ use ridge_remote::serve::UaServeConfig;
 
 use crate::core_host;
 use crate::fs_reuse;
-use crate::rtp1_kernel_client::{Rtp1ClientState, Rtp1KernelClient};
-use ridge_kernel::rtp1_session::HostInfo;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 const WORKSPACE_URI_PREFIX: &str = "ridge://kernel-workspace/";
 /// Direct kernel hosts do not expose the desktop-only teammate controller.
@@ -41,35 +40,9 @@ const WORKSPACE_URI_PREFIX: &str = "ridge://kernel-workspace/";
 /// background roster polling.
 const KERNEL_HOST_CAPABILITIES: &[&str] = &["pane", "fs", "search", "workspace"];
 
-/// RIDGE_RTP1_KERNEL=1 routes the per-pane subscribe loop through the
-/// RTP1-over-WebSocket kernel client (SPEC-L2-PROTO-001) instead of the
-/// bounded-seq-v1 HTTP lease API. Default off so existing shells keep
-/// working until they migrate.
-fn rtp1_kernel_enabled() -> bool {
-    matches!(
-        std::env::var("RIDGE_RTP1_KERNEL").ok().as_deref(),
-        Some("1" | "true" | "yes" | "on")
-    )
-}
-
-/// P2-B8: surface the active mode once at startup so operators can
-/// verify the kernel transport without strace'ing the kernel binary.
-/// Always prints; the legacy line indicates the bounded-seq-v1 path.
+/// Report the actual shared terminal stream used by independent LAN hosts.
 pub fn log_kernel_transport_mode() {
-    if rtp1_kernel_enabled() {
-        tracing::info!(
-            target: "ridge_cli::rtp1_kernel",
-            "kernel transport: RTP1-over-WebSocket (RIDGE_RTP1_KERNEL=1); \
-             bounded-seq-v1 HTTP path retained as fallback adapter"
-        );
-        eprintln!("ridge-cli: kernel transport = RTP1-over-WebSocket");
-    } else {
-        tracing::info!(
-            target: "ridge_cli::kernel_host_impl",
-            "kernel transport: bounded-seq-v1 HTTP (legacy adapter); \
-             set RIDGE_RTP1_KERNEL=1 to opt into RTP1"
-        );
-    }
+    tracing::info!(target: "ridge_cli::kernel_host_impl", "kernel transport: canonical terminal frames over authenticated WebSocket");
 }
 
 fn select_endpoint(initial: KernelEndpoint, refreshed: Option<KernelEndpoint>) -> KernelEndpoint {
@@ -896,12 +869,12 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
     // P2-B8: surface the active kernel transport once per WS upgrade.
     log_kernel_transport_mode();
     let (mut tx, mut rx) = socket.split();
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
-    let subscriptions = Arc::new(Mutex::new(std::collections::HashSet::<(Uuid, Uuid)>::new()));
+    let (out_tx, mut out_rx) = mpsc::channel::<Message>(64);
+    let subscriptions = Arc::new(Mutex::new(HashMap::<(Uuid, Uuid), u64>::new()));
     let runtime = tokio::runtime::Handle::current();
     let dispatch_counters = host_trace_enabled().then(|| Arc::new(DispatchCounters::new()));
     let input_counters = host_trace_enabled().then(|| Arc::new(DispatchCounters::new()));
-    let (dispatch_tx, mut dispatch_rx) = mpsc::unbounded_channel::<(Value, Option<DispatchTrace>)>();
+    let (dispatch_tx, mut dispatch_rx) = mpsc::channel::<(Value, Option<DispatchTrace>)>(64);
     let dispatch_out_tx = out_tx.clone();
     let dispatch_host = Arc::clone(&host);
     let dispatch_subscriptions = Arc::clone(&subscriptions);
@@ -918,12 +891,12 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
             ) else {
                 continue;
             };
-            if dispatch_out_tx.send(Message::Text(reply)).is_err() {
+            if dispatch_out_tx.blocking_send(Message::Text(reply)).is_err() {
                 break;
             }
         }
     });
-    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<(Value, Option<DispatchTrace>)>();
+    let (input_tx, mut input_rx) = mpsc::channel::<(Value, Option<DispatchTrace>)>(64);
     let input_out_tx = out_tx.clone();
     let input_host = Arc::clone(&host);
     let input_subscriptions = Arc::clone(&subscriptions);
@@ -940,7 +913,7 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
             ) else {
                 continue;
             };
-            if input_out_tx.send(Message::Text(reply)).is_err() {
+            if input_out_tx.blocking_send(Message::Text(reply)).is_err() {
                 break;
             }
         }
@@ -954,10 +927,9 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
                 "type":"hello",
                 "version":1,
                 "protocol":"ridge-remote-ws",
-                // SPA 端 wsRemote.ts 严格 `terminalProtocolVersion !== 2` 校验；
-                // 这里漏发一个字段就会让真实 Host 端到端被误判"协议过旧"。
-                // 与 `tui/lan_host_impl.rs::lan_session` 保持同一常量 (PROTOCOL_VERSION = 2)。
-                "terminalProtocolVersion": ridge_term::terminal_v2::PROTOCOL_VERSION,
+                // One generated terminal contract, also used by the TUI adapter.
+                "terminalProtocolVersion": ridge_term::terminal_protocol::PROTOCOL_VERSION,
+                "terminalMaxFrameBytes": ridge_term::terminal_protocol::MAX_FRAME_BYTES,
                 "capabilities": KERNEL_HOST_CAPABILITIES,
             })
             .to_string(),
@@ -1000,7 +972,8 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>) {
                         (&dispatch_tx, &dispatch_counters)
                     };
                     let trace = counters.as_ref().map(|counters| DispatchTrace::admit(counters, text.len()));
-                    if let Err(mpsc::error::SendError((_, trace))) = target.send((value, trace)) {
+                    if let Err(error) = target.try_send((value, trace)) {
+                        let (_, trace) = error.into_inner();
                         if let Some(trace) = trace { trace.rollback(); }
                         break;
                     }
@@ -1027,7 +1000,7 @@ fn is_latency_sensitive_pty_message(value: &Value) -> bool {
         .and_then(Value::as_str);
     matches!(
         method,
-        Some("write_to_pty" | "write_pty" | "subscribe-pane" | "subscribe_pane_raw")
+        Some("write_terminal_input" | "write_to_pty" | "write_pty" | "subscribe-pane" | "subscribe_pane_raw")
     )
 }
 
@@ -1035,8 +1008,8 @@ fn handle_text(
     value: &Value,
     host: &Arc<KernelHost>,
     runtime: &tokio::runtime::Handle,
-    out_tx: &mpsc::UnboundedSender<Message>,
-    subscriptions: &Arc<Mutex<std::collections::HashSet<(Uuid, Uuid)>>>,
+    out_tx: &mpsc::Sender<Message>,
+    subscriptions: &Arc<Mutex<HashMap<(Uuid, Uuid), u64>>>,
 ) -> Option<String> {
     if value.get("jsonrpc").and_then(Value::as_str) == Some("2.0") {
         let method = value.get("method").and_then(Value::as_str).unwrap_or("");
@@ -1052,18 +1025,7 @@ fn handle_text(
         if id.is_none() {
             if matches!(method, "subscribe-pane" | "subscribe_pane_raw") {
                 let snapshot = host.snapshot();
-                if rtp1_kernel_enabled() {
-                    start_subscription_rtp1(
-                        &params,
-                        host,
-                        &snapshot,
-                        runtime,
-                        out_tx,
-                        subscriptions,
-                    );
-                } else {
-                    start_subscription(&params, host, &snapshot, runtime, out_tx, subscriptions);
-                }
+                start_subscription(&params, host, &snapshot, runtime, out_tx, subscriptions);
             }
             return None;
         }
@@ -1088,6 +1050,10 @@ fn handle_text(
         "subscribe-pane" => {
             let snapshot = host.snapshot();
             start_subscription(value, host, &snapshot, runtime, out_tx, subscriptions);
+            None
+        }
+        "unsubscribe-pane" => {
+            if let Some(target) = subscription_target(value, &host.snapshot()) { if let Ok(mut active) = subscriptions.lock() { active.remove(&target); } }
             None
         }
         "stdin" => {
@@ -1205,8 +1171,8 @@ fn dispatch(
     args: &Value,
     host: &Arc<KernelHost>,
     runtime: &tokio::runtime::Handle,
-    out_tx: &mpsc::UnboundedSender<Message>,
-    subscriptions: &Arc<Mutex<std::collections::HashSet<(Uuid, Uuid)>>>,
+    out_tx: &mpsc::Sender<Message>,
+    subscriptions: &Arc<Mutex<HashMap<(Uuid, Uuid), u64>>>,
 ) -> Result<Value, String> {
     // Unsupported SPA probes must fail before the snapshot projection. The
     // projection performs multiple kernel HTTP calls; keeping it ahead of the
@@ -1214,6 +1180,21 @@ fn dispatch(
     // subscription and makes real keyboard input appear to lose output.
     if !is_kernel_host_method(method) {
         return Err(format!("method not supported by kernel host: {method}"));
+    }
+    if matches!(method, "write_terminal_input" | "get_terminal_history" | "get_terminal_snapshot") {
+        let (pane, activation) = if method == "get_terminal_snapshot" {
+            (json!({"workspaceId":args["workspaceId"],"paneId":args["paneId"]}), args["activationId"].as_u64())
+        } else {
+            let request = if method == "write_terminal_input" { &args["input"] } else { &args["request"] };
+            (request["pane"].clone(), request["activationId"].as_u64())
+        };
+        let workspace = Uuid::parse_str(pane["workspaceId"].as_str().ok_or("missing workspace")?).map_err(|_| "invalid workspace")?;
+        let id = Uuid::parse_str(pane["paneId"].as_str().ok_or("missing pane")?).map_err(|_| "invalid pane")?;
+        let activation = activation.filter(|id| *id > 0).ok_or("invalid activation")?;
+        if subscriptions.lock().map_err(|_| "subscription lock")?.get(&(workspace,id)) != Some(&activation) { return Err("terminal activation changed".into()); }
+        let reply = request_json(&host.current_endpoint(), "POST", &format!("/v1/domain/ptys/{id}/terminal"), Some(&json!({"method":method,"params":args})))?;
+        if reply["ok"] != true { return Err(reply["error"].as_str().unwrap_or("terminal request rejected").to_owned()); }
+        return Ok(reply["value"].clone());
     }
     // PTY input already carries its stable pane identity. Let the kernel's
     // authenticated PTY endpoint validate that identity directly; the broad
@@ -1367,7 +1348,7 @@ fn dispatch(
             let cols = args.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
             let owner = pane_resize_owner(args);
             resize_domain_pty(&host.current_endpoint(), id, cols, rows)?;
-            let _ = out_tx.send(Message::Text(
+            let _ = out_tx.try_send(Message::Text(
                 json!({
                     "type": "pty-resized",
                     "workspaceId": workspace_id,
@@ -1525,7 +1506,10 @@ fn dispatch(
 fn is_kernel_host_method(method: &str) -> bool {
     matches!(
         method,
-        "get_active_workspace_id"
+        "write_terminal_input"
+            | "get_terminal_history"
+            | "get_terminal_snapshot"
+            | "get_active_workspace_id"
             | "list_workspaces"
             | "get_pane_layout"
             | "get_pane_layout_for"
@@ -1704,392 +1688,45 @@ fn close_pane_wire_result(result: Result<Value, String>) -> Value {
 }
 
 fn start_subscription(
-    args: &Value,
-    host: &Arc<KernelHost>,
-    snapshot: &KernelSnapshot,
-    runtime: &tokio::runtime::Handle,
-    out_tx: &mpsc::UnboundedSender<Message>,
-    subscriptions: &Arc<Mutex<std::collections::HashSet<(Uuid, Uuid)>>>,
+    args: &Value, host: &Arc<KernelHost>, snapshot: &KernelSnapshot,
+    runtime: &tokio::runtime::Handle, out_tx: &mpsc::Sender<Message>,
+    subscriptions: &Arc<Mutex<HashMap<(Uuid, Uuid), u64>>>,
 ) {
-    let Some((workspace_id, pane_id)) = subscription_target(args, snapshot) else {
-        return;
-    };
-    let Ok(mut active) = subscriptions.lock() else {
-        return;
-    };
-    if !active.insert((workspace_id, pane_id)) {
-        return;
-    }
-    drop(active);
+    let Some((workspace_id, pane_id)) = subscription_target(args, snapshot) else { return; };
+    let Some(activation) = args.get("activationId").and_then(Value::as_u64).filter(|id| *id > 0 && *id <= 9_007_199_254_740_991) else { return; };
+    if let Ok(mut active) = subscriptions.lock() {
+        if active.get(&(workspace_id, pane_id)) == Some(&activation) { return; }
+        active.insert((workspace_id, pane_id), activation);
+    } else { return; }
     let endpoint = host.current_endpoint();
     let tx = out_tx.clone();
-    let subscriptions_for_task = subscriptions.clone();
+    let subscriptions = subscriptions.clone();
     runtime.spawn(async move {
-        // P0-5 + P0-4 (audit C5 + C4 fix): lease + subscriptions
-        // slot are guarded by a Drop type so any early-return path
-        // (scrollback error / next-seq error / attach error / tx send
-        // failure / panicking inner future) still detaches the lease
-        // and releases the (ws, pane) subscription slot. The original
-        // implementation only detached on the normal-exit branch
-        // (`let _ = detach_domain_pty_output(...)` at line 1026), so a
-        // scrollback/attach failure would orphan both the kernel lease
-        // and the local subscription set.
-        struct SubscriptionGuard {
-            endpoint: KernelEndpoint,
-            pane_id: Uuid,
-            lease: Option<uuid::Uuid>,
-            subscriptions:
-                Arc<Mutex<std::collections::HashSet<(Uuid, Uuid)>>>,
-            workspace_id: Uuid,
-        }
-        impl Drop for SubscriptionGuard {
-            fn drop(&mut self) {
-                if let Some(lease) = self.lease.take() {
-                    let _ = ridge_kernel::client::detach_domain_pty_output(
-                        &self.endpoint,
-                        self.pane_id,
-                        lease,
-                    );
-                }
-                if let Ok(mut active) = self.subscriptions.lock() {
-                    active.remove(&(self.workspace_id, self.pane_id));
+        let run = async {
+            let mut request = format!("ws://127.0.0.1:{}/v1/domain/ptys/{}/terminal/stream?activation={}", endpoint.port, pane_id, activation).into_client_request().map_err(|error| error.to_string())?;
+            request.headers_mut().insert("x-ridge-kernel-token", endpoint.token.parse().map_err(|_| "invalid kernel token")?);
+            let (mut socket, _) = tokio_tungstenite::connect_async(request).await.map_err(|error| error.to_string())?;
+            loop {
+                if tx.is_closed() || subscriptions.lock().map(|active| active.get(&(workspace_id, pane_id)) != Some(&activation)).unwrap_or(true) { break; }
+                tokio::select! {
+                    frame = socket.next() => match frame {
+                        Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(bytes))) if bytes.first() == Some(&0x13) && bytes.len() <= ridge_term::terminal_protocol::MAX_FRAME_BYTES => {
+                            if tx.send(Message::Binary(bytes)).await.is_err() { break; }
+                        }
+                        Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(bytes))) => { socket.send(tokio_tungstenite::tungstenite::Message::Pong(bytes)).await.map_err(|error| error.to_string())?; }
+                        Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => break,
+                        Some(Err(error)) => return Err(error.to_string()),
+                        _ => {}
+                    },
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
                 }
             }
-        }
-
-        let mut guard = SubscriptionGuard {
-            endpoint: endpoint.clone(),
-            pane_id,
-            lease: None,
-            subscriptions: subscriptions_for_task.clone(),
-            workspace_id,
-        };
-
-        let scrollback = tokio::task::spawn_blocking({
-            let endpoint = endpoint.clone();
-            move || scrollback_domain_pty(&endpoint, pane_id, 262_144)
-        })
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_default();
-        // CHG-050 §2.2: time the first blocking hop. The `bytes`
-        // value is the actual scrollback length returned (0 if the
-        // kernel rejected or returned an error); the `dt_us` covers
-        // spawn_blocking + std TcpStream I/O + JSON parse.
-        crate::host_trace!(
-            ev = "scroll",
-            pane_id = %pane_id,
-            bytes = scrollback.len()
-        );
-        let after_seq = tokio::task::spawn_blocking({
-            let endpoint = endpoint.clone();
-            move || {
-                list_domain_ptys(&endpoint).ok().and_then(|ptys| {
-                    ptys.into_iter()
-                        .find(|pty| pty.pty_id == pane_id)
-                        .map(|pty| pty.next_seq.saturating_sub(1))
-                })
-            }
-        })
-        .await
-        .ok()
-        .flatten();
-        crate::host_trace!(
-            ev = "list_seq",
-            pane_id = %pane_id,
-            next_seq = after_seq.unwrap_or(0)
-        );
-        let lease = match tokio::task::spawn_blocking({
-            let endpoint = endpoint.clone();
-            move || attach_domain_pty_output(&endpoint, pane_id, after_seq)
-        })
-        .await
-        {
-            Ok(Ok(lease)) => lease,
-            _ => return,
-        };
-        crate::host_trace!(
-            ev = "attach",
-            pane_id = %pane_id,
-            lease_id = %lease
-        );
-        // Hand the lease to the guard so Drop will detach it.
-        guard.lease = Some(lease);
-        // P3-D9 (audit D9 surface layer): the bytes emitted to the
-        // rdg controller use `ridge_remote::pane::pane_frame` /
-        // `pane_resync_frame` — the same wire format that the legacy
-        // mux channel `PANE_RAW` produced. When the kernel is reached
-        // via RTP1 (`RIDGE_RTP1_KERNEL=1`), this is the
-        // mux-PANE_RAW adapter: it consumes RTP1 output frames and
-        // emits the legacy mux byte format so existing rdg
-        // controllers continue to work. New code should consume RTP1
-        // directly; this adapter remains only as a transport-boundary
-        // seam (SPEC-L2-PROTO-001 §3.9 P5).
-        let frame = ridge_remote::pane::pane_resync_frame(
-            pane_id,
-            &scrollback,
-            &ridge_term::term::modes::Modes::default(),
-            false,
-        );
-        if tx.send(Message::Binary(frame)).is_err() {
-            return;
-        }
-        let mut metadata_buffer = Vec::new();
-        loop {
-            let poll_t0 = Instant::now();
-            let result = tokio::task::spawn_blocking({
-                let endpoint = endpoint.clone();
-                move || poll_domain_pty_output(&endpoint, pane_id, lease, 1000, 64)
-            })
-            .await;
-            let poll_dt_us = poll_t0.elapsed().as_micros() as u64;
-            match result {
-                Ok(Ok(KernelPtyOutput::Data(bytes))) => {
-                    // CHG-050 §2.2: emit `poll_out` once per delivery
-                    // so the trace can correlate the kernel-side
-                    // `lease_deliver` (under `ridge_kernel::trace`)
-                    // with the host-side frame emit.
-                    crate::host_trace!(
-                        ev = "poll_out",
-                        pane_id = %pane_id,
-                        lease_id = %lease,
-                        frames = 1u64,
-                        bytes = bytes.len() as u64,
-                        dt_us = poll_dt_us
-                    );
-                    if !send_subscription_data(
-                        workspace_id,
-                        pane_id,
-                        &bytes,
-                        &mut metadata_buffer,
-                        &tx,
-                    ) {
-                        break;
-                    }
-                }
-                Ok(Ok(KernelPtyOutput::Lagged)) => {
-                    let _ = resync_domain_pty_output(&endpoint, pane_id, lease);
-                }
-                Ok(Ok(KernelPtyOutput::Timeout)) => {
-                    // CHG-050 §2.2: surface the long-poll ceiling so
-                    // we can tell whether idle polls reach the 1000ms
-                    // timeout or wake early via `notify_waiters`.
-                    crate::host_trace!(
-                        ev = "poll_timeout",
-                        pane_id = %pane_id,
-                        lease_id = %lease,
-                        dt_us = poll_dt_us
-                    );
-                }
-                _ => break,
-            }
-        }
-        let _ = ridge_kernel::client::detach_domain_pty_output(&endpoint, pane_id, lease);
+            let _ = socket.close(None).await;
+            Ok::<(), String>(())
+        }.await;
+        if let Ok(mut active) = subscriptions.lock() { if active.get(&(workspace_id, pane_id)) == Some(&activation) { active.remove(&(workspace_id, pane_id)); } }
+        if let Err(error) = run { tracing::warn!(%pane_id, %error, "canonical terminal subscription failed"); }
     });
-}
-
-/// RTP1-over-WebSocket variant of [`start_subscription`]. Activated
-/// when `RIDGE_RTP1_KERNEL=1`. Drops the HTTP long-poll loop entirely
-/// (SPEC-L2-PROTO-001 §3.9 P5: RTP1 stays transport-neutral; the
-/// HTTP path remains as the legacy adapter fallback).
-fn start_subscription_rtp1(
-    args: &Value,
-    host: &Arc<KernelHost>,
-    snapshot: &KernelSnapshot,
-    runtime: &tokio::runtime::Handle,
-    out_tx: &mpsc::UnboundedSender<Message>,
-    subscriptions: &Arc<Mutex<std::collections::HashSet<(Uuid, Uuid)>>>,
-) {
-    let Some((workspace_id, pane_id)) = subscription_target(args, snapshot) else {
-        return;
-    };
-    let Ok(mut active) = subscriptions.lock() else {
-        return;
-    };
-    if !active.insert((workspace_id, pane_id)) {
-        return;
-    }
-    drop(active);
-
-    let endpoint = host.current_endpoint();
-    let tx = out_tx.clone();
-    let host_for_task = host.clone();
-    let subscriptions_for_task = subscriptions.clone();
-    runtime.spawn(async move {
-        // Fetch the host_info / runtime_epoch via the standard status
-        // endpoint first. The kernel status body carries host_id +
-        // runtime_epoch (set in server.rs).
-        let info = match fetch_host_info(&endpoint).await {
-            Ok(info) => info,
-            Err(error) => {
-                tracing::warn!(target: "ridge_cli::rtp1_kernel",
-                    %error, "host_info fetch failed; falling back to HTTP");
-                return;
-            }
-        };
-        let client = Rtp1KernelClient::new(endpoint.clone(), info.host_id, info.runtime_epoch);
-        let (mut sink, mut output_rx) = match client
-            .connect(pane_id, workspace_id.to_string(), None)
-            .await
-        {
-            Ok(pair) => pair,
-            Err(error) => {
-                tracing::warn!(target: "ridge_cli::rtp1_kernel",
-                    %error, "RTP1 connect failed");
-                // Best-effort cleanup: release the subscription slot so
-                // a future re-subscribe on the same (ws, pane) is not
-                // silently dropped (audit C4).
-                if let Ok(mut active) = subscriptions_for_task.lock() {
-                    active.remove(&(workspace_id, pane_id));
-                }
-                return;
-            }
-        };
-        let mut metadata_buffer = Vec::new();
-
-        // P0-3 (audit C3 fix): the initial resync must be sent BEFORE
-        // waiting for the first output frame. The legacy HTTP path
-        // promises the controller a scrollback + modes bundle on
-        // subscribe; the RTP1 path used to defer that until the first
-        // byte arrived, so a PTY that produced 0 bytes (e.g. `sleep
-        // infinity`) never received the initial resync and the
-        // controller hung on an empty stream.
-        let scrollback = match tokio::task::spawn_blocking({
-            let endpoint = endpoint.clone();
-            move || scrollback_domain_pty(&endpoint, pane_id, 262_144)
-        })
-        .await
-        {
-            Ok(Ok(bytes)) => bytes,
-            _ => Vec::new(),
-        };
-        let resync = ridge_remote::pane::pane_resync_frame(
-            pane_id,
-            &scrollback,
-            &ridge_term::term::modes::Modes::default(),
-            false,
-        );
-        if tx.send(Message::Binary(resync)).is_err() {
-            // Controller closed before we could deliver the initial
-            // resync; release the slot and exit cleanly.
-            if let Ok(mut active) = subscriptions_for_task.lock() {
-                active.remove(&(workspace_id, pane_id));
-            }
-            return;
-        }
-
-        loop {
-            tokio::select! {
-                out = output_rx.recv() => {
-                    let Some(frame) = out else { break };
-                    let chunks: Vec<u8> = frame
-                        .frames
-                        .iter()
-                        .flat_map(|c| {
-                            ridge_kernel::rtp1::b64_decode(&c.data_b64).unwrap_or_default()
-                        })
-                        .collect();
-                    if !chunks.is_empty()
-                        && !send_subscription_data(
-                            workspace_id,
-                            pane_id,
-                            &chunks,
-                            &mut metadata_buffer,
-                            &tx,
-                        )
-                    {
-                        break;
-                    }
-                }
-                state_check = async {
-                    client.state().await
-                } => {
-                    if matches!(
-                        state_check,
-                        Rtp1ClientState::Closing | Rtp1ClientState::Detached | Rtp1ClientState::Failed
-                    ) {
-                        break;
-                    }
-                }
-            }
-        }
-        // Best-effort: tell the kernel we are gone. Even if the
-        // request fails (e.g. socket already closed) the kernel will
-        // eventually reap via the WS close detection.
-        if let Err(error) = sink.send_detach(pane_id, Some("subscription-closed".into())).await {
-            tracing::debug!(target: "ridge_cli::rtp1_kernel",
-                %error, "send_detach on close (best effort)");
-        }
-        let _ = sink.close().await;
-        // Release the subscription slot so a future subscribe on the
-        // same (ws, pane) is not silently dropped.
-        if let Ok(mut active) = subscriptions_for_task.lock() {
-            active.remove(&(workspace_id, pane_id));
-        }
-        let _ = host_for_task;
-    });
-}
-
-async fn fetch_host_info(
-    endpoint: &KernelEndpoint,
-) -> Result<HostInfo, String> {
-    // /v1/status is the only canonical source of (host_id,
-    // runtime_epoch); we go through the public HTTP client. The
-    // client is blocking (uses std::thread internally), so wrap in
-    // spawn_blocking.
-    let endpoint_clone = endpoint.clone();
-    let body = tokio::task::spawn_blocking(move || {
-        ridge_kernel::client::request_json(&endpoint_clone, "GET", "/v1/status", None)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
-    let host_id = body
-        .get("host_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "status missing host_id".to_string())?
-        .to_string();
-    let runtime_epoch = body
-        .get("runtime_epoch")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "status missing runtime_epoch".to_string())?
-        .to_string();
-    Ok(HostInfo {
-        host_id,
-        runtime_epoch,
-        max_realtime_frame: ridge_kernel::rtp1::MAX_REALTIME_FRAME,
-        max_snapshot_chunk: 256 * 1024,
-        replay_cap_bytes: 256 * 1024,
-        replay_cap_frames: 256,
-        features: vec!["rtp1.v1".into()],
-    })
-}
-
-fn send_subscription_data(
-    workspace_id: Uuid,
-    pane_id: Uuid,
-    bytes: &[u8],
-    metadata_buffer: &mut Vec<u8>,
-    tx: &mpsc::UnboundedSender<Message>,
-) -> bool {
-    if bytes.is_empty() {
-        return true;
-    }
-    metadata_buffer.extend_from_slice(bytes);
-    if metadata_buffer.len() > 8192 {
-        let keep_from = metadata_buffer.len() - 8192;
-        metadata_buffer.drain(..keep_from);
-    }
-    if let Some(metadata) = pty_metadata_frame(workspace_id, pane_id, metadata_buffer) {
-        if tx.send(Message::Text(metadata.to_string())).is_err() {
-            return false;
-        }
-    }
-    tx.send(Message::Binary(ridge_remote::pane::pane_frame(
-        pane_id, bytes,
-    )))
-    .is_ok()
 }
 
 fn subscription_target(args: &Value, snapshot: &KernelSnapshot) -> Option<(Uuid, Uuid)> {
@@ -2118,6 +1755,7 @@ fn subscription_target(args: &Value, snapshot: &KernelSnapshot) -> Option<(Uuid,
         .map(|workspace_id| (workspace_id, pane_id))
 }
 
+#[cfg(test)]
 fn pty_metadata_frame(workspace_id: Uuid, pane_id: Uuid, bytes: &[u8]) -> Option<Value> {
     let title = ridge_core::pty::title::parse_title_from_output(bytes);
     let cwd = last_osc_sequence(bytes, &[b'\x1b', b']', b'7', b';'])
@@ -2137,6 +1775,7 @@ fn pty_metadata_frame(workspace_id: Uuid, pane_id: Uuid, bytes: &[u8]) -> Option
     }))
 }
 
+#[cfg(test)]
 fn last_osc_sequence<'a>(bytes: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
     let start = bytes
         .windows(prefix.len())

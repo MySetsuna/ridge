@@ -1,3 +1,4 @@
+import terminalHello from '../cloud/signaling/fixtures/terminal/hello.json';
 // src/lib/transport/remote/rpcClient.ts
 //
 // L2 shared RPC client (handoff plan §5.3, D7). Written ONCE and runs on any L1
@@ -50,7 +51,7 @@ export const HELLO_METHOD = '$/hello';
 export const BYE_METHOD = '$/bye';
 /** Protocol version this client implements (D9). */
 export const CLIENT_PROTOCOL_VERSION = 1;
-export const TERMINAL_PROTOCOL_VERSION = 2;
+export const TERMINAL_PROTOCOL_VERSION = terminalHello.protocolVersion;
 /** Capabilities this client (controller SPA) can drive (contract §7.3). */
 export const CLIENT_CAPABILITIES = [
   'pane',

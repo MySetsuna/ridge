@@ -1283,6 +1283,75 @@ pub async fn get_shell_history(_shell_kind: String) -> Result<Vec<String>, Strin
 }
 
 #[tauri::command]
+pub async fn write_terminal_input(
+    state: State<'_, AppState>,
+    input: ridge_term::terminal_protocol::TerminalInput,
+) -> Result<ridge_term::terminal_protocol::TerminalInputAck, String> {
+    terminal_input_reply(&state, input).await
+}
+
+pub async fn terminal_input_reply(
+    state: &AppState,
+    input: ridge_term::terminal_protocol::TerminalInput,
+) -> Result<ridge_term::terminal_protocol::TerminalInputAck, String> {
+    use ridge_term::terminal_protocol::validate_input;
+    validate_input(&input).map_err(|error| error.to_string())?;
+    validate_input_identity(Some(input.source_id.clone()), Some(input.sequence)).map_err(|error| error.to_string())?;
+    let ws = Uuid::parse_str(&input.pane.workspace_id).map_err(|_| "invalid workspaceId")?;
+    let pane = Uuid::parse_str(&input.pane.pane_id).map_err(|_| "invalid paneId")?;
+    // Capture the sink and lifetime together. Awaiting admission can never
+    // look up a replacement terminal that reused the same pane UUID.
+    let (sink, foreign) = {
+        let workspaces = state.workspaces.read();
+        let handle = workspaces.get(&ws).and_then(|workspace| workspace.terminals.get(&pane)).ok_or("terminal unavailable")?;
+        if handle.parser.lock().terminal_epoch() != input.terminal_epoch { return Err("terminal lifetime changed".into()); }
+        (handle.input_sink.clone(), handle.remote_ref.clone())
+    };
+    let lane = {
+        let mut lanes = state.pty_input_lanes.write();
+        let key = (ws, pane, input.source_id);
+        if !lanes.contains_key(&key) && lanes.keys().filter(|(workspace, id, _)| *workspace == ws && *id == pane).count() >= 64 {
+            return Err("terminal input source limit reached".into());
+        }
+        lanes.entry(key).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(crate::state::PtyInputSequenceState::default()))).clone()
+    };
+    let digest = Sha256::digest(&input.bytes).into();
+    let owned_state = state.clone();
+    admit_terminal_input(lane, input.sequence, digest, async move {
+        if let Some(reference) = foreign {
+            crate::hosts::route_foreign_input(&owned_state, &reference, &input.bytes)
+        } else {
+            sink.send(input.bytes).await
+        }
+    }).await
+}
+
+async fn admit_terminal_input(
+    lane: Arc<tokio::sync::Mutex<crate::state::PtyInputSequenceState>>,
+    requested: u64, digest: [u8; 32],
+    write: impl std::future::Future<Output = Result<(), String>> + Send + 'static,
+) -> Result<ridge_term::terminal_protocol::TerminalInputAck, String> {
+    // Dropping the RPC waiter must not cancel an already admitted writer or
+    // erase its sequence commit. The bounded sink owns the actual write.
+    tokio::spawn(async move {
+        let mut sequence = lane.lock().await;
+        if let Some(error) = &sequence.last_error { return Err(error.clone()); }
+        if decide_input_sequence(&sequence, requested, digest).map_err(|error| error.to_string())? == InputSequenceDecision::Duplicate {
+            return Ok(ridge_term::terminal_protocol::TerminalInputAck { sequence: requested, already_applied: true });
+        }
+        let result = write.await;
+        sequence.last_sequence = requested;
+        sequence.last_digest = Some(digest);
+        if let Err(error) = result {
+            let error = format!("terminal input failed; resync required; no replay: {error}");
+            sequence.last_error = Some(error.clone());
+            return Err(error);
+        }
+        Ok(ridge_term::terminal_protocol::TerminalInputAck { sequence: requested, already_applied: false })
+    }).await.map_err(|error| format!("terminal input worker failed: {error}"))?
+}
+
+#[tauri::command]
 pub async fn write_to_pty(
     state: State<'_, AppState>,
     pane_id: String,
@@ -1541,7 +1610,7 @@ fn resize_parser(
         }
     };
     if let Some(frame) = fallback {
-        if let Err(error) = emit_legacy_pane_delta(app, wid, pane_id, frame) {
+        if let Err(error) = emit_terminal_packet(app, wid, pane_id, frame) {
             tracing::warn!(
             target: "ridge::pty_delta",
             error = %error,
@@ -1553,14 +1622,16 @@ fn resize_parser(
     }
 }
 
-fn emit_legacy_pane_delta(
+fn emit_terminal_packet(
     app: &tauri::AppHandle,
     workspace_id: Uuid,
     pane_id: Uuid,
     frame: ridge_term::term::delta::DeltaFrame,
 ) -> Result<(), String> {
     use tauri::Emitter;
-    let bytes = ridge_term::term::delta::encode_frame(&frame)
+    let update = frame.semantic_update.ok_or("terminal update was not captured")?;
+    let frame = update.into_frame(ridge_term::terminal_protocol::PaneRef::new(workspace_id.to_string(), pane_id.to_string()), 0);
+    let bytes = ridge_term::terminal_protocol::encode_frame(&frame)
         .map_err(|error| format!("delta encode failed: {error}"))?;
     app.emit(&format!("pty-delta-{workspace_id}-{pane_id}"), bytes)
         .map_err(|error| format!("delta emit failed: {error}"))
@@ -1857,7 +1928,7 @@ fn clear_pane_terminal_inner(
     state.clear_pty_scrollback(workspace_id, pane_id);
 
     if let Some(frame) = fallback {
-        emit_legacy_pane_delta(app, workspace_id, pane_id, frame).map_err(AppError::PtyError)?;
+        emit_terminal_packet(app, workspace_id, pane_id, frame).map_err(AppError::PtyError)?;
     }
     Ok(())
 }
@@ -1880,6 +1951,7 @@ pub async fn register_pane_delta_channel(
     workspace_id: String,
     pane_id: String,
     channel: Channel<Vec<u8>>,
+    activation_id: u64,
 ) -> Result<(), String> {
     let workspace_id =
         Uuid::parse_str(&workspace_id).map_err(|_| "invalid workspace_id".to_string())?;
@@ -1896,23 +1968,28 @@ pub async fn register_pane_delta_channel(
             );
         }
     });
-    state.register_pane_delta_channel(workspace_id, pane_id, sender);
+    state.register_pane_delta_channel(workspace_id, pane_id, sender, activation_id);
+    if let Some(update) = state.get_remote_terminal_snapshot(workspace_id, pane_id) {
+        let mut frame = ridge_term::term::delta::DeltaFrame::new(update.revision(), Vec::new());
+        frame.semantic_update = Some(Box::new(update));
+        state.replace_pane_delta_frame(workspace_id, pane_id, frame);
+    }
     Ok(())
 }
 
 /// Take the current merged native-parser frame for one pane. A `None` reply is
 /// normal when a pane closes or when a later wake was already superseded.
 #[tauri::command]
-pub async fn take_pane_delta_frame(
+pub async fn take_terminal_frames(
     state: State<'_, AppState>,
     workspace_id: String,
     pane_id: String,
-) -> Result<Option<Vec<u8>>, String> {
+) -> Result<Vec<Vec<u8>>, String> {
     let workspace_id =
         Uuid::parse_str(&workspace_id).map_err(|_| "invalid workspace_id".to_string())?;
     let pane_id = parse_pane_id(&pane_id).map_err(|error| error.to_string())?;
     let state = state.inner().clone();
-    tokio::task::spawn_blocking(move || state.take_pane_delta_frame(workspace_id, pane_id))
+    tokio::task::spawn_blocking(move || state.take_terminal_frames(workspace_id, pane_id))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -2191,7 +2268,7 @@ fn set_pane_delta_mode_inner(
         // Replace, rather than append: this is a complete handoff frame and
         // must cut any pre-enable mailbox transcript.
         if !state.replace_pane_delta_frame(workspace_id, pane_id, frame.clone()) {
-            if let Err(error) = emit_legacy_pane_delta(app, workspace_id, pane_id, frame) {
+            if let Err(error) = emit_terminal_packet(app, workspace_id, pane_id, frame) {
                 delta_mode_flag.store(false, Ordering::Release);
                 return Err(error);
             }
@@ -2368,6 +2445,34 @@ mod write_scope_tests {
         assert!(validate_input_identity(Some("controller_1".into()), Some(1)).is_ok());
         assert!(validate_input_identity(Some("bad source".into()), Some(1)).is_err());
         assert!(validate_input_identity(Some("controller".into()), None).is_err());
+    }
+
+    #[tokio::test]
+    async fn admitted_terminal_input_survives_rpc_cancellation_and_commits_once() {
+        let lane = Arc::new(tokio::sync::Mutex::new(crate::state::PtyInputSequenceState::default()));
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (started, observed) = tokio::sync::oneshot::channel();
+        let (release, finished) = tokio::sync::oneshot::channel();
+        let first_lane = lane.clone(); let count = writes.clone();
+        let waiter = tokio::spawn(async move {
+            admit_terminal_input(first_lane, 1, [1; 32], async move {
+                count.fetch_add(1, Ordering::SeqCst); let _ = started.send(());
+                finished.await.map_err(|error| error.to_string())?; Ok(())
+            }).await
+        });
+        observed.await.unwrap(); waiter.abort(); assert!(waiter.await.unwrap_err().is_cancelled());
+        release.send(()).unwrap();
+        let ack = admit_terminal_input(lane, 1, [1; 32], async { panic!("cancelled waiter must not cause duplicate write") }).await.unwrap();
+        assert!(ack.already_applied); assert_eq!(writes.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_or_unknown_terminal_write_is_never_replayed_or_reported_successful() {
+        let lane = Arc::new(tokio::sync::Mutex::new(crate::state::PtyInputSequenceState::default()));
+        assert!(admit_terminal_input(lane.clone(), 1, [1; 32], async { Err("PTY input write timed out".into()) }).await.is_err());
+        let retry = admit_terminal_input(lane.clone(), 1, [1; 32], async { panic!("unknown write replayed") }).await.unwrap_err();
+        assert!(retry.contains("no replay"));
+        assert!(admit_terminal_input(lane, 2, [2; 32], async { panic!("failed input source continued") }).await.is_err());
     }
 }
 

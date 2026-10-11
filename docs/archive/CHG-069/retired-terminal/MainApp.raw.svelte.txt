@@ -1,0 +1,1686 @@
+<script lang="ts">
+  import type { TerminalInputContext, TerminalInputData } from "@ridge/remote/shared/transport/paneRpcScheduler";
+  import { clearRemoteToken } from './lib/remoteSession';
+  import { onDestroy, onMount, untrack } from 'svelte';
+  import { t, tr } from '$lib/i18n';
+  import { Folder, GitBranch, Search, Bot, Keyboard, TextCursorInput } from 'lucide-svelte';
+  // Type-only import of the lazily-loaded TerminalCanvas, used solely to type
+  // the bind:this instance ref below. Erased at build, so it does NOT defeat
+  // the dynamic import / lazy-load on the next line.
+  import type TerminalCanvasComponent from './lib/TerminalCanvas.svelte';
+  // §lazy-load: creating an import promise starts a request immediately. Keep
+  // these promises null until the authenticated feature actually needs them;
+  // this prevents five optional chunks from competing with the first pane.
+  let terminalCanvasPromise: Promise<typeof import('./lib/TerminalCanvas.svelte')> | null = $state(null);
+  let virtualKeyboardPromise: Promise<typeof import('./lib/VirtualKeyboard.svelte')> | null = $state(null);
+  let remoteSidebarPromise: Promise<typeof import('./lib/RemoteSidebar.svelte')> | null = $state(null);
+  let remoteTeamRosterPromise: Promise<typeof import('./lib/SidebarTeamRoster.svelte')> | null = $state(null);
+  let fileViewerPromise: Promise<typeof import('./lib/FileViewer.svelte')> | null = $state(null);
+  const loadTerminalCanvas = retryableLazyImport(() => import('./lib/TerminalCanvas.svelte'));
+  const loadVirtualKeyboard = retryableLazyImport(() => import('./lib/VirtualKeyboard.svelte'));
+  const loadRemoteSidebar = retryableLazyImport(() => import('./lib/RemoteSidebar.svelte'));
+  const loadRemoteTeamRoster = retryableLazyImport(() => import('./lib/SidebarTeamRoster.svelte'));
+  const loadFileViewer = retryableLazyImport(() => import('./lib/FileViewer.svelte'));
+  import BottomTabBar from './BottomTabBar.svelte';
+  import { retryableLazyImport } from './lib/retryableLazyImport';
+  import {
+    getRemotePanelAvailability,
+    paneRefKey,
+    type RemoteLink,
+    type PaneRef,
+    type RemotePanel,
+    type PaneInfo,
+    type ConnectionState,
+    type WorkspaceInfo,
+    type ConnectionFailure,
+  } from '@ridge/remote';
+  import { applyThemeVars, buildKernelTheme } from './lib/theme';
+  import { createWsSidebarProvider } from './lib/sidebarProvider';
+  import { readDeviceClass, watchDeviceClass } from './lib/deviceClass';
+  import { onceCleanup } from './lib/listenerCleanup';
+  import { createGenerationGuard } from './lib/generationGuard';
+  import { detachPaneRefs } from './lib/paneLifecycle';
+  import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
+  import { PaneFeedScheduler } from './lib/paneFeedScheduler';
+  import {
+    remotePerfEnd,
+    remotePerfMark,
+    remotePerfStart,
+  } from '@ridge/remote/shared/transport/remotePerfTrace';
+  import { getTransport, type DataProvider } from '$lib/transport';
+  import type { TerminalLinkOpenRequest, TerminalLinkValidationResult } from '@ridge/remote/shared/terminal/ports';
+  import { looksOutsideWorkspace, probePathWithCache } from '@ridge/remote/shared/terminal/linkOpenHost';
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query';
+  import { MobileRemoteUiState } from './lib/mobileRemoteUiState.svelte';
+  import { applyPwaUpdate, pwaUpdateReady } from './lib/pwaUpdate';
+  import {
+    dedupeRemoteItems,
+    mergeRemoteItems,
+    remoteQueryKeys,
+    remoteSessionId,
+    requestPaneSnapshot,
+    requestWorkspaceSnapshot,
+    type RemoteCapabilities,
+  } from './lib/remoteQueries';
+
+  let { ws, dataProvider, workspaceManagement = true, paneManagement = true, embedded = false, sharedGrid = !embedded }: {
+    ws: RemoteLink;
+    dataProvider?: DataProvider;
+    workspaceManagement?: boolean;
+    paneManagement?: boolean;
+    embedded?: boolean;
+    sharedGrid?: boolean;
+  } = $props();
+
+  function activePaneRef(): PaneRef | null {
+    return ui.activePaneRef();
+  }
+  const LS_SBUF_KEY = 'rg-remote-sentence-buffer';
+  const ui = new MobileRemoteUiState(((): boolean => {
+    try { return localStorage.getItem(LS_SBUF_KEY) === '1'; } catch { return false; }
+  })());
+  // §real-keyboard gate: 桌面/笔电带实体键盘时（pointer:fine + hover:hover），手机端
+  // SPA 不必再叠虚拟键盘栏——`canvasRef.openSystemKeyboard()` 的隐藏 textarea
+  // 直接捕获实体键，物理键输入路径完整。触屏设备保留默认 true 以不破坏既有体验。
+  // `readDeviceClass()` 在 SSR / 无 matchMedia 时保守返回 false → 保留虚拟键盘。
+  let hasRealKeyboard = $state(readDeviceClass().hasRealKeyboard);
+  $effect(() => {
+    return watchDeviceClass((cls) => {
+      hasRealKeyboard = cls.hasRealKeyboard;
+      // 设备降级到触屏（如断开外接键盘）时若用户没显式开过键盘栏，仍保留默认开启
+      // 以保触屏可用；主动开启后保留用户选择。
+    });
+  });
+  // 派生：是否显示虚拟键盘栏。设备有实体键盘时彻底隐藏；触屏设备尊重用户显式开关。
+  const showVirtualKeyboardUi = $derived(!hasRealKeyboard);
+  let wsState = $state<ConnectionState>('disconnected');
+  const queryClient = useQueryClient();
+  const sessionId = () => remoteSessionId(ws);
+  let remoteAppAlive = true;
+  let stopConnection: (() => void) | null = null;
+  let _refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  const workspaceRefreshGuard = createGenerationGuard();
+  onDestroy(() => {
+    remoteAppAlive = false;
+    // Invalidate every in-flight workspace snapshot before tearing down the
+    // transport. Late responses must never repopulate a destroyed view.
+    workspaceRefreshGuard.invalidate();
+    if (_refreshTimer !== null) {
+      clearTimeout(_refreshTimer);
+      _refreshTimer = null;
+    }
+    stopConnection?.();
+    stopConnection = null;
+    const ownedPanes = [...attachedPanes.values()];
+    for (const pane of ownedPanes) releasePaneRuntime(pane);
+    void detachPaneKernels(ownedPanes);
+    ws.pruneOutputs(new Set());
+    clearAllFeedResync();
+    paneFeedScheduler.dispose();
+    pendingRawFrames.clear();
+    paneSwitchPerf.clear();
+    attachedPanes.clear();
+  });
+  const workspacesQuery = createQuery(() => ({
+    queryKey: remoteQueryKeys.workspaces(sessionId()),
+    queryFn: ({ signal }) => requestWorkspaceSnapshot(ws, signal),
+    enabled: wsState === 'connected',
+  }));
+  const panesQuery = createQuery(() => ({
+    queryKey: remoteQueryKeys.panes(sessionId(), ui.activeWorkspaceId),
+    queryFn: ({ signal }) => requestPaneSnapshot(ws, ui.activeWorkspaceId, signal),
+    enabled: wsState === 'connected' && ui.activeWorkspaceId.length > 0,
+  }));
+  let workspaces = $derived(workspacesQuery.data ?? []);
+  // LAN/kernel hosts include panes in the workspace snapshot. Use that
+  // authoritative fallback until the dedicated active-pane query hydrates;
+  // otherwise a cold mobile boot can show a connected host with no terminal.
+  let panes = $derived(
+    panesQuery.data ?? workspaces.find((workspace) => workspace.id === ui.activeWorkspaceId)?.panes ?? [],
+  );
+  // The active pane object (for its title in the header breadcrumb), derived
+  // from the live `panes` list by id — mirrors the panes.find(...) lookup used
+  // for the active cwd below.
+  let activePane = $derived(panes.find((p) => p.id === ui.activePaneId));
+
+  // Pane borders are a sticky HITL affordance, never a permanent Agent status
+  // rail. Completion/approval events are edge-triggered by the roster, then
+  // remain visible until the terminal input surface actually receives focus.
+  // Input/resize traffic is deliberately NOT an acknowledgement: a background
+  // RPC or a stale resize must never hide an intervention request.
+  let attentionPaneKeys = $state<string[]>([]);
+  const acknowledgedAttention = new Set<string>();
+  function updateAgentAttention(paneIds: string[]): void {
+    const incoming = new Set(paneIds.filter(Boolean).map((paneId) => paneRefKey({
+      workspaceId: ui.activeWorkspaceId,
+      paneId,
+    })));
+    const sticky = new Set(attentionPaneKeys);
+    for (const key of incoming) {
+      if (!acknowledgedAttention.has(key)) sticky.add(key);
+    }
+    for (const key of acknowledgedAttention) {
+      if (!incoming.has(key)) acknowledgedAttention.delete(key);
+    }
+    attentionPaneKeys = [...sticky].filter((key) => !acknowledgedAttention.has(key));
+  }
+  function clearAgentAttention(pane: PaneRef | null): void {
+    if (!pane) return;
+    const key = paneRefKey(pane);
+    acknowledgedAttention.add(key);
+    attentionPaneKeys = attentionPaneKeys.filter((current) => current !== key);
+  }
+  function paneNeedsAttention(pane: PaneInfo | undefined): boolean {
+    return !!pane && attentionPaneKeys.includes(paneRefKey({
+      workspaceId: ui.activeWorkspaceId,
+      paneId: pane.id,
+    }));
+  }
+  function selectAgentPane(paneId: string): void {
+    ui.navigate(ui.activeWorkspaceId, paneId);
+    ui.sidebarTab = null;
+  }
+  function activeAttentionPaneIds(): string[] {
+    const prefix = `${ui.activeWorkspaceId}:`;
+    return attentionPaneKeys
+      .filter((key) => key.startsWith(prefix))
+      .map((key) => key.slice(prefix.length));
+  }
+  // §fail-grading（任务 A 问题1）：最近一次失败分级。驱动顶部 banner 的差异化处置——
+  // 'user'（账户/权限不匹配）退回登录、'parked'（设备停用）提示去控制台、'channel'
+  // （信令/网络/并发）显示「通道异常」并允许重试。
+  let failure = $state<ConnectionFailure | null>(null);
+  // 句级输入缓冲（语音听写友好）——localStorage 持久，TabBar 切换。
+  $effect(() => {
+    try { localStorage.setItem(LS_SBUF_KEY, ui.sentenceBuffer ? '1' : '0'); } catch { /* quota */ }
+  });
+  // Optimistic until D9 hello completes; onMount immediately replaces these via
+  // refreshCapabilities and subscribes to reconnect renegotiation.
+  let panelAvailability = $state<Readonly<Record<RemotePanel, boolean>>>({
+    files: true,
+    git: true,
+    search: true,
+    team: false,
+  });
+  let canManageWorkspaces = $state(false);
+  let canManagePanes = $state(false);
+  let canUseTheme = $state(true);
+  // Read-only file / git-diff viewer overlay. Opened from the sidebar (tap a
+  // file in the tree / a search hit → 'file'; tap a changed file in git → 'diff').
+  // Active pane's working dir — roots the sidebar at the same place ridge shows.
+  let activeCwd = $state('');
+  // Provider rooted at the active cwd — backs the file/diff viewer (the sidebar
+  // builds its own internally). Recreated when the cwd changes.
+  const sidebarProvider = $derived(
+    createWsSidebarProvider(activeCwd, dataProvider, {
+      queryClient,
+      sessionId: sessionId(),
+      workspaceId: ui.activeWorkspaceId,
+      paneId: ui.activePaneId ?? undefined,
+    }),
+  );
+
+  // iter-60 G10（导航栈语义，取代旧 §close-to-terminal 一刀切）：关闭 viewer 回
+  // 「打开它的那一级」——从侧栏（文件树/git/搜索）打开的，关闭回该侧栏页；从终端
+  // 直接打开的（sidebarTab 本为 null，如终端链接），关闭回终端。两代诉求兼得：
+  // 旧 bug「关文件误回目录」只出现在终端来源场景，栈语义下同样成立。
+  let viewerReturnTab: RemotePanel | null = null;
+  let linkedDirectory = $state<{ workspaceId: string; paneId: string; path: string } | null>(null);
+  let linkError = $state('');
+  function openFileViewer(path: string, line?: number) {
+    if (!panelAvailability.files) return;
+    viewerReturnTab = ui.sidebarTab;
+    ui.viewer = { kind: 'file', path, line };
+    ui.sidebarTab = null; // close the sidebar so the viewer takes the screen
+  }
+  function openDiffViewer(path: string) {
+    if (!panelAvailability.git) return;
+    viewerReturnTab = ui.sidebarTab;
+    ui.viewer = { kind: 'diff', path };
+    ui.sidebarTab = null;
+  }
+  function closeViewer() {
+    ui.viewer = null;
+    ui.sidebarTab = viewerReturnTab;
+    viewerReturnTab = null;
+  }
+
+  function handleRemoteTextLink(event: Event): void {
+    const detail = (event as CustomEvent<TerminalLinkOpenRequest & {
+      validateOnly?: boolean;
+      resolveValidation?: (result: TerminalLinkValidationResult) => void;
+    }>).detail;
+    const path = detail?.type === 'path' ? detail.path?.trim() : '';
+    const scope = detail.cwd?.trim() || detail.workspaceRoot?.trim();
+    if (!path || !scope || looksOutsideWorkspace(path, scope)) {
+      detail.resolveValidation?.({ valid: false, reason: 'outside_workspace' });
+      return;
+    }
+    const line = detail.line;
+    linkError = '';
+    const provider = dataProvider ?? getTransport();
+    const cacheKey = [
+      'shared',
+      detail.origin.workspaceId,
+      detail.origin.paneId,
+      path,
+    ].join('\0');
+    void probePathWithCache(cacheKey, async (signal) => {
+      try {
+        await provider.getFileTree(path, 0, signal);
+        return { exists: true, isDirectory: true };
+      } catch (error) {
+        if (signal.aborted) throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        if (/not a directory/i.test(message)) return { exists: true, isDirectory: false };
+        if (/not exist|no such file|not found/i.test(message)) return { exists: false };
+        throw error;
+      }
+    }).then((proof) => {
+      if (detail.validateOnly) {
+        detail.resolveValidation?.({
+          valid: proof.exists && proof.isDirectory !== true,
+          reason: !proof.exists ? 'missing_path' : proof.isDirectory ? 'directory_path' : undefined,
+        });
+        return;
+      }
+      if (!proof.exists) {
+        linkError = `路径不存在：${path}`;
+      } else if (proof.isDirectory) {
+        linkError = `非文件路径：${path}`;
+      } else {
+        openFileViewer(path, line);
+      }
+    }).catch((error) => {
+      detail.resolveValidation?.({ valid: false, reason: 'probe_failed' });
+      if (detail.validateOnly) return;
+      linkError = `路径验证失败：${error instanceof Error ? error.message : String(error)}`;
+    });
+  }
+
+  onMount(() => {
+    window.addEventListener('ridge:remote-open-text-link', handleRemoteTextLink);
+    return () => window.removeEventListener('ridge:remote-open-text-link', handleRemoteTextLink);
+  });
+  // §remote 新建终端：空状态下让远程端自行创建终端，不再依赖桌面端先开一个。
+  let creatingPane = $state(false);
+  let createError = $state('');
+
+  let canvasRef: ReturnType<typeof TerminalCanvasComponent> | undefined = $state();
+  // Kernel palette derived from the desktop theme; applied to the canvas once it
+  // mounts (the theme push usually arrives before the terminal exists).
+  let kernelTheme: Record<string, string> | null = $state(null);
+  let backendName = $state('WebGPU');
+  let hostCanvasError = $state<string | null>(null);
+  let scrollbackLoadingPaneIds = $state<string[]>([]);
+  let scrollbackErrorPaneIds = $state<string[]>([]);
+
+  // §remember-last-pane / §persist-state: remember the last active pane per
+  // workspace AND the last active workspace, persisted to localStorage so a
+  // refresh restores the user's exact context (工作区 + pane) instead of forcing
+  // a re-selection every time. sessionStorage holds the heavy scrollback; these
+  // lightweight "which ws / which pane" pointers go to localStorage so they also
+  // survive a tab close, not just a reload.
+  // §force-reset (?reset=1): driver / harness hook to drop all SPA localStorage
+  // before reading savedActiveWs. Without it, a stale LS_PANEMAP_KEY from a
+  // previous Chrome profile (surviving `pm clear` on some AVD builds) would
+  // push `lastActivePanePerWorkspace` entries that target panes the kernel
+  // never registered — the canvas would mount with a stale paneId and the
+  // host's strict cross-workspace check rejects `resize_pane`. Only clears
+  // the keys this SPA owns; does not touch auth or kernel data.
+  try {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('reset') === '1') {
+      const prefix = 'rg-remote-';
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(prefix)) localStorage.removeItem(k);
+      }
+    }
+  } catch { /* ignore — URL parser / storage may not be available */ }
+
+  const storageScope = untrack(() => ws.cacheScope?.() ?? `session-${sessionId()}`);
+  const LS_WS_KEY = `rg-remote-active-ws:${storageScope}`;
+  const LS_PANEMAP_KEY = `rg-remote-pane-map:${storageScope}`;
+
+  function loadPaneMap(): Map<string, string> {
+    try {
+      const raw = localStorage.getItem(LS_PANEMAP_KEY);
+      if (!raw) return new Map();
+      return new Map(Object.entries(JSON.parse(raw) as Record<string, string>));
+    } catch { return new Map(); }
+  }
+  function persistPaneMap(): void {
+    try {
+      localStorage.setItem(LS_PANEMAP_KEY, JSON.stringify(Object.fromEntries(lastActivePanePerWorkspace)));
+    } catch { /* quota exceeded / disabled — ignore */ }
+  }
+  function persistActiveWs(id: string): void {
+    try { if (id) localStorage.setItem(LS_WS_KEY, id); } catch { /* ignore */ }
+  }
+
+  const lastActivePanePerWorkspace = loadPaneMap();
+  // The workspace the user last viewed. Read once at init; on boot we switch the
+  // host back to it (if it's on a different one) so a refresh lands on the same
+  // workspace. The host then broadcasts that workspace's panes and the panes
+  // handler restores the remembered pane.
+  let savedActiveWs: string | null = null;
+  try { savedActiveWs = localStorage.getItem(LS_WS_KEY); } catch { /* ignore */ }
+  // Boot workspace-restore runs exactly once (first workspaces list after connect).
+  let bootRestoreDone = false;
+
+  // §theme-persist: a control end owns its appearance (theme isolation). Once the
+  // user cycles the theme, that choice must survive a reconnect (the host re-pushes
+  // its OWN active theme at every connect) AND a reload. We remember the cycled
+  // {id, colors} locally; on any later host theme push we re-apply the override
+  // instead of the host's theme. localStorage makes it survive a reload too.
+  const LS_THEME_KEY = 'rg-remote-theme-override';
+  let userTheme: { id: string; colors: Record<string, string> } | null = null;
+  try {
+    const raw = localStorage.getItem(LS_THEME_KEY);
+    if (raw) userTheme = JSON.parse(raw) as { id: string; colors: Record<string, string> };
+  } catch { /* ignore */ }
+  // True between tapping the theme button and its `theme` reply arriving, so the
+  // reply is adopted as the override (vs. a host-initiated connect/reconnect push).
+  let pendingCycle = false;
+  function persistUserTheme() {
+    try {
+      if (userTheme) localStorage.setItem(LS_THEME_KEY, JSON.stringify(userTheme));
+      else localStorage.removeItem(LS_THEME_KEY);
+    } catch { /* quota / disabled — ignore */ }
+  }
+
+  // Theme cycling: ask the host for the theme *after* the one we currently show.
+  // The host computes it statelessly (no disk write / no peer clobber — see
+  // wsRemote.cycleTheme) and pushes it back via the 'theme' message. We cycle from
+  // the user's override id when present so cycling stays continuous after a
+  // reconnect (where ws.lastTheme() would be the host's theme, not ours).
+  async function handleThemeToggle() {
+    if (!canUseTheme) return;
+    pendingCycle = true;
+    ws.cycleTheme(userTheme?.id ?? ws.lastTheme()?.id ?? '');
+  }
+
+  // Paste the CONTROL DEVICE's clipboard (this phone/browser) into the remote
+  // terminal as a bracketed paste. The button onclick is the user gesture the
+  // Clipboard API requires, and the LAN/cloud link is a secure context, so
+  // readText() is permitted. Previously this sent `{type:'paste'}` to the host,
+  // which had no handler — so the button did nothing.
+  async function handlePaste() {
+    const target = canvasRef;
+    if (!activePaneRef() || !target) return;
+    target.pasteClipboard?.();
+  }
+
+  // Semantic rows come from the shared kernel; history never reparses VT bytes.
+  async function loadOlderScrollback(pane: PaneRef) {
+    if (!remoteAppAlive || !canvasRef || !ws.fetchTerminalHistory) return;
+    const target = canvasRef;
+    const key = paneRefKey(pane);
+    const activation = activeTerminalActivation;
+    const request = target.terminalHistoryRequest();
+    if (!request || !activation || activation.key !== key || scrollbackLoadingPaneIds.includes(key)) return;
+    scrollbackErrorPaneIds = scrollbackErrorPaneIds.filter(id => id !== key);
+    scrollbackLoadingPaneIds = [...scrollbackLoadingPaneIds, key];
+    try {
+      const frame = await ws.fetchTerminalHistory(request);
+      if (!remoteAppAlive || canvasRef !== target || activeTerminalActivation?.id !== activation.id || activeTerminalActivation.key !== key) return;
+      if (!target.applyRemoteFrameForPane(key, frame, pane, activation.id)) throw new Error('terminal history target unavailable');
+    } catch {
+      if (remoteAppAlive && activeTerminalActivation?.id === activation.id) scrollbackErrorPaneIds = [...scrollbackErrorPaneIds, key];
+    } finally {
+      if (remoteAppAlive) scrollbackLoadingPaneIds = scrollbackLoadingPaneIds.filter(id => id !== key);
+    }
+  }
+
+  // §keep-alive (P4, 2026-07-25): the per-pane raw-byte cache + sessionStorage
+  // mirror + replay-reconcile are RETIRED. Each pane now has its own keep-alive
+  // kernel in the shared TerminalManager (held by the pane's TerminalCanvas,
+  // parked — not wiped — on switch), so pane history lives in the kernel and
+  // switching back shows it instantly with no wipe / no cache / no reconcile.
+  // We keep only the lightweight "which pane is subscribed" pointer and a
+  // workspace-tagged set of attached panes so we can DETACH (free the kernel)
+  // when the host truly closes a pane / workspace.
+  let subscribedPaneId: string | null = null;
+  let activationCounter = 0;
+  let activeTerminalActivation: { key: string; id: number } | null = null;
+  const pendingSemanticFrames = new Map<
+    string,
+    Array<{ bytes: Uint8Array; pane: PaneRef; activationId: number }>
+  >();
+
+  function nextTerminalActivation(key: string): number {
+    activationCounter = activationCounter >= Number.MAX_SAFE_INTEGER - 1
+      ? 1
+      : activationCounter + 1;
+    activeTerminalActivation = { key, id: activationCounter };
+    return activationCounter;
+  }
+
+  // Workspace each attached (visited) pane belongs to. Mirrors the retired
+  // paneCache cross-ws prune: release only panes that vanished from THEIR OWN
+  // workspace's list (mobile can only close panes in the active workspace), so a
+  // cross-workspace switch-back keeps the other workspaces' kernels alive.
+  const attachedPanes = new Map<string, PaneRef>();
+  /**
+   * Raw PTY frames can arrive during the one-tick gap between parking the old
+   * TerminalCanvas and attaching the newly selected pane. Keep that gap lossless
+   * so a fast pane switch never rewinds the visible input/output tail.
+   */
+  const pendingRawFrames = new PaneSwitchBuffer();
+  const paneSwitchPerf = new Map<string, ReturnType<typeof remotePerfStart>>();
+
+  function markPaneFirstPaint(paneKey: string): void {
+    const token = paneSwitchPerf.get(paneKey) ?? null;
+    paneSwitchPerf.delete(paneKey);
+    remotePerfEnd(token, { paneKey });
+    remotePerfMark('pane-first-paint', { paneKey });
+  }
+
+  function drainPendingRawFrames(key: string): Uint8Array[] {
+    const { frames, needsResync } = pendingRawFrames.drain(key);
+    if (needsResync) requestFeedResync(key);
+    return frames;
+  }
+
+  function drainPendingSemanticFrames(key: string) {
+    const frames = pendingSemanticFrames.get(key) ?? [];
+    pendingSemanticFrames.delete(key);
+    return frames;
+  }
+
+  // A render overflow can arrive as a burst of raw frames. Collapse it to one
+  // full-pane resync so the recovery path cannot itself become an RPC storm.
+  const feedResyncPending = new Set<string>();
+  const feedResyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function clearFeedResync(key: string): void {
+    const timer = feedResyncTimers.get(key);
+    if (timer !== undefined) clearTimeout(timer);
+    feedResyncTimers.delete(key);
+    feedResyncPending.delete(key);
+  }
+
+  function clearAllFeedResync(): void {
+    for (const timer of feedResyncTimers.values()) clearTimeout(timer);
+    feedResyncTimers.clear();
+    feedResyncPending.clear();
+  }
+
+  function requestFeedResync(key: string): void {
+    if (feedResyncPending.has(key)) return;
+    const separator = key.indexOf(':');
+    const pane = separator > 0
+      ? { workspaceId: key.slice(0, separator), paneId: key.slice(separator + 1) }
+      : null;
+    if (!pane || wsState !== 'connected') return;
+    feedResyncPending.add(key);
+    queueMicrotask(() => {
+      if (!remoteAppAlive || !feedResyncPending.has(key)) return;
+      try {
+        pendingSemanticFrames.delete(key);
+        const activationId = nextTerminalActivation(key);
+        (ws.activatePane ?? ws.subscribePane).call(ws, pane, { active: true, activationId, resume: false });
+      } finally {
+        const timer = setTimeout(() => {
+          feedResyncPending.delete(key);
+          feedResyncTimers.delete(key);
+        }, 250);
+        feedResyncTimers.set(key, timer);
+      }
+    });
+  }
+
+  /**
+   * Keep WebRTC/WS pane callbacks cheap: terminal parsing runs in a bounded
+   * frame slice, with the focused pane first. This prevents a PTY burst from
+   * monopolising the browser task queue and starving keyboard events.
+   */
+  const paneFeedScheduler = new PaneFeedScheduler((key, data) => {
+    const stats = canvasRef?.feedPane(key, data);
+    remotePerfMark('raw-feed', {
+      paneKey: key,
+      bytes: data.byteLength,
+      queueBytes: (stats?.queuedBytes ?? 0) + paneFeedScheduler.queuedBytes(key),
+    });
+    if (!stats) {
+      // The keyed surface may be between mounts. Keep this short gap in the
+      // existing bounded hand-off buffer; the next surface drains it once.
+      pendingRawFrames.enqueue(key, data);
+      return { accepted: true };
+    }
+    if (stats.needsResync) {
+      canvasRef?.clearPendingFeed(key);
+      requestFeedResync(key);
+    }
+    return { accepted: true, stats };
+  }, {
+    onDrop: (key) => requestFeedResync(key),
+  });
+
+  function releasePaneRuntime(pane: PaneRef): void {
+    const key = paneRefKey(pane);
+    attachedPanes.delete(key);
+    paneFeedScheduler.clear(key);
+    pendingRawFrames.drop(key);
+    pendingSemanticFrames.delete(key);
+    paneSwitchPerf.delete(key);
+    clearFeedResync(key);
+    canvasRef?.clearPendingFeed(key);
+  }
+
+  // Free kernels no longer owned by this Remote view. Dynamic import keeps the (large)
+  // manager out of the mobile entry bundle — the lazy TerminalCanvas already
+  // loaded it by the time any pane exists, so this resolves instantly.
+  async function detachPaneKernels(refs: PaneRef[]) {
+    if (refs.length === 0) return;
+    try {
+      const { TerminalManager } = await import('@ridge/remote/shared/terminal/manager');
+      const mgr = TerminalManager.tryInstance();
+      if (!mgr) return;
+      detachPaneRefs(refs, (paneKey) => mgr.detach(paneKey));
+    } catch { /* manager not loaded / already torn down */ }
+  }
+
+  // Shared WebGPU host canvas: bind once, resize with its parent, and surface
+  // initialization failures instead of hiding them behind a second renderer.
+  function formatWebgpuInitError(error: unknown): string {
+    const detail = error instanceof Error ? error.message : String(error);
+    return detail.includes('WEBGPU_INIT_FAILED')
+      ? `${detail}. WebGPU and WebGL2 are unavailable; update the browser or OS, then reload.`
+      : detail;
+  }
+
+  function hostCanvas(node: HTMLCanvasElement) {
+    let observer: ResizeObserver | undefined;
+    let torndown = false;
+    let mgr: import('@ridge/remote/shared/terminal/manager').TerminalManager | null = null;
+    hostCanvasError = null;
+    void (async () => {
+      try {
+        const { TerminalManager } = await import('@ridge/remote/shared/terminal/manager');
+        if (torndown) return;
+        mgr = TerminalManager.instance();
+        if (sharedGrid) mgr.setSharedRemoteMode(true);
+        await mgr.attachHost(node);
+        const parent = node.parentElement;
+        if (parent && !torndown) {
+          observer = new ResizeObserver((entries) => {
+            const e = entries[entries.length - 1];
+            if (e) mgr?.resizeHost({ wCss: e.contentRect.width, hCss: e.contentRect.height });
+            else mgr?.resizeHost();
+          });
+          observer.observe(parent);
+        }
+      } catch (err) {
+        if (!torndown) hostCanvasError = formatWebgpuInitError(err);
+        console.warn('[mobile] WebGPU host initialization failed', err);
+      }
+    })();
+    return {
+      destroy() {
+        torndown = true;
+        hostCanvasError = null;
+        observer?.disconnect();
+        if (sharedGrid) mgr?.setSharedRemoteMode(false);
+        mgr?.detachHost();
+      },
+    };
+  }
+
+  // A fresh `panes` list arrived for the CURRENT active workspace. Panes tagged
+  // to `activeWsId` that vanished from it were truly closed → detach their
+  // kernels (and drop the host-side output buffer). Other workspaces' kernels
+  // are untouched (§cross-ws-prune parity).
+  function pruneDeadPanes(activeWsId: string, liveIds: string[]) {
+    const live = new Set(liveIds);
+    const dead: PaneRef[] = [];
+    for (const pane of attachedPanes.values()) {
+      if (pane.workspaceId === activeWsId && !live.has(pane.paneId)) {
+        dead.push(pane);
+      }
+    }
+    if (dead.length > 0) {
+      for (const pane of dead) releasePaneRuntime(pane);
+      void detachPaneKernels(dead);
+      ws.pruneOutputs(new Set(attachedPanes.keys()));
+    }
+  }
+
+  // A whole workspace closed (its id dropped from list-workspaces): its panes
+  // can never reappear, so free their kernels here (the per-list prune above
+  // never sees those panes again).
+  function pruneCachesForClosedWorkspaces(liveWorkspaceIds: string[]) {
+    const liveWs = new Set(liveWorkspaceIds);
+    const dead: PaneRef[] = [];
+    for (const pane of attachedPanes.values()) {
+      if (!liveWs.has(pane.workspaceId)) {
+        dead.push(pane);
+      }
+    }
+    if (dead.length > 0) {
+      for (const pane of dead) releasePaneRuntime(pane);
+      void detachPaneKernels(dead);
+      ws.pruneOutputs(new Set(attachedPanes.keys()));
+    }
+  }
+
+  // Defensive: the host's pane/workspace lists can briefly contain DUPLICATE ids
+  // — e.g. a pane present in both `terminals` and `pending_spawns` during a spawn
+  // (src-tauri/.../server.rs builds the list from both) — which makes Svelte's
+  // keyed {#each (id)} throw `each_key_duplicate` and corrupt the rendered tree
+  // (wrong row reused → close/switch acts on the wrong pane). Dedupe by id before
+  // rendering so the UI stays correct regardless of what the host sends.
+  function dedupeById<T extends { id: string }>(items: T[]): T[] {
+    const seen = new Set<string>();
+    return items.filter((it) => (seen.has(it.id) ? false : (seen.add(it.id), true)));
+  }
+
+  function applyTheme(colors: Record<string, string>) {
+    applyThemeVars(colors);
+    kernelTheme = buildKernelTheme(colors);
+  }
+
+  function onStdin(pane: PaneRef, data: TerminalInputData, context: TerminalInputContext) {
+    ws.sendStdin(pane, data, context);
+  }
+
+  function onInputTask(pane: PaneRef, task: () => Promise<TerminalInputData | null>, context: TerminalInputContext): boolean {
+    return ws.enqueueStdinTask?.(pane, task, context) ?? false;
+  }
+
+  function onPaneFocus(pane: PaneRef): void {
+    clearAgentAttention(pane);
+  }
+
+  // Automatic refit (ResizeObserver / visualViewport): the controller fires this
+  // only when the grid actually changed (cols/rows/DPR delta), i.e. a genuine
+  // viewport change that needs the host to reflow. A bare `resize` is host-side
+  // bookkeeping that never touches the PTY, so the remote stayed clipped/garbled
+  // until the manual refresh button. `claimPane` runs the SAME host path as that
+  // button (resize real PTY + parser, broadcast `pty-resized`), giving automatic
+  // 自适应全屏 reflow without the manual tap.
+  function onResize(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number): Promise<void> {
+    // This callback originates in the browser viewer. Keep ownership explicit
+    // so host and remote resize paths cannot overwrite each other's authority.
+    return ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight, 'remote');
+  }
+
+  async function handleRefresh() {
+    const pane = activePaneRef();
+    if (pane && canvasRef) {
+      // Pane box is the sole geometry authority. Measure the settled box and
+      // force a host remount/redraw at that grid, even when rows×cols match
+      // the last claim (same-size fit used to be a silent no-op).
+      await canvasRef.claimPaneSize();
+    }
+    if (pane) {
+      // Refresh is an explicit canonical-screen recovery boundary. Do not let
+      // bytes queued against the pre-claim geometry race ahead of the host's
+      // full-screen replay.
+      const key = paneRefKey(pane);
+      paneFeedScheduler.clear(key);
+      pendingRawFrames.drop(key);
+      canvasRef?.clearPendingFeed(key);
+      clearFeedResync(key);
+      ws.resyncPane?.(pane);
+    }
+    ws.listPanes();
+    refreshWorkspaces();
+  }
+
+  let _refreshSeq = 0;
+
+  function refreshActivePane() {
+    if (!ui.activePaneId || !canvasRef) return;
+    const pid = ui.activePaneId;
+    const workspaceId = ui.activeWorkspaceId;
+    const targetCanvas = canvasRef;
+    const targetKey = paneRefKey({ workspaceId, paneId: pid });
+    // Debounce: coalesce rapid calls
+    if (_refreshTimer !== null) clearTimeout(_refreshTimer);
+    _refreshTimer = setTimeout(() => {
+      _refreshTimer = null;
+      const cur = ws.lastRefreshSeq();
+      if (cur <= _refreshSeq) return; // stale, a newer call already went through
+      _refreshSeq = cur;
+      const pane = activePaneRef();
+      if (pane && paneRefKey(pane) === targetKey && canvasRef === targetCanvas) {
+        void targetCanvas.fitPaneNow();
+      }
+    }, 100);
+  }
+
+  async function refreshWorkspaces() {
+    // Only the newest refresh may commit state. The transport can resolve an
+    // older request after a reconnect or workspace switch, and applying it
+    // would resurrect panes/workspaces that the user already left.
+    const generation = workspaceRefreshGuard.begin();
+    const isCurrent = () => remoteAppAlive && workspaceRefreshGuard.isCurrent(generation);
+    try {
+      let next = await queryClient.fetchQuery({
+        queryKey: remoteQueryKeys.workspaces(sessionId()),
+        queryFn: () => requestWorkspaceSnapshot(ws),
+      });
+      if (!isCurrent()) return;
+      // §cross-ws-prune fallback: drop caches of any workspace that's gone.
+      pruneCachesForClosedWorkspaces(next.map(w => w.id));
+      const hostActive = next.find(w => w.active);
+      // §persist-state: on the first list after (re)connect, if the user's last
+      // viewed workspace still exists but the host is on a different one, switch
+      // the host back so a refresh lands on the same workspace (the host then
+      // broadcasts that workspace's panes, and the panes handler restores the
+      // remembered pane). Runs once; afterwards we just track the host's active.
+      if (!bootRestoreDone) {
+        if (savedActiveWs && savedActiveWs !== (hostActive?.id ?? '')
+            && next.some(w => w.id === savedActiveWs)) {
+          ui.navigate(savedActiveWs, lastActivePanePerWorkspace.get(savedActiveWs) ?? null);
+          const ok = await ws.switchWorkspace(savedActiveWs);
+          if (!isCurrent()) return;
+          if (ok) ws.listPanes();
+          // Re-read so the `active` flag reflects the switch.
+          const after = await requestWorkspaceSnapshot(ws);
+          if (!isCurrent()) return;
+          queryClient.setQueryData(remoteQueryKeys.workspaces(sessionId()), after);
+          next = after;
+          const a2 = after.find(w => w.active);
+          const restoredWorkspaceId = a2 ? a2.id : savedActiveWs;
+          const restoredPaneId = a2?.panes?.some((pane) => pane.id === ui.activePaneId)
+            ? ui.activePaneId
+            : a2?.panes?.[0]?.id ?? null;
+          ui.navigate(restoredWorkspaceId, restoredPaneId);
+          bootRestoreDone = true;
+          return;
+        }
+        // Do not consume the one-shot restore guard until this generation is
+        // still alive; a superseded request must remain retryable.
+        bootRestoreDone = true;
+      }
+      if (!isCurrent()) return;
+      if (hostActive) {
+        const paneId = hostActive.panes?.some((pane) => pane.id === ui.activePaneId)
+          ? ui.activePaneId
+          : hostActive.panes?.[0]?.id ?? null;
+        ui.navigate(hostActive.id, paneId);
+      }
+    } catch { /* ignore */ }
+  }
+
+  // §fail-grading 处置（任务 A 问题1）。
+  // 通道异常（信令/WebRTC/网络/并发超限）→ 全量重连：reload 让 App.svelte 重新走
+  // boot/gate（cloud boot 单例幂等；LAN autoReconnect 用持久化 token 重连），比在 banner
+  // 里手搓一套重连状态机更稳，且复用本仓库既有「reload 即重连」模式。
+  function handleRetry() {
+    try { ws.disconnect(); } catch { /* already torn down */ }
+    location.reload();
+  }
+  // 用户问题（账户/权限不匹配）或设备停用 → 退回登录态：清掉本端持久化的远控 token，
+  // reload 后 App.svelte 会落到 AuthScreen（LAN 无 token→手动输码；cloud 会话失效→boot
+  // 重定向到主域登录）。这就是本仓库现有的「回登录」路径（AuthScreen.fallbackToManual /
+  // CloudAuthScreen 的 location.replace 同源）。
+  function handleBackToLogin() {
+    try { ws.disconnect(); } catch { /* already torn down */ }
+    clearRemoteToken();
+    location.reload();
+  }
+
+  // Compact a cwd for the header sub-line: keep the last two path segments so the
+  // meaningful tail (repo/dir) is visible on a narrow phone header; the full path
+  // is on the title attribute for a long-press tooltip.
+  function compactCwd(cwd: string): string {
+    const parts = cwd.split(/[/\\]+/).filter(Boolean);
+    if (parts.length <= 2) return cwd;
+    return '…/' + parts.slice(-2).join('/');
+  }
+
+  function handleSidebarToggle(tab: RemotePanel) {
+    if (!panelAvailability[tab]) return;
+    if (ui.sidebarTab === tab) {
+      ui.sidebarTab = null;
+    } else {
+      ui.sidebarTab = tab;
+    }
+  }
+
+  function selectSidebarTab(tab: RemotePanel) {
+    if (panelAvailability[tab]) ui.sidebarTab = tab;
+  }
+
+  function refreshCapabilities() {
+    panelAvailability = getRemotePanelAvailability((capability) => ws.hasCapability(capability));
+    canManageWorkspaces = workspaceManagement && ws.hasCapability('workspace');
+    canManagePanes = paneManagement && ws.hasCapability('pane');
+    canUseTheme = ws.hasCapability('theme');
+    const snapshot: RemoteCapabilities = {
+      panels: panelAvailability,
+      manageWorkspaces: canManageWorkspaces,
+      managePanes: canManagePanes,
+      theme: canUseTheme,
+    };
+    queryClient.setQueryData(remoteQueryKeys.capabilities(sessionId()), snapshot);
+    if (ui.sidebarTab && !panelAvailability[ui.sidebarTab]) ui.sidebarTab = null;
+    if (ui.viewer?.kind === 'diff' && !panelAvailability.git) ui.viewer = null;
+    if (ui.viewer?.kind === 'file' && !panelAvailability.files) ui.viewer = null;
+  }
+
+  // 远程端自建终端：请求 host 创建 pane，成功后刷新列表并把新 pane 设为活动项
+  // （onMessage 的 'panes' 分支会在 listPanes 回包后把 activePaneId 兜底为首个，
+  //  这里显式置为新 id 以确保即使有多个 pane 也聚焦到刚建的那个）。失败时把错误
+  // 文案显示给用户，绝不静默吞掉。
+  async function handleCreatePane() {
+    if (creatingPane || !canManagePanes) return;
+    creatingPane = true;
+    createError = '';
+    try {
+      const newId = await ws.createPane();
+      if (newId) {
+        ui.navigate(ui.activeWorkspaceId, newId);
+        ws.listPanes();
+      } else {
+        createError = tr('mobile.createTerminalFailRetry');
+      }
+    } catch (e) {
+      createError = e instanceof Error ? e.message : tr('mobile.createTerminalFail');
+    } finally {
+      creatingPane = false;
+    }
+  }
+
+  onMount(() => {
+    const stops: Array<() => unknown> = [];
+    stops.push(ws.onCapabilitiesChanged(refreshCapabilities));
+    refreshCapabilities();
+    // §realtime-status（任务 A 问题3）：先装状态监听，再同步一次真实连接态。云端进入
+    // MainApp 时传输早已 'connected'，若不同步则 wsState 停在初值 'disconnected'，顶部
+    // 误显示「重连中」直到下一次状态事件才纠正。装监听在先、同步在后，保证此刻起的每次
+    // 连接事件都不漏。
+    stops.push(ws.onStateChange((s) => {
+      wsState = s;
+      failure = ws.lastFailure();
+    }));
+    wsState = ws.state();
+    failure = ws.lastFailure();
+    stops.push(ws.onMessage((msg) => {
+      if (msg.type === 'panes') {
+        // Steady-state pane snapshots must carry their source workspace.
+        // A current-UI fallback races late responses onto the wrong identity.
+        if (!msg.workspaceId) return;
+        const workspaceId = msg.workspaceId;
+        const nextPanes = dedupeRemoteItems(msg.panes);
+        queryClient.setQueryData(remoteQueryKeys.panes(sessionId(), workspaceId), nextPanes);
+        const paneIds = nextPanes.map(p => p.id);
+        // Release caches for panes truly closed in THIS workspace (memory/quota
+        // leak); other workspaces' caches survive (§cross-ws-prune). The list
+        // belongs to the active workspace; skip pruning until we know which one
+        // (an empty id would mis-tag every pane).
+        if (workspaceId) pruneDeadPanes(workspaceId, paneIds);
+        if (workspaceId !== ui.activeWorkspaceId) return;
+        // §persist-state pane restore: keep a still-valid current selection
+        // (no "莫名奇妙切换工作区"); otherwise prefer the remembered pane for the
+        // current workspace (seeded from localStorage on boot), else the first
+        // pane. Re-picking when the current id went stale — e.g. right after a
+        // workspace switch — is what lets a refresh land back on the remembered
+        // pane instead of a dead id.
+        if (ui.activePaneId && paneIds.includes(ui.activePaneId)) {
+          // current selection still valid — leave it untouched
+        } else {
+          const remembered = ui.activeWorkspaceId
+            ? lastActivePanePerWorkspace.get(ui.activeWorkspaceId)
+            : undefined;
+          if (remembered && paneIds.includes(remembered)) {
+            ui.navigate(workspaceId, remembered);
+          } else if (paneIds.length > 0) {
+            ui.navigate(workspaceId, nextPanes[0].id);
+          } else {
+            ui.navigate(workspaceId, null);
+          }
+        }
+      }
+      if (msg.type === 'workspaces') {
+        const nextWorkspaces = dedupeRemoteItems(msg.workspaces);
+        queryClient.setQueryData(remoteQueryKeys.workspaces(sessionId()), nextWorkspaces);
+        // §cross-ws-prune fallback: a closed workspace's panes can never come
+        // back — release their caches so they don't leak (per-list prune never
+        // sees them again).
+        pruneCachesForClosedWorkspaces(nextWorkspaces.map(w => w.id));
+        const active = nextWorkspaces.find(w => w.active);
+        // Once the boot restore has run, follow the host's active workspace.
+        // Before that, refreshWorkspaces() owns the restore decision, so a
+        // proactive push must not clobber the workspace we're about to restore.
+        if (active && bootRestoreDone) {
+          const paneId = active.panes?.some((pane) => pane.id === ui.activePaneId)
+            ? ui.activePaneId
+            : active.panes?.[0]?.id ?? null;
+          ui.navigate(active.id, paneId);
+        }
+      }
+      if (msg.type === 'switch-workspace-result') {
+        if (msg.success && msg.workspaceId) {
+          ui.navigate(msg.workspaceId, lastActivePanePerWorkspace.get(msg.workspaceId) ?? null);
+        }
+        refreshWorkspaces();
+      }
+      if (msg.type === 'create-workspace-result' || msg.type === 'close-workspace-result') {
+        refreshWorkspaces();
+      }
+      if (msg.type === 'workspace-renamed') {
+        queryClient.setQueryData(
+          remoteQueryKeys.workspaces(sessionId()),
+          (current: WorkspaceInfo[] | undefined) =>
+            (current ?? []).map(w => w.id === msg.workspaceId ? { ...w, name: msg.name } : w),
+        );
+      }
+    }));
+    stops.push(ws.onRawBytes((pane, data) => {
+      // The frame-budgeted scheduler below owns terminal parsing; this callback
+      // only copies bytes into its bounded queue.
+      // §keep-alive (P4): feed the frame into its pane's alive kernel via the
+      // active pane's TerminalCanvas. The host single-subscribes so this is the
+      // active pane; a straggler for a just-unsubscribed pane is dropped (it
+      // isn't the mounted TerminalCanvas). No cache, no reconcile, no wipe — the
+      // host's on-subscribe replay is absorbed by the alive kernel.
+      const key = paneRefKey(pane);
+      const active = activePaneRef();
+      // §cold-boot-race (P5): active 未确立前（activeWorkspaceId='' / activePaneId=null）
+      // 不能 drop，否则 cold boot 期 host 先到的 PTY bytes 永久丢失。bytes 仍按
+      // per-pane 入 PaneFeedScheduler 队列（既有隔离，跨 pane 不串）；active binding
+      // 由 refreshWorkspaces / panes handler 落定后 setActive(subscriptionKey) →
+      // queue 正常 drain 到 active canvas。active 已确立且 key 不匹配 → drop straggler。
+      if (active && key !== paneRefKey(active)) return;
+      paneFeedScheduler.enqueue(key, data);
+      // During a keyed pane switch the old canvas may already be parked and
+      // the new one not yet attached. Do not drop this frame: the next canvas
+      // drains it into the same keep-alive kernel before its first paint.
+    }));
+    if (ws.onTerminalFrame) {
+      stops.push(ws.onTerminalFrame((data) => {
+        const pane = activePaneRef();
+        if (!pane) return;
+        const key = paneRefKey(pane);
+        const activation = activeTerminalActivation;
+        if (!activation || activation.key !== key) return;
+        try {
+          if (canvasRef?.applyRemoteFrameForPane?.(key, data, pane, activation.id)) return;
+        } catch {
+          requestFeedResync(key);
+          return;
+        }
+        const queued = pendingSemanticFrames.get(key) ?? [];
+        // Activation begins with a full snapshot, so retaining a short ordered
+        // burst is sufficient during the keyed component's mount gap.
+        if (queued.length >= 64) {
+          pendingSemanticFrames.delete(key);
+          requestFeedResync(key);
+          return;
+        }
+        queued.push({ bytes: data.slice(), pane, activationId: activation.id });
+        pendingSemanticFrames.set(key, queued);
+      }));
+    }
+    stops.push(ws.onMetadata((pane, title, cwd) => {
+      const { paneId, workspaceId } = pane;
+      // §realtime-title: reflect the live pane title in the workspace tree (and
+      // header) the instant it changes, instead of waiting for the next
+      // list-panes round-trip. pty-meta only fires for the active workspace's
+      // panes (host filters by active_ws_id); non-active workspaces refresh via
+      // the tree's periodic poll.
+      if (title != null && title.length > 0) {
+        queryClient.setQueryData(
+          remoteQueryKeys.panes(sessionId(), workspaceId),
+          (current: PaneInfo[] | undefined) =>
+            mergeRemoteItems(current, [{ id: paneId, title } as PaneInfo]),
+        );
+      }
+      // iter-60 G9: mirror cwd into the pane list too, so the pane-switcher
+      // popup shows live per-pane cwd（此前只有 active pane 的侧栏根会更新）.
+      if (cwd != null && cwd.length > 0) {
+        queryClient.setQueryData(
+          remoteQueryKeys.panes(sessionId(), workspaceId),
+          (current: PaneInfo[] | undefined) =>
+            mergeRemoteItems(current, [{ id: paneId, cwd } as PaneInfo]),
+        );
+      }
+      if (paneId === ui.activePaneId && workspaceId === ui.activeWorkspaceId) {
+        // Title drives the document/tab title directly.
+        if (title != null && title.length > 0) document.title = title;
+        // cwd roots the sidebar (file tree / git / search) at the pane's dir.
+        if (cwd != null && cwd.length > 0) activeCwd = cwd;
+      }
+    }));
+    stops.push(ws.onPtyResize((pane, rows, cols) => {
+      if (pane.paneId === ui.activePaneId && pane.workspaceId === ui.activeWorkspaceId) {
+        canvasRef?.resizeKernel(rows, cols);
+      }
+    }));
+    // Theme: apply the snapshot pushed at connect (cached, since it usually
+    // arrives before this listener) — but a user override (§theme-persist) wins.
+    const t0 = ws.lastTheme();
+    if (userTheme) applyTheme(userTheme.colors);
+    else if (t0) applyTheme(t0.colors);
+    stops.push(ws.onTheme((colors) => {
+      if (pendingCycle) {
+        // Reply to our own cycle tap → adopt it as the persisted override.
+        pendingCycle = false;
+        const id = ws.lastTheme()?.id ?? '';
+        userTheme = id ? { id, colors } : null;
+        persistUserTheme();
+        applyTheme(colors);
+      } else if (userTheme) {
+        // Host (re)pushed its active theme at (re)connect, but the user has an
+        // override → keep the override so the cycled theme survives reconnects.
+        applyTheme(userTheme.colors);
+      } else {
+        applyTheme(colors);
+      }
+    }));
+    // Reconnect resync (R7): a reconnect opens a brand-new host socket that
+    // holds no pane subscription. §keep-alive (P4): the local kernel stays ALIVE
+    // (no wipe) — we just re-subscribe the active pane so the host resumes
+    // streaming into it, and re-claim the viewport size so the PTY isn't stuck
+    // at the 80x24 default. The host's replay is absorbed by the alive kernel.
+    stops.push(ws.onReconnect(() => {
+      const pid = ui.activePaneId;
+      clearAllFeedResync();
+      paneFeedScheduler.clearAll();
+      pendingRawFrames.clear();
+      pendingSemanticFrames.clear();
+      // §keep-alive after reconnect: a disconnect leaves a gap in every mirror kernel,
+      // so force a full RIS resync on the next visit to each pane (clear the replayed
+      // set). The active pane is full-resynced now (subscribePane below, resume=false).
+      if (pid) {
+        const pane = activePaneRef();
+        if (!pane) return;
+        const key = paneRefKey(pane);
+        const activationId = nextTerminalActivation(key);
+        (ws.activatePane ?? ws.subscribePane).call(ws, pane, {
+          resume: false,
+          active: true,
+          activationId,
+        });
+        // The new server socket has no knowledge of our viewport size.
+        // Claim it immediately so the PTY is reflowed and the terminal
+        // doesn't stay stuck at the 80x24 default.
+        canvasRef?.fitPaneNow();
+      }
+      ws.listPanes();
+      refreshWorkspaces();
+      // Reset stale-guard seq to 0 so the debounced refreshActivePane
+      // below can actually send — on reconnect no new claimPane has been
+      // issued yet, so the guard cur <= _refreshSeq would otherwise
+      // match and silently block the re-subscribe PTY resize (#B3).
+      _refreshSeq = -1;
+      refreshActivePane();
+    }));
+    stopConnection = onceCleanup(stops.map((stop) => () => stop()));
+    // §persist-state: refreshWorkspaces() is the single owner for establishing
+    // the initial active workspace + pane binding. savedActiveWs 不再独立
+    // pre-seed（消除 cold-boot 双写/竞态）；refreshWorkspaces 内部首轮会按
+    // savedActiveWs 决定是否要 host 切回 + restore remembered pane。
+    ws.listPanes();
+    refreshWorkspaces();
+    return () => {
+      stopConnection?.();
+      stopConnection = null;
+      ws.disconnect();
+    };
+  });
+
+  // Pane switch: isolate the kernel + (re)subscribe. Reacts to activePaneId only;
+  // canvas ops run untracked so the canvas's async mount doesn't re-trigger a
+  // re-subscribe (which would double the host scrollback replay).
+  $effect(() => {
+    const pid = ui.activePaneId;
+    const workspaceId = ui.activeWorkspaceId;
+    if (!pid || !workspaceId) paneFeedScheduler.setActive(null);
+    if (!pid || !workspaceId) { subscribedPaneId = null; return; } // null gap → force re-subscribe next
+    untrack(() => {
+      const pane = { workspaceId, paneId: pid };
+      const subscriptionKey = paneRefKey(pane);
+      if (subscriptionKey === subscribedPaneId) return;
+      subscribedPaneId = subscriptionKey;
+      paneFeedScheduler.setActive(subscriptionKey);
+      paneSwitchPerf.set(subscriptionKey, remotePerfStart('pane-switch', {
+        paneKey: subscriptionKey,
+      }));
+      // Remember this pane as the last active for the current workspace, and
+      // persist it so a refresh restores the same ws + pane (§persist-state).
+      if (workspaceId) {
+        lastActivePanePerWorkspace.set(workspaceId, pid);
+        persistPaneMap();
+        persistActiveWs(workspaceId);
+        // Track for keep-alive GC: this pane's kernel is (being) attached under
+        // the active workspace; released only when the host closes it.
+        attachedPanes.set(subscriptionKey, pane);
+      }
+      // §keep-alive (P4): NO resetForSwitch / no cache pre-paint. The pane's
+      // kernel stays alive across switches (its TerminalCanvas parks it, not
+      // wiped), so switching back shows content instantly with zero white-screen
+      // and full scrollback. We only (debounced) re-subscribe so the host
+      // resumes streaming THIS pane; the host's on-subscribe replay is absorbed
+      // by the alive kernel.
+      // Cached pixels paint immediately, then the transport silently replaces
+      // them with a fresh host seed. Inactive panes never retain live streams:
+      // live-only resume would necessarily skip output and recreate stale TUIs.
+      const activationId = nextTerminalActivation(subscriptionKey);
+      (ws.activatePane ?? ws.subscribePane).call(ws, pane, {
+        resume: false,
+        active: true,
+        activationId,
+      });
+      // §B: prune listeners for panes we just left. The keep-alive kernel
+      // survives the park (no detach), but the host-side raw-byte fan-out
+      // must stop writing to a closed live stream — otherwise a noisy
+      // background pane can hold the controller's WebRTC buffer in use
+      // forever. Switching back later re-subscribes via (activate|subscribe)Pane.
+      if (typeof ws.pruneOutputs === 'function') {
+        ws.pruneOutputs(new Set([subscriptionKey]));
+      }
+    });
+  });
+
+  $effect(() => {
+    if (ui.activePaneId && canvasRef) {
+      refreshActivePane();
+    }
+  });
+
+  // §persist-state: save the active workspace whenever it changes (the pane map
+  // is saved on pane switch above) so a refresh restores the user's context.
+  $effect(() => {
+    if (ui.activeWorkspaceId) persistActiveWs(ui.activeWorkspaceId);
+  });
+
+  // Apply the kernel palette once the canvas exists (theme can arrive earlier).
+  $effect(() => {
+    if (canvasRef && kernelTheme) canvasRef.applyTheme(kernelTheme);
+  });
+
+  // §debug-pane-main: self-identifying bundle name so screenshots prove which
+  // build the page actually loaded (Vite rewrites import.meta.url per chunk).
+  const _bundleName = (() => {
+    try { return new URL(import.meta.url).pathname.split('/').pop() || '?'; } catch { return '?'; }
+  })();
+  // §debug-pane-main: which wasm asset the page fetched + which GL stack the
+  // browser exposes — screenshots then prove the loaded build and the GLES
+  // driver without needing CDP on the AVD.
+  const _glInfo = (() => {
+    try {
+      const wasm = (performance.getEntriesByType('resource') as PerformanceResourceTiming[])
+        .map((e) => e.name.split('/').pop() ?? '')
+        .filter((n) => n.includes('ridge_term_bg'))
+        .join(',') || '?';
+      const c = document.createElement('canvas');
+      const gl = c.getContext('webgl2');
+      const ver = gl ? String(gl.getParameter(gl.VERSION)).slice(0, 42) : 'no-webgl2';
+      const ren = gl ? String(gl.getParameter(gl.RENDERER)).slice(0, 38) : '-';
+      if (gl) gl.getExtension('WEBGL_lose_context')?.loseContext();
+      return `wasm=${wasm} gl=${ver} ren=${ren}`;
+    } catch (err) { return `glinfo err=${String(err).slice(0, 40)}`; }
+  })();
+
+  // §debug-pane-watch (?debug=pane=1): mirror activeLocation into
+  // document.title so the AVD driver can capture the live workspace/pane
+  // IDs via the Chrome tab strip / page dump. Off by default — no prod
+  // traffic cost; this effect never installs unless the query param is set.
+  let _paneDebugEnabled = false;
+  try {
+    if (new URL(window.location.href).searchParams.get('debug') === 'pane=1') _paneDebugEnabled = true;
+  } catch { /* ignore */ }
+  if (_paneDebugEnabled) {
+    let _lastTitle = '';
+    $effect(() => {
+      const ws = ui.activeWorkspaceId || '<none>';
+      const pn = ui.activePaneId || '<none>';
+      const ce = String(hostCanvasError ?? '').slice(0, 60);
+      const title = `[ws=${ws.slice(0,8)} pane=${pn.slice(0,8)} err=${ce}]`;
+      document.title = title;
+      // §debug-pane-log: stream via console.log so logcat captures every
+      // active-id change AND mirror into localStorage so driver can read via
+      // `adb shell run-as com.android.chrome cat files/.../Local Storage/...`
+      // AND POST to host's /debug/pane-state which logs into host-trace.
+      if (title !== _lastTitle) {
+        _lastTitle = title;
+        console.log(`[pane-debug] ${title} full_ws=${ws} full_pn=${pn}`);
+        try {
+          localStorage.setItem('rg-remote-debug-state', JSON.stringify({
+            ts: Date.now(),
+            activeWorkspaceId: ws,
+            activePaneId: pn,
+            hostCanvasError: ce,
+            fullUrl: window.location.href,
+          }));
+          // POST to host. The host's /debug/pane-state handler is mounted
+          // only when RIDGE_HOST_TRACE=1 (which the driver sets) — if missing,
+          // the fetch rejects but we don't care; the localStorage write above
+          // is the primary signal.
+          fetch('/debug/pane-state', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              ws, pn, ce,
+              fullWs: ui.activeWorkspaceId,
+              fullPn: ui.activePaneId,
+              ts: Date.now(),
+            }),
+          }).catch(() => {});
+        } catch { /* */ }
+      }
+    });
+  }
+
+  // Trigger each optional chunk only after the authenticated app is connected
+  // and the corresponding surface is relevant. The promises are cached so a
+  // pane/sidebar switch never creates duplicate module requests.
+  $effect(() => {
+    if (wsState === 'connected' && ui.activePaneId) {
+      terminalCanvasPromise ??= loadTerminalCanvas();
+    }
+  });
+  $effect(() => {
+    if (wsState === 'connected' && showVirtualKeyboardUi && ui.showKeyboard) {
+      virtualKeyboardPromise ??= loadVirtualKeyboard();
+    }
+  });
+  $effect(() => {
+    if (wsState === 'connected' && ui.sidebarTab !== null) {
+      remoteSidebarPromise ??= loadRemoteSidebar();
+    }
+  });
+  $effect(() => {
+    if (wsState === 'connected' && panelAvailability.team) {
+      remoteTeamRosterPromise ??= loadRemoteTeamRoster();
+    }
+  });
+  $effect(() => {
+    if (wsState === 'connected' && ui.viewer) {
+      fileViewerPromise ??= loadFileViewer();
+    }
+  });
+
+  // Seed the sidebar root from the active pane's cwd (pty-meta refines it live).
+  $effect(() => {
+    const p = panes.find((pp) => pp.id === ui.activePaneId);
+    if (p?.cwd) activeCwd = p.cwd;
+  });
+
+  // §header-pin（虚拟键盘顶吸）: keep the header (which holds the virtual keyboard)
+  // glued to the VISIBLE viewport top so the soft IME can't push it off-screen /
+  // let it cover content. When a mobile browser scrolls the layout up to reveal the
+  // focused input above the IME, `visualViewport.offsetTop` grows by that scroll
+  // amount; translating the header DOWN by the same amount re-pins it to the visible
+  // top. When the browser keeps `position:fixed` still (offsetTop stays 0) this is a
+  // no-op, so it's safe on every viewport model. Bounded by the scroll distance.
+  let headerShift = $state(0);
+  $effect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => { headerShift = Math.max(0, Math.round(vv.offsetTop)); };
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    update();
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+    };
+  });
+</script>
+
+<div class="app-root" class:embedded>
+  {#if $pwaUpdateReady}
+    <div class="pwa-update-banner" role="status">
+      <span>新版 Remote 已就绪</span>
+      <button class="conn-action" onclick={() => void applyPwaUpdate()}>刷新</button>
+    </div>
+  {/if}
+  {#if linkError}
+    <button class="link-error" onclick={() => linkError = ''} aria-label="关闭路径错误">{linkError}</button>
+  {/if}
+  {#if wsState !== 'connected'}
+    <!-- §断连提示 + §fail-grading（任务 A 问题1）: live link status.
+         - 非 error（disconnected/connecting）: 传输在自动重连 → 「重连中」，不阻断。
+         - error + user/parked: 不可重试的终态 → 标红，给「退回登录」动作（user 换凭据 /
+           parked 设备停用需去控制台启用或升级），绝不再无限 pending。
+         - error + channel（含无分级兜底）: 通道异常（信令/WebRTC/网络/并发超限）→ 标红，
+           给「重试」动作，让用户主动全量重连而不是一直转圈。 -->
+    <div class="conn-banner-safe">
+      {#if wsState === 'error'}
+        <div class="conn-banner lost">
+          {#if failure?.category === 'user'}
+            <span class="conn-msg">{$t('mobile.connectFail')}</span>
+            <button class="conn-action" onclick={handleBackToLogin}>{$t('mobile.verifyAndConnect')}</button>
+          {:else if failure?.category === 'parked'}
+            <span class="conn-msg">{$t('mobile.connectionLost')}</span>
+            <button class="conn-action" onclick={handleBackToLogin}>{$t('mobile.refresh')}</button>
+          {:else}
+            <!-- channel 异常 -->
+            <span class="conn-msg">{failure?.message || $t('mobile.connectionLost')}</span>
+            <button class="conn-action" onclick={handleRetry}>{$t('mobile.refresh')}</button>
+          {/if}
+        </div>
+      {:else}
+        <div class="conn-banner">
+          {$t('mobile.reconnecting')}
+        </div>
+      {/if}
+    </div>
+  {/if}
+  {#if panes.length === 0}
+    <div class="empty">
+      <p>{$t('mobile.noActiveTerminal')}</p>
+      {#if canManageWorkspaces}
+        <button class="create-btn" onclick={handleCreatePane} disabled={creatingPane}>
+          {creatingPane ? $t('mobile.creating') : $t('mobile.newTerminal')}
+        </button>
+      {/if}
+      {#if createError}<p class="create-error">{createError}</p>{/if}
+    </div>
+  {:else if ui.activePaneId}
+    <header class="mobile-header" style="transform: translateY({headerShift}px)">
+      <div class="header-row">
+        <div class="header-nav">
+          {#if panelAvailability.files}
+            <button class="hdr-btn" class:active={ui.sidebarTab === 'files'} onclick={() => handleSidebarToggle('files')} title={$t('mobile.filesTitle')} tabindex="-1">
+              <Folder class="w-4 h-4" />
+            </button>
+          {/if}
+          {#if panelAvailability.git}
+            <button class="hdr-btn" class:active={ui.sidebarTab === 'git'} onclick={() => handleSidebarToggle('git')} title="Git" tabindex="-1">
+              <GitBranch class="w-4 h-4" />
+            </button>
+          {/if}
+          {#if panelAvailability.search}
+            <button class="hdr-btn" class:active={ui.sidebarTab === 'search'} onclick={() => handleSidebarToggle('search')} title={$t('mobile.searchTitle')} tabindex="-1">
+              <Search class="w-4 h-4" />
+            </button>
+          {/if}
+          {#if panelAvailability.team}
+            <button class="hdr-btn" class:active={ui.sidebarTab === 'team'} onclick={() => handleSidebarToggle('team')} title="Team" tabindex="-1">
+              <Bot class="w-4 h-4" />
+            </button>
+          {/if}
+        </div>
+        <div class="header-breadcrumb">
+          {#if ui.activePaneId}
+            <div class="breadcrumb-line">
+              <span class="breadcrumb-text">{activePane?.title || $t('mobile.terminalDefault')}</span>
+              <span class="status-dot" class:connected={wsState === 'connected'} class:connecting={wsState === 'connecting'}></span>
+            </div>
+            {#if activeCwd}
+              <span class="breadcrumb-cwd" title={activeCwd}>{compactCwd(activeCwd)}</span>
+            {/if}
+          {/if}
+        </div>
+        <div class="header-actions">
+          <button
+            class="hdr-btn"
+            onclick={() => canvasRef?.openSystemKeyboard()}
+            title="Open system keyboard"
+            aria-label="Open system keyboard"
+            data-testid="system-ime-button"
+          >
+            <TextCursorInput class="w-4 h-4" />
+          </button>
+          {#if showVirtualKeyboardUi}
+            <button
+              class="hdr-btn"
+              class:active={ui.showKeyboard}
+              onclick={() => ui.showKeyboard = !ui.showKeyboard}
+              title={$t('mobile.virtualKeyboard')}
+              aria-label={$t('mobile.virtualKeyboard')}
+              data-testid="virtual-keyboard-button"
+            >
+              <Keyboard class="w-4 h-4" />
+            </button>
+          {/if}
+        </div>
+      </div>
+      {#if showVirtualKeyboardUi && ui.showKeyboard}
+        <div class="vk-section">
+          {#if virtualKeyboardPromise}
+            {#await virtualKeyboardPromise}
+              <div class="vk-loading">{$t('mobile.initializingTerminal')}</div>
+            {:then module}
+              <module.default onKey={(k: string, c: boolean, a: boolean, s: boolean) => canvasRef?.handleVirtualKey(k, c, a, s)} />
+            {:catch}
+          <div role="alert" class="load-error">
+            <span>键盘加载失败。</span>
+            <button onclick={() => { virtualKeyboardPromise = loadVirtualKeyboard(); }}>重试</button>
+          </div>
+        {/await}
+          {:else}
+            <div class="vk-loading">{$t('mobile.initializingTerminal')}</div>
+          {/if}
+        </div>
+      {/if}
+    </header>
+
+   <!-- term-stage keeps the shared WebGPU host canvas and terminal input surface
+        inside the terminal region; initialization failures remain visible. -->
+    <div class="term-stage" style:transform={`translateY(${ui.keyboardShift}px)`}>
+      <canvas class="host-canvas" data-rg-host aria-hidden="true" use:hostCanvas></canvas>
+      {#if terminalCanvasPromise && activePane}
+        {#await terminalCanvasPromise}
+          <div class="terminal-loading">{$t('mobile.initializingTerminal')}</div>
+        {:then module}
+          <!-- §keep-alive (P4): key on activePaneId so switching panes REMOUNTS the
+               input surface (onMount attach/unpark, onDestroy park) — mirroring the
+               desktop RidgePane mount/unmount → attach/park lifecycle. The pane's
+               kernel survives the remount (parked), so no wipe / no white-screen. -->
+          {#key `${ui.activeWorkspaceId}:${ui.activePaneId}`}
+            <module.default
+              bind:this={canvasRef}
+               bind:backendName
+               hostError={hostCanvasError}
+               paneId={ui.activePaneId}
+              workspaceId={ui.activeWorkspaceId}
+              agentState={activePane?.agentState ?? (activePane?.isAgent ? 'busy' : undefined)}
+              agentNeedsAttention={paneNeedsAttention(activePane)}
+              {onStdin}
+              {onInputTask}
+              onFocus={onPaneFocus}
+              {onResize}
+              onDrainPending={drainPendingRawFrames}
+              onDrainSemantic={drainPendingSemanticFrames}
+              onSemanticResync={(pane) => requestFeedResync(paneRefKey(pane))}
+              onFirstPaint={markPaneFirstPaint}
+              onHostClipboard={(text) => ws.setHostClipboard(text)}
+              onNearTop={loadOlderScrollback}
+              onKeyboardShift={(shift: number) => ui.keyboardShift = shift}
+              scrollbackLoading={scrollbackLoadingPaneIds.includes(`${ui.activeWorkspaceId}:${ui.activePaneId}`)}
+              scrollbackError={scrollbackErrorPaneIds.includes(`${ui.activeWorkspaceId}:${ui.activePaneId}`)}
+              onRetryScrollback={loadOlderScrollback}
+              bind:selectionMode={ui.selectionMode}
+              sentenceBuffer={ui.sentenceBuffer}
+            />
+          {/key}
+        {:catch}
+          <div role="alert" class="load-error">
+            <span>终端加载失败。</span>
+            <button onclick={() => { terminalCanvasPromise = loadTerminalCanvas(); }}>重试</button>
+          </div>
+        {/await}
+      {:else}
+        <div class="terminal-loading">{$t('mobile.initializingTerminal')}</div>
+      {/if}
+    </div>
+  {/if}
+
+  {#if ui.sidebarTab !== null && panelAvailability[ui.sidebarTab]}
+    <div class="sidebar-overlay" onclick={() => ui.sidebarTab = null} role="presentation"></div>
+    {#if remoteSidebarPromise}
+      {#await remoteSidebarPromise}
+        <div class="sidebar-loading">{$t('mobile.loading')}</div>
+      {:then module}
+        <module.default
+          tab={ui.sidebarTab}
+          available={panelAvailability}
+          cwd={activeCwd}
+          workspaceId={ui.activeWorkspaceId}
+          paneId={ui.activePaneId ?? undefined}
+          initialDirectory={linkedDirectory?.workspaceId === ui.activeWorkspaceId
+            && linkedDirectory?.paneId === ui.activePaneId
+            ? linkedDirectory.path
+            : ''}
+          {ws}
+          {panes}
+          attentionPaneIds={activeAttentionPaneIds()}
+          {dataProvider}
+          onClose={() => ui.sidebarTab = null}
+          onTabChange={selectSidebarTab}
+          onOpenFile={openFileViewer}
+          onOpenDiff={openDiffViewer}
+          onSelectPane={selectAgentPane}
+          onAttentionChange={updateAgentAttention}
+        />
+      {:catch}
+          <div role="alert" class="load-error">
+            <span>侧栏加载失败。</span>
+            <button onclick={() => { remoteSidebarPromise = loadRemoteSidebar(); }}>重试</button>
+          </div>
+        {/await}
+    {:else}
+      <div class="sidebar-loading">{$t('mobile.loading')}</div>
+    {/if}
+  {/if}
+
+  {#if panelAvailability.team && wsState === 'connected' && ui.sidebarTab !== 'team'}
+      {#if remoteTeamRosterPromise}
+        {#await remoteTeamRosterPromise then module}
+          <div class="agent-attention-monitor" aria-hidden="true">
+          <module.default
+            {ws}
+            workspaceId={ui.activeWorkspaceId}
+            {queryClient}
+            {panes}
+            attentionPaneIds={activeAttentionPaneIds()}
+            onSelectPane={selectAgentPane}
+            onAttentionChange={updateAgentAttention}
+          />
+        </div>
+        {:catch}
+          <div role="alert" class="load-error">
+            <span>成员状态加载失败。</span>
+            <button onclick={() => { remoteTeamRosterPromise = loadRemoteTeamRoster(); }}>重试</button>
+          </div>
+        {/await}
+      {/if}
+
+  {/if}
+
+  {#if ui.viewer}
+    {@const v = ui.viewer}
+    {#if fileViewerPromise}
+      {#await fileViewerPromise then module}
+        <module.default
+          provider={sidebarProvider}
+          kind={v.kind}
+          path={v.path}
+          line={v.line}
+          onClose={closeViewer}
+        />
+      {:catch}
+          <div role="alert" class="load-error">
+            <span>文件预览加载失败。</span>
+            <button onclick={() => { fileViewerPromise = loadFileViewer(); }}>重试</button>
+          </div>
+        {/await}
+    {/if}
+  {/if}
+
+  <BottomTabBar
+    {ws}
+    {backendName}
+    onRefresh={handleRefresh}
+    onPaste={handlePaste}
+    onThemeToggle={handleThemeToggle}
+    {canUseTheme}
+    {canManageWorkspaces}
+    {canManagePanes}
+    bind:selectionMode={ui.selectionMode}
+    bind:sentenceBuffer={ui.sentenceBuffer}
+    {panes}
+    bind:activePaneId={ui.activePaneId}
+    {workspaces}
+    bind:activeWorkspaceId={ui.activeWorkspaceId}
+    onNavigate={(workspaceId, paneId) => ui.navigate(workspaceId, paneId)}
+    onWorkspacesChanged={refreshWorkspaces}
+  />
+</div>
+
+<style>
+  /* Standalone PWA uses the dynamic viewport; keep the flex column at the
+     actual viewport edge so the action bar cannot float above a body strip. */
+  /* Explicit dynamic height keeps browser and standalone-PWA layout tied to
+     the visible viewport when URL chrome or the soft keyboard changes it. */
+  .app-root{position:fixed;inset:0;width:100%;height:100vh;height:100dvh;min-height:100dvh;box-sizing:border-box;display:flex;flex-direction:column;background:var(--rg-bg);color:var(--rg-fg)}
+  .app-root.embedded{position:absolute}
+  /* iter-61: 终端区叠放层——WebGPU host 画布垫底，终端容器（host 模式透明）在上。 */
+  .term-stage{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;transition:transform .12s ease-out;will-change:transform}
+  .host-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:0;display:block;pointer-events:none}
+  /* Keep the notice itself below the cutout.  Some standalone WebViews paint a
+     fixed/flex child at y=0 even when padding on that child is ignored, so the
+     safe-area offset lives in a separate flex item rather than in the text box. */
+  .conn-banner-safe{position:relative;flex:0 0 auto;margin-top:env(safe-area-inset-top,0px);box-sizing:border-box;background:var(--rg-bg);z-index:50}
+  /* Older standalone WebKit exposes the cutout through constant(). */
+  @supports (padding-top:constant(safe-area-inset-top)) {
+    .conn-banner-safe{margin-top:constant(safe-area-inset-top)}
+  }
+  @supports (padding-top:env(safe-area-inset-top)) {
+    .conn-banner-safe{margin-top:env(safe-area-inset-top,0px)}
+  }
+  .conn-banner{flex-shrink:0;padding:6px max(12px,env(safe-area-inset-right,0px));min-height:30px;box-sizing:border-box;text-align:center;font-size:12px;font-weight:600;color:#fff;background:var(--rg-ansi-yellow,#bb8009);display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}
+  /* A few standalone Android/WebView shells expose a cutout but report zero
+     for env(). Keep both reconnect and failure content below the belt. */
+  @media (display-mode:standalone) and (orientation:portrait) {
+    .conn-banner-safe{margin-top:64px}
+    @supports (padding-top:constant(safe-area-inset-top)) {
+      .conn-banner-safe{margin-top:max(64px,constant(safe-area-inset-top))}
+    }
+    @supports (padding-top:env(safe-area-inset-top)) {
+      .conn-banner-safe{margin-top:max(64px,env(safe-area-inset-top,0px))}
+    }
+  }
+  /* iOS standalone may expose only navigator.standalone (not display-mode). */
+  :global(html[data-ridge-pwa="standalone"]) .conn-banner-safe{margin-top:64px}
+  @supports (padding-top:constant(safe-area-inset-top)) {
+    :global(html[data-ridge-pwa="standalone"]) .conn-banner-safe{margin-top:max(64px,constant(safe-area-inset-top))}
+  }
+  @supports (padding-top:env(safe-area-inset-top)) {
+    :global(html[data-ridge-pwa="standalone"]) .conn-banner-safe{margin-top:max(64px,env(safe-area-inset-top,0px))}
+  }
+  .conn-banner.lost{background:var(--rg-ansi-red,#cf222e)}
+  .pwa-update-banner{position:relative;z-index:51;display:flex;align-items:center;justify-content:center;gap:10px;padding:6px 12px;background:var(--rg-accent);color:var(--rg-bg);font-size:12px;font-weight:600}
+  .conn-msg{flex:0 1 auto}
+  .conn-action{flex-shrink:0;border:1px solid rgba(255,255,255,.7);background:rgba(255,255,255,.15);color:#fff;font-size:12px;font-weight:600;border-radius:6px;padding:3px 10px;cursor:pointer}
+  .conn-action:hover{background:rgba(255,255,255,.28)}
+  .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--rg-fg-muted);gap:12px}
+  .create-btn{padding:8px 20px;border:1px solid var(--rg-accent);border-radius:8px;background:color-mix(in srgb,var(--rg-accent) 14%,transparent);color:var(--rg-fg);font-size:14px;font-weight:600;cursor:pointer;transition:all .15s}
+  .create-btn:active{background:color-mix(in srgb,var(--rg-accent) 26%,transparent)}
+  .create-btn:disabled{opacity:.5;cursor:not-allowed}
+  .create-error{font-size:12px;color:var(--rg-ansi-red)}
+  .link-error{flex:0 0 auto;width:100%;border:0;padding:7px 12px;background:var(--rg-ansi-red,#cf222e);color:#fff;font-size:12px;text-align:center;z-index:51}
+  .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:40;touch-action:none}
+  /* Keep the live Agent attention poll mounted without adding a second visible
+     drawer or layout work while the Team tab is closed. */
+  .agent-attention-monitor{position:fixed;left:-1px;top:-1px;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;contain:strict}
+  .mobile-header{position:sticky;top:0;display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 0 0;background:var(--rg-bg);border-bottom:1px solid color-mix(in srgb,var(--rg-fg) 12%,transparent);z-index:30;min-height:calc(44px + env(safe-area-inset-top))}
+  :global(html[data-ridge-pwa="standalone"]) .mobile-header{padding-top:64px;min-height:108px}
+  @supports (padding-top:env(safe-area-inset-top)) {
+    :global(html[data-ridge-pwa="standalone"]) .mobile-header{padding-top:max(64px,env(safe-area-inset-top,0px));min-height:max(108px,calc(44px + env(safe-area-inset-top,0px)))}
+  }
+  .header-row{display:flex;align-items:center;height:44px;padding:0 8px;gap:4px}
+  .header-nav{display:flex;gap:2px}
+  .header-breadcrumb{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;min-width:0;overflow:hidden}
+  .breadcrumb-line{display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;max-width:100%}
+  .breadcrumb-text{font-size:13px;color:var(--rg-fg-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .breadcrumb-cwd{max-width:100%;font-size:10px;line-height:1.2;color:var(--rg-fg-muted);opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .header-actions{display:flex;align-items:center;gap:2px}
+  .hdr-btn{display:flex;align-items:center;justify-content:center;width:36px;height:36px;border:none;border-radius:8px;background:transparent;color:var(--rg-fg-muted);cursor:pointer;transition:all .15s}
+  .hdr-btn:active{background:color-mix(in srgb,var(--rg-fg) 10%,transparent);color:var(--rg-fg)}
+  .hdr-btn.active{color:var(--rg-accent)}
+  .hdr-btn :global(svg){width:18px;height:18px}
+  .vk-section{overflow:hidden;border-top:1px solid color-mix(in srgb,var(--rg-fg) 8%,transparent)}
+  .status-dot{width:8px;height:8px;border-radius:50%;background:var(--rg-fg-muted);flex-shrink:0}
+  .status-dot.connected{background:var(--rg-ansi-green)}
+  .status-dot.connecting{background:var(--rg-ansi-yellow)}
+</style>

@@ -31,6 +31,12 @@ importers:
       '@ridge/split':
         specifier: workspace:*
         version: link:packages/rg-split
+      '@ridge/term-font-wasm':
+        specifier: link:packages/ridge-term-font/pkg
+        version: link:packages/ridge-term-font/pkg
+      '@ridge/term-render-wasm':
+        specifier: link:packages/ridge-term-render/pkg
+        version: link:packages/ridge-term-render/pkg
       '@ridge/term-wasm':
         specifier: link:packages/ridge-term/pkg
         version: link:packages/ridge-term/pkg

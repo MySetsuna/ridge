@@ -21,7 +21,8 @@ use crate::render::backend::{
     draw_frame, CursorDraw, CursorStyle, FrameDraw, FrameMetrics, RenderBackend, RowDraw, Theme,
 };
 use crate::selection::Range as SelRange;
-use crate::term::{cell::Row, grid::ScrollOp, Terminal};
+use crate::presentation::RenderTerminal;
+use crate::term::{cell::Row, grid::ScrollOp};
 
 pub struct Renderer<B: RenderBackend> {
     backend: B,
@@ -107,6 +108,8 @@ pub struct Renderer<B: RenderBackend> {
     /// JS installs via `setHistoryOverlay`, every frame paints, JS
     /// clears via `clearHistoryOverlay`.
     history_overlay: Option<HistoryOverlay>,
+    link_regions: Vec<(usize, usize, usize)>,
+    link_damage: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -381,7 +384,19 @@ impl<B: RenderBackend> Renderer<B> {
             last_is_alt: false,
             preedit: None,
             history_overlay: None,
+            link_regions: Vec::new(),
+            link_damage: Vec::new(),
         }
+    }
+
+    /// Only an explicitly hovered, validated link gets an affordance. OSC8
+    /// metadata alone does not decorate terminal output.
+    pub fn set_link_underlines(&mut self, regions: Vec<(usize, usize, usize)>) {
+        if self.link_regions == regions { return; }
+        for (row, _, _) in self.link_regions.iter().chain(&regions) {
+            if !self.link_damage.contains(row) { self.link_damage.push(*row); }
+        }
+        self.link_regions = regions;
     }
 
     /// §1.34 (2026-05-22) — install the shell-history popup overlay.
@@ -573,7 +588,7 @@ impl<B: RenderBackend> Renderer<B> {
     /// or any monotonic millisecond source). Used for cursor-blink phase
     /// computation. Pass 0.0 if you want a stable non-blinking cursor —
     /// blink is also gated on `Modes::cursor_blink`.
-    pub fn tick(&mut self, terminal: &Terminal, selection: Option<SelRange>, now_ms: f64) -> bool {
+    pub fn tick(&mut self, terminal: &impl RenderTerminal, selection: Option<SelRange>, now_ms: f64) -> bool {
         self.tick_with_scroll(terminal, selection, now_ms, &[])
     }
 
@@ -583,7 +598,7 @@ impl<B: RenderBackend> Renderer<B> {
     /// invalid mappings and structural invalidation fall back to repainting.
     pub fn tick_with_scroll(
         &mut self,
-        terminal: &Terminal,
+        terminal: &impl RenderTerminal,
         selection: Option<SelRange>,
         now_ms: f64,
         scroll_ops: &[ScrollOp],
@@ -700,6 +715,9 @@ impl<B: RenderBackend> Renderer<B> {
         // same O(rows) revision compare covers live grid and scrollback views
         // without allocating a flags array or hashing every visible cell.
         let mut dirty_rows = self.collect_dirty_rows(terminal, rows_n);
+        for row in self.link_damage.drain(..) {
+            if row < rows_n && !dirty_rows.contains(&row) { dirty_rows.push(row); }
+        }
         for row in scroll_repaint_rows {
             if row < rows_n && !dirty_rows.contains(&row) {
                 dirty_rows.push(row);
@@ -797,21 +815,12 @@ impl<B: RenderBackend> Renderer<B> {
             tui_mode,
             ..self.metrics
         };
-        // Hyperlink underlines share the persistent frame store with row
-        // pixels. Re-emit spans only for rows painted in this frame; a full
-        // redraw still supplies every visible row through `dirty_rows`.
-        let mut hl_rects: Vec<(usize, usize, usize)> = Vec::new();
-        for row_draw in &rows {
-            let Some(row) = terminal.viewport_row(row_draw.row_index) else {
-                continue;
-            };
-            for span in &row.hyperlinks {
-                if !is_safe_http_uri(&span.uri) {
-                    continue;
-                }
-                hl_rects.push((row_draw.row_index, span.col_start, span.col_end));
-            }
-        }
+        // Affordances share the persistent GPU frame store with cell pixels.
+        // Repaint old/new rows on hover changes and re-emit only painted rows.
+        let hl_rects: Vec<_> = self.link_regions.iter().filter_map(|&(row, c0, c1)| {
+            let c1 = c1.min(terminal.cols());
+            (dirty_rows.contains(&row) && c1 > c0).then_some((row, c0, c1))
+        }).collect();
         draw_frame(
             &mut self.backend,
             FrameDraw {
@@ -819,7 +828,7 @@ impl<B: RenderBackend> Renderer<B> {
                 theme: &self.theme,
                 rows: &rows,
                 cursor: new_cursor,
-                attrs_table: &terminal.grid().attrs,
+                attrs_table: terminal.attrs_table(),
                 full_redraw: do_full,
                 selection_rects: &sel_rects,
                 hyperlink_rects: &hl_rects,
@@ -842,7 +851,7 @@ impl<B: RenderBackend> Renderer<B> {
     /// falls back to the existing exact revision renderer.
     fn scroll_copy_candidate(
         &self,
-        terminal: &Terminal,
+        terminal: &impl RenderTerminal,
         selection: Option<SelRange>,
         offset: usize,
         scroll_ops: &[ScrollOp],
@@ -858,6 +867,8 @@ impl<B: RenderBackend> Renderer<B> {
             || self.last_selection.is_some()
             || self.preedit.is_some()
             || self.history_overlay.is_some()
+            || !self.link_regions.is_empty()
+            || !self.link_damage.is_empty()
             || offset != 0
             || scroll.count == 0
             || scroll.bottom >= rows
@@ -947,7 +958,7 @@ impl<B: RenderBackend> Renderer<B> {
     /// Cost: one integer revision compare per visible row. `tick` repeats
     /// the compare before committing its snapshot, preserving the
     /// non-mutating semantics needed by the JS scheduler.
-    fn update_screen_state(&mut self, terminal: &Terminal) {
+    fn update_screen_state(&mut self, terminal: &impl RenderTerminal) {
         let is_alt = terminal.is_alt_screen();
         if is_alt != self.last_is_alt {
             self.last_is_alt = is_alt;
@@ -958,7 +969,7 @@ impl<B: RenderBackend> Renderer<B> {
     /// Detect fullscreen and inline TUI modes. Cursor blink scheduling uses
     /// this to hold an enabled terminal cursor steady, while DEC ?25 remains
     /// authoritative for visibility.
-    fn is_tui_mode(terminal: &Terminal) -> bool {
+    fn is_tui_mode(terminal: &impl RenderTerminal) -> bool {
         terminal.is_alt_screen() || terminal.is_inline_tui_resize_at(crate::term::clock::now_ms())
     }
 
@@ -971,7 +982,7 @@ impl<B: RenderBackend> Renderer<B> {
         self.backend.on_full_invalidate();
     }
 
-    fn update_blink_phase(&mut self, terminal: &Terminal, now_ms: f64) -> bool {
+    fn update_blink_phase(&mut self, terminal: &impl RenderTerminal, now_ms: f64) -> bool {
         let active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
         let phase = !active || ((now_ms / 500.0) as i64).rem_euclid(2) == 1;
         if phase != self.last_blink_phase {
@@ -1005,7 +1016,7 @@ impl<B: RenderBackend> Renderer<B> {
         self.backend.on_full_invalidate();
     }
 
-    fn collect_dirty_rows(&mut self, terminal: &Terminal, rows: usize) -> Vec<usize> {
+    fn collect_dirty_rows(&mut self, terminal: &impl RenderTerminal, rows: usize) -> Vec<usize> {
         let mut dirty = Vec::with_capacity(rows);
         let mut previous_dirty = false;
         for row_index in 0..rows {
@@ -1077,7 +1088,7 @@ impl<B: RenderBackend> Renderer<B> {
         self.last_presented_cursor = self.last_cursor.clone();
     }
 
-    fn move_frozen_cursor_with_scroll(&mut self, terminal: &Terminal, ops: &[ScrollOp]) {
+    fn move_frozen_cursor_with_scroll(&mut self, terminal: &impl RenderTerminal, ops: &[ScrollOp]) {
         if ops.is_empty() { return; }
         for op in ops {
             let full_primary = !terminal.is_alt_screen() && op.top == 0
@@ -1100,7 +1111,7 @@ impl<B: RenderBackend> Renderer<B> {
     }
 
     /// Refresh the anchored content cell; viewport scrolling only remaps it.
-    fn refresh_frozen_cursor_cell(&mut self, terminal: &Terminal) -> bool {
+    fn refresh_frozen_cursor_cell(&mut self, terminal: &impl RenderTerminal) -> bool {
         let Some(anchor) = self.frozen_cursor_grid_row else { return false; };
         let visible = anchor + terminal.scroll_offset() as isize;
         if visible < 0 || visible >= terminal.rows() as isize { return false; }
@@ -1131,7 +1142,7 @@ impl<B: RenderBackend> Renderer<B> {
         &self,
         dirty: &mut Vec<usize>,
         selection: Option<SelRange>,
-        terminal: &Terminal,
+        terminal: &impl RenderTerminal,
         rows: usize,
     ) {
         if self.full_redraw_pending || dirty.is_empty() || selection.is_none() {
@@ -1144,10 +1155,10 @@ impl<B: RenderBackend> Renderer<B> {
         }
     }
 
-    pub fn is_dirty(&self, terminal: &Terminal, selection: Option<SelRange>, now_ms: f64) -> bool {
+    pub fn is_dirty(&self, terminal: &impl RenderTerminal, selection: Option<SelRange>, now_ms: f64) -> bool {
         // Pending unconditional redraw — first frame or set by an
         // earlier mutation we haven't tick-consumed yet.
-        if self.first_frame || self.full_redraw_pending || self.backend.requires_full_frame() {
+        if self.first_frame || self.full_redraw_pending || !self.link_damage.is_empty() || self.backend.requires_full_frame() {
             return true;
         }
 
@@ -1238,7 +1249,7 @@ impl<B: RenderBackend> Renderer<B> {
     /// Phase boundary is every 500 ms aligned to the same time origin
     /// `tick` uses. Caller is responsible for the lower bound (e.g.
     /// `Math.max(deadline, 1)` to avoid 0-ms timers).
-    pub fn next_blink_deadline_ms(&self, terminal: &Terminal, now_ms: f64) -> f64 {
+    pub fn next_blink_deadline_ms(&self, terminal: &impl RenderTerminal, now_ms: f64) -> f64 {
         // `self.focused` gates cursor rendering at compute_cursor_draw
         // (line 355): when the pane isn't focused, `new_cursor` is
         // always None, `last_cursor` quickly settles to None, and no
@@ -1267,13 +1278,12 @@ impl<B: RenderBackend> Renderer<B> {
     /// Compute the cursor descriptor for this frame. Returns None when
     /// DECTCEM is off (cursor hidden) or terminal is on alt screen with
     /// inactive cursor mode (future).
-    fn compute_cursor_draw(&self, terminal: &Terminal, offset: usize) -> Option<CursorDraw> {
+    fn compute_cursor_draw(&self, terminal: &impl RenderTerminal, offset: usize) -> Option<CursorDraw> {
         if !terminal.modes().cursor_visible {
             return None;
         }
-        let grid = terminal.grid();
-        let cur = grid.cursor();
-        let row = grid.row(cur.row)?;
+        let cur = terminal.cursor_position();
+        let row = terminal.cursor_row()?;
         let cell = row.cells.get(cur.col).copied().unwrap_or_default();
         let cluster_text = row.cluster_at(cur.col).map(|c| c.text.as_ref().to_string());
         // The cursor sits at live-grid row `cur.row`; the viewport shifts
@@ -1306,46 +1316,6 @@ impl<B: RenderBackend> Renderer<B> {
     }
 }
 
-fn is_safe_http_uri(uri: &str) -> bool {
-    if uri.is_empty()
-        || uri.len() > 2_048
-        || uri.contains('\\')
-        || uri.chars().any(|ch| ch.is_control() || ch.is_whitespace())
-    {
-        return false;
-    }
-    let Some(rest) = uri
-        .strip_prefix("https://")
-        .or_else(|| uri.strip_prefix("http://"))
-    else {
-        return false;
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    if authority.is_empty() || authority.contains('@') {
-        return false;
-    }
-    if let Some(ipv6) = authority.strip_prefix('[') {
-        let Some(close) = ipv6.find(']') else {
-            return false;
-        };
-        if close == 0 {
-            return false;
-        }
-        let tail = &ipv6[close + 1..];
-        return tail.is_empty()
-            || tail.strip_prefix(':').is_some_and(|port| {
-                !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
-            });
-    }
-    let (host, port) = authority
-        .split_once(':')
-        .map_or((authority, None), |(host, port)| (host, Some(port)));
-    !host.is_empty()
-        && !host.contains(':')
-        && port.map_or(true, |port| {
-            !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
-        })
-}
 
 fn cursor_eq(a: &Option<CursorDraw>, b: &Option<CursorDraw>) -> bool {
     cursor_refs_eq(a.as_ref(), b.as_ref())
@@ -1657,7 +1627,8 @@ mod tests {
     // large VT rewrites as grid updates and dirty only revision-changed rows —
     // never whole-viewport clear solely because absolute CSI / TUI is active.
 
-    use super::{is_safe_http_uri, Renderer};
+    use super::Renderer;
+    use crate::links::is_safe_http_uri;
     use crate::render::backend::{FrameMetrics, RenderBackend, RowDraw, ScrollCopyResult, Theme};
     use crate::term::attr_table::AttrTable;
     use crate::term::{grid::ScrollOp, Terminal};
@@ -2137,7 +2108,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_repaint_emits_hyperlinks_only_for_painted_rows() {
+    fn osc8_metadata_does_not_underline_output_without_hover() {
         let mut term = Terminal::new(4, 16, 0);
         term.feed(b"\x1b]8;;https://example.com\x07link\x1b]8;;\x07");
         let mut renderer = Renderer::new(
@@ -2148,11 +2119,12 @@ mod tests {
         renderer.set_focused(false);
 
         assert!(renderer.tick(&term, None, 0.0));
-        assert_eq!(
-            renderer.backend().hyperlink_rects,
-            vec![(0, 0, 4)],
-            "full redraw must emit the visible link"
-        );
+        assert!(renderer.backend().hyperlink_rects.is_empty());
+
+        renderer.set_link_underlines(vec![(0, 0, 4)]);
+        assert!(renderer.is_dirty(&term, None, 0.0));
+        assert!(renderer.tick(&term, None, 0.0));
+        assert_eq!(renderer.backend().hyperlink_rects, vec![(0, 0, 4)]);
 
         // Change a distant row. The persistent frame store retains row 0,
         // so its underline must not be rebuilt for this partial paint.
@@ -2162,6 +2134,11 @@ mod tests {
             renderer.backend().hyperlink_rects.is_empty(),
             "partial redraw must not scan or re-emit clean-row links"
         );
+
+        renderer.set_link_underlines(vec![]);
+        assert!(renderer.tick(&term, None, 0.0));
+        assert!(renderer.backend().last_drawn.contains(&0), "hover-off must erase the GPU underline");
+        assert!(renderer.backend().hyperlink_rects.is_empty());
     }
 
     #[test]

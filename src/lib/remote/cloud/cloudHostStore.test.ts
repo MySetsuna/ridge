@@ -59,6 +59,7 @@ import {
   hostState,
   isHostOnline,
 } from './cloudHostStore';
+import { makeCloudHostPaneSource } from '@ridge/remote/shared/cloud/cloudHostPaneSource';
 
 describe('cloudHostStore lifecycle', () => {
   beforeEach(() => {
@@ -113,6 +114,8 @@ describe('cloudHostStore lifecycle', () => {
   });
 
   it('routes Cloud RPC through the runtime-agnostic remote dispatcher', async () => {
+    const paneSource = vi.fn(() => () => {});
+    vi.mocked(makeCloudHostPaneSource).mockReturnValue(paneSource);
     mocks.snapshot.mockReturnValue({
       deviceToken: 'token',
       deviceName: 'desktop',
@@ -159,6 +162,7 @@ describe('cloudHostStore lifecycle', () => {
     });
     const scopedBridge = mocks.bridgeConstruct.mock.calls[1]?.[0] as {
       invoke: (method: string, params?: unknown) => Promise<unknown>;
+      paneOutputSource: (paneId: string, workspaceId: string, output: () => void, options: { activationId: number }) => () => void;
     };
     mocks.invoke.mockReset();
     mocks.invoke.mockImplementation(async (command: string) => {
@@ -171,6 +175,12 @@ describe('cloudHostStore lifecycle', () => {
       method: 'resize_pane',
       args: params,
     });
+    const output = vi.fn();
+    scopedBridge.paneOutputSource('pane-1', 'workspace-1', output, { activationId: 17 });
+    expect(paneSource).toHaveBeenCalledWith('pane-1', 'workspace-1', output, { activationId: 17 });
+    expect(() => scopedBridge.paneOutputSource('pane-1', 'foreign-workspace', output, { activationId: 17 })).toThrow('terminal outside workspace grant');
+    expect(() => scopedBridge.paneOutputSource('foreign-pane', 'workspace-1', output, { activationId: 17 })).toThrow('terminal outside workspace grant');
+    expect(paneSource).toHaveBeenCalledOnce();
     await goOffline();
   });
 

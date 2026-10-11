@@ -22,7 +22,7 @@ import {
   BYE_REASON_SIGNATURE_INVALID,
   type EphemeralKeyPair,
 } from './e2ee';
-import { demuxFrame, encodePaneLaneReadyFrame } from '@ridge/remote';
+import { CHANNEL, demuxFrame, encodePaneLaneReadyFrame } from '@ridge/remote';
 import { encodeChunks, ChunkReassembler } from '@ridge/remote';
 import type { CloudConnectionState } from '@ridge/remote';
 
@@ -319,7 +319,7 @@ describe('ControllerCloudProvider', () => {
     expect(states).toEqual(['connecting', 'handshaking', 'connected']);
   });
 
-  it('§7.1 E2EE：握手发 0x01||pub32；session 用 dir=1，与 host(dir=0) 互通', async () => {
+  it.each([CHANNEL.PANE_RAW, CHANNEL.TERMINAL])('encrypted pane tag %i retains its lane and independent counter', async (tag) => {
     const { ControllerCloudProvider } = await loadProvider();
     const received: Uint8Array[] = [];
     const provider = new ControllerCloudProvider(CONFIG, { onFrame: (b) => received.push(b) });
@@ -345,7 +345,7 @@ describe('ControllerCloudProvider', () => {
     // Old hosts may expose an open-but-unwired ridge-pane channel. The
     // controller must keep pane output on ridge until an authenticated ready
     // marker arrives.
-    const panePlain = new Uint8Array([0x10, 0x01, 0x70, 0x6f, 0x6e, 0x65]);
+    const panePlain = new Uint8Array([tag, 0x01, 0x70, 0x6f, 0x6e, 0x65]);
     provider.sendFrame(panePlain);
     expect(paneDc.sent).toHaveLength(0);
     expect(dc.sent).toHaveLength(3); // handshake + probe + pane fallback
@@ -376,6 +376,26 @@ describe('ControllerCloudProvider', () => {
     const paneHostKey = deriveSessionKey(hostKp.privateKey, hostKp.publicKey, ctrlPub);
     const paneHostSession = new E2eeSession(paneHostKey, DIR_HOST_TO_CONTROLLER);
     expect(paneHostSession.open(paneWire)).toEqual(panePlain);
+  });
+
+  it('negotiates the bulk lane on received terminal output without a raw-byte send', async () => {
+    const { ControllerCloudProvider } = await loadProvider();
+    const received: Uint8Array[] = [];
+    const provider = new ControllerCloudProvider(CONFIG, { onFrame: frame => received.push(frame) });
+    await provider.connect(HOST_DEVICE);
+    await flush();
+    const pc = FakePeerConnection.instances[0];
+    const dc = pc.channel!;
+    pc.paneChannel!.fireOpen();
+    dc.fireOpen();
+    const { hostSession } = handshakeAsHost(decodeHandshakeFrame(dc.lastSent()), dc);
+    expect(dc.sent).toHaveLength(1);
+    const packet = new Uint8Array([CHANNEL.TERMINAL, 1, 2]);
+    dc.deliver(wrapSingle(hostSession.seal(packet)));
+    expect(received).toEqual([packet]);
+    expect(dc.sent).toHaveLength(2);
+    expect(hostSession.open(unwrapSingle(dc.lastSent()))[0]).toBe(CHANNEL.CONTROL);
+    provider.disconnect();
   });
 
   it('B3：信令公钥与握手公钥一致 → 绑定模式 enforced + connected', async () => {

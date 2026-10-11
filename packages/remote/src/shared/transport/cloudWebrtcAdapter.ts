@@ -31,6 +31,7 @@
 //     runtime work; this is the pure-TS client leg.
 
 import { demuxFrame, encodeControlFrame, encodeJsonFrame, encodePaneFrame } from './cloudMux';
+import terminalHello from '../cloud/signaling/fixtures/terminal/hello.json';
 import type {
   CloudConnectionCallbacks,
   CloudConnectionState,
@@ -161,6 +162,13 @@ export class CloudWebrtcAdapter implements ChannelTransport {
     return () => this.paneListeners.delete(cb);
   }
 
+  private readonly terminalListeners = new Set<(bytes: Uint8Array) => void>();
+
+  onTerminalFrame(cb: (bytes: Uint8Array) => void): Unsubscribe {
+    this.terminalListeners.add(cb);
+    return () => this.terminalListeners.delete(cb);
+  }
+
   // ── L1: lifecycle ───────────────────────────────────────────────────────────
   connect(): Promise<void> {
     // The provider owns the signaling/ICE/DTLS + E2EE + (D9) auth handshake.
@@ -236,6 +244,11 @@ export class CloudWebrtcAdapter implements ChannelTransport {
   // ── inbound demux ────────────────────────────────────────────────────────────
   /** One decrypted DataChannel plaintext frame → control frame or pane bytes. */
   private handleInboundFrame(plaintext: Uint8Array): void {
+    if (plaintext[0] === 0x13) {
+      if (plaintext.byteLength > terminalHello.maxFrameBytes) return;
+      for (const cb of this.terminalListeners) cb(plaintext);
+      return;
+    }
     let result;
     try {
       result = demuxFrame(plaintext);
@@ -332,6 +345,7 @@ export class CloudWebrtcAdapter implements ChannelTransport {
 
   /** Detach all listeners (does not disconnect the provider). */
   dispose(): void {
+    this.terminalListeners.clear();
     this.controlListeners.clear();
     this.paneListeners.clear();
     this.stateListeners.clear();

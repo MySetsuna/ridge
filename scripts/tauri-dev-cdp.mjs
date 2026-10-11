@@ -42,6 +42,7 @@ const root = path.resolve(import.meta.dirname, '..');
 // Tauri CLI runs the debug binary from `src-tauri`; keep CDP's first shell in
 // the caller's project root instead of exposing the crate directory.
 process.env.RIDGE_CDP_STARTUP_CWD = root;
+process.env.RIDGE_REMOTE_UI_ROOT = path.join(root, 'remote-dist');
 
 // Windows installations may leave `%NVM_HOME%` / `%NVM_SYMLINK%` literals in
 // the inherited PATH. Expand them before Cargo/Tauri inherits the environment;
@@ -65,7 +66,7 @@ if (pathEnvKey !== 'PATH') process.env.PATH = process.env[pathEnvKey];
 // detached kernel starts. Carry the normalized value through an explicit CDP
 // variable so the kernel can apply the same shell-tool contract.
 process.env.RIDGE_CDP_SHELL_PATH = pathEntries.join(';');
-const devKernelDataDir = path.join(root, '.iteration', 'dev-kernel-isolated-cdp');
+const devKernelDataDir = path.join(userDataDir, 'dev-kernel');
 const configuredTargetDir = process.env.RIDGE_CDP_TARGET_DIR?.trim();
 const cargoTargetDir = configuredTargetDir ? path.resolve(configuredTargetDir) : path.join(root, 'target');
 const cargoEnv = {
@@ -117,7 +118,7 @@ process.env.no_proxy = appendLoopbackNoProxy(process.env.no_proxy);
 process.env.RIDGE_DISABLE_SINGLE_INSTANCE = '1';
 process.env.RIDGE_DEV_SERVER_PORT = String(vitePort);
 // Do not attach dev:cdp to the installed Ridge kernel. The desktop and its
-// `rdg host` sidecar must share this project-local registry/data graph.
+// embedded host share this project-local registry/data graph.
 process.env.RIDGE_KERNEL_DATA_DIR = devKernelDataDir;
 // Some CDP hosts run inside a Windows Job that rejects
 // CREATE_BREAKAWAY_FROM_JOB. The kernel always tries breakaway first; this
@@ -130,7 +131,7 @@ fs.mkdirSync(devKernelDataDir, { recursive: true });
 // The normal Tauri config rebuilds the release teammate shim on every dev
 // launch. That is correct for a cold developer setup, but it serializes CDP
 // smoke runs behind a second release Cargo build and can contend with the
-// isolated debug target. CDP already supplies the debug sidecar explicitly;
+// isolated debug target. CDP supplies the current embedded kernel explicitly;
 // only refresh the frontend bundle and start Vite here.
 fs.writeFileSync(configFile, JSON.stringify({
   build: {
@@ -153,20 +154,6 @@ if (desktopBuild.status !== 0) {
   process.exit(desktopBuild.status ?? 1);
 }
 
-// The LAN host is a detached `rdg` sidecar, not part of the Tauri crate. Build
-// it last so a desktop build cannot leave the copied Remote binary behind the
-// current checkout; otherwise Remote may run yesterday's CLI.
-const cliBuild = spawnSync(cargoTool('cargo'), ['build', '-p', 'ridge-cli', '--bin', 'rdg'], {
-  cwd: path.resolve(import.meta.dirname, '..'),
-  env: cargoEnv,
-  stdio: 'inherit',
-  shell: process.platform === 'win32',
-});
-if (cliBuild.status !== 0) {
-  console.error(`[tauri-dev-cdp] ridge-cli debug build failed (exit ${cliBuild.status ?? 'unknown'})`);
-  process.exit(cliBuild.status ?? 1);
-}
-
 const ridgeSource = path.join(cargoTargetDir, 'debug', process.platform === 'win32' ? 'ridge.exe' : 'ridge');
 const ridgeKernelCopy = path.join(
   userDataDir,
@@ -175,21 +162,6 @@ const ridgeKernelCopy = path.join(
 fs.copyFileSync(ridgeSource, ridgeKernelCopy);
 process.env.RIDGE_KERNEL_HOST_BINARY = ridgeKernelCopy;
 console.log(`[tauri-dev-cdp] detached kernel binary: ${ridgeKernelCopy}`);
-
-const rdgSource = path.join(cargoTargetDir, 'debug', process.platform === 'win32' ? 'rdg.exe' : 'rdg');
-const rdgSourceStat = fs.statSync(rdgSource);
-const rdgCodeStat = fs.statSync(path.join(root, 'packages', 'ridge-cli', 'src', 'tui', 'lan_host_impl.rs'));
-if (rdgSourceStat.mtimeMs < rdgCodeStat.mtimeMs) {
-  console.error('[tauri-dev-cdp] rdg sidecar is older than its LAN host source; refusing stale E2E binary');
-  process.exit(1);
-}
-const rdgCopy = path.join(
-  userDataDir,
-  `rdg-dev-${process.pid}${process.platform === 'win32' ? '.exe' : ''}`,
-);
-fs.copyFileSync(rdgSource, rdgCopy);
-process.env.RIDGE_RDG_BINARY = rdgCopy;
-console.log(`[tauri-dev-cdp] debug rdg sidecar: ${rdgCopy}`);
 
 console.log(`[tauri-dev-cdp] WebView2 CDP   : dynamic port (Chromium 136+ blocks fixed ports)`);
 console.log(`[tauri-dev-cdp] user-data-dir : ${userDataDir}`);

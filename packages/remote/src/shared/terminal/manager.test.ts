@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { SurfaceHostHandle } from '@ridge/term-wasm';
+import { SurfaceHostHandle } from './wasmRuntime';
 import { MAX_PANE_FEED_FLUSH_BUDGET_MS, TerminalManager } from './manager';
 
 const PANE = 'manager-test-pane';
@@ -38,6 +38,7 @@ function makePane() {
 		cols: vi.fn(() => cols),
 		feed: vi.fn(),
 		applyDeltaFrame: vi.fn(),
+        applyRemoteFrame: vi.fn(() => true),
 		resize: vi.fn(),
 		prependScrollback: vi.fn(),
 		takePendingResponse: vi.fn(() => new Uint8Array()),
@@ -99,6 +100,7 @@ function makePane() {
 	const handle = {
 		setFocused: vi.fn(),
 		setPresentationCursorSuppressed: vi.fn(),
+		setLinkUnderlines: vi.fn(),
 		setPreedit: vi.fn(),
 		clearPreedit: vi.fn(),
 		setHistoryOverlay: vi.fn(),
@@ -142,18 +144,18 @@ function makePane() {
 		initialFitTimer: null,
 		initialFitAttempt: 0,
 		syncStart: null,
-		syncTimeoutRendered: false,
 		deltaQueue: [],
 		deltaQueueHead: 0,
 		deltaQueuedBytes: 0,
-		tuiCursorSuppressUntil: 0,
-		tuiCursorSuppressed: false,
 		focusListener: vi.fn(),
 		blurListener: vi.fn(),
 		selecting: false,
 		selectionStartAbs: null,
 		selectionEndAbs: null,
 		lastMouseSent: null,
+		programPointerId: null,
+		programMouseButton: 0,
+		localPointerSelection: false,
 		pendingMouseMove: null,
 		mouseMoveRaf: null,
 		autoScrollTimer: null,
@@ -238,6 +240,8 @@ beforeEach(() => {
 		removeItem: vi.fn(),
 	});
 	vi.stubGlobal('window', {
+		addEventListener: vi.fn(),
+		removeEventListener: vi.fn(),
 		devicePixelRatio: 1,
 		open: vi.fn(),
 		getComputedStyle: vi.fn(() => ({
@@ -336,7 +340,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		manager.resetInputModes(PANE);
 
 		expect(fixture.kernel.feed).toHaveBeenCalled();
-		expect(fixture.kernel.applyDeltaFrame).toHaveBeenCalledWith(new Uint8Array([1, 2]));
+		expect(fixture.kernel.applyRemoteFrame).toHaveBeenCalledWith(new Uint8Array([1, 2]), 'workspace-a', PANE, 0);
 		expect(fixture.kernel.prependScrollback).toHaveBeenCalled();
 		expect(fixture.kernel.selectAll).toHaveBeenCalledOnce();
 		expect(sent.length).toBeGreaterThanOrEqual(3);
@@ -392,39 +396,34 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(fixture.handle.clearHistoryOverlay).toHaveBeenCalledOnce();
 	});
 
-	it('drains native deltas on the frame hub, paints output, and freezes only a hinted TUI cursor', () => {
+	it('presents every held-key cursor frame despite repeated native repaint hints', () => {
 		const { manager, fixture, internal } = makeManager();
-		fixture.kernel.applyDeltaFrame.mockReturnValueOnce(true);
+		let col = 0;
+		const painted: number[] = [];
+		fixture.kernel.cursorCol.mockImplementation(() => col);
+		fixture.kernel.applyRemoteFrame.mockImplementation(() => { col += 1; return true; });
+		fixture.handle.render.mockImplementation(() => { painted.push(fixture.kernel.cursorCol()); });
 		const bytes = new Uint8Array([1, 2, 3]);
-
 		manager.enqueueDeltaFrame(PANE, bytes);
-		expect(fixture.kernel.applyDeltaFrame).not.toHaveBeenCalled();
+		expect(fixture.kernel.applyRemoteFrame).not.toHaveBeenCalled();
 		expect(fixture.pane.deltaQueuedBytes).toBe(bytes.byteLength);
-
-		internal._drainQueuedDeltaFrames([fixture.pane]);
-		expect(fixture.kernel.applyDeltaFrame).toHaveBeenCalledWith(bytes);
+		for (let frame = 0; frame < 10; frame += 1) {
+			if (frame > 0) manager.enqueueDeltaFrame(PANE, bytes);
+			internal._drainQueuedDeltaFrames([fixture.pane]);
+			internal._renderFrameEntry(fixture.pane, {
+				frameOrder: [fixture.pane], dateNow: Date.now(), perfNow: frame * 16,
+				surfaceJustWiped: false, dirtyByPane: new Map(), activeWsId: null,
+				activeHost: null, hostFrameOpen: false, anyRendered: false, minDeadlineMs: Infinity,
+			});
+		}
 		expect(fixture.pane.deltaQueuedBytes).toBe(0);
-		expect(fixture.pane.tuiCursorSuppressUntil).toBeGreaterThan(0);
-		expect(fixture.handle.setPresentationCursorSuppressed).toHaveBeenCalledWith(true);
-
-		const held = {
-			frameOrder: [fixture.pane], dateNow: Date.now(),
-			perfNow: fixture.pane.tuiCursorSuppressUntil - 1,
-			surfaceJustWiped: false, dirtyByPane: new Map(), activeWsId: null,
-			activeHost: null, hostFrameOpen: false, anyRendered: false, minDeadlineMs: Infinity,
-		};
-		internal._renderFrameEntry(fixture.pane, held);
-		expect(fixture.handle.render).toHaveBeenCalledOnce();
-
-		held.perfNow = fixture.pane.tuiCursorSuppressUntil + 1;
-		internal._renderFrameEntry(fixture.pane, held);
-		expect(fixture.handle.setPresentationCursorSuppressed).toHaveBeenLastCalledWith(false);
-		expect(fixture.handle.render).toHaveBeenCalledTimes(2);
+		expect(painted).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+		expect(fixture.handle.setPresentationCursorSuppressed).not.toHaveBeenCalled();
 	});
 
-	it('keeps the cursor frozen after synchronized output until the quiet window expires', () => {
+	it('presents the cursor immediately when an explicit synchronized-output transaction ends', () => {
 		const { manager, fixture, internal } = makeManager();
-		fixture.kernel.applyDeltaFrame.mockReturnValueOnce(true);
+		fixture.kernel.applyRemoteFrame.mockReturnValueOnce(true);
 		fixture.kernel.isSyncOutput.mockReturnValue(true);
 		manager.enqueueDeltaFrame(PANE, new Uint8Array([7]));
 		internal._drainQueuedDeltaFrames([fixture.pane]);
@@ -442,18 +441,14 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		fixture.kernel.isSyncOutput.mockReturnValue(false);
 		state.perfNow = 11;
 		internal._renderFrameEntry(fixture.pane, state);
-		expect(fixture.handle.setPresentationCursorSuppressed).toHaveBeenLastCalledWith(true);
 		expect(fixture.handle.render).toHaveBeenCalledOnce();
-
-		state.perfNow = fixture.pane.tuiCursorSuppressUntil + 1;
-		internal._renderFrameEntry(fixture.pane, state);
-		expect(fixture.handle.setPresentationCursorSuppressed).toHaveBeenLastCalledWith(false);
+		expect(fixture.handle.setPresentationCursorSuppressed).not.toHaveBeenCalled();
 	});
 
 	it('drops queued native deltas after a decode error and reports it through the bridge callback', () => {
 		const { manager, fixture, internal } = makeManager();
 		const failure = vi.fn();
-		fixture.kernel.applyDeltaFrame.mockImplementation(() => { throw new Error('bad postcard'); });
+		fixture.kernel.applyRemoteFrame.mockImplementation(() => { throw new Error('bad postcard'); });
 		manager.enqueueDeltaFrame(PANE, new Uint8Array([1]), failure);
 		manager.enqueueDeltaFrame(PANE, new Uint8Array([2]), failure);
 
@@ -705,19 +700,14 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect((fixture.handle as any).render).toHaveBeenCalled();
 	});
 
-	it('freezes a raw PTY cursor only when the parser reports repaint activity', () => {
-		const { manager, fixture, internal } = makeManager();
+	it('does not freeze raw PTY cursor movement on parser repaint hints', () => {
+		const { manager, fixture } = makeManager();
 		fixture.kernel.feed.mockReturnValueOnce(true);
 
 		manager.feed(PANE, '\x1b[2K');
-		expect(fixture.pane.tuiCursorSuppressUntil).toBeGreaterThan(0);
-		expect(fixture.handle.setPresentationCursorSuppressed).toHaveBeenCalledWith(true);
-
-		internal._releaseTuiCursorSuppression(fixture.pane);
-		fixture.handle.setPresentationCursorSuppressed.mockClear();
 		fixture.kernel.feed.mockReturnValueOnce(undefined);
 		manager.feed(PANE, 'plain output');
-		expect(fixture.handle.setPresentationCursorSuppressed).not.toHaveBeenCalledWith(true);
+		expect(fixture.handle.setPresentationCursorSuppressed).not.toHaveBeenCalled();
 	});
 
 	it('covers pointer/link routing, scroll subscriptions, padding, and lifecycle defaults', async () => {
@@ -914,6 +904,19 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(manager.isParked(PANE)).toBe(true);
 		expect(fixture.handle.free).not.toHaveBeenCalled();
 		expect(host.invalidate).not.toHaveBeenCalled();
+	});
+
+	it('ignores a late component teardown after another container owns the pane', () => {
+		const { manager, fixture } = makeManager();
+		const previous = fixture.pane.container;
+		const current = makeContainer() as unknown as HTMLElement;
+		fixture.pane.container = current;
+		manager.park(PANE, 'component', previous);
+		expect(manager.isParked(PANE)).toBe(false);
+		expect(manager.ownsContainer(PANE, current)).toBe(true);
+		expect(manager.ownsContainer(PANE, previous)).toBe(false);
+		manager.park(PANE, 'component', current);
+		expect(manager.isParked(PANE)).toBe(true);
 	});
 
 	it('parks and reclaims a pane without reviving renderer state', () => {
@@ -1562,7 +1565,8 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect((manager as any)._renderEntryAfterSync(fixture.pane, state)).toBe(false);
 		state.perfNow = 1_000_000;
 		expect((manager as any)._renderEntryAfterSync(fixture.pane, state)).toBe(true);
-		expect((manager as any)._renderEntryAfterSync(fixture.pane, state)).toBe(false);
+		state.perfNow += 16;
+		expect((manager as any)._renderEntryAfterSync(fixture.pane, state)).toBe(true);
 
 		expect((manager as any)._entryDirty(fixture.pane, { ...state, dirtyByPane: new Map() })).toBe(true);
 		internal.globalHost = null;
@@ -1589,6 +1593,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		(fixture.handle.render as ReturnType<typeof vi.fn>).mockClear();
 		(fixture.handle.repaintAll as ReturnType<typeof vi.fn>).mockClear();
 		(host.beginFrame as ReturnType<typeof vi.fn>).mockClear();
+		fixture.pane.syncStart = state.perfNow;
 		(manager as any)._renderFrameEntry(fixture.pane, { ...state, activeHost: host });
 		expect(fixture.handle.render).not.toHaveBeenCalled();
 		expect(fixture.handle.repaintAll).not.toHaveBeenCalled();
@@ -1630,8 +1635,26 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 			expect(fixture.pane.resizeHandler).not.toHaveBeenCalled();
 
 			await manager.fitPaneNow(PANE, true);
-			expect(fixture.kernel.resize).toHaveBeenCalledWith(20, 80);
+			expect(fixture.kernel.resize).not.toHaveBeenCalled();
 			expect(fixture.pane.resizeHandler).toHaveBeenCalledWith(20, 80, false, false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('keeps a canonical mirror unchanged when a Host size claim fails', async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, fixture, internal } = makeManager();
+			internal._sharedRemoteMode = true;
+			fixture.pane.localGridAuthority = false;
+			fixture.setRows(40);
+			fixture.setCols(100);
+			fixture.pane.resizeHandler = vi.fn().mockRejectedValue(new Error('claim denied'));
+			await expect(manager.fitPaneNow(PANE, true)).rejects.toThrow('claim denied');
+			expect(fixture.kernel.resize).not.toHaveBeenCalled();
+			manager.applyPaneResize(PANE, 20, 80);
+			expect(fixture.kernel.resize).toHaveBeenCalledWith(20, 80);
 		} finally {
 			vi.useRealTimers();
 		}

@@ -124,8 +124,9 @@ describe('remote pane Agent status chrome contract', () => {
   });
 
   it('requires the platform modifier for mouse links while preserving touch taps', () => {
-    expect(source).toContain('e.button === 0 && linkModifierHeld(e) && manager.openLinkAt(paneId, cell.row, cell.col)');
-    expect(source).toContain('return isMac ? e.metaKey : e.ctrlKey;');
+    expect(source).toContain("event.pointerType === 'touch'");
+    expect(source).toContain('manager.setPointerSelectionMode(paneId, selectionMode)');
+    expect(source).not.toContain('onmousedown={handleMouseDown}');
     expect(source).toContain('const linkCell = touchLinkCell;');
     expect(source).toMatch(/e\.preventDefault\(\);\r?\n\s+return;/);
   });
@@ -141,9 +142,7 @@ describe('remote pane Agent status chrome contract', () => {
   // not one mid-flush. Drift here would make real-device perf numbers
   // non-comparable across builds.
   it('drains pending frames before reporting first paint', () => {
-    const attachBody = lines
-      .slice(lineAfter('async function attachTerminal'), lineAfter('async function attachTerminal') + 70)
-      .join('\n');
+    const attachBody = source.slice(source.indexOf('async function attachTerminal'), source.indexOf('// §B: flush queued'));
     // Drain order: pendingFrames → pendingSemantic → flushPaneFeed → flushPendingStdin → focus → onFirstPaint
     const drainIdx = attachBody.indexOf('const pendingFrames = onDrainPending?.(paneId) ?? [];');
     const semanticIdx = attachBody.indexOf('const pendingSemantic = onDrainSemantic?.(paneId) ?? [];');
@@ -409,10 +408,10 @@ describe('B — binding-uncertain input guard in TerminalCanvas.svelte source', 
     // The local onStdin must queue (not forward) when bindingUncertain.
     // The branch is the FIRST one inside the if (!attached || bindingUncertain)
     // block — same code path that already handles the pre-attach gap.
-    const stdinFn = lineAfter('function onStdin(data: string): void', 0);
-    const stdinBody = lines.slice(stdinFn, stdinFn + 14).join('\n');
+    const stdinFn = lineAfter('function onStdin(input: TerminalInputData): void', 0);
+    const stdinBody = lines.slice(stdinFn, stdinFn + 18).join('\n');
     expect(stdinBody).toMatch(/if\s*\(\s*!attached\s*\|\|\s*bindingUncertain\s*\)/);
-    expect(stdinBody).toMatch(/pendingStdin\.push\(data\)/);
+    expect(stdinBody).toMatch(/pendingStdin\.push\(data\.slice\(\)\)/);
     expect(stdinBody).toMatch(/pendingStdinBytes\s*\+=\s*bytes/);
   });
 

@@ -31,7 +31,8 @@
 //   mgr.viewportChanged(paneId);        // call when container resizes
 //   mgr.detach(paneId);                 // on pane unmount
 
-import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
+import init, { TerminalKernel } from '@ridge/term-wasm';
+import { loadSelectedFontRuntime, loadRendererRuntime, RenderHandle, SurfaceHostHandle } from './wasmRuntime';
 import type { HostPorts } from './ports';
 import { invoke } from '@tauri-apps/api/core';
 import type { ActiveWallpaperGpu, InputBufferState } from './types';
@@ -65,8 +66,8 @@ import {
 	type InitialFitMeasurement,
 } from './initialPaneFit';
 import { shouldWipeHostOnPaneRemount } from './hostRemountPolicy';
-import { shouldForwardPointerMotion, sgrReleaseButton } from './mouseForwardPolicy';
-import { SYNC_OUTPUT_TIMEOUT_MS, TUI_CURSOR_SETTLE_MS } from './renderTransaction';
+import { shouldForwardPointerMotion } from './mouseForwardPolicy';
+import { SYNC_OUTPUT_TIMEOUT_MS } from './renderTransaction';
 
 // Remote Web rasterizes with controller-side browser fonts; only desktop
 // installs Host-resolved font bytes into the shared WASM renderer.
@@ -147,24 +148,6 @@ import {
 import type { TerminalLinkOpenRequest } from './ports';
 
 type LinkUnderlineRegion = { row: number; c0: number; c1: number };
-
-function createLinkUnderlineOverlay(container: HTMLElement): HTMLDivElement {
-	const el = document.createElement('div');
-	el.setAttribute('aria-hidden', 'true');
-	el.dataset.ridgeLinkUnderline = 'true';
-	el.style.cssText = [
-		'position:absolute',
-		'display:none',
-		'pointer-events:none',
-		'z-index:3',
-		'height:1px',
-		'border-radius:0',
-		'background:var(--rg-accent,#58a6ff)',
-		'box-sizing:border-box',
-	].join(';');
-	container.appendChild(el);
-	return el;
-}
 
 function linkOpenHintText(isMac = isMacPlatform()): string {
 	return isMac ? '⌘+点击打开' : 'Ctrl+点击打开';
@@ -247,6 +230,7 @@ interface PaneEntry {
 	 *  RAF tick / resize / viewport recompute can find the right per-
 	 *  workspace SurfaceHost. */
 	workspaceId: string;
+	nativeActivationId?: number;
 	container: HTMLElement;
 	canvas: HTMLCanvasElement;
 	kernel: TerminalKernel;
@@ -322,7 +306,6 @@ interface PaneEntry {
 	 *  timeout (since `now - syncStart` keeps exceeding the threshold),
 	 *  burning CPU while the TUI is misbehaving. Cleared together with
 	 *  `syncStart` when sync mode clears (TASKS §1.4). */
-	syncTimeoutRendered: boolean;
 	/** Kernel/output or renderer invalidation already requires a paint. */
 	renderPending: boolean;
 	/** Monotonic delta generation mirrored into the worker renderer. */
@@ -332,10 +315,6 @@ interface PaneEntry {
 	deltaQueue: QueuedDeltaFrame[];
 	deltaQueueHead: number;
 	deltaQueuedBytes: number;
-	/** Short inline-TUI presentation transaction. Grid cells keep painting;
-	 * the cursor stays at its last presented cell until the walk is quiet. */
-	tuiCursorSuppressUntil: number;
-	tuiCursorSuppressed: boolean;
 	/** focusin listener bound to `container`. Held so detach() can remove
 	 *  it cleanly. Emits `\x1b[I` to PTY when kernel.isFocusReporting(). */
 	focusListener: (e: FocusEvent) => void;
@@ -345,6 +324,7 @@ interface PaneEntry {
 	 *  and pointerup; `selectionStartAbs` is the (row,col) where drag began. */
 	selecting: boolean;
 	selectionStartAbs: { row: number; col: number } | null;
+	selectionPointerId: number | null;
 	selectionEndAbs: { row: number; col: number } | null;
 	/** TUI mouse forwarding hot-path state — rAF batching + (row, col,
 	 *  buttons, action) dedup so a single drag doesn't fire 60-120 wasm
@@ -352,6 +332,9 @@ interface PaneEntry {
 	 *  this pattern; without it, hover / drag / wheel feel laggy in TUIs
 	 *  because the kernel can't drain PTY writes fast enough. */
 	lastMouseSent: { row: number; col: number; buttons: number; action: number } | null;
+	programPointerId: number | null;
+	programMouseButton: number;
+	localPointerSelection: boolean;
 	pendingMouseMove: PointerEvent | null;
 	mouseMoveRaf: number | null;
     /** Drag-selection auto-scroll timer. Non-null while the pointer is
@@ -365,6 +348,8 @@ interface PaneEntry {
 	pointerMoveListener: (e: PointerEvent) => void;
 	pointerUpListener: (e: PointerEvent) => void;
 	pointerCancelListener: (e: PointerEvent) => void;
+	pointerWindowMoveListener: (e: PointerEvent) => void;
+	pointerWindowBlurListener: () => void;
 	pointerLeaveListener: (e: PointerEvent) => void;
 	modifierKeyListener: (e: KeyboardEvent) => void;
 	lastPointerPoint: {
@@ -509,7 +494,6 @@ interface PaneEntry {
 	/** Real DOM affordance for link hover. Dataset-only state is not painted by
 	 * WebView2, so keep pointer-events-free overlays beside the canvas and
 	 * position them in the same CSS grid coordinates. */
-	linkUnderlineEls: HTMLDivElement[];
 	linkUnderlineRegions: { row: number; c0: number; c1: number }[];
 	linkHintEl: HTMLDivElement | null;
 	linkHintRegion: { row: number; c0: number; c1: number } | null;
@@ -654,6 +638,7 @@ export class TerminalManager {
 
 	private readonly opts: ManagerOptions;
 	private readonly panes = new Map<string, PaneEntry>();
+	private readonly mountRequests = new Map<string, HTMLElement>();
 	/** Active-frame lookup. RAF paints one workspace, so avoid walking hidden
 	 * workspace panes on every compositor turn. The main map remains the source
 	 * of truth for lifecycle and feed bookkeeping. */
@@ -957,15 +942,17 @@ export class TerminalManager {
 		if (this.wasmReady) return Promise.resolve();
 		if (this.wasmReadyPromise !== null) return this.wasmReadyPromise;
 		const pending = (async () => {
-			await init(wasmUrl);
+			const selectedFonts = loadHostFontDataService ? loadSelectedFontRuntime() : null;
+			const [, rendererRuntime, fontRuntime] = await Promise.all([init(wasmUrl), loadRendererRuntime(), selectedFonts]);
 			if (loadHostFontDataService) {
-				const fontModule = (await import('@ridge/term-wasm')) as unknown as {
-					installFontData?: (data: Uint8Array) => boolean;
+				const coreModule = rendererRuntime as unknown as {
+					installFontRasterizer?: (factory: (width: number, height: number) => unknown) => void;
 				};
-				if (typeof fontModule.installFontData !== 'function') {
-					throw new Error('FONT_DATA_MISSING: wasm bundle has no system-font installer');
+				if (!fontRuntime || typeof coreModule.installFontRasterizer !== 'function') {
+					throw new Error('FONT_DATA_MISSING: font engine registration is unavailable');
 				}
-				this.fontInstaller = fontModule.installFontData;
+				coreModule.installFontRasterizer((width, height) => new fontRuntime.FontRasterizer(width, height));
+				this.fontInstaller = fontRuntime.installFontData;
 			}
 			await this._ensureFontStack(this.opts.fontFamily);
 			this.wasmReady = true;
@@ -974,7 +961,7 @@ export class TerminalManager {
 			// of -1 means the wasm export is missing (running an OLD bundle) —
 			// confirms the installed app actually has this build.
 			try {
-				const rmod = (await import('@ridge/term-wasm')) as unknown as {
+				const rmod = rendererRuntime as unknown as {
 					atlasOverwriteAfterCiteCount?: () => number;
 				};
 				if (typeof window !== 'undefined') {
@@ -1003,7 +990,7 @@ export class TerminalManager {
 					typeof localStorage !== 'undefined' &&
 					localStorage.getItem('RIDGE_PRESENT_FAST') === '1'
 				) {
-					const mod = (await import('@ridge/term-wasm')) as unknown as {
+					const mod = rendererRuntime as unknown as {
 						setPresentFast?: (on: boolean) => void;
 					};
 					if (typeof mod.setPresentFast === 'function') mod.setPresentFast(true);
@@ -1458,63 +1445,26 @@ export class TerminalManager {
 	}
 
 	private _clearLinkUnderline(entry: PaneEntry): void {
+		if (entry.linkUnderlineRegions.length > 0) {
+			entry.handle?.setLinkUnderlines([]);
+			this._markRenderPending(entry);
+			this.wake();
+		}
 		entry.linkUnderlineRegions = [];
-		for (const el of entry.linkUnderlineEls) el.style.display = 'none';
 		this._clearLinkHint(entry);
-	}
-
-	private _positionLinkUnderline(entry: PaneEntry): void {
-		const regions = entry.linkUnderlineRegions;
-		const els = entry.linkUnderlineEls;
-		if (regions.length === 0) {
-			for (const el of els) el.style.display = 'none';
-			return;
-		}
-		const cellW = entry.geometry?.cellWidthCss ?? entry.cellW;
-		const cellH = entry.geometry?.cellHeightCss ?? entry.cellH;
-		if (!Number.isFinite(cellW) || !Number.isFinite(cellH) || cellW <= 0 || cellH <= 0) {
-			for (const el of els) el.style.display = 'none';
-			return;
-		}
-		const rect = entry.container.getBoundingClientRect();
-		const gridLeft = entry.geometry
-			? entry.geometry.gridClientXCss - rect.left
-			: (entry.lastFitPaddingPx ?? entry.lastAppliedPaddingPx ?? 0);
-		const gridTop = entry.geometry
-			? entry.geometry.gridClientYCss - rect.top
-			: (entry.lastFitPaddingPx ?? entry.lastAppliedPaddingPx ?? 0);
-		for (let i = 0; i < els.length; i++) {
-			const el = els[i]!;
-			const region = regions[i];
-			if (!region || region.c1 <= region.c0) {
-				el.style.display = 'none';
-				continue;
-			}
-			const dpr = window.devicePixelRatio || 1;
-			const left = Math.round((gridLeft + region.c0 * cellW) * dpr) / dpr;
-			const right = Math.round((gridLeft + region.c1 * cellW) * dpr) / dpr;
-			const top = Math.round((gridTop + (region.row + 1) * cellH - 1) * dpr) / dpr;
-			if (![left, top].every(Number.isFinite)) {
-				el.style.display = 'none';
-				continue;
-			}
-			el.style.left = `${left}px`;
-			el.style.top = `${top}px`;
-			el.style.width = `${Math.max(1, right - left)}px`;
-			el.style.display = 'block';
-		}
 	}
 
 	private _showLinkUnderlines(entry: PaneEntry, regions: LinkUnderlineRegion[]): void {
+		const next = regions.filter(region => region.c1 > region.c0);
+		if (next.length === entry.linkUnderlineRegions.length && next.every((region, index) => {
+			const previous = entry.linkUnderlineRegions[index];
+			return region.row === previous.row && region.c0 === previous.c0 && region.c1 === previous.c1;
+		})) return;
 		this._clearLinkHint(entry);
-		entry.linkUnderlineRegions = regions.filter((region) => region.c1 > region.c0);
-		while (entry.linkUnderlineEls.length < entry.linkUnderlineRegions.length) {
-			entry.linkUnderlineEls.push(createLinkUnderlineOverlay(entry.container));
-		}
-		while (entry.linkUnderlineEls.length > entry.linkUnderlineRegions.length) {
-			entry.linkUnderlineEls.pop()?.remove();
-		}
-		this._positionLinkUnderline(entry);
+		entry.linkUnderlineRegions = next;
+		entry.handle?.setLinkUnderlines(entry.linkUnderlineRegions);
+		this._markRenderPending(entry);
+		this.wake();
 	}
 
 	private _clearLinkHint(entry: PaneEntry): void {
@@ -1686,7 +1636,6 @@ export class TerminalManager {
 			? (entry.visualOffsetY ?? 0)
 			: 0;
 		entry.viewport = geometry.viewportDevice;
-		this._positionLinkUnderline(entry);
 		this._positionLinkHint(entry);
 		if (this._sharedRemoteMode) {
 			entry.lastViewportKernelRows = geometry.rows;
@@ -1762,10 +1711,11 @@ export class TerminalManager {
 	}
 
 	private _applyOscHover(entry: PaneEntry, hoverCell: { row: number; col: number }, uri: string | null, showHint: boolean): void {
-		const region = osc8UnderlineRegions(entry.kernel, hoverCell.row, hoverCell.col, uri)[0];
+		const regions = osc8UnderlineRegions(entry.kernel, hoverCell.row, hoverCell.col, uri);
+		const region = regions[0];
 		if (!region) return;
 		entry.container.dataset.linkUnderline = encodeUnderlineDataset(region.row, region.c0, region.c1);
-		this._showLinkUnderlines(entry, [region]);
+		this._showLinkUnderlines(entry, regions);
 		if (showHint) this._showLinkHint(entry, region);
 	}
 
@@ -1897,7 +1847,7 @@ export class TerminalManager {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
 		const hoverCell = this.cellFromEvent(paneId, pending);
-		const modes = entry.kernel.mouseReportingModes();
+		const modes = entry.localPointerSelection ? 0 : entry.kernel.mouseReportingModes();
 		if (this._forwardPointerMotion(entry, pending, hoverCell, modes)) return;
 		this._updatePointerHover(entry, pending, hoverCell);
 		if (entry.selecting && entry.selectionStartAbs && hoverCell) {
@@ -1910,6 +1860,10 @@ export class TerminalManager {
 		const bytes = entry.kernel.encodeMouse(cell.row, cell.col, event.button, 0, event.shiftKey, mod, event.altKey);
 		if (bytes.length === 0) return false;
 		entry.dataHandler?.(bytes);
+		entry.programPointerId = event.pointerId;
+		entry.programMouseButton = event.button;
+		entry.lastPointerPoint = { clientX: event.clientX, clientY: event.clientY, buttons: event.buttons,
+			shiftKey: event.shiftKey, altKey: event.altKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey };
 		entry.lastMouseSent = { row: cell.row, col: cell.col, buttons: event.buttons, action: 0 };
 		try { (event.target as Element | null)?.setPointerCapture?.(event.pointerId); } catch { /* best effort */ }
 		return true;
@@ -1919,6 +1873,7 @@ export class TerminalManager {
 		if (!event.shiftKey || !entry.selectionStartAbs) return false;
 		try { (event.target as Element | null)?.setPointerCapture?.(event.pointerId); } catch { /* best effort */ }
 		entry.selecting = true;
+		entry.selectionPointerId = event.pointerId;
 		const row = entry.kernel.scrollbackLen() + cell.row - entry.kernel.scrollOffset();
 		entry.selectionEndAbs = { row, col: cell.col };
 		entry.kernel.setSelectionAbs(entry.selectionStartAbs.row, entry.selectionStartAbs.col, row, cell.col);
@@ -1944,7 +1899,7 @@ export class TerminalManager {
 		const isMac = isMacPlatform();
 		const linkMod = linkModifierHeld(event);
 		const terminalMod = event.ctrlKey || (isMac && event.metaKey);
-		const mouseReportingOn = entry.kernel.mouseReportingModes() !== 0;
+		const mouseReportingOn = !entry.localPointerSelection && entry.kernel.mouseReportingModes() !== 0;
 		const rawLink = entry.kernel.hyperlinkAt(cell.row, cell.col) as { uri: string; id: string | null } | null;
 		const link = rawLink?.uri && isSafeHttpUrl(rawLink.uri) ? rawLink : null;
 		const span = link ? null : entry.linkSpans.hitTest(entry.kernel, cell.row, cell.col);
@@ -1966,6 +1921,7 @@ export class TerminalManager {
 		if (this._handleMultiClick(entry, cell, event.detail)) return;
 		try { (event.target as Element | null)?.setPointerCapture?.(event.pointerId); } catch { /* best effort */ }
 		entry.selecting = true;
+		entry.selectionPointerId = event.pointerId;
 		const row = entry.kernel.scrollbackLen() + cell.row - entry.kernel.scrollOffset();
 		entry.selectionStartAbs = { row, col: cell.col };
 		entry.selectionEndAbs = { row, col: cell.col };
@@ -2026,7 +1982,7 @@ export class TerminalManager {
 		this._startAttachAutoScroll(paneId, entry, event, direction);
 	}
 
-	private _createAttachBindings(paneId: string, container: HTMLElement): Pick<PaneEntry, 'focusListener' | 'blurListener' | 'pointerDownListener' | 'pointerMoveListener' | 'pointerUpListener' | 'pointerCancelListener' | 'pointerLeaveListener' | 'modifierKeyListener'> & { linkHintEl: HTMLDivElement } {
+	private _createAttachBindings(paneId: string, container: HTMLElement): Pick<PaneEntry, 'focusListener' | 'blurListener' | 'pointerDownListener' | 'pointerMoveListener' | 'pointerUpListener' | 'pointerCancelListener' | 'pointerWindowMoveListener' | 'pointerWindowBlurListener' | 'pointerLeaveListener' | 'modifierKeyListener'> & { linkHintEl: HTMLDivElement } {
 		const focusListener = () => {
 			const entry = this.panes.get(paneId);
 			if (entry?.dataHandler && entry.kernel.isFocusReporting()) entry.dataHandler(new TextEncoder().encode('\x1b[I'));
@@ -2035,7 +1991,7 @@ export class TerminalManager {
 			const entry = this.panes.get(paneId);
 			if (entry?.dataHandler && entry.kernel.isFocusReporting()) entry.dataHandler(new TextEncoder().encode('\x1b[O'));
 		};
-		const isScrollbar = (event: PointerEvent) => !!(event.target as Element | null)?.closest?.('.rg-scrollbar-track, .rg-scrollbar-thumb');
+		const isScrollbar = (event: PointerEvent) => !!(event.target as Element | null)?.closest?.('.rg-scrollbar-track, .rg-scrollbar-thumb, [data-ridge-control]');
 		const flushPointerMove = () => {
 			const entry = this.panes.get(paneId);
 			if (!entry) return;
@@ -2070,20 +2026,30 @@ export class TerminalManager {
 			if (!force && isScrollbar(event)) return;
 			const entry = this.panes.get(paneId);
 			if (!entry) return;
-			if (entry.kernel.mouseReportingModes() !== 0) {
-				const cell = this.cellFromEvent(paneId, event);
+			const owner = entry.programPointerId ?? entry.selectionPointerId;
+			if (owner !== null && owner !== undefined && owner !== event.pointerId) return;
+			if (entry.programPointerId === event.pointerId) {
+				const cell = this.cellFromEvent(paneId, event) ?? entry.lastMouseSent;
 				if (cell) {
 					const mac = isMacPlatform();
-					const bytes = entry.kernel.encodeMouse(cell.row, cell.col, sgrReleaseButton(event.button, entry.lastMouseSent?.buttons ?? 0), 1, event.shiftKey, event.ctrlKey || (mac && event.metaKey), event.altKey);
+					const bytes = entry.kernel.encodeMouse(cell.row, cell.col, entry.programMouseButton, 1, event.shiftKey, event.ctrlKey || (mac && event.metaKey), event.altKey);
 					if (bytes.length > 0) entry.dataHandler?.(bytes);
 				}
 			}
 			entry.selecting = false;
+			entry.selectionPointerId = null;
+			entry.programPointerId = null;
 			entry.lastMouseSent = null;
 			this._stopAttachAutoScroll(entry);
 			try { (event.target as Element | null)?.releasePointerCapture?.(event.pointerId); } catch { /* best effort */ }
 		};
 		const pointerCancelListener = (event: PointerEvent) => pointerUpListener(event, true);
+		const pointerWindowMoveListener = (event: PointerEvent) => {
+			const entry = this.panes.get(paneId);
+			if (entry && (entry.programPointerId === event.pointerId || entry.selectionPointerId === event.pointerId) &&
+				!entry.container.contains(event.target as Node)) pointerMoveListener(event);
+		};
+		const pointerWindowBlurListener = () => this.cancelPointerGesture(paneId);
 		const pointerLeaveListener = () => {
 			const entry = this.panes.get(paneId);
 			if (!entry) return;
@@ -2099,7 +2065,12 @@ export class TerminalManager {
 		container.addEventListener('pointerleave', pointerLeaveListener);
 		container.addEventListener('keydown', modifierKeyListener);
 		container.addEventListener('keyup', modifierKeyListener);
-		return { focusListener, blurListener, pointerDownListener, pointerMoveListener, pointerUpListener, pointerCancelListener, pointerLeaveListener, modifierKeyListener, linkHintEl: createLinkHintOverlay(container) };
+		window.addEventListener('pointermove', pointerWindowMoveListener);
+		window.addEventListener('pointerup', pointerUpListener, true);
+		window.addEventListener('pointercancel', pointerCancelListener, true);
+		window.addEventListener('blur', pointerWindowBlurListener);
+		return { focusListener, blurListener, pointerDownListener, pointerMoveListener, pointerUpListener, pointerCancelListener,
+			pointerWindowMoveListener, pointerWindowBlurListener, pointerLeaveListener, modifierKeyListener, linkHintEl: createLinkHintOverlay(container) };
 	}
 
 	private _installAttachDebugHooks(paneId: string): void {
@@ -2428,10 +2399,18 @@ export class TerminalManager {
 		if (!this.wasmReady) {
 			throw new Error('TerminalManager.attach: call ready() first');
 		}
-		if (this.panes.has(paneId)) {
+		const existing = this.panes.get(paneId);
+		if (existing?.container.isConnected === false) {
+			if (!existing.parked) this.park(paneId, 'component', existing.container);
+			await this.unpark(paneId, container);
+			return;
+		}
+		if (existing) {
 			throw new Error(`TerminalManager.attach: pane ${paneId} already attached`);
 		}
+		this.mountRequests.set(paneId, container);
 		await this._awaitAttachHost();
+		if (this.mountRequests.get(paneId) !== container || container.isConnected === false) return;
 
 		const { canvas, hostHandle } = this._createAttachCanvas(container);
 		if (this.opts.paddingPx && this.opts.paddingPx > 0) {
@@ -2439,6 +2418,10 @@ export class TerminalManager {
 		}
 		const { handle, dpr, cellW: cellWnum, cellH: cellHnum } =
 			await this._createAttachRenderState(canvas, hostHandle);
+		if (this.mountRequests.get(paneId) !== container || (container as HTMLElement).isConnected === false) {
+			try { handle?.free(); } catch { /* abandoned mount */ }
+			return;
+		}
 
 		const scrollbackLines = this._attachScrollbackLines();
 		const kernel = new TerminalKernel(24, 80, scrollbackLines);
@@ -2467,19 +2450,20 @@ export class TerminalManager {
 			initialFitTimer: null,
 			initialFitAttempt: 0,
 			syncStart: null,
-			syncTimeoutRendered: false,
 			renderPending: true,
 			deltaQueue: [],
 			deltaQueueHead: 0,
 			deltaQueuedBytes: 0,
-			tuiCursorSuppressUntil: 0,
-			tuiCursorSuppressed: false,
 			focusListener: bindings.focusListener,
 			blurListener: bindings.blurListener,
 			selecting: false,
 			selectionStartAbs: null,
+			selectionPointerId: null,
 			selectionEndAbs: null,
 			lastMouseSent: null,
+			programPointerId: null,
+			programMouseButton: 0,
+			localPointerSelection: false,
 			pendingMouseMove: null,
 			mouseMoveRaf: null,
 			autoScrollTimer: null,
@@ -2488,6 +2472,8 @@ export class TerminalManager {
 			pointerMoveListener: bindings.pointerMoveListener,
 			pointerUpListener: bindings.pointerUpListener,
 			pointerCancelListener: bindings.pointerCancelListener,
+			pointerWindowMoveListener: bindings.pointerWindowMoveListener,
+			pointerWindowBlurListener: bindings.pointerWindowBlurListener,
 			pointerLeaveListener: bindings.pointerLeaveListener,
 			modifierKeyListener: bindings.modifierKeyListener,
 			lastPointerPoint: null,
@@ -2504,7 +2490,6 @@ export class TerminalManager {
 			feedBufferBytes: 0,
 			feedFlushTimer: null,
 			linkSpans: new LinkSpanIndex(),
-			linkUnderlineEls: [],
 			linkUnderlineRegions: [],
 			linkHintEl: bindings.linkHintEl,
 			linkHintRegion: null,
@@ -2561,15 +2546,12 @@ export class TerminalManager {
 	 */
 	private _removeLinkOverlays(entry: PaneEntry): void {
 		this._clearLinkUnderline(entry);
-		for (const el of entry.linkUnderlineEls) {
-			try { el.remove(); } catch { /* already detached */ }
-		}
-		entry.linkUnderlineEls = [];
 		try { entry.linkHintEl?.remove(); } catch { /* already detached */ }
 		entry.linkHintEl = null;
 	}
 
 	private _detachDomBindings(entry: PaneEntry): void {
+		this.cancelPointerGesture(entry.paneId);
 		entry.resizeObserver.disconnect();
 		entry.container.removeEventListener('focusin', entry.focusListener);
 		entry.container.removeEventListener('focusout', entry.blurListener);
@@ -2580,10 +2562,15 @@ export class TerminalManager {
 		entry.container.removeEventListener('pointerleave', entry.pointerLeaveListener);
 		entry.container.removeEventListener('keydown', entry.modifierKeyListener);
 		entry.container.removeEventListener('keyup', entry.modifierKeyListener);
+		window.removeEventListener('pointermove', entry.pointerWindowMoveListener);
+		window.removeEventListener('pointerup', entry.pointerUpListener, true);
+		window.removeEventListener('pointercancel', entry.pointerCancelListener, true);
+		window.removeEventListener('blur', entry.pointerWindowBlurListener);
 		if (entry.mouseMoveRaf !== null) cancelAnimationFrame(entry.mouseMoveRaf);
 		entry.mouseMoveRaf = null;
 		entry.pendingMouseMove = null;
 		entry.lastMouseSent = null;
+		entry.programPointerId = null;
 		if (entry.autoScrollTimer !== null) clearInterval(entry.autoScrollTimer);
 		entry.autoScrollTimer = null;
 		entry.autoScrollDirection = null;
@@ -2594,7 +2581,6 @@ export class TerminalManager {
 	}
 
 	private _releaseRenderer(entry: PaneEntry): void {
-		this._releaseTuiCursorSuppression(entry);
 		if (this._isHostMode(entry)) this._invalidateHost();
 		else {
 			try { entry.canvas.remove(); } catch { /* already detached */ }
@@ -2617,6 +2603,7 @@ export class TerminalManager {
 	}
 
 	detach(paneId: string): void {
+		this.mountRequests.delete(paneId);
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
 		this._memoryRestorePending.delete(paneId);
@@ -2645,9 +2632,15 @@ export class TerminalManager {
 	 *
 	 * If the pane is already parked or unknown, this is a no-op.
 	 */
-	park(paneId: string, reason: 'component' | 'memory' = 'component'): void {
+	ownsContainer(paneId: string, container: HTMLElement | undefined): boolean {
+		const entry = this.panes.get(paneId);
+		return !!entry && !entry.parked && entry.container === container;
+	}
+
+	park(paneId: string, reason: 'component' | 'memory' = 'component', expectedContainer?: HTMLElement): void {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
+		if (arguments.length >= 3 && entry.container !== expectedContainer) return;
 		if (entry.parked) {
 			this._updateParkedEntry(entry, reason);
 			return;
@@ -2656,7 +2649,6 @@ export class TerminalManager {
 			this._focusedPaneByWorkspace.delete(entry.workspaceId);
 			entry.handle?.setFocused(false);
 		}
-		this._releaseTuiCursorSuppression(entry);
 		this._detachParkedBindings(entry);
 		entry.imeCompositionActive = false;
 		entry.imeAnchor = null;
@@ -2689,6 +2681,7 @@ export class TerminalManager {
 		entry.pendingFitTimer = null;
 		this._cancelInitialFit(entry);
 		entry.selecting = false;
+		entry.selectionPointerId = null;
 		entry.selectionStartAbs = null;
 		entry.selectionEndAbs = null;
 	}
@@ -2735,11 +2728,14 @@ export class TerminalManager {
 			throw new Error(`TerminalManager.unpark: pane ${paneId} not parked (use attach for new panes)`);
 		}
 		if (!entry.parked) {
+			if (entry.container !== container && entry.container.isConnected === false) this.park(paneId, 'component', entry.container);
+			else
 			throw new Error(`TerminalManager.unpark: pane ${paneId} is already attached`);
 		}
+		this.mountRequests.set(paneId, container);
 		await this._ensureDomHostStarted();
 		await this._waitForHostAttach();
-		if (this.panes.get(paneId) !== entry || !entry.parked) return;
+		if (this.panes.get(paneId) !== entry || !entry.parked || this.mountRequests.get(paneId) !== container || container.isConnected === false) return;
 		const resources = await this._prepareUnparkResources(container, entry);
 		this._commitUnpark(paneId, container, entry, resources);
 	}
@@ -2781,7 +2777,7 @@ export class TerminalManager {
 		entry: PaneEntry,
 		resources: { canvas: HTMLCanvasElement; hostHandle: SurfaceHostHandle; handle: RenderHandle | null; dpr: number },
 	): void {
-		if (this.panes.get(paneId) !== entry || !entry.parked) {
+		if (this.panes.get(paneId) !== entry || !entry.parked || (this.mountRequests.has(paneId) && this.mountRequests.get(paneId) !== container) || container.isConnected === false) {
 			try { resources.handle?.free(); } catch { /* best-effort abandoned restore cleanup */ }
 			return;
 		}
@@ -2793,7 +2789,7 @@ export class TerminalManager {
 			: ([entry.cellW, entry.cellH] as [number, number]);
 		if (handle && this.opts.theme) handle.applyTheme(this.opts.theme);
 		Object.assign(entry, {
-			container, canvas, handle, rendererRetained: false, linkUnderlineEls: [],
+			container, canvas, handle, rendererRetained: false,
 			linkUnderlineRegions: [], linkHintEl, linkHintRegion: null,
 			linkValidationKey: null, linkValidationState: 'idle',
 			linkValidationToken: entry.linkValidationToken + 1,
@@ -2818,6 +2814,10 @@ export class TerminalManager {
 		container.addEventListener('pointermove', entry.pointerMoveListener);
 		container.addEventListener('pointerup', entry.pointerUpListener);
 		container.addEventListener('pointercancel', entry.pointerCancelListener);
+		window.addEventListener('pointermove', entry.pointerWindowMoveListener);
+		window.addEventListener('pointerup', entry.pointerUpListener, true);
+		window.addEventListener('pointercancel', entry.pointerCancelListener, true);
+		window.addEventListener('blur', entry.pointerWindowBlurListener);
 		container.addEventListener('pointerleave', entry.pointerLeaveListener);
 		container.addEventListener('keydown', entry.modifierKeyListener);
 		container.addEventListener('keyup', entry.modifierKeyListener);
@@ -2962,10 +2962,9 @@ export class TerminalManager {
 			entry: PaneEntry,
 			bytes: Uint8Array,
 			budgetMs: number,
-		): { offset: number; requiresRenderSettle: boolean } {
+		): number {
 			const chunkBytes = 16 * 1024;
 			let offset = 0;
-			let requiresRenderSettle = false;
 			const start = performance.now();
 			const traceCursor = typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_CURSOR_TRACE') === '1';
 			const kernel = entry.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
@@ -2973,14 +2972,12 @@ export class TerminalManager {
 			while (offset < bytes.length) {
 				const end = Math.min(offset + chunkBytes, bytes.length);
 				const chunk = bytes.subarray(offset, end);
-				requiresRenderSettle = (
-					entry.kernel as unknown as { feed: (data: Uint8Array) => boolean | void }
-				).feed(chunk) === true || requiresRenderSettle;
+				entry.kernel.feed(chunk);
 				offset = end;
 				if (performance.now() - start >= budgetMs) break;
 			}
 			if (traceCursor) console.debug(`[cursor-trace][${performance.now().toFixed(1)}ms] feed paneId=${entry.paneId.slice(0, 8)} bytes=${bytes.length} consumed=${offset} cursor ${before}→${kernel.cursorRow()},${kernel.cursorCol()})`);
-			return { offset, requiresRenderSettle };
+			return offset;
 		}
 
 		private _drainFeedOutputs(entry: PaneEntry): void {
@@ -3009,7 +3006,7 @@ export class TerminalManager {
 				this.wake();
 				return;
 			}
-			const { offset, requiresRenderSettle } = this._feedChunks(entry, bytes, budgetMs);
+			const offset = this._feedChunks(entry, bytes, budgetMs);
 			if (offset < bytes.length) {
 				const remainder = bytes.slice(offset);
 				if (drainingDeferred) prependDeferredFeed(entry, remainder);
@@ -3017,7 +3014,6 @@ export class TerminalManager {
 			}
 			this._syncPendingFrameWork(entry);
 			entry.linkSpans.markDirty();
-			if (requiresRenderSettle) this._noteTuiCursorSettle(entry, performance.now());
 			this.wake();
 			this._drainFeedOutputs(entry);
 		}
@@ -3045,7 +3041,12 @@ export class TerminalManager {
 	applyDeltaFrame(paneId: string, bytes: Uint8Array): void {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
-		if (this._applyDeltaFrame(entry, bytes)) this._noteTuiCursorSettle(entry, performance.now());
+		this._applyDeltaFrame(entry, bytes);
+	}
+
+	setNativeActivation(paneId: string, activationId: number): void {
+		const entry = this.panes.get(paneId);
+		if (entry) entry.nativeActivationId = activationId;
 	}
 
 	/** Apply one Remote Terminal Protocol v2 envelope to a keyed kernel. The
@@ -3059,10 +3060,7 @@ export class TerminalManager {
 	): boolean {
 		const entry = this.panes.get(paneId);
 		if (!entry) return false;
-		// A snapshot supersedes anything retained by the old raw/delta path.
-		dropPendingFeedBuffers(entry);
-		this._clearQueuedDeltaFrames(entry);
-		const settle = (
+		const applied = (
 			entry.kernel as unknown as {
 				applyRemoteFrame: (
 					frame: Uint8Array,
@@ -3071,17 +3069,20 @@ export class TerminalManager {
 					activationId: number,
 				) => boolean | void;
 			}
-		).applyRemoteFrame(bytes, workspaceId, remotePaneId, activationId) === true;
+		).applyRemoteFrame(bytes, workspaceId, remotePaneId, activationId);
+		// A fenced stale frame is consumed without changing presentation or queues.
+		if (applied === false) return true;
+		dropPendingFeedBuffers(entry);
+		this._clearQueuedDeltaFrames(entry);
 		this._drainFeedOutputs(entry);
 		entry.linkSpans.markDirty();
 		entry.renderPending = true;
-		if (settle) this._noteTuiCursorSettle(entry, performance.now());
 		this._syncPendingFrameWork(entry);
 		this.wake();
 		return true;
 	}
 
-	private _applyDeltaFrame(entry: PaneEntry, bytes: Uint8Array): boolean {
+	private _applyDeltaFrame(entry: PaneEntry, bytes: Uint8Array): void {
 		return perfMark('rg.ptyDelta.apply', () => {
 			if ((globalThis as { __RIDGE_PERF_TRACE?: unknown }).__RIDGE_PERF_TRACE === true) {
 				const traceHost = globalThis as { __ridgePtyDeltaTrace?: number[] };
@@ -3091,12 +3092,12 @@ export class TerminalManager {
 			const traceCursor = typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_CURSOR_TRACE') === '1';
 			const k = entry.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
 			const pre = traceCursor ? `(${k.cursorRow()},${k.cursorCol()})` : '';
-			// The v5 return value is a native-parser repaint hint. Cast keeps this
-			// source compatible with an already-running v4 dev bundle until wasm
-			// hot-reloads; stale bundles simply yield `undefined` (immediate path).
-			const requiresRenderSettle = (
-				entry.kernel as unknown as { applyDeltaFrame: (frame: Uint8Array) => boolean | void }
-			).applyDeltaFrame(bytes) === true;
+			// Presentation follows each frame's authoritative cursor. A parser's
+			// repaint hint is not an explicit synchronized-output transaction.
+			const applied = (entry.kernel as unknown as {
+				applyRemoteFrame: (bytes: Uint8Array, workspace: string, pane: string, activation: number) => boolean;
+			}).applyRemoteFrame(bytes, entry.workspaceId, paneId, entry.nativeActivationId ?? 0);
+			if (!applied) return;
 			if (this.isTuiKeyboardLease(entry.paneId)) entry.handle?.clearHistoryOverlay();
 			if (traceCursor) {
 				const ts = performance.now().toFixed(1);
@@ -3112,7 +3113,6 @@ export class TerminalManager {
 			entry.linkSpans.markDirty();
 			entry.renderPending = true;
 			this.wake();
-			return requiresRenderSettle;
 		});
 	}
 
@@ -3151,29 +3151,6 @@ export class TerminalManager {
 		}
 	}
 
-	private _setPresentationCursorSuppressed(entry: PaneEntry, suppressed: boolean): void {
-		if (entry.tuiCursorSuppressed === suppressed) return;
-		entry.tuiCursorSuppressed = suppressed;
-		const handle = entry.handle as unknown as {
-			setPresentationCursorSuppressed?: (value: boolean) => void;
-		} | null;
-		try { handle?.setPresentationCursorSuppressed?.(suppressed); }
-		catch { /* an already-running wasm bundle keeps its prior safe behavior */ }
-	}
-
-	private _noteTuiCursorSettle(entry: PaneEntry, now: number): void {
-		// The worker owns its own renderer transaction. Main-thread panes paint
-		// text immediately and freeze only the cursor during the rewind burst.
-		if (entry.handle === null) return;
-		entry.tuiCursorSuppressUntil = now + TUI_CURSOR_SETTLE_MS;
-		this._setPresentationCursorSuppressed(entry, true);
-	}
-
-	private _releaseTuiCursorSuppression(entry: PaneEntry): void {
-		entry.tuiCursorSuppressUntil = 0;
-		this._setPresentationCursorSuppressed(entry, false);
-	}
-
 	private _drainQueuedDeltaFrames(order: readonly PaneEntry[]): void {
 		const started = performance.now();
 		let applied = 0;
@@ -3186,7 +3163,7 @@ export class TerminalManager {
 				const frame = this._takeQueuedDeltaFrame(entry);
 				if (!frame) break;
 				try {
-				if (this._applyDeltaFrame(entry, frame.bytes)) this._noteTuiCursorSettle(entry, performance.now());
+				this._applyDeltaFrame(entry, frame.bytes);
 				} catch (error) {
 					this._clearQueuedDeltaFrames(entry);
 					frame.onError?.(error);
@@ -3711,7 +3688,6 @@ export class TerminalManager {
 			dropPendingFeedBuffers(entry);
 			this._clearQueuedDeltaFrames(entry);
 			this._syncPendingFrameWork(entry);
-			this._releaseTuiCursorSuppression(entry);
 		} else {
 			// Automatic memory reclaim must not turn a scrollback sweep into a
 			// synchronous catch-up. Flush the short coalescer, leave the bounded
@@ -3735,6 +3711,31 @@ export class TerminalManager {
 	/** Tell the wasm renderer whether this pane is the focused one. Only one
 	 *  pane per workspace may own a cursor; claiming focus clears the prior
 	 *  owner's renderer before the new pane is allowed to blink. */
+	cancelPointerGesture(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry) return;
+		if (entry.programPointerId !== null && entry.lastPointerPoint) {
+			entry.pointerCancelListener({ ...entry.lastPointerPoint, pointerId: entry.programPointerId,
+				button: entry.programMouseButton, target: entry.container } as unknown as PointerEvent);
+		}
+		entry.selecting = false;
+		entry.selectionPointerId = null;
+		entry.programPointerId = null;
+		entry.lastMouseSent = null;
+		if (entry.mouseMoveRaf !== null) cancelAnimationFrame(entry.mouseMoveRaf);
+		entry.mouseMoveRaf = null;
+		entry.pendingMouseMove = null;
+		this._stopAttachAutoScroll(entry);
+	}
+
+	setPointerSelectionMode(paneId: string, enabled: boolean): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.localPointerSelection === enabled) return;
+		this.cancelPointerGesture(paneId);
+		entry.localPointerSelection = enabled;
+		this._clearPointerHover(entry);
+	}
+
 	setFocused(paneId: string, focused: boolean): void {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
@@ -4277,24 +4278,8 @@ export class TerminalManager {
 		if (tgt?.closest?.('.rg-scrollbar-track, .rg-scrollbar-thumb')) return false;
 		const cell = this.cellFromEvent(paneId, e);
 		if (!cell) return false;
-		const { row: cellRow, col } = cell;
-		// Cancel any queued mouse move to prevent stale motion events.
-		if (ent.mouseMoveRaf !== null) {
-			cancelAnimationFrame(ent.mouseMoveRaf);
-			ent.mouseMoveRaf = null;
-		}
-		ent.pendingMouseMove = null;
 		const isMac = isMacPlatform();
-		const mod = e.ctrlKey || (isMac && e.metaKey);
-		const btn = e.button;
-		const bytes = ent.kernel.encodeMouse(cellRow, col, btn, 0, e.shiftKey, mod, e.altKey);
-		if (bytes.length > 0) {
-			ent.dataHandler(bytes);
-			ent.lastMouseSent = { row: cellRow, col, buttons: e.buttons, action: 0 };
-			try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
-			return true;
-		}
-		return false;
+		return this._sendPointerDown(ent, cell, e, e.ctrlKey || (isMac && e.metaKey));
 	}
 
 	/** §1.31 (2026-05-19): DEC text-cursor-enable mode (`?25`).
@@ -5284,7 +5269,7 @@ export class TerminalManager {
 		const isAlt = entry.kernel.isAltScreen();
 		const isInlineTui = !isAlt && entry.kernel.isInlineTuiMode();
 		this._logResizeDecision(entry, grid.rows, grid.cols, isAlt, isInlineTui);
-		if (entry.localGridAuthority || this._sharedRemoteMode) entry.kernel.resize(grid.rows, grid.cols);
+		if (entry.localGridAuthority) entry.kernel.resize(grid.rows, grid.cols);
 		await entry.resizeHandler?.(grid.rows, grid.cols, isAlt, isInlineTui);
 		if (this._sharedRemoteMode && entry.localGridAuthority) this._recomputeViewport(entry);
 		this._invalidateEntry(entry);
@@ -5401,7 +5386,6 @@ export class TerminalManager {
 		if (!sync) {
 			if (entry.syncStart !== null) {
 				entry.syncStart = null;
-				entry.syncTimeoutRendered = false;
 			}
 			return true;
 		}
@@ -5411,8 +5395,6 @@ export class TerminalManager {
 			state.minDeadlineMs = Math.min(state.minDeadlineMs, SYNC_OUTPUT_TIMEOUT_MS - elapsed);
 			return false;
 		}
-		if (entry.syncTimeoutRendered) return false;
-		entry.syncTimeoutRendered = true;
 		return true;
 	}
 
@@ -5478,10 +5460,10 @@ export class TerminalManager {
 			void this.fitPane(entry, this._sharedRemoteMode);
 		}
 		if (!this._renderEntryAfterSync(entry, state)) return;
-		if (entry.tuiCursorSuppressUntil > state.perfNow) {
-			state.minDeadlineMs = Math.min(state.minDeadlineMs, entry.tuiCursorSuppressUntil - state.perfNow);
-		} else if (entry.tuiCursorSuppressed) {
-			this._releaseTuiCursorSuppression(entry);
+		if (entry.lastPointerPoint && entry.linkSpans.needsRefresh) {
+			entry.linkSpans.recompute(entry.kernel);
+			this._updatePointerHover(entry, entry.lastPointerPoint as PointerEvent,
+				this.cellFromEvent(entry.paneId, entry.lastPointerPoint));
 		}
 		const dirty = this._entryDirty(entry, state);
 		const shouldRender = this._isHostMode(entry)

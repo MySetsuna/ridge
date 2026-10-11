@@ -116,6 +116,8 @@ export interface ChannelTransport {
   sendPaneBytes(paneId: string, bytes: Uint8Array): void;
   /** Subscribe to inbound raw pane bytes (the binary fan-out). */
   onPaneBytes(cb: PaneBytesListener): Unsubscribe;
+  /** Canonical terminal packets; the kernel validates pane/epoch/activation. */
+  onTerminalFrame?(cb: (bytes: Uint8Array) => void): Unsubscribe;
 
   /** Begin connecting (incl. the adapter's own auth handshake). */
   connect(): void | Promise<void>;
