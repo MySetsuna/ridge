@@ -17,6 +17,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // src/lib/transport/tauriShim so the desktop code runs untouched outside Tauri.
 // In the normal Tauri build the flag is unset and none of this applies.
 const WEB_REMOTE = !!process.env.RIDGE_WEB_REMOTE;
+const NATIVE_RUNTIME = !WEB_REMOTE && process.env.RIDGE_NATIVE_RUNTIME === '1';
 const TAURI_DEV_PORT = Number(process.env.RIDGE_DEV_SERVER_PORT || 5173);
 const TAURI_DEV_CDP = !!process.env.RIDGE_DEV_SERVER_PORT;
 /** @param {string} f */
@@ -30,6 +31,10 @@ if (WEB_REMOTE) {
   webRemoteAliases['@tauri-apps/plugin-dialog'] = shim('dialog.ts');
   webRemoteAliases['@tauri-apps/plugin-clipboard-manager'] = shim('clipboard.ts');
   webRemoteAliases['@tauri-apps/plugin-opener'] = shim('opener.ts');
+}
+if (NATIVE_RUNTIME) {
+  webRemoteAliases['@tauri-apps/api/core'] = path.resolve(__dirname, 'src/lib/transport/nativeRuntimeCore.ts');
+  webRemoteAliases['@tauri-apps/api/event'] = path.resolve(__dirname, 'src/lib/transport/nativeRuntimeEvent.ts');
 }
 
 export default defineConfig({
@@ -51,6 +56,7 @@ export default defineConfig({
     // Build-time flag read by +layout.svelte and the shims. `false` in the
     // Tauri build lets the whole web-remote branch tree-shake away.
     'import.meta.env.RIDGE_WEB_REMOTE': JSON.stringify(WEB_REMOTE),
+    'import.meta.env.RIDGE_NATIVE_RUNTIME': JSON.stringify(NATIVE_RUNTIME),
     // Build-time ridge-cloud base override (apiClient.ts BASE_DOMAIN). Empty in
     // normal builds → client falls back to the production base. The debug build
     // (scripts/tauri-build-debug.mjs) sets RIDGE_CLOUD_BASE_DOMAIN=localhost:5173

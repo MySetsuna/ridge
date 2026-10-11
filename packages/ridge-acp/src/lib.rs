@@ -5,21 +5,16 @@
 //! ACP-compatible agent and exposes a `Serialize` event stream that future Desktop
 //! or Mobile consumers can read without parsing shell ANSI or touching Tauri invokes.
 
-pub mod communion;
 pub mod error;
 pub mod events;
 pub mod lifecycle;
 pub mod prompt_loop;
 pub mod provider;
-pub mod provider_adapter;
 pub mod protocol;
 pub mod session;
-pub mod spawn;
 pub mod task;
 pub mod transport;
 pub mod turn;
-pub mod workflow;
-pub mod worker;
 
 pub use error::{AcpErrorWrap, AgentSessionError};
 pub use events::AgentSessionEvent;
@@ -41,16 +36,8 @@ pub use turn::{
     AgentSessionSnapshot, PlanEntryView, PlanSnapshot, ToolCallRecord, ToolCallView, TurnId,
     TurnPhase, TurnRecord, TurnResult,
 };
-pub use spawn::{spawn_acp_agent, SpawnSpec};
 pub use transport::{AcpTransport, Framing};
 
-// Communion is a coordinator over already-running AgentSessions; it does NOT
-// transport ACP frames itself. Naming `Commutation` avoids identifier clash with
-// the legacy pane-bound "Agent's Commune".
-pub use communion::{
-    Commutation, CommutationEvent, CommutationSnapshot, CommutationState, SessionSummary,
-    StaffSpec,
-};
 pub use task::{
     blocked_by_failed_deps, ready_tasks, validate_dag, HandoffPayload, Plan, PlanId,
     PlanStore, Story, StoryId, Task, TaskId, TaskPoint, TaskResult, TaskStatus,

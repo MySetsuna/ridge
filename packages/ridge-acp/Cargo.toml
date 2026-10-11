@@ -2,7 +2,7 @@
 name = "ridge-acp"
 version = "0.1.0"
 edition = "2021"
-description = "Ridge Agent product layer — AgentSession + ACP adapter + Commutation coordinator. Boundary between any ACP-compatible agent and the frozen Runtime/Remote stack."
+description = "Ridge shared ACP transport and session types. Legacy Communion coordinator archived by CHG-070."
 license = "MIT"
 
 # M2.1 NS-1 satisfied: ridge-acp is now a workspace member of C:\code\wind.

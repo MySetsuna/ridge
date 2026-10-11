@@ -23,7 +23,9 @@ use tokio::process::Command;
 
 use ridge_acp::events::AgentSessionEvent;
 use ridge_acp::session::{AgentSession, AgentSessionConfig, SessionStatus};
-use ridge_acp::spawn::SpawnSpec;
+#[path = "common/spawn.rs"]
+mod fixture_spawn;
+use fixture_spawn::SpawnSpec;
 
 fn live_spec() -> SpawnSpec {
     SpawnSpec {

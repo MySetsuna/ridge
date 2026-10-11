@@ -1,7 +1,7 @@
 //! MOBILE_CONSUMER — protocol-level acceptance for the canonical event stream.
 //!
 //! The M2 Mobile consumer is a test-only consumer of `AgentSessionEvent` and
-//! `CommutationEvent` JSON. The point: prove that any client (Mobile future,
+//! legacy session JSON. The point: prove that any client (Mobile future,
 //! Desktop today, third-party watchdog) can decode every state dimension
 //! Ridge exposes without depending on:
 //!
@@ -14,7 +14,6 @@
 //!
 //! | dimension       | wire shape                                | tested via              |
 //! |-----------------|-------------------------------------------|-------------------------|
-//! | session list    | `CommutationSnapshot.staff: Vec<...>`     | commutation snapshot    |
 //! | session state   | `SessionStatus` enum                      | status enum round-trip  |
 //! | stream          | `AgentSessionEvent` tagged enum           | event decode round-trip |
 //! | tool            | `ToolCallStarted` / `ToolCallFinished`    | tool event round-trip   |
@@ -32,8 +31,7 @@ mod common;
 use std::time::Duration;
 
 use ridge_acp::{
-    AgentSession, AgentSessionEvent, AgentSessionSnapshot, Commutation, CommutationEvent,
-    LifecycleView, StaffSpec,
+    AgentSession, AgentSessionEvent, AgentSessionSnapshot, LifecycleView,
 };
 use ridge_core::teammate::communication::AgentLifecycle;
 
@@ -55,48 +53,6 @@ fn assert_portable(s: &str) {
             "forbidden platform-bound token leaked: {needle}"
         );
     }
-}
-
-// ---------- dimension 1: session list (CommutationSnapshot) ----------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mobile_consumer_session_list_via_commutation_snapshot() {
-    let lead = common::spawn_fake_session().await.session;
-    let staff_a = common::spawn_fake_session().await.session;
-    let staff_b = common::spawn_fake_session().await.session;
-    let staff_a_id = staff_a.id().await;
-    let staff_b_id = staff_b.id().await;
-
-    let comm = Commutation::new(&lead, "two-subtask", "explore + summarize").await;
-    comm.assign_staff(
-        StaffSpec {
-            session_id: staff_a_id.clone(),
-            role: "explorer".into(),
-            provider_label: "mock/claude-haiku".into(),
-        },
-        &staff_a,
-    )
-    .await;
-    comm.assign_staff(
-        StaffSpec {
-            session_id: staff_b_id.clone(),
-            role: "summarizer".into(),
-            provider_label: "mock/claude-haiku".into(),
-        },
-        &staff_b,
-    )
-    .await;
-
-    let snap = comm.snapshot().await;
-    let json = serde_json::to_value(&snap).expect("serialize commutation snapshot");
-    assert_portable(&json.to_string());
-    let back: ridge_acp::CommutationSnapshot =
-        serde_json::from_value(json.clone()).expect("deserialize commutation snapshot");
-    assert_eq!(back.state, snap.state);
-    assert_eq!(back.lead, snap.lead);
-    assert_eq!(back.staff.len(), 2, "session list must contain both staff");
-    assert!(back.staff.contains(&staff_a_id));
-    assert!(back.staff.contains(&staff_b_id));
 }
 
 // ---------- dimension 2: session state (LifecycleView) ----------
@@ -396,56 +352,6 @@ async fn mobile_consumer_artifact_dimension_is_honest_gap() {
     // Verify opencode's initialize response carries no artifact capability
     // (probed only when opencode is present — skip otherwise).
     eprintln!("[artifact-gap] Ridge does not synthesize artifact events; Mobile clients must negotiate with the agent (or wait for an M3 contract).");
-}
-
-// ---------- CommutationEvent portable (cross-cutting) ----------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mobile_consumer_commutation_events_decode_portably() {
-    let lead = common::spawn_fake_session().await.session;
-    let staff = common::spawn_fake_session().await.session;
-    let staff_id = staff.id().await;
-
-    let comm = Commutation::new(&lead, "decode", "ctxt").await;
-    let mut rx = comm.events();
-    comm.assign_staff(
-        StaffSpec {
-            session_id: staff_id.clone(),
-            role: "explorer".into(),
-            provider_label: "mock/claude-haiku".into(),
-        },
-        &staff,
-    )
-    .await;
-
-    let mut decoded_kinds = std::collections::BTreeSet::new();
-    while let Ok(ev) = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
-        match ev {
-            Ok(ev) => {
-                let v = serde_json::to_value(&ev).expect("ser");
-                assert_portable(&v.to_string());
-                let back: CommutationEvent = serde_json::from_value(v.clone()).expect("de");
-                assert_eq!(serde_json::to_value(&back).unwrap(), v);
-                decoded_kinds.insert(match &ev {
-                    CommutationEvent::Created { .. } => "created",
-                    CommutationEvent::StaffAssigned { .. } => "staff_assigned",
-                    CommutationEvent::StaffProgress { .. } => "staff_progress",
-                    CommutationEvent::StaffCompleted { .. } => "staff_completed",
-                    CommutationEvent::StaffFailed { .. } => "staff_failed",
-                    CommutationEvent::Handoff { .. } => "handoff",
-                    CommutationEvent::FinalDelivered { .. } => "final_delivered",
-                    CommutationEvent::CommutationCompleted { .. } => "commutation_completed",
-                    CommutationEvent::CommutationFailed { .. } => "commutation_failed",
-                });
-                if decoded_kinds.contains("staff_assigned") {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    assert!(decoded_kinds.contains("staff_assigned"),
-        "Mobile consumer must observe StaffAssigned; saw {decoded_kinds:?}");
 }
 
 // ---------- AgentSessionSnapshot portable (cross-cutting) ----------

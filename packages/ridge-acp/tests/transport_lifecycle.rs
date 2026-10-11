@@ -16,7 +16,9 @@ use tokio::process::Command;
 
 use ridge_acp::error::AcpErrorWrap;
 use ridge_acp::provider::ProviderSpec;
-use ridge_acp::spawn::{spawn_acp_agent, SpawnSpec};
+#[path = "common/spawn.rs"]
+mod fixture_spawn;
+use fixture_spawn::{spawn_acp_agent, SpawnSpec};
 use ridge_acp::transport::AcpTransport;
 
 fn fake_spec() -> SpawnSpec {

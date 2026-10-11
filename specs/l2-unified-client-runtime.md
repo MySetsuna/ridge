@@ -26,6 +26,7 @@ code_targets:
   - vite.config.js
   - scripts/**
   - docs/archive/**
+  - svelte.config.js
 test_targets:
   - packages/ridge-core/**
   - packages/ridge-kernel/**

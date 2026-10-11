@@ -153,7 +153,6 @@ ridge-remote = { path = "../packages/ridge-remote" }
 # commands (prompt, approve_tool, cancel) and every event flows back to the
 # renderer as `AgentSessionEvent` JSON via `app.emit`. No business state is
 # held in the bridge — AgentSession is the single source of truth.
-ridge-acp = { path = "../packages/ridge-acp" }
 
 # P3.5 (2026-05-20): same postcard codec the ridge-term crate uses for
 # the GridDelta wire format. The native PaneParser (`engine::parser`)

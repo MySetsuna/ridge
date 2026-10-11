@@ -5591,7 +5591,6 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest 0.12.28",
- "ridge-acp",
  "ridge-core",
  "ridge-kernel",
  "ridge-mcp",

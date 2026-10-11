@@ -3,12 +3,10 @@
   import '../app.css';
   import { browser, dev } from '$app/environment';
   import DevIssueDialog from '$lib/components/DevIssueDialog.svelte';
-  import DefaultWiredAgentChat from '$lib/agent-chat/DefaultWiredAgentChat.svelte';
-  let communionOpen = $state(false);
-  let communionMounted = $state(false);
   import HitlApprovalModal from '$lib/teammate/HitlApprovalModal.svelte';
   import { setTransport } from '$lib/transport';
   import { TauriDataProvider } from '$lib/transport/tauri';
+  import { presentationSession } from '$lib/transport/presentationSession';
   import { onMount } from 'svelte';
   import { clearRemoteToken, readRemoteToken, writeRemoteToken } from '../remote/lib/remoteSession';
   import { t, tr } from '$lib/i18n';
@@ -27,6 +25,7 @@
   // vite.config.js). In the normal Tauri build the flag is undefined, the whole
   // branch tree-shakes away, and behaviour is unchanged.
   const WEB_REMOTE = import.meta.env.RIDGE_WEB_REMOTE === true;
+  const NATIVE_RUNTIME = import.meta.env.RIDGE_NATIVE_RUNTIME === true;
 
   // §独立窗口：弹出的编辑器窗口以 ?win=editor 加载同一 SPA，但只渲染 <EditorWindow>
   // （= 铺满窗口的文件编辑器），不跑主应用（+page）的终端/工作区重型初始化。
@@ -60,7 +59,7 @@
   const queryClient = new QueryClient({
     defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 0 } },
   });
-  let ready = $state(!WEB_REMOTE);
+  let ready = $state(!WEB_REMOTE && !NATIVE_RUNTIME);
   let phase = $state('connecting'); // 'connecting' | 'need-code' | 'need-totp' | 'error'
   let code = $state('');
   let errorMsg = $state('');
@@ -80,6 +79,29 @@
   };
 
   onMount(() => {
+    if (NATIVE_RUNTIME) {
+      const session = presentationSession(
+        async () => {
+          const [{ connectPresentationRuntime }, { bridge }] = await Promise.all([
+            import('$lib/transport/runtimeClient'), import('$lib/transport/tauriShim/bridge'),
+          ]);
+          return { ...await connectPresentationRuntime(), bridge };
+        },
+        runtime => {
+          runtime.bridge.attach(runtime.transport, { useGlobalWorkspace: false });
+          setTransport(new TauriDataProvider());
+          return () => runtime.bridge.detach();
+        },
+        error => {
+          if (error) { errorMsg = error instanceof Error ? error.message : 'Runtime attach failed'; phase = 'error'; }
+          else ready = true;
+        },
+      );
+      const attach = () => { ready = false; phase = 'connecting'; errorMsg = ''; void session.start(); };
+      retryConnection = attach;
+      attach();
+      return () => session.dispose();
+    }
     if (!WEB_REMOTE) {
       setTransport(new TauriDataProvider());
       // §独立窗口：弹出的编辑器窗口只需 transport（让 invoke 可用），跳过 TOTP 身份同步
@@ -495,18 +517,12 @@
 {/if}
 
 <!-- Domain Zero / D2：HITL 人类中间审批模态（全局高优先级覆盖层）。无待审批时不渲染。 -->
-{#if browser && !WEB_REMOTE && !editorWindow}
-  <button class="communion-toggle" onclick={() => { communionMounted = true; communionOpen = !communionOpen; }} aria-expanded={communionOpen}>Agent Communion</button>
-  {#if communionMounted}<aside class="communion-sidebar" class:hidden={!communionOpen} aria-label="Agent Communion"><button class="communion-close" onclick={() => communionOpen = false} aria-label="Close Agent Communion">×</button><DefaultWiredAgentChat /></aside>{/if}
+{#if ready && browser && !WEB_REMOTE && !editorWindow}
   <HitlApprovalModal />
 {/if}
 </QueryClientProvider>
 
 <style>
-  .communion-toggle { position:fixed; bottom:12px; right:12px; z-index:90; padding:7px 10px; border:1px solid var(--rg-border); border-radius:6px; background:var(--rg-surface); }
-  .communion-sidebar { position:fixed; right:0; top:0; bottom:0; width:min(460px, 96vw); z-index:100; border-left:1px solid var(--rg-border); box-shadow:-8px 0 24px #0003; padding-top:28px; background:var(--rg-bg); }
-  .communion-sidebar.hidden { display:none; }
-  .communion-close { position:absolute; right:10px; top:2px; font-size:20px; }
   .wr-gate { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; background: var(--rg-bg, #0d1117); color: var(--rg-fg, #e6edf3); }
   .wr-gate h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
   .wr-sub { color: var(--rg-fg-muted, #8b949e); font-size: 14px; margin-bottom: 24px; text-align: center; }

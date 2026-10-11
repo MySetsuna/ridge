@@ -34,6 +34,8 @@ const config = {
       // 空间导入,不并入 flat 桶——见设计 R3.2)。SvelteKit 由此 alias 生成
       // @ridge/remote 与 @ridge/remote/* 两条 tsconfig paths(svelte-check 用)。
       "@ridge/remote": "packages/remote/src",
+      "@ridge/native-os-core": "node_modules/@tauri-apps/api/core.js",
+      "@ridge/native-os-event": "node_modules/@tauri-apps/api/event.js",
       // Transport-agnostic UI shared with the plain-Svelte remote app
       // (see vite.mobile.config.js for the mirror alias).
       "@shared": "src/shared",

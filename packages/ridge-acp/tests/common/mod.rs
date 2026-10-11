@@ -17,7 +17,8 @@ use tokio::sync::broadcast;
 use tokio::time::timeout;
 
 use ridge_acp::provider::ProviderSpec;
-use ridge_acp::spawn::{spawn_acp_agent, SpawnSpec};
+pub mod spawn;
+use spawn::{spawn_acp_agent, SpawnSpec};
 use ridge_acp::transport::Framing;
 use ridge_acp::{AgentSession, AgentSessionConfig, AgentSessionEvent};
 
