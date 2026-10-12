@@ -8,6 +8,7 @@ pub mod client;
 mod business;
 mod commune;
 mod commune_history;
+mod commune_groups;
 mod commune_permissions;
 pub mod host;
 pub mod host_core;

@@ -83,11 +83,13 @@ try {
       osCalls.push(command); if (command === 'bootstrap_runtime_client') return window.fixtureGrant();
       throw Error('Unexpected OS business call: ' + command);
     }, transformCallback: () => { throw Error('Unexpected native Channel'); } };
-    const [{ connectPresentationRuntime }, { bridge }, { invoke }, { mount, unmount }, { default: Modal }, { default: History }] = await Promise.all([
+    const [{ connectPresentationRuntime }, { bridge }, { invoke }, { mount, unmount }, { default: Modal }, { default: History }, { default: Groups }, { parseTopologySnapshot }, { teammateGroupStore }] = await Promise.all([
       import('/src/lib/transport/runtimeClient.ts'), import('/src/lib/transport/tauriShim/bridge.ts'),
       import('/src/lib/transport/nativeRuntimeCore.ts'), import('/scripts/commune-permission-ui-client.mjs'),
       import('/src/lib/teammate/HitlApprovalModal.svelte'),
       import('/src/lib/teammate/CommuneHistory.svelte'),
+      import('/src/lib/teammate/TeammateGroupsSection.svelte'), import('/src/lib/teammate/teammateModel.ts'),
+      import('/src/lib/teammate/teammateGroups.svelte.ts'),
     ]);
     const connection = await connectPresentationRuntime();
     bridge.attach(connection.transport, { useGlobalWorkspace: false });
@@ -98,7 +100,11 @@ try {
     const modal = mount(Modal, { target: document.getElementById('component') });
     const historyTarget = document.createElement('section'); document.body.append(historyTarget);
     const history = mount(History, { target: historyTarget, props: { workspaceId: target.workspaceId } });
-    window.ownedApproval = { invoke, target, osCalls, dispose: async () => { await unmount(history); await unmount(modal); bridge.detach(); connection.disconnect(); } };
+    const groupTarget = document.createElement('section'); groupTarget.dataset.testid = 'commune-groups'; document.body.append(groupTarget);
+    const topology = parseTopologySnapshot(await invoke('get_teammate_topology', {workspaceId:target.workspaceId}));
+    const groups = mount(Groups, {target:groupTarget, props:{workspaceId:target.workspaceId,filePath:null,roster:topology.roster}});
+    window.ownedGroups = teammateGroupStore();
+    window.ownedApproval = { invoke, target, osCalls, dispose: async () => { await unmount(groups); await unmount(history); await unmount(modal); bridge.detach(); connection.disconnect(); } };
   }, target);
   const receipt = await page.evaluate(async () => window.ownedApproval.invoke('send_agent_message', { ...window.ownedApproval.target, message: 'permission-needed', idempotency_key: crypto.randomUUID() }));
   const dialog = page.getByRole('alertdialog');
@@ -119,6 +125,21 @@ try {
   await history.locator('[data-history-kind="permission_decided"]').waitFor();
   assert.ok((await history.textContent()).includes('existing history'));
   assert.equal(await history.getByRole('button', { name: /恢复|Resume|启动/ }).count(), 0);
+  await until(() => page.evaluate(() => !window.ownedGroups.busy));
+  const groupUi = page.getByTestId('commune-groups');
+  await groupUi.getByRole('button', {name:'新建编组',exact:true}).click();
+  await groupUi.getByRole('checkbox').check();
+  await groupUi.getByPlaceholder('组名（可选）').fill('Browser group');
+  await groupUi.getByRole('button', {name:'建组（1）',exact:true}).click();
+  await until(() => page.evaluate(() => !window.ownedGroups.busy && window.ownedGroups.groups.length === 1));
+  const projection = await page.evaluate(() => ({groups:JSON.parse(JSON.stringify(window.ownedGroups.groups)),groupsRevision:window.ownedGroups.revision}));
+  assert.equal(projection.groups[0].memberAgentIds[0],identity.agentId);
+  projection.groups[0].name = 'Remote revision';
+  const remoteEdit = await call('POST','/v1/domain/commands',{method:'set_teammate_groups',args:{workspaceId,groups:projection.groups,expectedRevision:projection.groupsRevision},native:false,roots:[],connectionId:crypto.randomUUID()});
+  assert.equal(remoteEdit.ok,true,JSON.stringify(remoteEdit.error));
+  await groupUi.getByText('Remote revision',{exact:true}).waitFor();
+  await groupUi.scrollIntoViewIfNeeded();
+  await page.screenshot({path:path.resolve('.webview2-dev-cdp/070-commune-groups-ui.png')});
   const calls = await page.evaluate(() => window.ownedApproval.osCalls);
   assert.deepEqual(calls, ['bootstrap_runtime_client']);
   await page.evaluate(() => window.ownedApproval.dispose());
@@ -129,7 +150,8 @@ try {
   evidence.checks = ['Actual peer options appear in the production modal with actual tool input', 'No Modify action for standard ACP permissions',
     'A real click resolves the original permission ID and the original prompt ends', 'Business RPC and permission events use Runtime; OS IPC only issues bootstrap grant',
     'Unmounting the presentation client preserves the exact existing Agent process',
-    'Production history component reads replay, Runtime execution and approval records without a launch/resume action'];
+    'Production history component reads replay, Runtime execution and approval records without a launch/resume action',
+    'Production group UI creates exact registered membership through Runtime and converges to a remote revision event'];
   evidence.screenshot = screenshot; evidence.result = 'PASS';
 } catch (error) {
   evidence.result = 'FAIL'; evidence.error = error.message; evidence.pageErrors = pageErrors;

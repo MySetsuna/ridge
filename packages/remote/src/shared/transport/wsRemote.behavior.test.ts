@@ -209,9 +209,10 @@ describe('RemoteConnection public communication contract', () => {
 		const history = conn.listAgentHistory('workspace-a', 1000);
 		invoke(ws, 'read_agent_recent_replies', []);
 		await expect(history).resolves.toEqual([]);
-		const groups = conn.setTeammateGroups('workspace-a', []);
-		invoke(ws, 'set_teammate_groups');
-		await expect(groups).resolves.toBeUndefined();
+		const groups = conn.setTeammateGroups('workspace-a', [], 3);
+		expect(ws.sent.at(-1)).toMatchObject({args:{workspaceId:'workspace-a',expectedRevision:3}});
+		invoke(ws, 'set_teammate_groups', {groups:[],groupsRevision:4});
+		await expect(groups).resolves.toEqual({groups:[],groupsRevision:4});
 		const sentBeforeResume = ws.sent.length;
 		await expect(conn.resumeAgentSession('workspace-a', 'codex', 'session-1', 'C:/repo')).rejects.toThrow('Restore the Agent in its terminal');
 		expect(ws.sent.length).toBe(sentBeforeResume);

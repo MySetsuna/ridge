@@ -219,6 +219,10 @@ export interface GitStatus {
 }
 
 export type WsMessage = {
+  type: 'event';
+  name: string;
+  payload: unknown;
+} | {
   type: 'panes';
   panes: PaneInfo[];
   /** Iteration 63: identifies cached snapshots pushed for non-active workspaces. */
@@ -409,7 +413,10 @@ export interface TeammateGroup {
   color: string;
   memberAgentIds: string[];
   leaderAgentId?: string;
+  createdAt?: number;
+  revision?: number;
 }
+export interface TeammateGroupSnapshot { groups: TeammateGroup[]; groupsRevision: number }
 
 /** P1 teammate 拓扑快照（roster + leader；edges 预留）。 */
 export interface TeammateTopology {
@@ -418,6 +425,7 @@ export interface TeammateTopology {
   edges: unknown[];
   /** Optional for older hosts; populated by current hosts from workspace-memory. */
   groups?: TeammateGroup[];
+  groupsRevision?: number;
 }
 
 /** P2：待裁决高危动作的脱敏快照——绝不含 action 命令全文。 */
@@ -545,7 +553,7 @@ export interface RemoteLink {
   /** Real session-file history, always restricted to the selected workspace's pane CWDs. */
   listAgentHistory(workspaceId: string, limit?: number, cursor?: string, query?: string, textCursor?: string): Promise<AgentHistoryReply[]>;
   /** Persist the current workspace's Agent groups for Remote/desktop parity. */
-  setTeammateGroups(workspaceId: string, groups: readonly TeammateGroup[]): Promise<void>;
+  setTeammateGroups(workspaceId: string, groups: readonly TeammateGroup[], expectedRevision: number): Promise<TeammateGroupSnapshot>;
   /** Create a new pane and resume a recorded Agent session in its CWD. */
   resumeAgentSession(
     workspaceId: string,
@@ -1679,17 +1687,20 @@ export class RemoteConnection implements RemoteLink {
   async setTeammateGroups(
     workspaceId: string,
     groups: readonly TeammateGroup[],
-  ): Promise<void> {
+    expectedRevision: number,
+  ): Promise<TeammateGroupSnapshot> {
     const data = (await this._sendAndWait(
       {
         type: 'invoke-request',
         cmd: 'set_teammate_groups',
-        args: { workspaceId, groups },
+        args: { workspaceId, groups, expectedRevision },
         _reqId: ++this._reqCounter,
       },
       'invoke-result',
-    )) as { _error?: unknown };
+    )) as { _error?: unknown; _result?: TeammateGroupSnapshot };
     if (data._error) throw new Error(unknownText(data._error, 'remote error'));
+    if (!data._result || !Array.isArray(data._result.groups) || !Number.isSafeInteger(data._result.groupsRevision)) throw new Error('Invalid group projection');
+    return data._result;
   }
 
   async resumeAgentSession(_workspaceId: string, _agent: string, _sessionId: string, _cwd: string): Promise<string | null> {

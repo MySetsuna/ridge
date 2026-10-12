@@ -75,9 +75,10 @@
   let groupBusy = $state(false);
   let groupNote = $state('');
   /** Keep an optimistic mutation alive until the host confirms it. */
-  let pendingGroups: { workspaceId: string; groups: TeammateGroup[] } | null = null;
-  let confirmedGroups: TeammateGroup[] = [];
-  let groupWrite: Promise<void> | null = null;
+  let groupsRevision = $state<number | undefined>();
+  let groupMutationVersion = 0;
+
+
   const scopeGuard = createTeamRosterScopeGuard();
   let currentScopeKey = '';
   let disposed = false;
@@ -107,6 +108,8 @@
       color: typeof r.color === 'string' ? r.color : '#60a5fa',
       memberAgentIds: members,
       leaderAgentId: typeof r.leaderAgentId === 'string' ? r.leaderAgentId : undefined,
+      createdAt: typeof r.createdAt === 'number' ? r.createdAt : undefined,
+      revision: typeof r.revision === 'number' ? r.revision : undefined,
     };
   }
 
@@ -123,40 +126,27 @@
     });
   }
 
-  async function flushGroups(): Promise<void> {
-    if (!workspaceId || groupWrite) return;
-    groupWrite = (async () => {
-      while (pendingGroups) {
-        const pending = pendingGroups;
-        pendingGroups = null;
-        groupBusy = true;
-        groupNote = '';
-        try {
-          await ws.setTeammateGroups(pending.workspaceId, pending.groups);
-          confirmedGroups = pending.groups;
-          await invalidateRosterQuery(pending.workspaceId);
-          groupNote = '编组已保存';
-        } catch (e) {
-          // Preserve a newer optimistic edit; only roll back when this was the
-          // last queued mutation and the host rejected it.
-          if (!pendingGroups) groups = confirmedGroups;
-          groupNote = `保存失败：${e instanceof Error ? e.message : String(e)}`;
-        } finally {
-          groupBusy = false;
-        }
+  async function persistGroups(next: TeammateGroup[]): Promise<void> {
+    if (!workspaceId || groupBusy || groupsRevision === undefined) return;
+    const scope = workspaceId;
+    const session = remoteSessionId(ws);
+    const connection = ws;
+    const expectedRevision = groupsRevision;
+    const version = ++groupMutationVersion;
+    groupBusy = true; groupNote = '';
+    try {
+      const projection = await connection.setTeammateGroups(scope, next, expectedRevision);
+      if (version !== groupMutationVersion || scope !== workspaceId || session !== remoteSessionId(ws) || connection !== ws) return;
+      groups = projection.groups; groupsRevision = projection.groupsRevision;
+      groupNote = '编组已保存';
+      await invalidateRosterQuery(scope);
+    } catch (failure) {
+      if (version === groupMutationVersion && scope === workspaceId && session === remoteSessionId(ws) && connection === ws) {
+        groupNote = `保存失败：${failure instanceof Error ? failure.message : String(failure)}`;
+        await invalidateRosterQuery(scope);
+        void startRefresh();
       }
-    })().finally(() => {
-      groupWrite = null;
-      if (pendingGroups) void flushGroups();
-    });
-    await groupWrite;
-  }
-
-  function persistGroups(next: TeammateGroup[]): void {
-    if (!workspaceId) return;
-    groups = next;
-    pendingGroups = { workspaceId, groups: next };
-    void flushGroups();
+    } finally { if (version === groupMutationVersion && scope === workspaceId && connection === ws) groupBusy = false; }
   }
 
   function createGroup(): void {
@@ -350,11 +340,11 @@
       topo = t;
       // groups 随 topology 快照下发（TeammateTopology 类型未含，运行时扩展读取）。
       const rawGroups = (t as TeammateTopology & { groups?: unknown }).groups;
-      if (!pendingGroups && !groupWrite) {
+      if (!groupBusy) {
         groups = Array.isArray(rawGroups)
           ? rawGroups.map(parseRemoteGroup).filter((g): g is TeammateGroup => g !== null)
           : [];
-        confirmedGroups = groups;
+        groupsRevision = t.groupsRevision;
       }
       pending = p;
       health = h;
@@ -390,6 +380,8 @@
     const nextScopeKey = teamRosterScopeKey(remoteSessionId(ws), workspaceId, panes);
     if (nextScopeKey === currentScopeKey) return;
     currentScopeKey = nextScopeKey;
+    groupMutationVersion++;
+    groups = []; groupsRevision = undefined; groupBusy = false; groupNote = "";
     void startRefresh(true);
   });
 
@@ -399,6 +391,11 @@
         if (message.workspaceId === workspaceId) scheduleLiveRefresh();
       } else if (message.type === 'panes' && (!message.workspaceId || message.workspaceId === workspaceId)) {
         scheduleLiveRefresh();
+      } else if (message.type === 'event' && message.name === 'commune-groups-changed') {
+        const payload = message.payload as {workspaceId?: string} | undefined;
+        if (payload?.workspaceId === workspaceId) {
+          void invalidateRosterQuery().then(() => scheduleLiveRefresh());
+        }
       }
     });
     const offRaw = ws.onRawBytes((pane) => {

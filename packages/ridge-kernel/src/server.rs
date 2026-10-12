@@ -69,7 +69,7 @@ pub struct AppState {
     /// Kernel-owned Agent roster/topology; process binding remains a host adapter.
     pub roster: Arc<std::sync::Mutex<ridge_core::teammate::topology::TopologyGraph>>,
     pub roster_path: std::path::PathBuf,
-    pub groups: Arc<std::sync::Mutex<HashMap<String, std::collections::HashSet<Uuid>>>>,
+    pub(crate) groups: Arc<std::sync::Mutex<crate::commune_groups::Store>>,
     pub mcp_state: Arc<ridge_mcp::server::McpSessionState>,
     /// Kernel-owned remote host topology; shells only project or transport it.
     pub remote_hosts: Arc<std::sync::Mutex<ridge_core::remote::RemoteHostTopology>>,
@@ -292,7 +292,9 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         workspaces_path: workspace_graph_path(),
         roster: Arc::new(std::sync::Mutex::new({let mut roster=load_roster()?;roster.restore_protocol_bindings_offline();roster})),
         roster_path: roster_path(),
-        groups: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        groups: Arc::new(std::sync::Mutex::new(crate::commune_groups::Store::open(
+            crate::registry::ridge_data_dir().join("commune-groups.json")
+        ).map_err(anyhow::Error::msg)?)),
         mcp_state: Arc::new(
             ridge_mcp::server::McpSessionState::with_sqlite(crate::registry::agent_hub_path())
                 .map_err(|error| anyhow::anyhow!("open persistent Agent Hub: {error}"))?,

@@ -1,32 +1,5 @@
-/**
- * teammateGroups.svelte.ts — 指挥部「手动编组协作」的前端模型 + localStorage 持久化 +
- * Svelte 5 runes 响应式 store（设计：specs/2026-06-30-agent-collab-enhance-design.md 功能3 / P3）。
- *
- * 关键约束（硬约束 D1）：
- *  - 成员用**稳定 agent_id** 引用：pane 是每会话 Uuid，重启即失联；agent_id 相对稳定。
- *  - 持久化 key = `ridge-teammate-groups:<stableWorkspaceKey>`，`stableWorkspaceKey` = 该工作区
- *    的 `.ridge` 文件路径（经 `workspaceSaveInfo` 由 runtime workspaceId 解析）。
- *    **未保存的临时工作区无 .ridge 路径 → 回退会话内存键 `session:<workspaceId>`**，
- *    重启即丢失（第四部分·决策1 已拍板：接受此降级）。
- *  - 失联成员渲染时与当前 roster 对齐：roster 缺失的 agent_id → 标 Disappeared、置灰、**保留**，
- *    仅在用户手动「移除」时才删（{@link resolveMembers}）。
- *
- * 持久化模式参照 `stores/settings.ts` / `teammateSettings.ts`：localStorage + 防御式解析、
- * `typeof localStorage === 'undefined'` 守卫（node/SSR/web-remote 无 localStorage 时静默降级）。
- *
- * 可测性：建组/改名/解散/持久化往返/失联对齐/组任务历史等**纯逻辑**全部拆为不依赖 runes 的
- * 导出纯函数，由 `teammateGroups.test.ts` 在 node 环境（vitest 无 svelte 插件）单测。runes
- * 只出现在 {@link TeammateGroupStore} 类内部，且经惰性 {@link teammateGroupStore} 实例化——
- * 测试只导入纯函数、不触发类构造，故 `$state` 永不在 node 下执行。
- */
+/** Runtime owns group definitions; legacy persistence helpers support read-only migration. */
 import type { TeammateProfile } from './teammateModel';
-import {
-  emptyWorkspaceMemory,
-  loadWorkspaceMemory,
-  saveWorkspaceMemory,
-  type WorkspaceMemory,
-} from './workspaceMemory';
-
 // ── 数据模型 ──
 
 /** 一个手动编组：成员用稳定 agent_id 引用（D1）。 */
@@ -39,6 +12,7 @@ export interface TeammateGroup {
   /** 组长的稳定 agent_id（「给组派任务」= 派给组长）；未指定为 undefined（则该组不接任务）。 */
   readonly leaderAgentId?: string;
   readonly createdAt: number;
+  readonly revision?: number;
 }
 
 /** 一条「组任务」历史记录（给组派任务时落账）。 */
@@ -387,15 +361,6 @@ function loadPersisted(storageKey: string): PersistShape {
   }
 }
 
-function savePersisted(storageKey: string, state: PersistShape): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(storageKey, serializePersisted(state));
-  } catch {
-    /* 配额满 → 静默降级 */
-  }
-}
-
 // ── 响应式 store（Svelte 5 runes；仅供组件消费） ──
 
 /**
@@ -404,181 +369,106 @@ function savePersisted(storageKey: string, state: PersistShape): void {
  * 故 `$state` 仅在真实 svelte 运行时执行，node 单测不触碰。
  */
 class TeammateGroupStore {
-  /**
-   * 当前活动工作区对应的 localStorage key（空串 = 尚未切入任何工作区）。
-   * **刻意非 `$state`**：仅作切换守卫的内部字段；若设为响应式，组件里调用
-   * {@link setWorkspace} 的 `$effect` 会读+写同一 state → 自循环
-   * （`effect_update_depth_exceeded`，见 MEMORY 主题图鉴教训）。
-   */
+  private runtimeWorkspaceId: string | undefined;
   private storageKey = '';
-  /**
-   * 当前活动工作区的运行时 UUID（供后端镜像双写；`null` = 未切入或非 tauri 环境）。
-   * **刻意非 `$state`**：仅内部字段，同 {@link storageKey} 避免 `$effect` 自循环。
-   * 与 storageKey 分离：storageKey 走 .ridge 稳定路径，此处走运行时 wid（同路径重启会变）。
-   */
-  private runtimeWorkspaceId: string | null = null;
-  /** 当前工作区的编组列表。 */
+  private requestVersion = 0;
+  private refreshRequested = false;
   groups = $state<TeammateGroup[]>([]);
-  /** 当前工作区的组任务历史（最新在前）。 */
+  revision = $state(0);
+  busy = $state(false);
+  error = $state('');
+  notice = $state('');
+  /** Historical local records are read-only; new execution lives in the Hub ledger. */
   tasks = $state<GroupTask[]>([]);
-  /** 当前工作区的可恢复目标；后端 sidecar 是跨重启权威投影。 */
-  goal = $state('');
-  /** 当前工作区的可恢复约束列表。 */
-  constraints = $state<string[]>([]);
 
-  /** 切到某工作区：解析稳定键 → 载入该工作区持久化的编组/任务。键不变则不动。 */
   setWorkspace(workspaceId: string | undefined, filePath: string | null | undefined): void {
-    // runtime wid 总是刷新（供后端镜像双写），即便 storageKey 未变（同 .ridge 路径重启换 wid）。
-    this.runtimeWorkspaceId = workspaceId ?? null;
-    const key = groupsStorageKey(stableWorkspaceKey(workspaceId, filePath));
-    if (key === this.storageKey) {
-      void this.hydrateMemory(key, workspaceId);
-      return;
-    }
-    this.storageKey = key;
-    const loaded = loadPersisted(key);
-    this.goal = '';
-    this.constraints = [];
-    // 只在**内容真的变了**时才写 `$state`（iter-62 硬护栏）。key 守卫防的是同一
-    // 调用方重复调用；这一层防的是**两个调用方拿不同 key 互相打架**——那会让读
-    // `groups` 的 effect 与写 `groups` 的 effect 互相失效，滚成
-    // `effect_update_depth_exceeded`（实测一次 15 秒 long task，整个面板僵住）。
-    // 写之前先比内容：即便所有权守卫将来被改坏，最坏也只是键来回翻，不再有
-    // $state 写入 → 循环无法成立。
-    if (!persistedEquals(loaded.groups, this.groups)) this.groups = loaded.groups;
-    if (!persistedEquals(loaded.tasks, this.tasks)) this.tasks = loaded.tasks;
-    // 切入工作区即把本地编组推后端一次，保证镜像与本地一致（供 remote 只读同步）。
-    this.syncBackend();
-    void this.hydrateMemory(key, workspaceId);
+    if (workspaceId === this.runtimeWorkspaceId) return;
+    this.runtimeWorkspaceId = workspaceId;
+    this.storageKey = groupsStorageKey(stableWorkspaceKey(workspaceId, filePath));
+    this.requestVersion++;
+    this.groups = []; this.revision = 0; this.busy = false; this.error = ''; this.notice = '';
+    this.tasks = loadPersisted(this.storageKey).tasks;
+    void this.refresh(true);
   }
-
-  private persist(): void {
-    savePersisted(this.storageKey, { groups: this.groups, tasks: this.tasks });
-    this.syncBackend();
-    this.syncMemory();
-  }
-
-  /** 后端 memory 读回只可写入当前 key，避免慢 IPC 覆盖后续工作区。 */
-  private async hydrateMemory(storageKey: string, workspaceId: string | undefined): Promise<void> {
-    const memory = await loadWorkspaceMemory(workspaceId);
-    if (storageKey !== this.storageKey) return;
-    this.goal = memory.goal;
-    this.constraints = [...memory.constraints];
-
-    // localStorage 仍是组任务的首选；仅当本地没有历史时用 sidecar 恢复合法 GroupTask。
-    if (this.tasks.length === 0 && memory.tasks.length > 0) {
-      const restored = memory.tasks.map(parseTask).filter((task): task is GroupTask => task !== null);
-      if (restored.length > 0) {
-        this.tasks = restored.slice(0, TASK_CAP);
-        savePersisted(this.storageKey, { groups: this.groups, tasks: this.tasks });
+  async refresh(importLegacy = false): Promise<void> {
+    const workspaceId = this.runtimeWorkspaceId;
+    if (!workspaceId) return;
+    if (this.busy) { this.refreshRequested = true; return; }
+    const version = ++this.requestVersion;
+    this.busy = true;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      let projection = await invoke<{groups: TeammateGroup[]; groupsRevision: number}>('get_teammate_topology', {workspaceId});
+      if (version !== this.requestVersion) return;
+      if (importLegacy && projection.groupsRevision === 0) {
+        // Retain the old browser value untouched; the Runtime archives every supplied row.
+        let legacyGroups: unknown[] = [];
+        const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(this.storageKey);
+        if (raw) {
+          const document = JSON.parse(raw) as {groups?: unknown};
+          if (Array.isArray(document.groups)) legacyGroups = document.groups;
+        }
+        {
+          try {
+            projection = await invoke('set_teammate_groups', {workspaceId, expectedRevision:0, legacyGroups});
+            if (version !== this.requestVersion) return;
+            if (legacyGroups.length) this.notice = '旧编组已归档；仅迁入身份可精确核对之组。旧任务记录只读。';
+          } catch (failure) {
+            // Another client may have migrated first. Reload, never overwrite its revision.
+            projection = await invoke('get_teammate_topology', {workspaceId});
+            if (projection.groupsRevision === 0) throw failure;
+          }
+        }
       }
-    }
-    // 读回后再投影一次，避免本地已有任务覆盖时 sidecar 留旧值。
-    this.syncMemory(memory);
+      if (version === this.requestVersion) this.apply(projection);
+    } catch (failure) {
+      if (version === this.requestVersion) this.error = String(failure);
+    } finally { this.finish(version); }
   }
-
-  private syncMemory(fallback: WorkspaceMemory = emptyWorkspaceMemory()): void {
-    const wid = this.runtimeWorkspaceId ?? undefined;
-    if (!wid) return;
-    void saveWorkspaceMemory(wid, {
-      goal: this.goal || fallback.goal,
-      constraints: this.constraints.length > 0 ? this.constraints : fallback.constraints,
-      tasks: this.tasks.length > 0 ? this.tasks : fallback.tasks,
-    });
+  private apply(projection: {groups: TeammateGroup[]; groupsRevision: number}): void {
+    if (!Array.isArray(projection.groups) || !Number.isSafeInteger(projection.groupsRevision)) throw new Error('Invalid group projection');
+    this.groups = projection.groups; this.revision = projection.groupsRevision;
   }
-
-  /**
-   * 把当前编组推到后端 workspace-memory（供 remote 手机端只读同步）。fire-forget：
-   * 动态 import invoke 以免污染纯逻辑模块的 node 单测；非 tauri 环境 / 后端不可用一律
-   * 忽略（桌面 localStorage 仍是编组的权威真相）。
-   */
-  private syncBackend(): void {
-    const wid = this.runtimeWorkspaceId;
-    if (!wid) return;
-    const groups = this.groups;
-    void import('@tauri-apps/api/core')
-      .then(({ invoke }) => invoke('set_teammate_groups', { workspaceId: wid, groups }))
-      .catch(() => {
-        /* 非 tauri / 后端不可用：忽略，不阻断本地编组 */
-      });
+  private async change(update: (groups: readonly TeammateGroup[]) => TeammateGroup[]): Promise<boolean> {
+    if (!this.runtimeWorkspaceId || this.busy) { this.error = '编组同步中，请稍候再改。'; return false; }
+    const workspaceId = this.runtimeWorkspaceId;
+    const version = ++this.requestVersion;
+    const groups = update(this.groups);
+    const expectedRevision = this.revision;
+    this.busy = true; this.error = '';
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const projection = await invoke<{groups: TeammateGroup[]; groupsRevision: number}>('set_teammate_groups', {workspaceId, groups, expectedRevision});
+      if (version === this.requestVersion) this.apply(projection);
+      return true;
+    } catch (failure) {
+      if (version === this.requestVersion) {
+        this.error = String(failure);
+        const { invoke } = await import('@tauri-apps/api/core');
+        try {
+          const projection = await invoke<{groups: TeammateGroup[]; groupsRevision: number}>('get_teammate_topology', {workspaceId});
+          if (version === this.requestVersion) this.apply(projection);
+        } catch { /* Retain the last confirmed projection and visible error. */ }
+      }
+      return false;
+    } finally { this.finish(version); }
   }
-
-  /** 建组并落盘，返回新组。 */
-  create(name: string, color: string, memberAgentIds: readonly string[]): TeammateGroup {
-    const group = buildGroup(name, color, memberAgentIds);
-    this.groups = addGroup(this.groups, group);
-    this.persist();
-    return group;
+  private finish(version: number): void {
+    if (version !== this.requestVersion) return;
+    this.busy = false;
+    if (this.refreshRequested) { this.refreshRequested = false; void this.refresh(); }
   }
-
-  rename(id: string, name: string): void {
-    this.groups = renameGroupIn(this.groups, id, name);
-    this.persist();
+  create(name: string, color: string, memberAgentIds: readonly string[]): Promise<boolean> {
+    const group = buildGroup(name,color,memberAgentIds);
+    return this.change(groups => addGroup(groups,group));
   }
-
-  dissolve(id: string): void {
-    this.groups = removeGroupIn(this.groups, id);
-    this.persist();
-  }
-
-  /** 改组配色并落盘（预设或自定义颜色）。 */
-  recolor(id: string, color: string): void {
-    this.groups = recolorGroupIn(this.groups, id, color);
-    this.persist();
-  }
-
-  /** 指定 / 清除组长并落盘（`agentId===null` 清空）。 */
-  setLeader(id: string, agentId: string | null): void {
-    this.groups = setGroupLeaderIn(this.groups, id, agentId);
-    this.persist();
-  }
-
-  removeMember(groupId: string, agentId: string): void {
-    this.groups = removeMemberIn(this.groups, groupId, agentId);
-    this.persist();
-  }
-
-  /** 向已有组追加成员并落盘（「加成员」UI）。 */
-  addMember(groupId: string, agentId: string): void {
-    this.groups = addMemberIn(this.groups, groupId, agentId);
-    this.persist();
-  }
-
-  /**
-   * 按组名把 agent 加入（供后端 `teammate://group-add-member` 事件桥用）。
-   * 找不到该名字的组 → 返回 false（不新建）；成功加入 → true。
-   */
-  addMemberByGroupName(groupName: string, agentId: string): boolean {
-    const group = findGroupByName(this.groups, groupName);
-    if (!group) return false;
-    this.addMember(group.id, agentId);
-    return true;
-  }
-
-  /** 记录一条组任务历史并落盘。 */
-  recordTask(groupId: string, objective: string, targets: readonly string[]): GroupTask {
-    const task = buildTask(groupId, objective, targets);
-    this.tasks = withTask(this.tasks, task);
-    this.persist();
-    return task;
-  }
-
-  /** 某组的任务历史（最新在前）。 */
-  tasksFor(groupId: string): GroupTask[] {
-    return this.tasks.filter((t) => t.groupId === groupId);
-  }
-
-  /** 设置可恢复目标；空白值清除 sidecar 节。 */
-  setGoal(goal: string): void {
-    this.goal = goal.trim();
-    this.persist();
-  }
-
-  /** 设置可恢复约束；空白项被丢弃，避免污染跨端投影。 */
-  setConstraints(constraints: readonly string[]): void {
-    this.constraints = constraints.map((item) => item.trim()).filter(Boolean);
-    this.persist();
-  }
+  rename(id: string, name: string): Promise<boolean> { return this.change(groups => renameGroupIn(groups,id,name)); }
+  dissolve(id: string): Promise<boolean> { return this.change(groups => removeGroupIn(groups,id)); }
+  recolor(id: string, color: string): Promise<boolean> { return this.change(groups => recolorGroupIn(groups,id,color)); }
+  setLeader(id: string, agentId: string | null): Promise<boolean> { return this.change(groups => setGroupLeaderIn(groups,id,agentId)); }
+  removeMember(groupId: string, agentId: string): Promise<boolean> { return this.change(groups => removeMemberIn(groups,groupId,agentId)); }
+  addMember(groupId: string, agentId: string): Promise<boolean> { return this.change(groups => addMemberIn(groups,groupId,agentId)); }
+  tasksFor(groupId: string): GroupTask[] { return this.tasks.filter(task => task.groupId === groupId); }
 }
 
 let singleton: TeammateGroupStore | null = null;

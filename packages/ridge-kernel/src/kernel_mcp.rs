@@ -168,26 +168,9 @@ impl KernelMcpHost {
                 })
                 .collect::<Vec<_>>()
         };
-        let groups = self
-            .state
-            .groups
-            .lock()
-            .expect("agent groups lock")
-            .iter()
-            .map(|(name, members)| {
-                json!({
-                    "name": name,
-                    "members": members.iter().map(|id| {
-                        identities
-                            .iter()
-                            .find(|identity| identity.pane_id == id.to_string())
-                            .map(|identity| identity.agent_id.clone())
-                            .unwrap_or_else(|| format!("kernel:{id}"))
-                    }).collect::<Vec<_>>()
-                })
-            })
-            .collect::<Vec<_>>();
-        json!({ "roster": roster, "leaderId": null, "edges": [], "groups": groups })
+        let projection = workspace_id.map(|id| crate::commune_groups::projection(&self.state, &id.to_string()).expect("group authority lock"))
+            .unwrap_or_else(|| json!({"groups":[],"groupsRevision":0}));
+        json!({ "roster": roster, "leaderId": null, "edges": [], "groups": projection["groups"], "groupsRevision":projection["groupsRevision"] })
     }
 
     fn launch_profile(id: &str) -> HostResult<AgentProfile> {
@@ -651,27 +634,26 @@ impl McpHost for KernelMcpHost {
         agent_id: Option<&str>,
         target: Option<&Value>,
     ) -> HostResult<()> {
-        let pane_id = match (agent_id, target) {
-            (_, Some(target)) => self.pane_id(target)?,
-            (Some(agent_id), None) => {
-                let raw = agent_id.strip_prefix("kernel:").ok_or_else(|| {
-                    HostError::InvalidParams("kernel agent id must start with kernel:".into())
-                })?;
-                self.pane_id(&Value::String(raw.to_string()))?
-            }
-            (None, None) => {
-                return Err(HostError::InvalidParams(
-                    "join_group requires agent_id or target_pane_id".into(),
-                ))
-            }
-        };
-        self.state
-            .groups
-            .lock()
-            .expect("agent groups lock")
-            .entry(group_name.to_string())
-            .or_default()
-            .insert(pane_id);
+        if agent_id.is_none() && target.is_none() {
+            return Err(HostError::InvalidParams("join_group requires an exact registered member".into()));
+        }
+        let identities = self.state.roster.lock().map_err(|_| HostError::Internal("roster unavailable".into()))?
+            .agent_identities().into_iter().cloned().collect::<Vec<_>>();
+        let pane = target.map(|target| self.pane_id(target)).transpose()?;
+        let member = identities.iter().find(|member| member.protocol_binding.is_some()
+            && agent_id.is_none_or(|id| member.agent_id == id)
+            && pane.is_none_or(|pane| member.pane_id == pane.to_string()))
+            .ok_or_else(|| HostError::InvalidParams("join_group requires an exact registered member".into()))?;
+        let snapshot = self.state.groups.lock().map_err(|_| HostError::Internal("group authority unavailable".into()))?.snapshot(&member.workspace_id);
+        let matches = snapshot.groups.iter().filter(|group| group.id == group_name || group.name == group_name).collect::<Vec<_>>();
+        if matches.len() != 1 { return Err(HostError::InvalidParams("specify one existing group ID; name is missing or ambiguous".into())); }
+        let id = matches[0].id.clone();
+        let mut groups = snapshot.groups;
+        let group = groups.iter_mut().find(|group| group.id == id).unwrap();
+        if group.member_agent_ids.contains(&member.agent_id) { return Ok(()); }
+        group.member_agent_ids.push(member.agent_id.clone());
+        crate::commune_groups::replace(&self.state,&json!({"workspaceId":member.workspace_id,"expectedRevision":snapshot.revision,"groups":groups}),false)
+            .map_err(HostError::InvalidParams)?;
         Ok(())
     }
 
@@ -769,7 +751,7 @@ mod tests {
                 ridge_core::teammate::topology::TopologyGraph::new(),
             )),
             roster_path: std::env::temp_dir().join("ridge-kernel-kernel-mcp-roster.json"),
-            groups: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            groups: Arc::new(std::sync::Mutex::new(crate::commune_groups::Store::open(std::env::temp_dir().join(format!("ridge-test-groups-{}.json",Uuid::new_v4()))).unwrap())),
             mcp_state: Arc::new(ridge_mcp::server::McpSessionState::default()),
             remote_hosts: Arc::new(std::sync::Mutex::new(
                 ridge_core::remote::RemoteHostTopology::default(),

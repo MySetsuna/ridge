@@ -8,10 +8,12 @@
   //    = 派给该组组长（无组长或组长离线则提示，绝不静默）。可改名 / 改配色（预设或自定义
   //    颜色）/ 解散 / 加成员 / 移除失联成员。
   //
-  // 编组定义按工作区持久化（localStorage，稳定键=该工作区 .ridge 路径，见 teammateGroups）。
+  // 编组定义按工作区持久化（Runtime，workspaceId + revision，见 teammateGroups）。
   // 组长不再由后端能力竞选自动产生——顶层 leaderId 恒 null，组长纯由用户在此指定。
 
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
+  import { onMount } from 'svelte';
   import { Users, Plus, Trash2, Pencil, Send, Ghost, Palette } from 'lucide-svelte';
   import { alertDialog, confirmDialog, promptDialog } from '$lib/components/RidgeDialog.svelte';
   import { autoGrow } from '$lib/actions/autoGrow';
@@ -56,6 +58,12 @@
   $effect(() => {
     store.setWorkspace(workspaceId, filePath);
   });
+  onMount(() => {
+    const stop = listen<{workspaceId:string}>('commune-groups-changed', event => {
+      if (event.payload.workspaceId === workspaceId) void store.refresh();
+    });
+    return () => { stop.then(fn => fn()).catch(() => {}); };
+  });
 
   // ── 新建编组的本地选择态 ──
   let building = $state(false);
@@ -76,10 +84,9 @@
     newColor = GROUP_COLORS[0];
   }
 
-  function commitGroup() {
+  async function commitGroup() {
     if (selectedIds.length === 0) return;
-    store.create(newName, newColor, selectedIds);
-    resetBuilder();
+    if (await store.create(newName, newColor, selectedIds)) resetBuilder();
   }
 
   // 每组成员的失联对齐视图（roster 变化即重算）。
@@ -105,8 +112,8 @@
   let addingFor = $state<string | null>(null);
 
   /** 某组还能加的候选：roster 里尚未入组的成员。 */
-  function candidatesFor(g: TeammateGroup): TeammateProfile[] {
-    return roster.filter((m) => !g.memberAgentIds.includes(m.id));
+  function candidatesFor(_g: TeammateGroup): TeammateProfile[] {
+    return roster.filter((m) => !groupOfAgent(store.groups, m.id));
   }
 
   function addMemberToGroup(g: TeammateGroup, agentId: string) {
@@ -164,8 +171,8 @@
         from: 'desktop-group-ui',
         idempotency_key: crypto.randomUUID(),
       });
-      store.recordTask(g.id, text, [leader.agentId]);
-      recordMemberTask(leader.agentId, text); // 成员级「最近任务」同步（成员列表展示）
+
+      recordMemberTask(leader.agentId, text); // 成员级「旧本地任务记录」同步（成员列表展示）
       taskInput = { ...taskInput, [g.id]: '' };
     } catch (e) {
       console.error('[teammate-groups] teammate service dispatch failed', e);
@@ -174,7 +181,7 @@
   }
 </script>
 
-<!-- 单个成员行 —— 与成员 Tab **同一个组件**，故两边展示一致（状态 / 最近任务 /
+<!-- 单个成员行 —— 与成员 Tab **同一个组件**，故两边展示一致（状态 / 旧本地任务记录 /
      最近回复 / 每人独立发消息框 / 行内审批）。编组视图额外给出组长与移出组。 -->
 {#snippet memberRow(mem: ResolvedGroupMember, group: TeammateGroup | null)}
   <AgentMemberRow
@@ -196,6 +203,9 @@
 {/snippet}
 
 <section>
+  {#if store.error}<p role="alert" class="text-[12px] text-red-300">编组操作失败：{store.error}</p>{/if}
+  {#if store.notice}<p role="status" class="text-[11px] text-[var(--rg-fg-muted)]">{store.notice}</p>{/if}
+  {#if store.busy}<p class="text-[11px] text-[var(--rg-fg-muted)]">编组同步中…</p>{/if}
   <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
     <Users class="h-3 w-3 text-[var(--rg-accent)]/70" /> 编组
     <span class="ml-auto font-mono">{store.groups.length}</span>
@@ -217,7 +227,7 @@
         <p class="text-[11px] text-[var(--rg-fg-muted)]">暂无可编组的成员。</p>
       {:else}
         <ul class="space-y-0.5 max-h-32 overflow-y-auto rg-scroll">
-          {#each roster as m (m.id)}
+          {#each roster.filter(m => !groupOfAgent(store.groups, m.id)) as m (m.id)}
             <li>
               <label class="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-[12px] hover:bg-[var(--rg-surface)]">
                 <input

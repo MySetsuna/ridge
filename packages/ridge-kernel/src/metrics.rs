@@ -51,7 +51,7 @@ pub async fn metrics_handler(
     let group_subscription_total = st
         .groups
         .lock()
-        .map(|g| g.values().map(|s| s.len()).sum())
+        .map(|g| g.member_count())
         .unwrap_or(0);
 
     let ptys_list = st.ptys.list();

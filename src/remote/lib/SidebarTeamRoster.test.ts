@@ -72,8 +72,10 @@ describe('remote Agent drawer alignment contract', () => {
   });
 
   it('keeps group mutations ordered and exposes leader/order/color controls', () => {
-    expect(source).toContain('pendingGroups: { workspaceId: string; groups: TeammateGroup[] } | null');
-    expect(source).toContain('while (pendingGroups)');
+    expect(source).toContain('const expectedRevision = groupsRevision');
+    expect(source).toContain('connection.setTeammateGroups(scope, next, expectedRevision)');
+    expect(source).toContain('version !== groupMutationVersion');
+    expect(source).not.toContain('while (pendingGroups)');
     expect(source).toContain('reorderAgentGroups(groups, group.id, direction)');
     expect(source).toContain('toggleAgentGroupLeader(group, agentId)');
     expect(source).toContain('Move group up');

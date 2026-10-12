@@ -34,7 +34,7 @@
   import { showToast } from '$lib/stores/toast';
   import { setTeammateHitlEnabled } from './teammateSettings';
   import TeammateGroups from './TeammateGroupsSection.svelte';
-  import { teammateGroupStore, groupOfAgent, parseGroupAddMember } from './teammateGroups.svelte';
+  import { teammateGroupStore, groupOfAgent } from './teammateGroups.svelte';
   import {
     parseCircuitTripped,
     EMPTY_TOPOLOGY,
@@ -71,7 +71,7 @@
 
   const CIRCUIT_EVENT = 'teammate://circuit-tripped';
   // 后端 MCP `ridge_join_group` → 前端编组「加成员」事件桥（见 teammate/layout_event.rs）。
-  const GROUP_ADD_MEMBER_EVENT = 'teammate://group-add-member';
+
   const TRIP_CAP = 20;
 
   interface Props {
@@ -194,6 +194,7 @@
   let teamTab = $state<'members' | 'groups' | 'history'>('members');
   // 编组 store（单例，与 TeammateGroups 共用）：成员聚合列表据此标注每人组归属。
   const groupStore = teammateGroupStore();
+  $effect(() => { groupStore.setWorkspace(workspaceId, filePath); });
 
   function nameOf(paneId: string): string {
     return allMembers.find((member) => member.profile.paneId === paneId)?.profile.name ?? paneId;
@@ -397,47 +398,14 @@
     const unCommune = ['commune-members-changed', 'commune-task-changed', 'teammate://hitl-pending-changed']
       .map(name => listen(name, () => scheduleRefresh({ heavy: true })));
     const unConversation = listen('commune-session-update', () => scheduleHistoryRefresh());
-    // Agent 自助拉入：后端 `ridge_join_group` emit → 落到该工作区的编组 store。
-    // 后端 emit 的 workspaceId = MCP 的活动工作区，与本面板的 `workspaceId`(焦点工作区)
-    // 常态一致；仅在两者短暂不同步时才 mismatch。失败一律 warn（勿静默吞——评审 HIGH）。
-    const unJoin = listen(GROUP_ADD_MEMBER_EVENT, (e) => {
-      const payload = parseGroupAddMember(e.payload);
-      if (!payload) return;
-      // 工作区守卫（评审 #7）：焦点工作区未就绪就别落地——否则 setWorkspace('') 会把本属于
-      // 某工作区的加成员事件落到空/错的 store 键。之前 `workspaceId &&` 会在焦点为空时短路
-      // 跳过校验，导致误落；这里改为先丢弃空焦点，再对「带 workspaceId 却与焦点不符」丢弃。
-      if (!workspaceId) {
-        console.warn(
-          `[teammate-groups] join dropped: no focused workspace (event workspace ${payload.workspaceId ?? 'n/a'})`
-        );
-        return;
-      }
-      if (payload.workspaceId && payload.workspaceId !== workspaceId) {
-        console.warn(
-          `[teammate-groups] join dropped: event workspace ${payload.workspaceId} !== focused ${workspaceId}`
-        );
-        return;
-      }
-      const store = teammateGroupStore();
-      store.setWorkspace(workspaceId, filePath); // 保证 store 键落在当前工作区
-      const ok = store.addMemberByGroupName(payload.groupName, payload.agentId);
-      if (ok) {
-        // Agent 自助拉入成功 → 轻提示，让在看面板的用户知道有成员被加进了组。
-        showToast(`已加入编组「${payload.groupName}」`, 'info');
-      } else {
-        // 组名不存在（区分大小写/空白/同名）或 store 键尚未就绪（.ridge 路径未解析）。
-        // 评审 #17：此前仅 console.warn 静默，用户不知加组为何没生效——补一条 error toast。
-        console.warn(
-          `[teammate-groups] join no-op: group "${payload.groupName}" not found in current workspace`
-        );
-        showToast(`加入编组「${payload.groupName}」失败：未找到该组`, 'error');
-      }
+    const unGroups = listen('commune-groups-changed', e => {
+      if ((e.payload as {workspaceId?: string}).workspaceId === workspaceId) void groupStore.refresh();
     });
     return () => {
       if (refreshTimer) clearTimeout(refreshTimer);
       if (historyRefreshTimer) clearTimeout(historyRefreshTimer);
       unTrip.then((f) => f()).catch(() => {});
-      unJoin.then((f) => f()).catch(() => {});
+      unGroups.then((f) => f()).catch(() => {});
       unLayout.then((f) => f()).catch(() => {});
       unOutput.then((f) => f()).catch(() => {});
       for (const un of [...unCommune, unConversation]) un.then((f) => f()).catch(() => {});

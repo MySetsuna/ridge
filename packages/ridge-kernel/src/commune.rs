@@ -40,6 +40,7 @@ pub fn owns_method(method: &str) -> bool {
             | "get_agent_message_delivery_status"
             | "cancel_agent_message"
             | "read_agent_recent_replies"
+            | "set_teammate_groups"
     )
 }
 
@@ -50,6 +51,12 @@ pub async fn dispatch(
     native: bool,
 ) -> Result<Value, String> {
     match method {
+        "set_teammate_groups" => {
+            let state = state.clone();
+            let args = args.clone();
+            tokio::task::spawn_blocking(move || crate::commune_groups::replace(&state, &args, native))
+                .await.map_err(|e| e.to_string())?
+        }
         "read_agent_recent_replies" => {
             let state = state.clone();
             let args = args.clone();
@@ -76,6 +83,10 @@ pub async fn dispatch(
                     | ridge_mcp::server::HostError::Unsupported(message) => message,
                 })?;
             let connections = state.commune.lock().await;
+            let workspace = args["workspaceId"].as_str().ok_or("topology requires workspaceId")?;
+            let groups = crate::commune_groups::projection(state, workspace)?;
+            profile["groups"] = groups["groups"].clone();
+            profile["groupsRevision"] = groups["groupsRevision"].clone();
             if let Some(roster) = profile["roster"].as_array_mut() {
                 roster.retain(|row| row["protocolBinding"].is_object());
                 for row in roster {

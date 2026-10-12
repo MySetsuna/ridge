@@ -34,6 +34,7 @@ import {
   type AgentMessageReceipt,
   type AgentHistoryReply,
   type TeammateGroup,
+  type TeammateGroupSnapshot,
   type HitlPendingItem,
   type HitlResolveOutcome,
   type RemoteShellInfo,
@@ -169,6 +170,7 @@ export class CloudRemoteConnection implements RemoteLink {
   private pendingActivePromotion: PaneRef | null = null;
   // pane-tree-changed unlisten (host-side layout changes → re-list panes).
   private treeUnlisten: UnlistenFn | null = null;
+  private groupUnlisten: UnlistenFn | null = null;
   /** iter-60 G9：pane-meta-changed 退订句柄。 */
   private metaUnlisten: UnlistenFn | null = null;
   private resizeUnlisten: UnlistenFn | null = null;
@@ -332,6 +334,12 @@ export class CloudRemoteConnection implements RemoteLink {
       this.setState('error');
     });
     if (this.disposed) { this.terminalErrorUnlisten(); this.terminalErrorUnlisten = null; return; }
+    try {
+      this.groupUnlisten = await this.bridge.listen('commune-groups-changed', event => {
+        this.emitMessage({type:'event', name:'commune-groups-changed', payload:event.payload});
+      });
+      if (this.disposed) { this.groupUnlisten(); this.groupUnlisten = null; return; }
+    } catch { /* Explicit refresh remains available when event subscription fails. */ }
     try {
       this._activeWorkspaceId = await this.bridge.invoke<string>('get_active_workspace_id');
     } catch {
@@ -1014,8 +1022,11 @@ export class CloudRemoteConnection implements RemoteLink {
   async setTeammateGroups(
     workspaceId: string,
     groups: readonly TeammateGroup[],
-  ): Promise<void> {
-    await this.bridge.invoke('set_teammate_groups', { workspaceId, groups });
+    expectedRevision: number,
+  ): Promise<TeammateGroupSnapshot> {
+    const projection = await this.bridge.invoke<TeammateGroupSnapshot>('set_teammate_groups', { workspaceId, groups, expectedRevision });
+    if (!projection || !Array.isArray(projection.groups) || !Number.isSafeInteger(projection.groupsRevision)) throw new Error('Invalid group projection');
+    return projection;
   }
 
   async resumeAgentSession(_workspaceId: string, _agent: string, _sessionId: string, _cwd: string): Promise<string | null> {
@@ -1183,6 +1194,8 @@ export class CloudRemoteConnection implements RemoteLink {
       try { this.treeUnlisten(); } catch { /* already gone */ }
       this.treeUnlisten = null;
     }
+    this.groupUnlisten?.();
+    this.groupUnlisten = null;
     if (this.metaUnlisten) {
       try { this.metaUnlisten(); } catch { /* already gone */ }
       this.metaUnlisten = null;

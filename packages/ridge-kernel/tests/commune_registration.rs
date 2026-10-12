@@ -532,6 +532,31 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
         client::request_json(&endpoint, "POST", "/v1/domain/workspaces", None).unwrap()
             ["workspace_id"]
             .clone();
+    let group_id = Uuid::new_v4().to_string();
+    let group = json!({"id":group_id,"name":"exact-group","color":"#60a5fa","memberAgentIds":[identity.agent_id],"leaderAgentId":identity.agent_id,"createdAt":1});
+    let legacy_dir = root.join("workspace-memory");
+    fs::create_dir_all(&legacy_dir).unwrap();
+    let legacy_path = legacy_dir.join(format!("{}.json",workspace.as_str().unwrap()));
+    let legacy_bytes = serde_json::to_vec(&json!({"teammateGroups":[group],"tasks":[{"objective":"legacy objective, not proven execution"}]})).unwrap();
+    fs::write(&legacy_path,&legacy_bytes).unwrap();
+    let ambiguous_group = json!({"id":"unmapped","name":"preserve-old","color":"#60a5fa","memberAgentIds":["old-provider-alias"]});
+    let group_snapshot = command(&endpoint,"set_teammate_groups",json!({"workspaceId":workspace,"expectedRevision":0,"legacyGroups":[group,ambiguous_group]}),true);
+    assert_eq!(group_snapshot["groups"].as_array().unwrap().len(),1);
+    assert_eq!(fs::read(&legacy_path).unwrap(),legacy_bytes,"migration must leave the source recoverable");
+    let persisted_groups: Value = serde_json::from_slice(&fs::read(root.join("commune-groups.json")).unwrap()).unwrap();
+    assert_eq!(persisted_groups["workspaces"][workspace.as_str().unwrap()]["legacy"]["browserGroups"][1],ambiguous_group);
+    assert_eq!(persisted_groups["workspaces"][workspace.as_str().unwrap()]["legacy"]["workspaceMemory"]["tasks"][0]["objective"],"legacy objective, not proven execution");
+    assert_eq!(group_snapshot["groupsRevision"],1);
+    assert_eq!(group_snapshot["groups"][0]["revision"],1);
+    let remote_group_snapshot = command(&endpoint,"get_teammate_topology",json!({"workspaceId":workspace}),false);
+    assert_eq!(remote_group_snapshot["groups"],group_snapshot["groups"]);
+    assert_eq!(remote_group_snapshot["groupsRevision"],1);
+    assert_eq!(command_reply(&endpoint,"set_teammate_groups",json!({"workspaceId":workspace,"expectedRevision":0,"groups":[]}),false)["ok"],false);
+    assert_eq!(command_reply(&endpoint,"set_teammate_groups",json!({"workspaceId":other_workspace,"expectedRevision":0,"groups":[group]}),false)["ok"],false);
+    let mut renamed = group.clone(); renamed["name"] = json!("remote-rename");
+    let remote_edit = command(&endpoint,"set_teammate_groups",json!({"workspaceId":workspace,"expectedRevision":1,"groups":[renamed]}),false);
+    assert_eq!(remote_edit["groups"][0]["revision"],2);
+    assert_eq!(command(&endpoint,"get_teammate_topology",json!({"workspaceId":workspace}),true)["groups"],remote_edit["groups"]);
     assert_eq!(
         command_reply(
             &endpoint,
@@ -717,4 +742,5 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
     assert!(fs::read_to_string(&history)
         .unwrap()
         .contains("existing history"));
+    assert_eq!(command(&endpoint,"get_teammate_topology",json!({"workspaceId":workspace}),true)["groups"],remote_edit["groups"],"process exit must retain exact group membership");
 }

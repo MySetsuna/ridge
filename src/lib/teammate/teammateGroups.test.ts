@@ -28,6 +28,8 @@ import {
   persistedEquals,
   teammateGroupStore,
 } from './teammateGroups.svelte';
+const invokeMock = vi.hoisted(() => vi.fn());
+vi.mock('@tauri-apps/api/core', () => ({invoke:invokeMock}));
 import type { TeammateProfile } from './teammateModel';
 
 const runtime = { isAuto: false, activity: 'idle', outputSeq: 0, recentOutput: '' } as const;
@@ -333,42 +335,36 @@ describe('persistedEquals（多 tab 卡死的第二道防线）', () => {
 describe('TeammateGroupStore runtime bridge', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('persists mutations, reloads by workspace key, and records group tasks', async () => {
+  it('reads the Runtime projection, fences writes, and never writes browser storage', async () => {
     vi.stubGlobal('$state', <T>(value: T) => value);
-    const backing = new Map<string, string>();
-    vi.stubGlobal('localStorage', {
-      getItem: (key: string) => backing.get(key) ?? null,
-      setItem: (key: string, value: string) => backing.set(key, value),
-    } as unknown as Storage);
-
-    const store = teammateGroupStore();
-    store.setWorkspace('store-test-a', 'C:/workspace-a.ridge');
-    const group = store.create('Agents', GROUP_COLORS[0], ['agent-a']);
-    store.rename(group.id, 'Agents Renamed');
-    store.addMemberByGroupName('Agents Renamed', 'agent-b');
-    store.setLeader(group.id, 'agent-a');
-    store.recolor(group.id, '#123456');
-    const task = store.recordTask(group.id, '  ship bridge  ', ['agent-a', 'agent-b']);
-
-    expect(store.groups[0]).toMatchObject({
-      id: group.id,
-      name: 'Agents Renamed',
-      color: '#123456',
-      memberAgentIds: ['agent-a', 'agent-b'],
-      leaderAgentId: 'agent-a',
+    const writeLocal = vi.fn();
+    vi.stubGlobal('localStorage', {getItem:() => null,setItem:writeLocal} as unknown as Storage);
+    const authoritative = new Map<string, {groups: ReturnType<typeof buildGroup>[]; groupsRevision:number}>();
+    invokeMock.mockImplementation(async (method:string,args:{workspaceId:string;groups?:ReturnType<typeof buildGroup>[];expectedRevision?:number;legacyGroups?:unknown[]}) => {
+      const snapshot = authoritative.get(args.workspaceId) ?? {groups:[],groupsRevision:0};
+      if (method === 'set_teammate_groups') {
+        if (args.expectedRevision !== snapshot.groupsRevision) throw new Error('group revision conflict');
+        const next = {groups:args.legacyGroups ? [] : args.groups!,groupsRevision:snapshot.groupsRevision+1};
+        authoritative.set(args.workspaceId,next); return next;
+      }
+      return snapshot;
     });
-    expect(store.tasksFor(group.id)).toEqual([task]);
-    expect(store.addMemberByGroupName('missing', 'agent-c')).toBe(false);
-
-    store.setWorkspace('store-test-b', 'C:/workspace-b.ridge');
+    const store = teammateGroupStore();
+    store.setWorkspace('a','C:/a.ridge');
+    await vi.waitFor(() => expect(store.busy).toBe(false));
+    await expect(store.create('Agents',GROUP_COLORS[0],['agent-a'])).resolves.toBe(true);
+    const group = store.groups[0];
+    await store.rename(group.id,'Renamed');
+    expect(invokeMock).toHaveBeenLastCalledWith('set_teammate_groups',expect.objectContaining({workspaceId:'a',expectedRevision:2}));
+    expect(store.groups[0].name).toBe('Renamed');
+    authoritative.set('a',{groups:[],groupsRevision:5});
+    await expect(store.recolor(group.id,'#123456')).resolves.toBe(false);
+    expect(store.error).toContain('revision conflict');
     expect(store.groups).toEqual([]);
-    store.setWorkspace('store-test-a', 'C:/workspace-a.ridge');
-    expect(store.groups[0]).toMatchObject({ name: 'Agents Renamed', memberAgentIds: ['agent-a', 'agent-b'] });
-    expect(store.tasksFor(group.id)).toHaveLength(1);
-
-    store.removeMember(group.id, 'agent-b');
-    store.dissolve(group.id);
-    expect(store.groups).toEqual([]);
-    await Promise.resolve();
+    expect(store.revision).toBe(5);
+    store.setWorkspace('b','C:/a.ridge');
+    await vi.waitFor(() => expect(store.busy).toBe(false));
+    expect(store.revision).toBe(1);
+    expect(writeLocal).not.toHaveBeenCalled();
   });
 });

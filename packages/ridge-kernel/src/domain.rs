@@ -2361,7 +2361,7 @@ mod tests {
             )),
             roster_path: std::env::temp_dir()
                 .join(format!("ridge-kernel-roster-{}.json", Uuid::new_v4())),
-            groups: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            groups: Arc::new(std::sync::Mutex::new(crate::commune_groups::Store::open(std::env::temp_dir().join(format!("ridge-test-groups-{}.json",Uuid::new_v4()))).unwrap())),
             mcp_state: Arc::new(ridge_mcp::server::McpSessionState::default()),
             remote_hosts: Arc::new(std::sync::Mutex::new(
                 ridge_core::remote::RemoteHostTopology::default(),

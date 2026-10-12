@@ -138,11 +138,7 @@ pub fn dispatch(
             if let Err(error) = save_workspace_graph_at(&state.workspaces_path, &next) {
                 return Err(io(format!("workspace close incomplete after stopping PTYs {stopped:?}: {error}; metadata retained; original retained at {}",archive.display())));
             }
-            if let Ok(mut groups) = state.groups.lock() {
-                for members in groups.values_mut() {
-                    members.retain(|pane| !stopped.contains(pane));
-                }
-            }
+            // Group identities and removed workspaces stay persisted for recovery.
             retired.insert(id);
         }
         *graph = next;

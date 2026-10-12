@@ -1090,13 +1090,15 @@ describe('CloudRemoteConnection bounded parity guards', () => {
       if (cmd === 'create_workspace') return '';
       if (cmd === 'get_pane_layout_for') throw new Error('layout unavailable');
       if (cmd === 'get_theme_data') return { themes: [] };
+      if (cmd === 'set_teammate_groups') return {groups:[],groupsRevision:4};
       return undefined;
     });
 
     await expect(conn.listWorkspaces()).resolves.toEqual({ workspaces: [] });
     await expect(conn.sendAgentMessage({ ...PANE, generation: 2, lease: 'lease' }, 'hello'))
       .resolves.toMatchObject({ messageId: 'm' });
-    await expect(conn.setTeammateGroups('ws1', [])).resolves.toBeUndefined();
+    await expect(conn.setTeammateGroups('ws1', [], 3)).resolves.toEqual({groups:[],groupsRevision:4});
+    expect(invokeMock).toHaveBeenCalledWith('set_teammate_groups',{workspaceId:'ws1',groups:[],expectedRevision:3});
     await expect(conn.resumeAgentSession('ws1', 'Codex', 's', '/repo')).rejects.toThrow('Restore the Agent in its terminal');
     await expect(conn.listSavedWorkspaceFiles()).resolves.toEqual([]);
     await expect(conn.openWorkspaceFromFile('missing.ridge')).rejects.toThrow('open unavailable');
