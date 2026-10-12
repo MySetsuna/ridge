@@ -36,6 +36,7 @@ struct Inner {
     permissions: JoinHandle<()>,
     agent_info: Option<Value>,
     capabilities: Value,
+    history_replayed: bool,
 }
 struct PendingLoad {
     transport: AcpTransport,
@@ -186,34 +187,43 @@ impl ExistingConversation {
             {
                 return Err(failure("ACP version/capability mismatch"));
             }
-            if initialized["agentCapabilities"]["loadSession"] != true {
-                return Err(failure("Agent cannot load the existing conversation"));
-            }
+            let replay = initialized["agentCapabilities"]["loadSession"] == true;
+            let method = if replay {
+                "session/load"
+            } else if initialized["agentCapabilities"]["sessionCapabilities"]["resume"].is_object()
+            {
+                "session/resume"
+            } else {
+                return Err(failure(
+                    "Agent cannot load or resume the existing conversation",
+                ));
+            };
             let loaded = result(
                 transport
                     .call(
-                        "session/load",
+                        method,
                         json!({"sessionId":session_id,"cwd":cwd,"mcpServers":[]}),
                     )
                     .await?,
             )?;
             if !loaded.is_object() {
-                return Err(failure("invalid session/load response"));
+                return Err(failure("invalid existing-session response"));
             }
-            Ok(initialized)
+            Ok((initialized, replay))
         };
-        let initialized = match tokio::time::timeout(Duration::from_secs(30), handshake).await {
-            Ok(Ok(value)) => value,
-            outcome => {
-                transport.shutdown();
-                return Err(match outcome {
-                    Ok(Err(error)) => error,
-                    _ => AcpErrorWrap::Transport(
-                        "existing ACP session load timed out; no new session created".into(),
-                    ),
-                });
-            }
-        };
+        let (initialized, history_replayed) =
+            match tokio::time::timeout(Duration::from_secs(30), handshake).await {
+                Ok(Ok(value)) => value,
+                outcome => {
+                    transport.shutdown();
+                    return Err(match outcome {
+                        Ok(Err(error)) => error,
+                        _ => AcpErrorWrap::Transport(
+                            "existing ACP session load timed out; no new session created".into(),
+                        ),
+                    });
+                }
+            };
         Ok(Self {
             inner: Arc::new(Inner {
                 transport,
@@ -227,6 +237,7 @@ impl ExistingConversation {
                     .expect("load owns request handler"),
                 agent_info: initialized.get("agentInfo").cloned(),
                 capabilities: initialized["agentCapabilities"].clone(),
+                history_replayed,
             }),
         })
     }
@@ -238,6 +249,9 @@ impl ExistingConversation {
     }
     pub fn capabilities(&self) -> &Value {
         &self.inner.capabilities
+    }
+    pub fn history_replayed(&self) -> bool {
+        self.inner.history_replayed
     }
     pub fn is_busy(&self) -> bool {
         self.inner.busy.load(Ordering::Acquire)

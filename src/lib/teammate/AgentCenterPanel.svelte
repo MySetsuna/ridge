@@ -11,7 +11,9 @@
   import { listen } from '@tauri-apps/api/event';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
-  import { Bot, ZapOff, ShieldCheck, BookOpen, Users, MonitorUp } from 'lucide-svelte';
+  import { Bot, ZapOff, ShieldCheck, BookOpen, Users } from 'lucide-svelte';
+  import CommuneHistory from './CommuneHistory.svelte';
+  import type { AgentHistoryReply } from '../../../packages/remote/src/shared/transport/wsRemote';
   import AgentMemberRow from './AgentMemberRow.svelte';
   import { settingsStore } from '$lib/stores/settings';
   import { fileEditorStore } from '$lib/stores/fileEditor';
@@ -19,21 +21,14 @@
     workspaceSaveInfoStore,
     refreshWorkspaceSaveInfo,
     workspacesList,
-    activePaneId,
     focusPane,
-    closePane,
-    syncPaneLayoutFromBackend,
-    scheduleForceFitAfterSplit,
     terminalTitles,
     paneForegroundProcessStore,
     paneCwdStore,
     collapseCwd,
   } from '$lib/stores/paneTree';
   import {
-    hostsStore,
     refreshHosts,
-    attachSession,
-    type HostSession,
   } from '$lib/stores/hosts';
   import { alertDialog } from '$lib/components/RidgeDialog.svelte';
   import { showToast } from '$lib/stores/toast';
@@ -64,14 +59,8 @@
     agentCardStatus,
     sortMembersBySessionId,
     agentStatusLabel,
-    aggregateAgentCardStatus,
-    buildAgentHistoryGroups,
-    historyReplyMatchesProfile,
     latestReplyForProfile,
-    agentIdentityAliases,
-    normalizeAgentIdentity,
     shouldRefreshAgentHistory,
-    workspaceTranscriptScope,
     type AgentCardStatus,
   } from './agentCommuneModel';
   import {
@@ -106,10 +95,6 @@
       })),
     )
   );
-  const nativeSessions = $derived(
-    $hostsStore.find((host) => host.kind === 'headless')?.sessions ?? []
-  );
-  const headlessSessions = $derived(nativeSessions.filter((session) => !session.attached));
   let trips = $state<CircuitTrip[]>([]);
   /** R17-HITL-BADGE / TEAM-HEALTH */
   let pendingHitl = $state(0);
@@ -121,29 +106,8 @@
   let healthGeneration = $state(0);
   let gitGuard = $state<GitGuardStats | null>(null);
   let hitlAuditItems = $state<HitlAuditItem[]>([]);
-  interface AgentRecentReply {
-    agent: string;
-    title: string;
-    text: string;
-    timestamp: number;
-    cwd: string;
-    sessionId: string;
-    resume?: { executable: string; argv: string[]; cwd: string; sessionId: string };
-  }
+  type AgentRecentReply = AgentHistoryReply;
   let recentReplies = $state<AgentRecentReply[]>([]);
-  const HISTORY_PAGE_SIZE = 100;
-  let wakingSession = $state('');
-  /** One resume plan/PTY launch per history session; double taps must not split two panes. */
-  let resumeBusy = $state('');
-  let historyExpanded = $state<Record<string, boolean>>({});
-  let historySearch = $state('');
-  let historyOffset = 0;
-  let historyHasMore = $state(false);
-  let historyLoadingMore = $state(false);
-  let historySearchTimer: ReturnType<typeof setTimeout> | undefined;
-  /** 恢复时以 YOLO 模式启动（按 agent 配置表注入 yolo 参数）。 */
-  let resumeYolo = $state(false);
-  const recentReplyGroups = $derived(buildAgentHistoryGroups(recentReplies));
   let historyLoadedAt = 0;
   let historyRefreshInFlight: Promise<void> | null = null;
   let refreshInFlight: Promise<void> | null = null;
@@ -157,34 +121,6 @@
   const filePath = $derived(
     (workspaceId ? $workspaceSaveInfoStore[workspaceId]?.file_path : null) ?? null
   );
-  const historyProjectPaths = $derived.by(() => {
-    if (!workspaceId) return [] as string[];
-    const paths: string[] = [];
-    for (const [key, cwd] of Object.entries($paneCwdStore)) {
-      if (key.startsWith(`${workspaceId}:`) && cwd.trim()) paths.push(cwd.trim());
-    }
-    for (const profile of topology.roster) {
-      if (profile.cwd?.trim()) paths.push(profile.cwd.trim());
-    }
-    return workspaceTranscriptScope(filePath, paths);
-  });
-  const agentProfilesByIdentity = $derived.by(() => {
-    const profiles = new Map<string, TeammateProfile>();
-    for (const member of allMembers) {
-      for (const identity of [member.profile.name, member.profile.id, member.profile.executable ?? '']) {
-        for (const alias of agentIdentityAliases(identity)) profiles.set(alias, member.profile);
-        profiles.set(normalizeAgentIdentity(identity), member.profile);
-      }
-    }
-    return profiles;
-  });
-  const unmatchedHeadlessSessions = $derived(headlessSessions.filter((session) => {
-    return !recentReplies.some((history) => {
-      if (history.sessionId === session.name) return true;
-      return runningMemberFor(history)?.profile.sessionId === session.name;
-    });
-  }));
-
   /** Same live title projection as PaneHeader; identity/name remains stable for actions. */
   const livePaneTitles = $derived.by(() => {
     const titles = new Map<string, string>();
@@ -205,24 +141,6 @@
     return titles;
   });
 
-  function toggleHistoryGroup(key: string): void {
-    historyExpanded = { ...historyExpanded, [key]: !(historyExpanded[key] ?? false) };
-  }
-
-  function statusForReply(reply: AgentRecentReply): AgentCardStatus {
-    const profile = allMembers
-      .filter((member) => historyReplyMatchesProfile(reply, lookupProfileFor(member)))
-      .map((member) => member.profile)[0]
-      ?? agentIdentityAliases(reply.agent)
-      .map((identity) => agentProfilesByIdentity.get(identity))
-      .find((candidate): candidate is TeammateProfile => !!candidate);
-    return agentCardStatus(profile, profile ? pendingFor(profile).length > 0 : false);
-  }
-
-  function statusForGroup(group: { agent: string; replies: AgentRecentReply[] }): AgentCardStatus {
-    return aggregateAgentCardStatus(group.replies.map(statusForReply));
-  }
-
   function recentReplyFor(profile: TeammateProfile, ownerWorkspaceId = workspaceId): string | undefined {
     const paneCwd = profile.paneId
       ? $paneCwdStore[`${profile.workspaceId ?? ownerWorkspaceId ?? ''}:${profile.paneId}`]
@@ -238,148 +156,21 @@
   }
 
   async function refreshRecentReplies(force = false): Promise<void> {
-    if (!force && !shouldRefreshAgentHistory(historyLoadedAt)) return;
+    if (!workspaceId || (!force && !shouldRefreshAgentHistory(historyLoadedAt))) return;
     if (historyRefreshInFlight) return historyRefreshInFlight;
+    const scope = workspaceId;
     historyRefreshInFlight = (async () => {
       try {
-        if (historyProjectPaths.length === 0) {
-          recentReplies = [];
-          historyOffset = 0;
-          historyHasMore = false;
-          historyLoadedAt = Date.now();
-          return;
-        }
-        const page = await invoke<AgentRecentReply[]>('read_agent_recent_replies', {
-          projectPaths: historyProjectPaths,
-          limit: HISTORY_PAGE_SIZE,
-          offset: 0,
-          query: historySearch.trim(),
-        });
-        recentReplies = Array.isArray(page) ? page : [];
-        historyOffset = recentReplies.length;
-        historyHasMore = recentReplies.length === HISTORY_PAGE_SIZE;
-        historyLoadedAt = Date.now();
-      } catch {
-        // Keep the last good JSONL snapshot; PTY tail is not an answer fallback.
-      } finally {
-        historyRefreshInFlight = null;
-      }
+        const page = await invoke<AgentRecentReply[]>('read_agent_recent_replies', { workspaceId: scope, limit: 100, query: 'agent_message_chunk' });
+        if (workspaceId === scope) { recentReplies = page; historyLoadedAt = Date.now(); }
+      } catch { /* Preserve the last confirmed protocol projection. */ }
+      finally { historyRefreshInFlight = null; }
     })();
     return historyRefreshInFlight;
   }
 
-  async function loadMoreHistory(): Promise<void> {
-    if (!historyHasMore || historyLoadingMore || historyRefreshInFlight || historyProjectPaths.length === 0) return;
-    historyLoadingMore = true;
-    try {
-      const page = await invoke<AgentRecentReply[]>('read_agent_recent_replies', {
-        projectPaths: historyProjectPaths,
-        limit: HISTORY_PAGE_SIZE,
-        offset: historyOffset,
-        query: historySearch.trim(),
-      });
-      const rows = Array.isArray(page) ? page : [];
-      const existing = new Set(recentReplies.map((reply) => `${reply.agent}:${reply.sessionId}:${reply.timestamp}`));
-      const next = rows.filter(
-        (reply) => !existing.has(`${reply.agent}:${reply.sessionId}:${reply.timestamp}`),
-      );
-      recentReplies = [...recentReplies, ...next];
-      historyOffset += rows.length;
-      historyHasMore = rows.length === HISTORY_PAGE_SIZE;
-    } catch {
-      // Keep already loaded pages usable when an incremental read fails.
-    } finally {
-      historyLoadingMore = false;
-    }
-  }
-
-  function scheduleHistorySearch(): void {
-    if (historySearchTimer) clearTimeout(historySearchTimer);
-    historySearchTimer = setTimeout(() => {
-      historySearchTimer = undefined;
-      void refreshRecentReplies(true);
-    }, 220);
-  }
-
-  function canResume(reply: AgentRecentReply): boolean {
-    return !!reply.resume?.executable
-      && reply.resume.argv.length > 0
-      && !!reply.resume.cwd
-      && reply.resume.sessionId === reply.sessionId;
-  }
-
-  function runningSessionFor(reply: AgentRecentReply): HostSession | null {
-    const id = reply.resume?.sessionId ?? reply.sessionId;
-    if (!id) return null;
-    return nativeSessions.find((session) => session.name === id) ?? null;
-  }
-
-  function runningMemberFor(reply: AgentRecentReply) {
-    const session = runningSessionFor(reply);
-    const sessionId = reply.resume?.sessionId ?? reply.sessionId;
-    if (session?.creator_workspace_id && session.creator_pane_id) {
-      const owner = allMembers.find((member) =>
-        member.workspaceId === session.creator_workspace_id
-        && member.profile.paneId === session.creator_pane_id
-        && member.profile.sessionId === sessionId
-      );
-      if (owner) return owner;
-    }
-    const exactSession = allMembers.find((member) => member.profile.sessionId === sessionId);
-    if (exactSession) return exactSession;
-    return null;
-  }
-
-  async function resumeAgentSession(reply: AgentRecentReply): Promise<void> {
-    if (!canResume(reply) || !workspaceId || !$activePaneId) return;
-    const resumeKey = `${reply.agent}:${reply.sessionId}`;
-    if (resumeBusy) return;
-    resumeBusy = resumeKey;
-    const targetWorkspaceId = workspaceId;
-    let createdPaneId = '';
-    try {
-      const cwd = reply.cwd || reply.resume?.cwd || '';
-      if (!cwd) throw new Error('会话未记录 cwd，无法恢复');
-      const resumed = await invoke<{ paneId?: string }>('resume_agent_session', {
-        workspaceId: targetWorkspaceId,
-        sourcePaneId: $activePaneId,
-        agent: reply.agent,
-        sessionId: reply.sessionId,
-        cwd,
-        yolo: resumeYolo,
-        overrides: loadAgentProfileOverrides(),
-      });
-      createdPaneId = typeof resumed?.paneId === 'string' ? resumed.paneId : '';
-      if (!createdPaneId) throw new Error('恢复未返回 pane');
-      await syncPaneLayoutFromBackend();
-      scheduleForceFitAfterSplit($activePaneId, createdPaneId);
-      // 立刻切到新 pane，避免用户仍停在原 pane、误以为「没切 cwd / 没 resume」。
-      focusPane(createdPaneId, targetWorkspaceId);
-      showToast(
-        resumeYolo
-          ? `已 YOLO 恢复 ${reply.agent} @ ${cwd}`
-          : `已恢复 ${reply.agent} @ ${cwd}`,
-        'success',
-      );
-    } catch (e) {
-      if (createdPaneId) {
-        try { await closePane(createdPaneId); } catch { /* keep original launch error */ }
-      }
-      showToast(`恢复会话失败：${e instanceof Error ? e.message : String(e)}`, 'error');
-    } finally {
-      if (resumeBusy === resumeKey) resumeBusy = '';
-    }
-  }
-
-  function loadAgentProfileOverrides(): unknown[] {
-    try {
-      const raw = localStorage.getItem('ridge.agentProfiles.overrides');
-      if (!raw) return [];
-      const parsed = JSON.parse(raw) as unknown;
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
+  function historyMember(row: AgentRecentReply) {
+    return allMembers.find(member => member.profile.id === row.memberId && member.profile.sessionId === row.sessionId && member.workspaceId === row.workspaceId);
   }
 
   const hitlOn = $derived($settingsStore.teammateHitlEnabled);
@@ -583,31 +374,6 @@
     }
   }
 
-  function workspaceLabel(id?: string): string {
-    if (!id) return '未关联工作区';
-    const workspace = $workspacesList.find((item) => item.id === id);
-    return workspace?.name?.trim() || (workspace ? `工作区 ${workspace.displaySeq}` : id);
-  }
-
-  function replyTime(timestamp: number): string {
-    return timestamp ? new Date(timestamp).toLocaleString() : '';
-  }
-
-  async function wakeSession(session: HostSession) {
-    const key = `${session.socket}:${session.name}`;
-    wakingSession = key;
-    try {
-      await attachSession(
-        session.socket,
-        session.name,
-        session.creator_workspace_id || workspaceId
-      );
-    } catch (e) {
-      showToast(`唤醒失败：${e instanceof Error ? e.message : String(e)}`, 'error');
-    } finally {
-      wakingSession = '';
-    }
-  }
   onMount(() => {
     // Browser previews have neither Tauri IPC nor its event bridge. The
     // web-remote shim reports true and forwards these listeners to its host.
@@ -670,7 +436,6 @@
     return () => {
       if (refreshTimer) clearTimeout(refreshTimer);
       if (historyRefreshTimer) clearTimeout(historyRefreshTimer);
-      if (historySearchTimer) clearTimeout(historySearchTimer);
       unTrip.then((f) => f()).catch(() => {});
       unJoin.then((f) => f()).catch(() => {});
       unLayout.then((f) => f()).catch(() => {});
@@ -821,154 +586,9 @@
     {/snippet}
 
     {#snippet historyContent()}
-    <div class="flex items-center gap-2 rounded-md border border-[var(--rg-border)] bg-[var(--rg-bg)]/35 px-2 py-1.5">
-      <input
-        type="search"
-        value={historySearch}
-        placeholder="搜索 agent、session 或内容"
-        aria-label="搜索 Agent 历史会话"
-        oninput={(event) => {
-          historySearch = event.currentTarget.value;
-          scheduleHistorySearch();
-        }}
-        class="min-w-0 flex-1 bg-transparent text-[12px] text-[var(--rg-fg)] outline-none placeholder:text-[var(--rg-fg-muted)]"
-      />
-    </div>
-    {#if unmatchedHeadlessSessions.length > 0}
-      <section>
-        <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-          <MonitorUp class="h-3 w-3 text-[var(--rg-accent)]/70" /> Agent 后台终端
-          <span class="ml-auto font-mono">{unmatchedHeadlessSessions.length}</span>
-        </h3>
-        <ul class="mt-1 space-y-0.5">
-          {#each unmatchedHeadlessSessions as session (session.socket + ':' + session.name)}
-            {@const sessionKey = `${session.socket}:${session.name}`}
-            <li class="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--rg-surface)]">
-              <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400"></span>
-              <span class="min-w-0 flex-1">
-                <span class="block truncate text-[11px]" title={session.name}>{session.name}</span>
-                <span class="block truncate text-[9px] text-[var(--rg-fg-muted)]">
-                  {workspaceLabel(session.creator_workspace_id)}
-                  {#if session.creator_pane_id} · pane {session.creator_pane_id.slice(0, 8)}{/if}
-                </span>
-              </span>
-              <button
-                type="button"
-                disabled={wakingSession === sessionKey}
-                onclick={() => wakeSession(session)}
-                class="shrink-0 rounded border border-[var(--rg-border)] px-1.5 py-0.5 text-[10px] text-[var(--rg-accent)] disabled:opacity-40"
-              >{wakingSession === sessionKey ? '唤醒中' : '唤醒'}</button>
-            </li>
-          {/each}
-        </ul>
-      </section>
-    {/if}
-
-    {#if recentReplyGroups.length > 0}
-      <section>
-        <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-          <Bot class="h-3 w-3 text-[var(--rg-accent)]/70" /> 会话历史
-          <span class="ml-auto font-mono">{recentReplies.length}</span>
-        </h3>
-        <div class="mt-2 space-y-2.5">
-          {#each recentReplyGroups as group (group.key)}
-            {@const groupStatus = statusForGroup(group)}
-            <section
-              data-testid="agent-commune-card"
-              data-agent={group.key}
-              data-status={groupStatus}
-              aria-label={`${group.agent}: ${agentStatusLabel(groupStatus)}`}
-              class="rounded-lg border border-[var(--rg-border)]/60 border-l-[3px] bg-[var(--rg-surface)]/30 {groupStatus === 'waiting'
-                ? 'border-l-amber-400'
-                : groupStatus === 'working'
-                  ? 'border-l-emerald-400'
-                  : groupStatus === 'stopped'
-                    ? 'border-l-red-400'
-                    : groupStatus === 'idle'
-                      ? 'border-l-sky-400'
-                      : 'border-l-[var(--rg-border-bright)]'}"
-            >
-              <button
-                type="button"
-                class="flex w-full items-center gap-2 px-3 py-2.5 text-left text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--rg-accent)]/55"
-                onclick={() => toggleHistoryGroup(group.key)}
-              >
-                <span class="font-semibold text-[var(--rg-accent)]">{group.agent}</span>
-                <span class="rounded-md px-1.5 py-0.5 text-[10px] {groupStatus === 'waiting'
-                  ? 'bg-amber-500/15 text-amber-300'
-                  : groupStatus === 'working'
-                    ? 'bg-emerald-500/15 text-emerald-300'
-                    : groupStatus === 'stopped'
-                      ? 'bg-red-500/15 text-red-300'
-                      : 'bg-[var(--rg-surface)] text-[var(--rg-fg-muted)]'}">{agentStatusLabel(groupStatus)}</span>
-                <span class="font-mono text-[11px] text-[var(--rg-fg-muted)]">{group.replies.length}</span>
-                <span class="ml-auto text-[var(--rg-fg-muted)]">{historyExpanded[group.key] ?? false ? '−' : '+'}</span>
-              </button>
-              {#if historyExpanded[group.key] ?? false}
-                <ul class="space-y-2 px-2 pb-2">
-                  {#each group.replies as reply (reply.agent + ':' + reply.sessionId + ':' + reply.timestamp)}
-                    {@const runningMember = runningMemberFor(reply)}
-                    {#if runningMember}
-                      {@const m = runningMember.profile}
-                      <AgentMemberRow
-                        profile={m}
-                        agentId={m.id}
-                        name={m.name}
-                        displayTitle={livePaneTitles.get(`${runningMember.workspaceId}:${m.id}`) ?? reply.title ?? m.name}
-                        workspaceId={runningMember.workspaceId}
-                        sourceLabel={runningMember.workspaceName}
-                        pending={pendingFor(m)}
-                        recentReply={recentReplyFor(m, runningMember.workspaceId)}
-                        groupBadge={null}
-                        onRefresh={() => void refreshSharedState()}
-                      />
-                    {:else}
-                      <li class="min-h-32 rounded-md bg-[var(--rg-bg)]/60 px-3 py-2.5">
-                      <div class="flex items-center gap-2 text-[10px] text-[var(--rg-fg-muted)]">
-                        <span class="min-w-0 flex-1 truncate text-[13px] font-semibold text-[var(--rg-fg)]" title={reply.title}>{reply.title}</span>
-                        <span class="shrink-0">{replyTime(reply.timestamp)}</span>
-                        {#if canResume(reply)}
-                          <label
-                            class="inline-flex shrink-0 items-center gap-1 text-[10px] text-[var(--rg-fg-muted)]"
-                            title="开启后以该 agent 的 YOLO 参数启动（如 grok --always-approve）"
-                          >
-                            <input type="checkbox" class="h-3 w-3" bind:checked={resumeYolo} />
-                            YOLO
-                          </label>
-                          <button
-                            type="button"
-                            class="shrink-0 rounded-md border border-[var(--rg-border)] px-2 py-1 text-[10px] text-[var(--rg-accent)] disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60"
-                            disabled={!workspaceId || !$activePaneId || !!resumeBusy}
-                            title={!workspaceId || !$activePaneId ? '需先选中工作区与 pane' : `在新 pane 恢复 ${reply.agent} 会话（cwd+resume${resumeYolo ? '+yolo' : ''}）`}
-                            onclick={() => void resumeAgentSession(reply)}
-                          >恢复</button>
-                        {/if}
-                      </div>
-                      <p class="mt-2 line-clamp-6 whitespace-pre-wrap text-[13px] leading-5 text-[var(--rg-fg)]" title={reply.text}>{reply.text}</p>
-                      </li>
-                    {/if}
-                  {/each}
-                </ul>
-              {/if}
-            </section>
-          {/each}
-        </div>
-    </section>
-    {/if}
-    {#if historyHasMore}
-      <button
-        type="button"
-        disabled={historyLoadingMore}
-        onclick={() => void loadMoreHistory()}
-        class="self-center rounded-md border border-[var(--rg-border)] px-3 py-1.5 text-[11px] text-[var(--rg-accent)] disabled:opacity-50"
-      >{historyLoadingMore ? '加载中…' : '加载更多历史'}</button>
-    {/if}
-    <p class="px-1.5 py-1 text-[9px] text-[var(--rg-fg-muted)]">
-      识别/恢复以设置 → 智能体 → Agent 启动表为准（内置 claude/codex/grok…，可增改进程名与 YOLO 参数）。
-    </p>
-    {#if unmatchedHeadlessSessions.length === 0 && recentReplies.length === 0}
-      <p class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">暂无历史会话。</p>
-    {/if}
+      <CommuneHistory {workspaceId}
+        canLocate={row => historyMember(row)?.profile.online === true}
+        onLocate={row => { const member = historyMember(row); if (member?.profile.paneId) focusPane(member.profile.paneId, member.workspaceId); }} />
     {/snippet}
 
     <!-- 成员 / 编组 / 历史：顶级三视图。 -->
@@ -1008,7 +628,6 @@
             : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
         >
           历史
-          <span class="font-mono text-[11px] opacity-70">{unmatchedHeadlessSessions.length + recentReplies.length}</span>
         </button>
       </div>
 

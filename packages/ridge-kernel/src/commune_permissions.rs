@@ -12,7 +12,7 @@ use std::{
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-pub struct HistoryLog(Mutex<(File, u64, bool)>);
+pub struct HistoryLog(Mutex<(File, u64, bool, u64)>);
 impl HistoryLog {
     pub fn open(path: &Path) -> Result<Self, String> {
         let mut sequence = 0;
@@ -41,11 +41,9 @@ impl HistoryLog {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        Ok(Self(Mutex::new((
-            options.open(path).map_err(|e| e.to_string())?,
-            sequence,
-            false,
-        ))))
+        let file = options.open(path).map_err(|e| e.to_string())?;
+        let length = file.metadata().map_err(|e| e.to_string())?.len();
+        Ok(Self(Mutex::new((file, sequence, false, length))))
     }
     pub fn append(&self, mut event: Value) -> Result<Value, String> {
         let mut log = self
@@ -53,7 +51,7 @@ impl HistoryLog {
             .lock()
             .map_err(|_| "conversation ledger unavailable")?;
         if log.2 {
-            return Err("conversation ledger write outcome unknown; reconnect required".into());
+            return Err("conversation ledger write outcome unknown; recovery required".into());
         }
         let sequence = log
             .1
@@ -67,6 +65,7 @@ impl HistoryLog {
         log.2 = true;
         writeln!(log.0, "{event}").map_err(|e| e.to_string())?;
         log.0.sync_data().map_err(|e| e.to_string())?;
+        log.3 = log.0.metadata().map_err(|e| e.to_string())?.len();
         log.1 = sequence;
         log.2 = false;
         Ok(event)
@@ -95,6 +94,29 @@ pub struct Permissions(
     Mutex<HashMap<String, std::sync::Weak<HistoryLog>>>,
 );
 impl Permissions {
+    /// Snapshot committed bytes only; history reads never create files or writers.
+    pub fn history_length(&self, agent_id: &str, path: &Path) -> Result<Option<u64>, String> {
+        let writer = self
+            .1
+            .lock()
+            .map_err(|_| "conversation writers unavailable")?
+            .get(agent_id)
+            .and_then(std::sync::Weak::upgrade);
+        if let Some(writer) = writer {
+            return Ok(Some(
+                writer
+                    .0
+                    .lock()
+                    .map_err(|_| "conversation ledger unavailable")?
+                    .3,
+            ));
+        }
+        match std::fs::metadata(path) {
+            Ok(metadata) => Ok(Some(metadata.len())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
+    }
     pub fn history(&self, agent_id: &str, path: &Path) -> Result<Arc<HistoryLog>, String> {
         let mut logs = self
             .1

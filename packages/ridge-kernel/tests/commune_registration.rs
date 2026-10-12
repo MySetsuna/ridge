@@ -517,6 +517,72 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
     assert!(records
         .windows(2)
         .all(|pair| pair[0]["sequence"].as_u64().unwrap() < pair[1]["sequence"].as_u64().unwrap()));
+    let before_history_read = fs::read(&history).unwrap();
+    let first_history = command(
+        &endpoint,
+        "read_agent_recent_replies",
+        json!({"workspaceId":workspace,"limit":2}),
+        true,
+    );
+    let history_cursor = first_history.as_array().unwrap().last().unwrap()["cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let other_workspace =
+        client::request_json(&endpoint, "POST", "/v1/domain/workspaces", None).unwrap()
+            ["workspace_id"]
+            .clone();
+    assert_eq!(
+        command_reply(
+            &endpoint,
+            "read_agent_recent_replies",
+            json!({"workspaceId":other_workspace,"cursor":history_cursor}),
+            true
+        )["ok"],
+        false
+    );
+    assert_eq!(
+        command_reply(
+            &endpoint,
+            "read_agent_recent_replies",
+            json!({"workspaceId":workspace,"cursor":history_cursor}),
+            false
+        )["ok"],
+        false
+    );
+    let rest = command(
+        &endpoint,
+        "read_agent_recent_replies",
+        json!({"workspaceId":workspace,"limit":200,"cursor":history_cursor}),
+        true,
+    );
+    assert!(rest.as_array().unwrap().iter().all(|row| first_history
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|first| first["id"] != row["id"])));
+    assert_eq!(
+        fs::read(&history).unwrap(),
+        before_history_read,
+        "history reads must not write or replay the session"
+    );
+    let remote_history = command(
+        &endpoint,
+        "read_agent_recent_replies",
+        json!({"workspaceId":workspace,"limit":200}),
+        false,
+    );
+    assert!(!remote_history.to_string().contains("private-argument"));
+    assert!(remote_history
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["kind"] == "agent_message_chunk" && row["text"] == "existing history"));
+    assert!(remote_history
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row["memberId"] == identity.agent_id && row["sessionId"] == "fixture-existing"));
     runtime.block_on(async {
         local_events.close(None).await.unwrap();
         remote_events.close(None).await.unwrap();

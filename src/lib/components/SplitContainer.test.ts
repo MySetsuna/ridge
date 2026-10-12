@@ -65,7 +65,8 @@ describe('desktop Pane Agent border contract', () => {
     expect(communeSource).toContain('refreshAgentPaneHighlight');
     expect(communeSource).toContain('agentTopologyStore');
     expect(communeSource).toContain('sortMembersBySessionId');
-    expect(communeSource).toContain('resume_agent_session');
+    expect(communeSource).not.toContain('resume_agent_session');
+    expect(communeSource).toContain('<CommuneHistory');
     expect(communeSource).not.toContain('launch_agent_session');
     expect(highlightSource).toContain('latchAgentAttention');
     expect(highlightSource).toContain('get(agentPaneAttentionStore)[key]');

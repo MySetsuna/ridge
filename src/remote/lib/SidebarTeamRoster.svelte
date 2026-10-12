@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CommuneHistory from '$lib/teammate/CommuneHistory.svelte';
   import { onMount } from 'svelte';
   import { ArrowDown, ArrowUp, Check, Crown, Palette, Send, ShieldAlert, X } from 'lucide-svelte';
   import type {
@@ -21,7 +22,6 @@
     agentAttentionForTransition,
     agentPaneStatus,
     agentStatusLabel,
-    buildAgentHistoryGroups,
     historyReplyMatchesProfile,
     reorderAgentGroups,
     shouldRefreshAgentHistory,
@@ -69,15 +69,7 @@
   let history = $state<AgentHistoryReply[]>([]);
   const HISTORY_PAGE_SIZE = 100;
   let historyLoadedAt = 0;
-  let historyOffset = 0;
-  let historyHasMore = $state(false);
-  let historyLoadingMore = $state(false);
-  let historySearch = $state('');
-  let historySearchTimer: ReturnType<typeof setTimeout> | undefined;
-  let historyExpanded = $state<Record<string, boolean>>({});
   let historyUnavailable = false;
-  let resumeBusy = $state<string | null>(null);
-  let historyNote = $state('');
   let refreshToken = 0;
   let newGroupName = $state('');
   let groupBusy = $state(false);
@@ -86,16 +78,11 @@
   let pendingGroups: { workspaceId: string; groups: TeammateGroup[] } | null = null;
   let confirmedGroups: TeammateGroup[] = [];
   let groupWrite: Promise<void> | null = null;
-  const historyGroups = $derived(buildAgentHistoryGroups(history));
   const scopeGuard = createTeamRosterScopeGuard();
   let currentScopeKey = '';
   let disposed = false;
   /** Previous live status; completion attention is a working→idle edge. */
   let observedAgentStatuses = new Map<string, AgentPaneStatus>();
-
-  function toggleHistoryGroup(key: string): void {
-    historyExpanded = { ...historyExpanded, [key]: !(historyExpanded[key] ?? false) };
-  }
 
   function scheduleLiveRefresh(): void {
     if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
@@ -103,14 +90,6 @@
       liveRefreshTimer = undefined;
       void startRefresh();
     }, 250);
-  }
-
-  function scheduleHistorySearch(): void {
-    if (historySearchTimer) clearTimeout(historySearchTimer);
-    historySearchTimer = setTimeout(() => {
-      historySearchTimer = undefined;
-      void startRefresh(true);
-    }, 220);
   }
 
   /** 防御式解析后端下发的编组条目（外部数据不信任；无 id 则丢弃）。 */
@@ -292,46 +271,21 @@
     return m.cwd?.trim() || panes.find((pane) => pane.id === m.paneId)?.cwd?.trim() || '';
   }
 
-  function historyProjectPaths(): string[] {
-    return [...new Set(panes.map((pane) => pane.cwd?.trim() ?? '').filter(Boolean))];
-  }
-
   function titleFor(m: TeammateRosterMember): string {
     return m.title?.trim() || m.name;
   }
 
   function recentHistoryFor(m: TeammateRosterMember): AgentHistoryReply | undefined {
     const match = history
-      .filter((reply) => historyReplyMatchesProfile(reply, {
+      .filter((reply) => reply.kind === 'agent_message_chunk' && historyReplyMatchesProfile(reply, {
         id: m.id,
         name: m.name,
         sessionId: m.sessionId,
+        workspaceId,
         cwd: cwdFor(m),
       }))
       .sort((a, b) => b.timestamp - a.timestamp)[0];
     return match;
-  }
-
-  async function resumeHistory(reply: AgentHistoryReply): Promise<void> {
-    const spec = reply.resume;
-    if (!spec || !workspaceId || resumeBusy) return;
-    const key = `${reply.agent}:${reply.sessionId}:${reply.timestamp}`;
-    resumeBusy = key;
-    historyNote = '';
-    try {
-      const paneId = await ws.resumeAgentSession(
-        workspaceId,
-        reply.agent,
-        reply.sessionId,
-        spec.cwd || reply.cwd,
-      );
-      if (!paneId) throw new Error('Host did not return a pane');
-      onSelectPane?.(paneId);
-    } catch (e) {
-      historyNote = e instanceof Error ? e.message : String(e);
-    } finally {
-      resumeBusy = null;
-    }
   }
 
   /** 给该成员发消息：写其 pane stdin。
@@ -381,11 +335,10 @@
               queryClient,
               sessionId,
               workspaceId,
-              historyProjectPaths(),
               HISTORY_PAGE_SIZE,
               signal,
-              0,
-              historySearch.trim(),
+              undefined,
+              'agent_message_chunk',
             ).catch(() => {
               if (!signal.aborted && scopeGuard.isCurrent(generation)) historyUnavailable = true;
               return null;
@@ -408,8 +361,6 @@
       onAttentionChange?.(attentionEvents(t.roster, p));
       if (recent) {
         history = recent;
-        historyOffset = recent.length;
-        historyHasMore = recent.length === HISTORY_PAGE_SIZE;
         historyLoadedAt = Date.now();
         historyUnavailable = false;
       }
@@ -423,43 +374,10 @@
     }
   }
 
-  async function loadMoreHistory(): Promise<void> {
-    if (!historyHasMore || historyLoadingMore || historyUnavailable) return;
-    const token = refreshToken;
-    historyLoadingMore = true;
-    try {
-      const page = await fetchRemoteAgentHistory(
-        ws,
-        queryClient,
-        remoteSessionId(ws),
-        workspaceId,
-        historyProjectPaths(),
-        HISTORY_PAGE_SIZE,
-        undefined,
-        historyOffset,
-        historySearch.trim(),
-      );
-      if (token !== refreshToken || disposed) return;
-      const existing = new Set(history.map((reply) => `${reply.agent}:${reply.sessionId}:${reply.timestamp}`));
-      const next = page.filter(
-        (reply) => !existing.has(`${reply.agent}:${reply.sessionId}:${reply.timestamp}`),
-      );
-      history = [...history, ...next];
-      historyOffset += page.length;
-      historyHasMore = page.length === HISTORY_PAGE_SIZE;
-    } catch {
-      // Keep the loaded history visible when an incremental page fails.
-    } finally {
-      historyLoadingMore = false;
-    }
-  }
-
   function startRefresh(resetScope = false): Promise<void> {
     if (disposed) return Promise.resolve();
     if (resetScope) {
       historyLoadedAt = 0;
-      historyOffset = 0;
-      historyHasMore = false;
       historyUnavailable = false;
       observedAgentStatuses.clear();
       onAttentionChange?.([]);
@@ -494,7 +412,6 @@
       scopeGuard.invalidate();
       refreshToken += 1;
       if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
-      if (historySearchTimer) clearTimeout(historySearchTimer);
       onAttentionChange?.([]);
       offMessage();
       offRaw();
@@ -648,59 +565,10 @@
       {/each}
     {/if}
   {:else}
-    <!-- 历史来自宿主真实会话文件；按 Agent 聚合，不按当前 cwd 丢弃。 -->
-    <div class="history-search">
-      <input
-        type="search"
-        value={historySearch}
-        placeholder="搜索 agent、session 或内容"
-        aria-label="搜索 Agent 历史会话"
-        oninput={(event) => {
-          historySearch = event.currentTarget.value;
-          scheduleHistorySearch();
-        }}
-      />
-    </div>
-    {#if historyGroups.length === 0}
-      <p class="empty">暂无 Agent 历史</p>
-    {:else}
-      {#if historyNote}<p class="note" role="status">{historyNote}</p>{/if}
-      {#each historyGroups as group (group.key)}
-        <section class="history-group">
-          <button class="group-head history-toggle" type="button" onclick={() => toggleHistoryGroup(group.key)}>
-            <span class="name">{group.agent}</span>
-            <span class="role">{group.replies.length}</span>
-            <span class="role">{historyExpanded[group.key] ?? false ? '−' : '+'}</span>
-          </button>
-          {#if historyExpanded[group.key] ?? false}
-          {#each group.replies as reply (reply.sessionId + ':' + reply.timestamp)}
-            <article class="history-item">
-              <div class="history-head">
-                <div class="history-title" title={reply.title}>{reply.title || 'Agent reply'}</div>
-                {#if reply.resume}
-                  {@const resumeKey = `${reply.agent}:${reply.sessionId}:${reply.timestamp}`}
-                  <button
-                    class="resume"
-                    type="button"
-                    disabled={resumeBusy !== null}
-                    aria-label={`Resume ${reply.agent} session ${reply.sessionId}`}
-                    onclick={() => void resumeHistory(reply)}
-                  >{resumeBusy === resumeKey ? 'Starting…' : 'Resume'}</button>
-                {/if}
-              </div>
-              <div class="history-meta">{reply.cwd || '/'} · {reply.sessionId}</div>
-              <p>{reply.text}</p>
-            </article>
-          {/each}
-          {/if}
-        </section>
-      {/each}
-      {#if historyHasMore}
-        <button class="history-more" type="button" disabled={historyLoadingMore} onclick={() => void loadMoreHistory()}>
-          {historyLoadingMore ? '加载中…' : '加载更多历史'}
-        </button>
-      {/if}
-    {/if}
+    <CommuneHistory {workspaceId}
+      load={request => ws.listAgentHistory(request.workspaceId, request.limit, request.cursor, request.query, request.textCursor)}
+      canLocate={row => topo.roster.some(member => member.id === row.memberId && member.sessionId === row.sessionId && member.online === true)}
+      onLocate={row => { const member = topo.roster.find(member => member.id === row.memberId && member.sessionId === row.sessionId); if (member?.paneId) onSelectPane?.(member.paneId); }} />
   {/if}
 </div>
 
@@ -710,7 +578,7 @@
   {@const cwd = cwdFor(m)}
   {@const title = titleFor(m)}
   {@const persistedReply = recentHistoryFor(m)}
-  {@const visibleReply = persistedReply?.text || m.recentOutput || ''}
+  {@const visibleReply = persistedReply?.text || ''}
   <div
     class="member-card"
     class:agent-attention={attentionPaneIds.includes(m.paneId)}
@@ -829,7 +697,6 @@
   .group{border:1px solid var(--rg-border);border-radius:8px;overflow:hidden;margin:2px 0}
   .group-bar{height:3px}
   .group-head{display:flex;align-items:center;gap:8px;padding:6px 10px}
-  .group-head .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;font-size:12px}
   .group-color{position:relative;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;color:var(--rg-fg-muted);cursor:pointer;flex-shrink:0}
   .group-color input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
   .group-move{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--rg-fg-muted);cursor:pointer;line-height:1}
@@ -847,22 +714,6 @@
   .member-leader.leader-active{color:#f5c242;border-color:#f5c242}
   .member-add{display:block;width:calc(100% - 16px);margin:4px 8px 7px;padding:3px 6px;border:1px dashed var(--rg-border);border-radius:5px;background:transparent;color:var(--rg-fg-muted);font-size:10px;text-align:left;cursor:pointer}
   .member-add:active,.member-leader:active,.member-remove:active{color:var(--rg-accent)}
-  .history-group{border:1px solid var(--rg-border);border-radius:8px;overflow:hidden;margin:2px 0}
-  .history-toggle{width:100%;border:0;background:transparent;color:var(--rg-fg);text-align:left;cursor:pointer}
-  .history-toggle:active{background:var(--rg-surface-2)}
-  .history-search{display:flex;margin:2px 0 6px;padding:5px 8px;border:1px solid var(--rg-border);border-radius:6px;background:var(--rg-bg)}
-  .history-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--rg-fg);font-size:12px}
-  .history-search input::placeholder{color:var(--rg-fg-muted)}
-  .history-more{display:block;margin:8px auto;padding:5px 10px;border:1px solid var(--rg-border);border-radius:6px;background:transparent;color:var(--rg-accent);font-size:11px;cursor:pointer}
-  .history-more:disabled{opacity:.5;cursor:default}
-  .history-item{padding:7px 9px;border-top:1px solid var(--rg-border);font-size:11px;line-height:1.35}
-  .history-head{display:flex;align-items:center;gap:6px;min-width:0}
-  .history-title{font-weight:600;color:var(--rg-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .resume{flex:0 0 auto;border:1px solid var(--rg-border);border-radius:5px;background:transparent;color:var(--rg-fg-muted);font-size:10px;padding:2px 6px;cursor:pointer}
-  .resume:disabled{opacity:.5;cursor:default}
-  .resume:not(:disabled):active{color:var(--rg-accent);border-color:var(--rg-accent)}
-  .history-meta{margin-top:2px;color:var(--rg-fg-muted);font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .history-item p{margin:4px 0 0;color:var(--rg-fg-muted);white-space:pre-wrap;word-break:break-word;max-height:80px;overflow:auto}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--rg-fg-muted);flex-shrink:0}
   .dot.working{background:var(--rg-accent)}
   .dot.waiting{background:var(--rg-ansi-yellow,#d29922)}

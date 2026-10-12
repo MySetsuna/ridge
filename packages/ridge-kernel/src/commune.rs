@@ -39,6 +39,7 @@ pub fn owns_method(method: &str) -> bool {
             | "send_agent_message"
             | "get_agent_message_delivery_status"
             | "cancel_agent_message"
+            | "read_agent_recent_replies"
     )
 }
 
@@ -49,6 +50,13 @@ pub async fn dispatch(
     native: bool,
 ) -> Result<Value, String> {
     match method {
+        "read_agent_recent_replies" => {
+            let state = state.clone();
+            let args = args.clone();
+            tokio::task::spawn_blocking(move || crate::commune_history::read(&state, &args, native))
+                .await
+                .map_err(|e| e.to_string())?
+        }
         "register_commune_member" => {
             if !native {
                 return Err("only a native trusted client may register an existing process".into());
@@ -387,6 +395,12 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
     let permissions = state.permissions.clone();
     let permission_roster = state.roster.clone();
     let permission_events = state.business_events.clone();
+    let replay_id = Uuid::new_v4().to_string();
+    history.append(json!({"kind":"replay_begin","agentId":agent_id,"sessionId":request.session_id,"replayId":replay_id,"generation":generation}))?;
+    let replaying = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let update_phase = replaying.clone();
+    let update_replay = replay_id.clone();
+    let connection_history = history.clone();
     let (read, write) = stream.into_split();
     let events = state.business_events.clone();
     let event_agent = agent_id.clone();
@@ -396,7 +410,8 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
         request.cwd.clone(),
         Arc::new(move |update| {
             let record = history
-                .append(json!({"kind":"session_update","agentId":event_agent,"params":update}))
+                .append(json!({"kind":"session_update","agentId":event_agent,"params":update,"generation":generation,
+                    "phase":if update_phase.load(std::sync::atomic::Ordering::Acquire) {"replay"}else{"live"},"replayId":update_replay}))
                 .map_err(ridge_acp::AcpErrorWrap::Io)?;
             events.broadcast("commune-session-update", record);
             Ok(())
@@ -435,6 +450,11 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
         session.disconnect();
         return Err("Agent/pane process instance changed during registration".into());
     }
+    if let Err(error) = connection_history.append(json!({"kind":if session.history_replayed(){"replay_committed"}else{"session_reconnected"},"agentId":agent_id,"sessionId":request.session_id,"replayId":replay_id,"generation":generation,"agentInfo":session.agent_info()})) {
+        session.disconnect();
+        return Err(error);
+    }
+    replaying.store(false, std::sync::atomic::Ordering::Release);
     let mut roster = state.roster.lock().map_err(|_| "roster unavailable")?;
     let mut next = roster.clone();
     if next.next_agent_generation(&agent_id) != generation {
@@ -467,13 +487,18 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
             .duration_since(UNIX_EPOCH)
             .map_err(|error| error.to_string())?
             .as_millis() as u64,
-        capabilities: vec![
-            "messages".into(),
-            "tasks".into(),
-            "acp.prompt".into(),
-            "acp.cancel".into(),
-            "acp.history".into(),
-        ],
+        capabilities: {
+            let mut capabilities = vec![
+                "messages".into(),
+                "tasks".into(),
+                "acp.prompt".into(),
+                "acp.cancel".into(),
+            ];
+            if session.history_replayed() {
+                capabilities.push("acp.history".into());
+            }
+            capabilities
+        },
     })
     .map_err(|error| error.to_string())?;
     let receiver = state.mcp_state.register_delivery_endpoint(
@@ -505,12 +530,14 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
         generation,
         lease.clone(),
         request.workspace_id.to_string(),
+        connection_history.clone(),
     ));
     tokio::spawn({
         let state = state.clone();
         let agent_id = agent_id.clone();
         let lease = lease.clone();
         let process = binding.process.clone();
+        let history = connection_history;
         async move {
             let mut disconnected = false;
             loop {
@@ -553,6 +580,9 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
                     }
                 };
                 if changed {
+                    if let Err(error) = history.append(json!({"kind":if exited {"process_exited"}else{"connection_lost"},"agentId":agent_id,"generation":generation})) {
+                        tracing::error!(%agent_id,%error,"connection coverage gap could not be persisted");
+                    }
                     state
                         .business_events
                         .broadcast("commune-members-changed", Value::Null);
@@ -582,6 +612,7 @@ async fn consume_deliveries(
     generation: u64,
     lease: String,
     workspace: String,
+    history: Arc<crate::commune_permissions::HistoryLog>,
 ) {
     loop {
         let entry = match receiver.try_recv() {
@@ -599,6 +630,8 @@ async fn consume_deliveries(
             let receipt = state
                 .mcp_state
                 .record_runtime_execution(&agent_id, generation, &lease, id, execution)?;
+            history.append(json!({"kind":"execution","agentId":agent_id,"sessionId":receipt["to"]["sessionId"],"deliveryId":id,
+                "payload":receipt["payload"],"execution":receipt["execution"],"taskId":receipt["taskId"],"correlationId":receipt["correlationId"],"causationId":receipt["causationId"]}))?;
             state
                 .business_events
                 .broadcast("commune-task-changed", receipt.clone());

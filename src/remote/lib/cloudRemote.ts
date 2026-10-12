@@ -1000,11 +1000,12 @@ export class CloudRemoteConnection implements RemoteLink {
     });
   }
 
-  async listAgentHistory(projectPaths: readonly string[], limit = 24, offset = 0, query = ''): Promise<AgentHistoryReply[]> {
+  async listAgentHistory(workspaceId: string, limit = 24, cursor?: string, query = '', textCursor?: string): Promise<AgentHistoryReply[]> {
     const result = await this.bridge.invoke<unknown>('read_agent_recent_replies', {
-      projectPaths: [...new Set(projectPaths.map((path) => path.trim()).filter(Boolean))],
+      workspaceId,
       limit: Math.max(1, Math.min(100, Math.floor(limit))),
-      offset: Math.max(0, Math.floor(offset)),
+      cursor,
+      textCursor,
       query: query.trim(),
     });
     return Array.isArray(result) ? result as AgentHistoryReply[] : [];
@@ -1017,21 +1018,8 @@ export class CloudRemoteConnection implements RemoteLink {
     await this.bridge.invoke('set_teammate_groups', { workspaceId, groups });
   }
 
-  async resumeAgentSession(
-    workspaceId: string,
-    agent: string,
-    sessionId: string,
-    cwd: string,
-  ): Promise<string | null> {
-    const result = await this.bridge.invoke<{ paneId?: unknown }>('resume_agent_session', {
-      workspaceId,
-      agent,
-      sessionId,
-      cwd,
-    });
-    return typeof result?.paneId === 'string' && result.paneId.length > 0
-      ? result.paneId
-      : null;
+  async resumeAgentSession(_workspaceId: string, _agent: string, _sessionId: string, _cwd: string): Promise<string | null> {
+    throw new Error('Restore the Agent in its terminal, then reconnect its existing protocol session');
   }
 
   // P2 阶段 1：脱敏待审批快照（无 action 全文），同 allowlist 门控。

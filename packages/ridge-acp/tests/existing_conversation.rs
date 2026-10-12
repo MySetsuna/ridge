@@ -159,6 +159,61 @@ async fn malformed_permission_options_do_not_reach_the_user_or_produce_an_approv
 }
 
 #[tokio::test]
+async fn resumes_an_existing_session_without_replay_when_the_peer_negotiates_resume() {
+    let (client, peer) = tokio::io::duplex(4096);
+    let (input, output) = tokio::io::split(client);
+    let agent = tokio::spawn(async move {
+        let (reader, mut writer) = tokio::io::split(peer);
+        let mut reader = BufReader::new(reader);
+        let init = read(&mut reader).await;
+        send(&mut writer,json!({"jsonrpc":"2.0","id":init["id"],"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"resume":{}}}}})).await;
+        let resume = read(&mut reader).await;
+        assert_eq!(resume["method"], "session/resume");
+        assert_eq!(resume["params"]["sessionId"], "already-existing");
+        send(
+            &mut writer,
+            json!({"jsonrpc":"2.0","id":resume["id"],"result":{}}),
+        )
+        .await;
+        let prompt = read(&mut reader).await;
+        assert_eq!(prompt["method"], "session/prompt");
+        send(&mut writer,json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"already-existing","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"observed live"}}}})).await;
+        send(
+            &mut writer,
+            json!({"jsonrpc":"2.0","id":prompt["id"],"result":{"stopReason":"end_turn"}}),
+        )
+        .await;
+    });
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let sink = observed.clone();
+    let session = ExistingConversation::load(
+        AcpTransport::from_io(output, input),
+        "already-existing".into(),
+        std::env::temp_dir().to_string_lossy().into(),
+        Arc::new(move |event| {
+            sink.lock().unwrap().push(event.clone());
+            Ok(())
+        }),
+        Arc::new(|_| Box::pin(async { None })),
+    )
+    .await
+    .unwrap();
+    assert!(!session.history_replayed());
+    assert!(observed.lock().unwrap().is_empty());
+    assert_eq!(
+        session
+            .prompt("continue".into())
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap()["stopReason"],
+        "end_turn"
+    );
+    assert_eq!(observed.lock().unwrap().len(), 1);
+    agent.await.unwrap();
+}
+
+#[tokio::test]
 async fn missing_load_capability_fails_without_creating_or_loading_a_session() {
     let (client, peer) = tokio::io::duplex(4096);
     let (input, output) = tokio::io::split(client);

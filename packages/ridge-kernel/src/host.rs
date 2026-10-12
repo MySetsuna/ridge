@@ -1703,7 +1703,6 @@ fn dispatch(
             | "get_pty_runtime_identity"
             | "get_workspace_memory"
             | "get_orchestration_health"
-            | "read_agent_recent_replies"
     ) {
         return match method {
             "detect_available_shells" => {
@@ -1950,7 +1949,6 @@ fn is_kernel_host_method(method: &str) -> bool {
             | "get_pty_runtime_identity"
             | "get_workspace_memory"
             | "get_orchestration_health"
-            | "read_agent_recent_replies"
             | "open_workspace_from_file"
             | "use_global_workspace"
             | "activate_pane_pty"

@@ -206,15 +206,15 @@ describe('RemoteConnection public communication contract', () => {
 			deliveryAdapter: 'hub', deliveryReliability: 'durable', terminalAccepted: false, agentAcknowledged: true,
 		});
 		await expect(receipt).resolves.toMatchObject({ messageId: 'm1' });
-		const history = conn.listAgentHistory(['C:/repo'], 1000);
+		const history = conn.listAgentHistory('workspace-a', 1000);
 		invoke(ws, 'read_agent_recent_replies', []);
 		await expect(history).resolves.toEqual([]);
 		const groups = conn.setTeammateGroups('workspace-a', []);
 		invoke(ws, 'set_teammate_groups');
 		await expect(groups).resolves.toBeUndefined();
-		const resumed = conn.resumeAgentSession('workspace-a', 'codex', 'session-1', 'C:/repo');
-		invoke(ws, 'resume_agent_session', { paneId: 'pane-b' });
-		await expect(resumed).resolves.toBe('pane-b');
+		const sentBeforeResume = ws.sent.length;
+		await expect(conn.resumeAgentSession('workspace-a', 'codex', 'session-1', 'C:/repo')).rejects.toThrow('Restore the Agent in its terminal');
+		expect(ws.sent.length).toBe(sentBeforeResume);
 
 		const hitl = conn.listHitlPending();
 		invoke(ws, 'list_hitl_pending', [{ id: 'h1' }]);

@@ -101,10 +101,10 @@ describe('remoteQueries', () => {
     const history = [{ agent: 'Codex', sessionId: 's1' }];
     vi.mocked(remote.listAgentHistory).mockResolvedValueOnce(history as never);
     const fetchQuery = makeFetchQuery();
-		await expect(fetchRemoteAgentHistory(remote, { fetchQuery }, 9, 'workspace-a', ['/repo'], 12)).resolves.toEqual(history);
-    expect(remote.listAgentHistory).toHaveBeenCalledWith(['/repo'], 12, 0, '');
+		await expect(fetchRemoteAgentHistory(remote, { fetchQuery }, 9, 'workspace-a', 12)).resolves.toEqual(history);
+    expect(remote.listAgentHistory).toHaveBeenCalledWith('workspace-a', 12, undefined, '');
 		expect(fetchQuery).toHaveBeenCalledWith(expect.objectContaining({
-			queryKey: remoteQueryKeys.agentHistory(9, 'workspace-a', ['/repo'], 12),
+			queryKey: remoteQueryKeys.agentHistory(9, 'workspace-a', 12),
 		}));
 	});
 

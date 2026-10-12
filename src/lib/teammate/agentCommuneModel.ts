@@ -44,6 +44,9 @@ export function workspaceTranscriptScope(
 }
 
 export interface AgentHistoryReplyLike {
+  memberId?: string;
+  workspaceId?: string;
+  kind?: string;
   agent: string;
   sessionId: string;
   timestamp: number;
@@ -56,6 +59,7 @@ export interface AgentReplyLookupProfile {
   sessionId?: string;
   executable?: string;
   cwd?: string;
+  workspaceId?: string;
 }
 
 const CANONICAL_AGENT_NAMES: Readonly<Record<string, string>> = {
@@ -100,6 +104,8 @@ function historyReplyMatchesAgent<T extends AgentHistoryReplyLike>(
   reply: T,
   profile: AgentReplyLookupProfile,
 ): boolean {
+  if (reply.memberId) return reply.memberId === profile.id && reply.sessionId === profile.sessionId
+    && (!profile.workspaceId || reply.workspaceId === profile.workspaceId);
   const profileIdentities = new Set(
     [profile.name, profile.id, profile.executable ?? ''].flatMap(agentIdentityAliases),
   );
@@ -118,6 +124,8 @@ export function historyReplyMatchesProfile<T extends AgentHistoryReplyLike>(
   reply: T,
   profile: AgentReplyLookupProfile,
 ): boolean {
+  if (reply.memberId) return reply.memberId === profile.id && reply.sessionId === profile.sessionId
+    && (!profile.workspaceId || reply.workspaceId === profile.workspaceId);
   if (!historyReplyMatchesAgent(reply, profile)) return false;
   const sessionId = profile.sessionId?.trim();
   return !!sessionId
@@ -131,7 +139,7 @@ export function latestReplyForProfile<T extends AgentHistoryReplyLike>(
   profile: AgentReplyLookupProfile,
 ): T | undefined {
   return replies
-    .filter((reply) => historyReplyMatchesProfile(reply, profile))
+    .filter((reply) => (!reply.kind || reply.kind === 'agent_message_chunk') && historyReplyMatchesProfile(reply, profile))
     .sort((a, b) => b.timestamp - a.timestamp)[0];
 }
 

@@ -834,16 +834,11 @@ describe('CloudRemoteConnection reconnect', () => {
     }
   });
 
-  it('resumes an Agent session through host structured launch with recorded CWD', async () => {
+  it('rejects branded Agent launch without issuing an RPC', async () => {
     const conn = await connected();
-    await expect(conn.resumeAgentSession('ws1', 'Codex', 'session-42', 'C:\\repo\\shared'))
-      .resolves.toBe('pane-resumed');
-    expect(invokeMock).toHaveBeenCalledWith('resume_agent_session', {
-      workspaceId: 'ws1',
-      agent: 'Codex',
-      sessionId: 'session-42',
-      cwd: 'C:\\repo\\shared',
-    });
+    const calls = invokeMock.mock.calls.length;
+    await expect(conn.resumeAgentSession('ws1', 'Codex', 'session-42', '/repo')).rejects.toThrow('Restore the Agent in its terminal');
+    expect(invokeMock.mock.calls.length).toBe(calls);
   });
 });
 
@@ -1036,7 +1031,7 @@ describe('CloudRemoteConnection bounded parity guards', () => {
       id: 'pwsh', label: 'PowerShell', program: 'pwsh', args: ['-NoLogo'],
     });
     expect(await conn.getTeammateTopology('ws1')).toBeUndefined();
-    expect(await conn.listAgentHistory(['/repo'], 999)).toEqual([]);
+    expect(await conn.listAgentHistory('ws1', 999)).toEqual([]);
     expect(await conn.listHitlPending()).toBeUndefined();
     expect(await conn.resolveHitlRemote('hitl-1', 'nonce-1', 'reject')).toBe('already-resolved');
     expect(await conn.getOrchestrationHealth()).toEqual({ suspendedAgents: 0, pendingHitl: 0 });
@@ -1102,7 +1097,7 @@ describe('CloudRemoteConnection bounded parity guards', () => {
     await expect(conn.sendAgentMessage({ ...PANE, generation: 2, lease: 'lease' }, 'hello'))
       .resolves.toMatchObject({ messageId: 'm' });
     await expect(conn.setTeammateGroups('ws1', [])).resolves.toBeUndefined();
-    await expect(conn.resumeAgentSession('ws1', 'Codex', 's', '/repo')).resolves.toBeNull();
+    await expect(conn.resumeAgentSession('ws1', 'Codex', 's', '/repo')).rejects.toThrow('Restore the Agent in its terminal');
     await expect(conn.listSavedWorkspaceFiles()).resolves.toEqual([]);
     await expect(conn.openWorkspaceFromFile('missing.ridge')).rejects.toThrow('open unavailable');
     await expect(conn.closeWorkspace('ws1')).resolves.toBe(false);

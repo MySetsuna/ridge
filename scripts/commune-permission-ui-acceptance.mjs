@@ -83,10 +83,11 @@ try {
       osCalls.push(command); if (command === 'bootstrap_runtime_client') return window.fixtureGrant();
       throw Error('Unexpected OS business call: ' + command);
     }, transformCallback: () => { throw Error('Unexpected native Channel'); } };
-    const [{ connectPresentationRuntime }, { bridge }, { invoke }, { mount, unmount }, { default: Modal }] = await Promise.all([
+    const [{ connectPresentationRuntime }, { bridge }, { invoke }, { mount, unmount }, { default: Modal }, { default: History }] = await Promise.all([
       import('/src/lib/transport/runtimeClient.ts'), import('/src/lib/transport/tauriShim/bridge.ts'),
       import('/src/lib/transport/nativeRuntimeCore.ts'), import('/scripts/commune-permission-ui-client.mjs'),
       import('/src/lib/teammate/HitlApprovalModal.svelte'),
+      import('/src/lib/teammate/CommuneHistory.svelte'),
     ]);
     const connection = await connectPresentationRuntime();
     bridge.attach(connection.transport, { useGlobalWorkspace: false });
@@ -95,7 +96,9 @@ try {
     ]);
     await initThemeSystem(); applyTheme(getThemeIds()[0]);
     const modal = mount(Modal, { target: document.getElementById('component') });
-    window.ownedApproval = { invoke, target, osCalls, dispose: async () => { await unmount(modal); bridge.detach(); connection.disconnect(); } };
+    const historyTarget = document.createElement('section'); document.body.append(historyTarget);
+    const history = mount(History, { target: historyTarget, props: { workspaceId: target.workspaceId } });
+    window.ownedApproval = { invoke, target, osCalls, dispose: async () => { await unmount(history); await unmount(modal); bridge.detach(); connection.disconnect(); } };
   }, target);
   const receipt = await page.evaluate(async () => window.ownedApproval.invoke('send_agent_message', { ...window.ownedApproval.target, message: 'permission-needed', idempotency_key: crypto.randomUUID() }));
   const dialog = page.getByRole('alertdialog');
@@ -111,6 +114,11 @@ try {
     const value = await page.evaluate(async deliveryId => window.ownedApproval.invoke('get_agent_message_delivery_status', { ...window.ownedApproval.target, deliveryId }), receipt.deliveryId);
     return value.execution?.state === 'turn_ended';
   });
+  const history = page.getByTestId('commune-history');
+  await history.getByRole('button', { name: /刷新/ }).click();
+  await history.locator('[data-history-kind="permission_decided"]').waitFor();
+  assert.ok((await history.textContent()).includes('existing history'));
+  assert.equal(await history.getByRole('button', { name: /恢复|Resume|启动/ }).count(), 0);
   const calls = await page.evaluate(() => window.ownedApproval.osCalls);
   assert.deepEqual(calls, ['bootstrap_runtime_client']);
   await page.evaluate(() => window.ownedApproval.dispose());
@@ -120,7 +128,8 @@ try {
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'permission-decisions'), 'utf8').trim()), { optionId: 'once', outcome: 'selected' });
   evidence.checks = ['Actual peer options appear in the production modal with actual tool input', 'No Modify action for standard ACP permissions',
     'A real click resolves the original permission ID and the original prompt ends', 'Business RPC and permission events use Runtime; OS IPC only issues bootstrap grant',
-    'Unmounting the presentation client preserves the exact existing Agent process'];
+    'Unmounting the presentation client preserves the exact existing Agent process',
+    'Production history component reads replay, Runtime execution and approval records without a launch/resume action'];
   evidence.screenshot = screenshot; evidence.result = 'PASS';
 } catch (error) {
   evidence.result = 'FAIL'; evidence.error = error.message; evidence.pageErrors = pageErrors;

@@ -59,10 +59,10 @@ describe('remote Agent drawer alignment contract', () => {
     expect(source).toContain('!signal.aborted && scopeGuard.isCurrent(generation)');
   });
 
-  it('offers host-structured Agent resume and preserves recorded CWD', () => {
-    expect(source).toContain('ws.resumeAgentSession(');
-    expect(source).toContain('spec.cwd || reply.cwd');
-    expect(source).toContain('aria-label={`Resume ${reply.agent} session ${reply.sessionId}`}');
+  it('uses the shared read-only history view without an Agent launch action', () => {
+    expect(source).toContain('<CommuneHistory');
+    expect(source).not.toContain('ws.resumeAgentSession(');
+    expect(source).not.toContain('reply.resume');
   });
 
   it('deletes a group only after confirmation and persists the filtered roster', () => {

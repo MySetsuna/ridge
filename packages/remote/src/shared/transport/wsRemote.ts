@@ -374,6 +374,20 @@ export interface AgentMessageReceipt {
  * Agent must not discard the context needed to resume a session.
  */
 export interface AgentHistoryReply {
+  id?: string;
+  memberId?: string;
+  workspaceId?: string;
+  sequence?: number;
+  kind?: string;
+  source?: string;
+  coverage?: string;
+  cursor?: string | null;
+  textCursor?: string | null;
+  previousTextCursor?: string | null;
+  textOffset?: number;
+  textLength?: number;
+  taskId?: string;
+  deliveryId?: string;
   agent: string;
   title: string;
   text: string;
@@ -529,7 +543,7 @@ export interface RemoteLink {
   /** P1 roster：只读拓扑快照（capability `teammate` 协商后可用；UI 轮询取数）。 */
   getTeammateTopology(workspaceId?: string): Promise<TeammateTopology>;
   /** Real session-file history, always restricted to the selected workspace's pane CWDs. */
-  listAgentHistory(projectPaths: readonly string[], limit?: number, offset?: number, query?: string): Promise<AgentHistoryReply[]>;
+  listAgentHistory(workspaceId: string, limit?: number, cursor?: string, query?: string, textCursor?: string): Promise<AgentHistoryReply[]>;
   /** Persist the current workspace's Agent groups for Remote/desktop parity. */
   setTeammateGroups(workspaceId: string, groups: readonly TeammateGroup[]): Promise<void>;
   /** Create a new pane and resume a recorded Agent session in its CWD. */
@@ -1642,15 +1656,16 @@ export class RemoteConnection implements RemoteLink {
     return data._result as AgentMessageReceipt;
   }
 
-  async listAgentHistory(projectPaths: readonly string[], limit = 24, offset = 0, query = ''): Promise<AgentHistoryReply[]> {
+  async listAgentHistory(workspaceId: string, limit = 24, cursor?: string, query = '', textCursor?: string): Promise<AgentHistoryReply[]> {
     const data = (await this._sendAndWait(
       {
         type: 'invoke-request',
         cmd: 'read_agent_recent_replies',
         args: {
-          projectPaths: [...new Set(projectPaths.map((path) => path.trim()).filter(Boolean))],
+          workspaceId,
           limit: Math.max(1, Math.min(100, Math.floor(limit))),
-          offset: Math.max(0, Math.floor(offset)),
+          cursor,
+          textCursor,
           query: query.trim(),
         },
         _reqId: ++this._reqCounter,
@@ -1677,24 +1692,8 @@ export class RemoteConnection implements RemoteLink {
     if (data._error) throw new Error(unknownText(data._error, 'remote error'));
   }
 
-  async resumeAgentSession(
-    workspaceId: string,
-    agent: string,
-    sessionId: string,
-    cwd: string,
-  ): Promise<string | null> {
-    const data = (await this._sendAndWait(
-      {
-        type: 'invoke-request',
-        cmd: 'resume_agent_session',
-        args: { workspaceId, agent, sessionId, cwd },
-        _reqId: ++this._reqCounter,
-      },
-      'invoke-result',
-    )) as { _result?: { paneId?: unknown }; _error?: unknown };
-    if (data._error) throw new Error(unknownText(data._error, 'remote error'));
-    const paneId = data._result?.paneId;
-    return typeof paneId === 'string' && paneId.length > 0 ? paneId : null;
+  async resumeAgentSession(_workspaceId: string, _agent: string, _sessionId: string, _cwd: string): Promise<string | null> {
+    throw new Error('Restore the Agent in its terminal, then reconnect its existing protocol session');
   }
 
   // P2 阶段 1：脱敏待审批快照（同 invoke-request 白名单边界；无 action 全文）。
