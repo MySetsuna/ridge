@@ -430,9 +430,13 @@ export interface CommuneGroupTask {
   objectiveVerified: boolean;
   children: {member: {agentId: string; sessionId: string; paneId: string; generation: number; lease: string};
     objective: string; objectiveTruncated?: boolean; state: string; taskId?: string; deliveryId?: string; submissionError?: string; deliveryError?: string;
-    artifacts: unknown[]; artifactCoverage: string}[];
+    artifacts: CommuneProtocolOutput[]; artifactsHasMore?: boolean; artifactCoverage: string}[];
   cancellationErrors?: {memberId:string;error:string}[];
   objectiveDetail?: {memberId:string;text:string;offset:number;length:number;next?:string;previous?:string};
+}
+export interface CommuneProtocolOutput {
+  id:string;kind:string;sequence:number;toolCallId?:string;status?:string;name?:string;uri?:string;
+  mimeType?:string;preview?:string;textCursor?:string;source:string;verified:boolean;
 }
 
 /** P1 teammate 拓扑快照（roster + leader；edges 预留）。 */

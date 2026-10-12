@@ -20,7 +20,7 @@
   import { recordMemberTask } from './memberTasks';
   import AgentMemberRow from './AgentMemberRow.svelte';
   import CommuneGroupTasks from './CommuneGroupTasks.svelte';
-  import type { CommuneGroupTask } from '../../../packages/remote/src/shared/transport/wsRemote';
+  import type { AgentHistoryReply, CommuneGroupTask } from '../../../packages/remote/src/shared/transport/wsRemote';
   import type { TeammateProfile, PendingApproval } from './teammateModel';
   import {
     teammateGroupStore,
@@ -450,6 +450,7 @@
 
           <CommuneGroupTasks {workspaceId} {group} members={roster} tasks={store.dispatches}
             read={request => invoke<CommuneGroupTask>('get_agent_message_delivery_status',{...request})}
+            readEvent={request => invoke<AgentHistoryReply[]>('read_agent_recent_replies',{...request})}
             submit={roster.some(member => member.canSend === true) ? request => invoke<CommuneGroupTask>('send_agent_message',{...request}) : undefined}
             cancel={roster.some(member => member.canCancel === true) ? groupTaskId => invoke<CommuneGroupTask>('cancel_agent_message',{workspaceId,groupTaskId}) : undefined}
             onRefresh={async () => { await store.refresh(); onRefresh?.(); }} />

@@ -87,7 +87,7 @@ pub async fn dispatch(
             let groups = crate::commune_groups::projection(state, workspace)?;
             profile["groups"] = groups["groups"].clone();
             profile["groupsRevision"] = groups["groupsRevision"].clone();
-            profile["groupTasks"] = crate::commune_tasks::list(state, workspace)?;
+            profile["groupTasks"] = crate::commune_tasks::list(state, workspace, native)?;
             if let Some(roster) = profile["roster"].as_array_mut() {
                 roster.retain(|row| row["protocolBinding"].is_object());
                 for row in roster {
@@ -421,7 +421,10 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
     let permissions = state.permissions.clone();
     let permission_roster = state.roster.clone();
     let permission_events = state.business_events.clone();
-    let permission_hub = state.mcp_state.clone();
+    let turn_context = Arc::new(std::sync::Mutex::new(Value::Null));
+    let observed_turn = turn_context.clone();
+    let output_hub = state.mcp_state.clone();
+    let permission_turn = turn_context.clone();
     let replay_id = Uuid::new_v4().to_string();
     history.append(json!({"kind":"replay_begin","agentId":agent_id,"sessionId":request.session_id,"replayId":replay_id,"generation":generation}))?;
     let replaying = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -436,9 +439,13 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
         request.session_id.clone(),
         request.cwd.clone(),
         Arc::new(move |update| {
+            let context = observed_turn.lock().map_err(|_|ridge_acp::AcpErrorWrap::Transport("turn context unavailable".into()))?.clone();
             let record = history
                 .append(json!({"kind":"session_update","agentId":event_agent,"params":update,"generation":generation,
-                    "phase":if update_phase.load(std::sync::atomic::Ordering::Acquire) {"replay"}else{"live"},"replayId":update_replay}))
+                    "phase":if update_phase.load(std::sync::atomic::Ordering::Acquire) {"replay"}else{"live"},"replayId":update_replay,
+                    "deliveryId":context["deliveryId"],"taskId":context["taskId"],"groupTaskId":context["payload"]["groupContext"]["groupTaskId"],"correlationId":context["correlationId"],"binding":context["to"]}))
+                .map_err(ridge_acp::AcpErrorWrap::Io)?;
+            crate::commune_outputs::observe(&output_hub,&context,&record,history.committed_length().map_err(ridge_acp::AcpErrorWrap::Io)?)
                 .map_err(ridge_acp::AcpErrorWrap::Io)?;
             events.broadcast("commune-session-update", record);
             Ok(())
@@ -449,7 +456,7 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
             let roster = permission_roster.clone();
             let log = permission_log.clone();
             let events = permission_events.clone();
-            let hub = permission_hub.clone();
+            let turn = permission_turn.clone();
             Box::pin(async move {
                 let live = roster.lock().is_ok_and(|roster| {
                     roster.agent_identities().into_iter().any(|member| {
@@ -463,10 +470,8 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
                 if !live {
                     return None;
                 }
-                let context = match hub.latest_runtime_receipt(&approval.agent_id,approval.generation,&approval.lease) {
-                    Ok(Some(receipt)) if receipt["execution"]["state"] == "running" => json!({"deliveryId":receipt["deliveryId"],"taskId":receipt["taskId"],"groupTaskId":receipt["payload"]["groupContext"]["groupTaskId"]}),
-                    _ => Value::Null,
-                };
+                let receipt = turn.lock().map(|turn|turn.clone()).unwrap_or(Value::Null);
+                let context = json!({"deliveryId":receipt["deliveryId"],"taskId":receipt["taskId"],"groupTaskId":receipt["payload"]["groupContext"]["groupTaskId"]});
                 permissions.request(approval, params, log, events, context).await
             })
         }),
@@ -563,6 +568,7 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
         lease.clone(),
         request.workspace_id.to_string(),
         connection_history.clone(),
+        turn_context.clone(),
     ));
     tokio::spawn({
         let state = state.clone();
@@ -645,6 +651,7 @@ async fn consume_deliveries(
     lease: String,
     workspace: String,
     history: Arc<crate::commune_permissions::HistoryLog>,
+    turn_context: Arc<std::sync::Mutex<Value>>,
 ) {
     loop {
         let entry = match receiver.try_recv() {
@@ -717,7 +724,16 @@ async fn consume_deliveries(
         } else if expired {
             json!({"state":"rejected","reason":"delivery deadline elapsed","sent":false})
         } else if let Some(text) = text {
-            match session.prompt(text.to_owned()) {
+            *turn_context.lock().expect("turn context mutex")=json!({"deliveryId":receipt["deliveryId"],"to":receipt["to"],"taskId":receipt["taskId"],"correlationId":receipt["correlationId"],
+                "payload":{"groupContext":{"groupTaskId":receipt["payload"]["groupContext"]["groupTaskId"],"groupId":receipt["payload"]["groupContext"]["groupId"],"groupRevision":receipt["payload"]["groupContext"]["groupRevision"]}}});
+            let context = turn_context.clone();
+            let delivery=id.to_owned();
+            let finish = Arc::new(move || {
+                if let Ok(mut context)=context.lock() {if context["deliveryId"]==delivery {*context=Value::Null;}}
+            });
+            let pending=session.prompt_observed(text.to_owned(),Some(finish));
+            if pending.is_err() {*turn_context.lock().expect("turn context mutex")=Value::Null;}
+            match pending {
                 Err(error) => json!({"state":"rejected","reason":error.to_string(),"sent":false}),
                 Ok(mut pending) => {
                     if let Err(error) = publish(json!({"state":"running"})) {

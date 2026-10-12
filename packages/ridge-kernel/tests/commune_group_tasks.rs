@@ -275,7 +275,7 @@ fn frozen_multi_member_dispatch_is_durable_exact_and_never_replayed() {
         )["ok"],
         false
     );
-    let first_expected = format!("broadcast-once\n{long_objective}\n");
+    let mut first_expected = format!("broadcast-once\n{long_objective}\n");
     assert_eq!(fs::read_to_string(&first_log).unwrap(), first_expected);
     assert_eq!(
         fs::read_to_string(&second_log).unwrap(),
@@ -289,13 +289,31 @@ fn frozen_multi_member_dispatch_is_durable_exact_and_never_replayed() {
         reply(endpoint, "send_agent_message", broadcast)["ok"],
         false
     );
+    let produced=command(endpoint,"send_agent_message",json!({"workspaceId":workspace,"groupId":group_id,"groupRevision":3,"groupAction":"assign","idempotency_key":"outputs-1","targets":[target(&first,"produce-outputs")]}));
+    let produced_scope=json!({"workspaceId":workspace,"groupTaskId":produced["groupTaskId"]});
+    let output_task=wait(endpoint,&produced_scope,|status|status["children"][0]["state"]=="reply_ended");
+    let outputs=output_task["children"][0]["artifacts"].as_array().unwrap();
+    assert_eq!(outputs.len(),3,"ordinary text, superseded content and post-response notifications are not current task outputs");
+    assert!(outputs.iter().any(|output|output["kind"]=="diff" && output["status"]=="completed"));
+    assert!(outputs.iter().all(|output|output["verified"]==false));
+    assert!(!outputs.iter().any(|output|output["uri"]=="urn:fixture:obsolete" || output["uri"]=="urn:fixture:late"));
+    assert_eq!(fs::read_to_string(root.join("first/result.txt")).unwrap(),"new");
+    let source_cursor=outputs.iter().find(|output|output["kind"]=="diff").unwrap()["textCursor"].as_str().unwrap();
+    let raw=command(endpoint,"read_agent_recent_replies",json!({"workspaceId":workspace,"textCursor":source_cursor}));
+    assert!(raw[0]["text"].as_str().unwrap().contains("tool_call_update"));
+    assert_eq!(raw[0]["taskId"],output_task["children"][0]["taskId"]);
+    assert_eq!(raw[0]["groupTaskId"],output_task["groupTaskId"]);
+    let remote_reply=client::request_json(endpoint,"POST","/v1/domain/commands",Some(&json!({"method":"get_teammate_topology","args":{"workspaceId":workspace},"native":false,"roots":[],"connectionId":Uuid::new_v4()}))).unwrap();
+    assert!(!remote_reply["value"]["groupTasks"].to_string().contains("urn:fixture:"));
+    assert!(!remote_reply["value"]["groupTasks"].to_string().contains("private-tool-input"));
+    first_expected.push_str("produce-outputs\n");
     let before = fs::read(root.join("commune-groups.json")).unwrap();
     let projection = command(
         endpoint,
         "get_teammate_topology",
         json!({"workspaceId":workspace}),
     );
-    assert_eq!(projection["groupTasks"].as_array().unwrap().len(), 3);
+    assert_eq!(projection["groupTasks"].as_array().unwrap().len(), 4);
     assert_eq!(
         fs::read(root.join("commune-groups.json")).unwrap(),
         before,
@@ -315,6 +333,8 @@ fn frozen_multi_member_dispatch_is_durable_exact_and_never_replayed() {
         broadcast_scope,
     );
     assert_eq!(restored_task["children"], ended["children"]);
+    let restored_outputs=command(&restored.endpoint,"get_agent_message_delivery_status",produced_scope);
+    assert_eq!(restored_outputs["children"][0]["artifacts"],output_task["children"][0]["artifacts"]);
     assert_eq!(fs::read_to_string(first_log).unwrap(), first_expected);
     assert_eq!(
         fs::read_to_string(second_log).unwrap(),

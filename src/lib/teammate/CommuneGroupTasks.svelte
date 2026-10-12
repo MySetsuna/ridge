@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import type { CommuneGroupDispatchRequest, CommuneGroupTask } from '../../../packages/remote/src/shared/transport/wsRemote';
+  import type { AgentHistoryReply, CommuneGroupDispatchRequest, CommuneGroupTask } from '../../../packages/remote/src/shared/transport/wsRemote';
   interface Member {id:string;name:string;generation?:number;lease?:string;online?:boolean;canSend?:boolean}
   interface Props {
     workspaceId?: string;
@@ -10,9 +10,10 @@
     submit?: (request:CommuneGroupDispatchRequest) => Promise<CommuneGroupTask>;
     cancel?: (id:string) => Promise<CommuneGroupTask>;
     read?: (request:{workspaceId:string;groupTaskId:string;objectiveMemberId?:string;objectiveCursor?:string}) => Promise<CommuneGroupTask>;
+    readEvent?: (request:{workspaceId:string;textCursor:string}) => Promise<AgentHistoryReply[]>;
     onRefresh?: () => void | Promise<void>;
   }
-  let {workspaceId,group,members,tasks=[],submit,cancel,read,onRefresh}: Props = $props();
+  let {workspaceId,group,members,tasks=[],submit,cancel,read,readEvent,onRefresh}: Props = $props();
   let mode = $state<'broadcast'|'assign'>('broadcast');
   let selected = $state<Record<string,{generation:number;lease:string}>>({});
   let selectedRevision = $state<number>();
@@ -26,6 +27,8 @@
   let currentScope = '';
   let detail = $state<CommuneGroupTask['objectiveDetail']>();
   let detailTask = $state('');
+  let protocolDetail = $state<AgentHistoryReply>();
+  let protocolOutput = $state('');
   const eligible = (member:Member) => member.canSend === true && typeof member.generation === 'number' && !!member.lease;
   const candidates = $derived(group.memberAgentIds.map(id => members.find(member => member.id === id) ?? {id,name:id}));
   const selectedIds = $derived(Object.keys(selected));
@@ -81,12 +84,22 @@
     } catch (failure) {if (token===version) error=String(failure);}
     finally {if (token===version) busy=false;}
   }
+  async function readOutput(id:string,cursor:string) {
+    if (!readEvent || !workspaceId || busy) return;
+    const token=++version;busy=true;error='';
+    try {
+      const page=await readEvent({workspaceId,textCursor:cursor});
+      if (token===version) {protocolDetail=page[0];protocolOutput=id;}
+    } catch (failure) {if (token===version) error=String(failure);}
+    finally {if (token===version) busy=false;}
+  }
   $effect(() => {
     const scope = `${workspaceId}:${group.id}`;
     if (scope === currentScope) return;
     currentScope = scope; version++; selected = {}; selectedRevision = undefined; received = undefined;
     message = ''; objectives = {}; busy = false; error = ''; attempt = undefined;
     detail=undefined; detailTask='';
+    protocolDetail=undefined;protocolOutput='';
   });
   onDestroy(() => { version++; });
 </script>
@@ -141,6 +154,23 @@
             {#if child.submissionError}<p class="break-all text-red-300">{child.submissionError}</p>{/if}
             {#if child.deliveryError}<p class="break-all text-red-300">{child.deliveryError}</p>{/if}
             <p class="text-[10px] text-[var(--rg-fg-muted)]">{child.artifactCoverage}</p>
+            <ul class="space-y-1">
+              {#each child.artifacts as output (output.id)}
+                <li class="rounded border border-[var(--rg-border)] p-2" data-protocol-output-kind={output.kind}>
+                  <p class="break-all">协议产物 · {output.kind}{output.status ? ` · ${output.status}` : ''} · 未核验</p>
+                  {#if output.name || output.uri}<p class="break-all">{output.name} {output.uri}</p>{/if}
+                  {#if output.preview}<pre class="whitespace-pre-wrap break-all">{output.preview}</pre>{/if}
+                  <p class="text-[10px] text-[var(--rg-fg-muted)]">{output.source} · event {output.sequence}</p>
+                  {#if readEvent && output.textCursor}<button disabled={busy} onclick={() => readOutput(output.id,output.textCursor!)} class="underline">查看原始协议记录</button>{/if}
+                  {#if protocolDetail && protocolOutput===output.id}
+                    <pre class="whitespace-pre-wrap break-all">{protocolDetail.text}</pre>
+                    {#if protocolDetail.previousTextCursor}<button disabled={busy} onclick={() => readOutput(output.id,protocolDetail!.previousTextCursor!)} class="mr-2 underline">前文</button>{/if}
+                    {#if protocolDetail.textCursor}<button disabled={busy} onclick={() => readOutput(output.id,protocolDetail!.textCursor!)} class="underline">后文</button>{/if}
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+            {#if child.artifactsHasMore}<p class="text-[10px]">仅列最近 50 条协议产物；原事件保留于历史。</p>{/if}
           </li>
         {/each}
       </ul>

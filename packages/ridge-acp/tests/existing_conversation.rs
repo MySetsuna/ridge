@@ -23,6 +23,32 @@ async fn send(writer: &mut WriteHalf<DuplexStream>, value: Value) {
 }
 
 #[tokio::test]
+async fn prompt_completion_closes_observation_before_a_later_notification_in_the_same_read() {
+    use std::sync::atomic::{AtomicBool,Ordering};
+    let (client,peer)=tokio::io::duplex(65536);let (input,output)=tokio::io::split(client);
+    let (reader,mut writer)=tokio::io::split(peer);let mut reader=BufReader::new(reader);
+    let agent=tokio::spawn(async move {
+        let init=read(&mut reader).await;
+        send(&mut writer,json!({"jsonrpc":"2.0","id":init["id"],"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}})).await;
+        let load=read(&mut reader).await;send(&mut writer,json!({"jsonrpc":"2.0","id":load["id"],"result":{}})).await;
+        let prompt=read(&mut reader).await;
+        let notify=|text|json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"existing","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":text}}}});
+        let response=json!({"jsonrpc":"2.0","id":prompt["id"],"result":{"stopReason":"end_turn"}});
+        writer.write_all(format!("{}\n{response}\n{}\n",notify("during"),notify("after")).as_bytes()).await.unwrap();
+    });
+    let active=Arc::new(AtomicBool::new(false));let observed=Arc::new(Mutex::new(Vec::new()));
+    let capture=active.clone();let output_events=observed.clone();
+    let session=ExistingConversation::load(AcpTransport::from_io(output,input),"existing".into(),std::env::temp_dir().to_string_lossy().into(),Arc::new(move|params| {
+        output_events.lock().unwrap().push((params["update"]["content"]["text"].clone(),capture.load(Ordering::Acquire)));Ok(())
+    }),Arc::new(|_|Box::pin(async {None}))).await.unwrap();
+    active.store(true,Ordering::Release);let finish=active.clone();
+    session.prompt_observed("task".into(),Some(Arc::new(move||finish.store(false,Ordering::Release)))).unwrap().await.unwrap().unwrap();
+    agent.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2),async {while observed.lock().unwrap().len()<2 {tokio::task::yield_now().await;}}).await.unwrap();
+    assert_eq!(*observed.lock().unwrap(),vec![(json!("during"),true),(json!("after"),false)]);
+}
+
+#[tokio::test]
 async fn loads_exact_existing_session_and_preserves_large_replay_without_new() {
     let (client, peer) = tokio::io::duplex(65536);
     let (input, output) = tokio::io::split(client);

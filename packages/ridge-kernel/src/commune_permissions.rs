@@ -14,6 +14,9 @@ use uuid::Uuid;
 
 pub struct HistoryLog(Mutex<(File, u64, bool, u64)>);
 impl HistoryLog {
+    pub fn committed_length(&self) -> Result<u64,String> {
+        Ok(self.0.lock().map_err(|_|"conversation ledger unavailable")?.3)
+    }
     pub fn open(path: &Path) -> Result<Self, String> {
         let mut sequence = 0;
         if path.exists() {

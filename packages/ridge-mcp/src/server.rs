@@ -780,6 +780,44 @@ impl McpSessionState {
         self.persistence.as_ref().map(|persistence| persistence.lookup_idempotency(&key)).transpose().map(Option::flatten)
     }
 
+    /// Persist protocol-reported outputs for one frozen delivery; journal bytes remain the raw source.
+    pub fn record_protocol_outputs(&self, binding: &Value, delivery: &str, sequence: u64, tool: Option<&str>, status: Option<&str>, content: Option<Vec<Value>>) -> Result<(),String> {
+        let entry=self.runtime_receipt(binding["agentId"].as_str().ok_or("missing member")?,binding["generation"].as_u64().ok_or("missing generation")?,binding["lease"].as_str().ok_or("missing lease")?,delivery)?;
+        if entry["to"] != *binding { return Err("protocol output binding mismatch".into()); }
+        let mut connection=self.group_persistence()?.connection.lock().map_err(|_|"Hub database lock poisoned")?;
+        let transaction=connection.transaction().map_err(|e|e.to_string())?;
+        let tool=tool.unwrap_or("");
+        if !tool.is_empty() {
+            if let Some(status)=status {
+                transaction.execute("INSERT INTO hub_protocol_tools(delivery_id,tool_call_id,status) VALUES (?1,?2,?3) ON CONFLICT(delivery_id,tool_call_id) DO UPDATE SET status=excluded.status",params![delivery,tool,status]).map_err(|e|e.to_string())?;
+                transaction.execute("UPDATE hub_protocol_outputs SET status=?1 WHERE delivery_id=?2 AND tool_call_id=?3",params![status,delivery,tool]).map_err(|e|e.to_string())?;
+            }
+        }
+        if let Some(content)=content {
+            if !tool.is_empty() { transaction.execute("DELETE FROM hub_protocol_outputs WHERE delivery_id=?1 AND tool_call_id=?2",params![delivery,tool]).map_err(|e|e.to_string())?; }
+            let status: Option<String>=transaction.query_row("SELECT status FROM hub_protocol_tools WHERE delivery_id=?1 AND tool_call_id=?2",params![delivery,tool],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+            for descriptor in content {
+                transaction.execute("INSERT OR REPLACE INTO hub_protocol_outputs(delivery_id,artifact_id,tool_call_id,status,sequence,entry_json) VALUES (?1,?2,?3,?4,?5,?6)",params![delivery,descriptor["id"].as_str().ok_or("missing output ID")?,tool,status,sequence,descriptor.to_string()]).map_err(|e|e.to_string())?;
+            }
+        }
+        transaction.commit().map_err(|e|e.to_string())
+    }
+    pub fn protocol_outputs(&self, delivery: &str, native: bool) -> Result<Value,String> {
+        let connection=self.group_persistence()?.connection.lock().map_err(|_|"Hub database lock poisoned")?;
+        let mut statement=connection.prepare("SELECT entry_json,status FROM hub_protocol_outputs WHERE delivery_id=?1 ORDER BY sequence DESC,artifact_id LIMIT 51").map_err(|e|e.to_string())?;
+        let rows=statement.query_map(params![delivery],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?))).map_err(|e|e.to_string())?;
+        let mut outputs=Vec::new();
+        for row in rows {
+            let (record,status)=row.map_err(|e|e.to_string())?;
+            let mut record: Value=serde_json::from_str(&record).map_err(|e|e.to_string())?;
+            record["status"]=json!(status);record["verified"]=json!(false);
+            if !native {record=json!({"id":record["id"],"kind":record["kind"],"sequence":record["sequence"],"toolCallId":record["toolCallId"],"status":record["status"],"verified":false,"source":record["source"]});}
+            outputs.push(record);
+        }
+        let more=outputs.len()>50;outputs.truncate(50);
+        Ok(json!({"items":outputs,"hasMore":more}))
+    }
+
     fn group_persistence(&self) -> Result<&HubPersistence, String> {
         self.persistence.as_ref().ok_or("group dispatch requires durable Hub storage".into())
     }
@@ -1052,7 +1090,10 @@ impl HubPersistence {
                  );
                  INSERT OR IGNORE INTO hub_receipt_archive
                      SELECT idempotency_key, target_key, json_extract(entry_json, '$.deliveryId'), entry_json, created_at FROM hub_idempotency;
-                 CREATE INDEX IF NOT EXISTS hub_receipt_archive_identity ON hub_receipt_archive(json_extract(entry_json,'$.to.agentId'), json_extract(entry_json,'$.to.generation'), json_extract(entry_json,'$.to.lease'));",
+                 CREATE INDEX IF NOT EXISTS hub_receipt_archive_identity ON hub_receipt_archive(json_extract(entry_json,'$.to.agentId'), json_extract(entry_json,'$.to.generation'), json_extract(entry_json,'$.to.lease'));
+                 CREATE TABLE IF NOT EXISTS hub_protocol_tools(delivery_id TEXT NOT NULL,tool_call_id TEXT NOT NULL,status TEXT,PRIMARY KEY(delivery_id,tool_call_id));
+                 CREATE TABLE IF NOT EXISTS hub_protocol_outputs(delivery_id TEXT NOT NULL,artifact_id TEXT NOT NULL,tool_call_id TEXT NOT NULL,status TEXT,sequence INTEGER NOT NULL,entry_json TEXT NOT NULL,PRIMARY KEY(delivery_id,artifact_id));
+                 CREATE INDEX IF NOT EXISTS hub_protocol_outputs_order ON hub_protocol_outputs(delivery_id,sequence);",
             )
             .map_err(|error| format!("initialize Hub schema: {error}"))?;
         Ok(Self {
@@ -5697,6 +5738,32 @@ mod tests {
         state.persistence.as_ref().unwrap().connection.lock().unwrap().execute_batch("PRAGMA query_only=ON").unwrap();
         assert!(state.prepare_group_task("workspace","key",json!({"id":"parent","request":{"workspaceId":"workspace","idempotency_key":"key"},"runtimeEpoch":"epoch","coordinating":true})).is_err());
         assert!(state.group_tasks("workspace",50).unwrap().is_empty());
+    }
+    #[test]
+    fn protocol_outputs_replace_only_explicit_content_and_remain_fenced_and_private() {
+        let path=std::env::temp_dir().join(format!("ridge-protocol-outputs-{}.sqlite3",Uuid::new_v4()));
+        let state=McpSessionState::with_sqlite(&path).unwrap();
+        let binding=json!({"workspaceId":"workspace","agentId":"member","sessionId":"session","paneId":"pane","generation":1,"lease":"lease"});
+        let entry=json!({"deliveryId":"delivery","to":binding,"targetKey":"target","from":"sender","idempotencyKey":"key","deliveryAdapter":"runtime_api","status":"adapter_accepted"});
+        state.persistence.as_ref().unwrap().persist_enqueue("target",&entry,&idempotency_key("target","sender","key")).unwrap();
+        let output=json!({"id":"output","kind":"diff","sequence":1,"uri":"private-location","preview":"private-output","textCursor":"owned-journal-cursor","source":"actual ACP observation"});
+        state.record_protocol_outputs(&binding,"delivery",1,Some("tool"),Some("pending"),Some(vec![output])).unwrap();
+        state.record_protocol_outputs(&binding,"delivery",2,Some("tool"),Some("completed"),None).unwrap();
+        let current=state.protocol_outputs("delivery",true).unwrap();
+        assert_eq!(current["items"][0]["status"],"completed");
+        assert_eq!(current["items"][0]["preview"],"private-output");
+        let public=state.protocol_outputs("delivery",false).unwrap().to_string();
+        for private in ["private-location","private-output","owned-journal-cursor"] {assert!(!public.contains(private));}
+        let mut wrong=binding.clone();wrong["sessionId"]=json!("another-session");
+        assert!(state.record_protocol_outputs(&wrong,"delivery",3,Some("tool"),None,Some(vec![])).is_err());
+        state.record_protocol_outputs(&binding,"delivery",4,Some("tool"),None,Some(vec![json!({"id":"replacement","kind":"resource_link","sequence":4,"source":"actual ACP observation"})])).unwrap();
+        let replacement=state.protocol_outputs("delivery",true).unwrap();
+        assert_eq!(replacement["items"].as_array().unwrap().len(),1);
+        assert_eq!(replacement["items"][0]["status"],"completed");
+        assert_eq!(replacement["items"][0]["id"],"replacement");
+        drop(state);
+        let reopened=McpSessionState::with_sqlite(&path).unwrap();
+        assert_eq!(reopened.protocol_outputs("delivery",true).unwrap(),replacement);
     }
     #[test]
     fn group_coordinator_slots_are_bounded_and_retired_epochs_do_not_replay() {

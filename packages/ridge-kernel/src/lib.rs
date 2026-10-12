@@ -10,6 +10,7 @@ mod commune;
 mod commune_history;
 mod commune_groups;
 mod commune_tasks;
+mod commune_outputs;
 mod commune_permissions;
 pub mod host;
 pub mod host_core;

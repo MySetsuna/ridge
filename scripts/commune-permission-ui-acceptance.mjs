@@ -196,6 +196,17 @@ try {
   await until(async () => await dialog.count() === 0);
   assert.equal(fs.readFileSync(path.join(root,'prompt-log'),'utf8'),'browser-group-objective\nbrowser-broadcast\n');
   assert.equal(fs.readFileSync(path.join(secondRoot,'prompt-log'),'utf8'),'browser-broadcast\nwait-for-cancel\n');
+  await taskUi.getByRole('combobox',{name:'协作动作',exact:true}).selectOption('assign');
+  await taskUi.getByRole('checkbox',{name:'选择 unknown-protocol-process',exact:true}).check();
+  await taskUi.getByRole('textbox',{name:'unknown-protocol-process 的审定任务',exact:true}).fill('produce-outputs');
+  await taskUi.getByRole('button',{name:'确认派发（1）',exact:true}).click();
+  await taskUi.locator('[data-protocol-output-kind="diff"]').waitFor();
+  assert.equal(await taskUi.locator('[data-protocol-output-kind]').count(),3);
+  assert.ok(!(await taskUi.textContent()).includes('urn:fixture:obsolete'));
+  assert.ok(!(await taskUi.textContent()).includes('urn:fixture:late'));
+  await taskUi.locator('[data-protocol-output-kind="diff"]').getByRole('button',{name:'查看原始协议记录',exact:true}).click();
+  await until(async () => (await taskUi.locator('[data-protocol-output-kind="diff"]').textContent()).includes('tool_call_update'));
+  assert.equal(fs.readFileSync(path.join(root,'prompt-log'),'utf8'),'browser-group-objective\nbrowser-broadcast\nproduce-outputs\n');
   await groupUi.scrollIntoViewIfNeeded();
   await page.screenshot({path:path.resolve('.webview2-dev-cdp/070-commune-groups-ui.png')});
   const calls = await page.evaluate(() => window.ownedApproval.osCalls);
@@ -213,7 +224,8 @@ try {
     'Production history component reads replay, Runtime execution and approval records without a launch/resume action',
     'Production group UI creates exact registered membership through Runtime and converges to a remote revision event',
     'A real group-leader task click freezes group and conversation binding in a durable task receipt; end_turn does not claim objective success',
-    'Production multi-member task UI preserves draft across refresh, blocks changed group revision, broadcasts once, shows permission/running per child and cancels both original turns'];
+    'Production multi-member task UI preserves draft across refresh, blocks changed group revision, broadcasts once, shows permission/running per child and cancels both original turns',
+    'Production task UI shows protocol-reported outputs and reads their original journal record; ordinary text and after-response output are excluded'];
   evidence.screenshot = screenshot; evidence.result = 'PASS';
 } catch (error) {
   evidence.result = 'FAIL'; evidence.error = error.message; evidence.pageErrors = pageErrors;

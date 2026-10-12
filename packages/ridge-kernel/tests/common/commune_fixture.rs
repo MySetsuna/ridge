@@ -75,6 +75,18 @@ pub fn run() {
                         .open("prompt-log")
                         .unwrap();
                     writeln!(log, "{text}").unwrap();
+                    if text == "produce-outputs" {
+                        fs::write("result.txt","new").unwrap();
+                        let path=std::env::current_dir().unwrap().join("result.txt");
+                        let notify=|update|json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture-existing","update":update}});
+                        writeln!(socket,"{}",notify(json!({"sessionUpdate":"tool_call","toolCallId":"same-tool-id","title":"Write result","status":"pending","content":[{"type":"content","content":{"type":"resource_link","uri":"urn:fixture:obsolete","name":"obsolete"}}],"rawInput":{"secret":"private-tool-input"}}))).unwrap();
+                        writeln!(socket,"{}",notify(json!({"sessionUpdate":"tool_call_update","toolCallId":"same-tool-id","status":"completed","content":[{"type":"diff","path":path,"oldText":"old","newText":"new"},{"type":"content","content":{"type":"resource","resource":{"uri":"urn:fixture:result","mimeType":"text/plain","text":"new"}}}]}))).unwrap();
+                        writeln!(socket,"{}",notify(json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"done is not a verified deliverable"}}))).unwrap();
+                        writeln!(socket,"{}",notify(json!({"sessionUpdate":"agent_message_chunk","content":{"type":"resource_link","uri":"urn:fixture:response","name":"result reference"}}))).unwrap();
+                        writeln!(socket,"{}",json!({"jsonrpc":"2.0","id":value["id"],"result":{"stopReason":"end_turn"}})).unwrap();
+                        writeln!(socket,"{}",notify(json!({"sessionUpdate":"agent_message_chunk","content":{"type":"resource_link","uri":"urn:fixture:late","name":"outside turn"}}))).unwrap();
+                        continue;
+                    }
                     if text == "disconnect-during-prompt" {
                         break;
                     }

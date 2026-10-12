@@ -104,7 +104,7 @@ fn child_state(
     }
     .into())
 }
-pub fn project(state: &AppState, task: &Dispatch) -> Result<Value, String> {
+pub fn project(state: &AppState, task: &Dispatch, native: bool) -> Result<Value, String> {
     let mut children = Vec::new();
     let mut counts = serde_json::Map::new();
     for child in &task.children {
@@ -112,11 +112,14 @@ pub fn project(state: &AppState, task: &Dispatch) -> Result<Value, String> {
         let status = child_state(state, task, child, receipt.as_ref())?;
         let count = counts.entry(status.clone()).or_insert(json!(0));
         *count = json!(count.as_u64().unwrap_or(0) + 1);
+        let outputs = if let Some(delivery)=receipt.as_ref().and_then(|receipt|receipt["deliveryId"].as_str()) {
+            state.mcp_state.protocol_outputs(delivery,native)?
+        } else { json!({"items":[],"hasMore":false}) };
         children.push(json!({"member":child.binding,"objective":child.objective.chars().take(512).collect::<String>(),"objectiveTruncated":child.objective.chars().count()>512,"state":status,"submissionError":child.error,
             "deliveryError":receipt.as_ref().map(|receipt| &receipt["deliveryError"]),
             "deliveryId":receipt.as_ref().map(|receipt| &receipt["deliveryId"]),"taskId":receipt.as_ref().map(|receipt| &receipt["taskId"]),
             "execution":receipt.as_ref().map(|receipt| json!({"state":receipt["execution"]["state"],"stopReason":receipt["execution"]["response"]["stopReason"]})),"cancellationRequested":receipt.as_ref().map(|receipt| &receipt["cancellationRequested"]),
-            "artifacts":[],"artifactCoverage":"尚无可归属的协议产物；普通回复不作交付成果"}));
+            "artifacts":outputs["items"],"artifactsHasMore":outputs["hasMore"],"artifactCoverage":"协议报告的内容；仅关联观察区间，未核验目标完成。无内容时覆盖未知。"}));
     }
     Ok(
         json!({"groupTaskId":task.id,"workspaceId":task.request.workspace_id,"groupId":task.group.id,
@@ -125,14 +128,14 @@ pub fn project(state: &AppState, task: &Dispatch) -> Result<Value, String> {
         "objectiveVerified":false,"source":"Runtime frozen dispatch + actual Hub receipts"}),
     )
 }
-pub fn list(state: &AppState, workspace: &str) -> Result<Value, String> {
+pub fn list(state: &AppState, workspace: &str, native: bool) -> Result<Value, String> {
     state
         .mcp_state
         .group_tasks(workspace, 10)?
         .into_iter()
         .map(|record| {
             let dispatch = serde_json::from_value::<Dispatch>(record).map_err(|e| e.to_string())?;
-            project(state, &dispatch)
+            project(state, &dispatch, native)
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|tasks| json!(tasks))
@@ -193,7 +196,7 @@ pub fn status(state: &AppState, args: &Value) -> Result<Value, String> {
         args["workspaceId"].as_str().ok_or("missing workspaceId")?,
         args["groupTaskId"].as_str().ok_or("missing groupTaskId")?,
     )?;
-    let mut result = project(state, &task)?;
+    let mut result = project(state, &task, true)?;
     let detail = if let Some(cursor) = args["objectiveCursor"].as_str() {
         if cursor.len() > 8192 {
             return Err("objective cursor too large".into());
@@ -292,7 +295,7 @@ pub fn cancel(state: &AppState, args: &Value) -> Result<Value, String> {
         "commune-task-changed",
         json!({"workspaceId":workspace,"groupTaskId":id}),
     );
-    let mut projection = project(state, &task)?;
+    let mut projection = project(state, &task, true)?;
     projection["cancellationErrors"] = json!(errors);
     Ok(projection)
 }
@@ -356,7 +359,7 @@ pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
         }
         drop(store);
         drop(retired);
-        return project(state, &previous);
+        return project(state, &previous, true);
     }
     let group = store
         .snapshot(&request.workspace_id)
@@ -425,7 +428,7 @@ pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
         if previous.request != dispatch.request {
             return Err("group idempotency conflict".into());
         }
-        return project(state, &previous);
+        return project(state, &previous, true);
     }
     let coordinator = Coordinating {
         state,
@@ -475,6 +478,7 @@ pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
     project(
         state,
         &task(state, &dispatch.request.workspace_id, &dispatch.id)?,
+        true,
     )
 }
 

@@ -42,6 +42,9 @@ struct TextPage {
     sequence: u64,
     offset: usize,
 }
+pub(crate) fn event_cursor(workspace: &str, member: &str, length: u64, sequence: u64, native: bool) -> Result<String,String> {
+    encode("text1:",&TextPage {version:1,workspace:workspace.into(),native,bound:Bound {member_id:member.into(),length},sequence,offset:0})
+}
 fn encode<T: Serialize>(prefix: &str, value: &T) -> Result<String, String> {
     Ok(format!(
         "{prefix}{}",

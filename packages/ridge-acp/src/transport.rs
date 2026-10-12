@@ -74,13 +74,20 @@ struct PeerInbox {
     notifications: Arc<StdMutex<Option<NotificationSink>>>,
 }
 
+pub type CallCompletion = Arc<dyn Fn() + Send + Sync>;
+struct PendingReply { sender: Option<oneshot::Sender<AcpResponse>>, completion: Option<CallCompletion> }
+impl PendingReply { fn finish(&mut self) { if let Some(finish)=self.completion.take() {finish();} } }
+impl Drop for PendingReply { fn drop(&mut self) {self.finish();} }
+type PendingCalls = Arc<StdMutex<HashMap<i64, PendingReply>>>;
+
 struct PendingCall {
     id: i64,
-    entries: Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>>,
+    entries: PendingCalls,
 }
 impl Drop for PendingCall {
     fn drop(&mut self) {
-        self.entries.lock().expect("pending mutex").remove(&self.id);
+        let removed={self.entries.lock().expect("pending mutex").remove(&self.id)};
+        drop(removed);
     }
 }
 
@@ -103,7 +110,7 @@ struct TransportInner {
     /// because all access is brief and does not hold the lock across await.
     /// `Arc` lets the reader task own a clone of the same map so dispatch
     /// routes responses back to the original `call()` oneshot.
-    pending: Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>>,
+    pending: PendingCalls,
     notify_tx: broadcast::Sender<AcpNotification>,
     shutdown_tx: watch::Sender<bool>,
     closed: Arc<AtomicBool>,
@@ -166,7 +173,7 @@ impl AcpTransport {
         let (notify_tx, _) = broadcast::channel(NOTIFY_BROADCAST_CAPACITY);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let pending: Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>> =
+        let pending: PendingCalls =
             Arc::new(StdMutex::new(HashMap::new()));
         let writer_handle = tokio::spawn({
             let writer_closed = closed.clone();
@@ -256,7 +263,7 @@ impl AcpTransport {
                     "ACP pending request budget exhausted".into(),
                 ));
             }
-            pending.insert(id, tx);
+            pending.insert(id, PendingReply {sender:Some(tx),completion:None});
         }
         let guard = PendingCall {
             id,
@@ -291,11 +298,14 @@ impl AcpTransport {
         method: &str,
         params: serde_json::Value,
     ) -> Result<PendingResponse, AcpErrorWrap> {
+        self.begin_call_observed(method, params, None)
+    }
+
+    /// Finish runs in the frame reader before releasing the response or processing a later notification.
+    pub fn begin_call_observed(&self, method: &str, params: serde_json::Value, completion: Option<CallCompletion>) -> Result<PendingResponse,AcpErrorWrap> {
         let (pending, body) = self.prepare_call(method, params)?;
-        self.inner
-            .writer_tx
-            .try_send(WriterCmd::Call { body })
-            .map_err(|error| AcpErrorWrap::Transport(error.to_string()))?;
+        if let Some(entry)=self.inner.pending.lock().expect("pending mutex").get_mut(&pending._pending.id) {entry.completion=completion;}
+        self.inner.writer_tx.try_send(WriterCmd::Call {body}).map_err(|error|AcpErrorWrap::Transport(error.to_string()))?;
         Ok(pending)
     }
 
@@ -481,7 +491,7 @@ async fn reader_task(
     reader: Reader,
     notify_tx: broadcast::Sender<AcpNotification>,
     shutdown_rx: watch::Receiver<bool>,
-    pending: Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>>,
+    pending: PendingCalls,
     framing: Framing,
     peer: PeerInbox,
 ) {
@@ -497,7 +507,7 @@ async fn reader_task_content_length(
     mut reader: Reader,
     notify_tx: broadcast::Sender<AcpNotification>,
     mut shutdown_rx: watch::Receiver<bool>,
-    pending: Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>>,
+    pending: PendingCalls,
     peer: PeerInbox,
 ) {
     let mut buf: Vec<u8> = Vec::with_capacity(16 * 1024);
@@ -540,7 +550,7 @@ async fn reader_task_ndjson(
     reader: Reader,
     notify_tx: broadcast::Sender<AcpNotification>,
     mut shutdown_rx: watch::Receiver<bool>,
-    pending: Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>>,
+    pending: PendingCalls,
     peer: PeerInbox,
 ) {
     let mut reader = reader;
@@ -580,8 +590,8 @@ async fn reader_task_ndjson(
 }
 
 /// EOF / shutdown — wake all pending callers with SessionClosed.
-fn drain_pending(pending: &Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>>) {
-    let drained: Vec<oneshot::Sender<AcpResponse>> = {
+fn drain_pending(pending: &PendingCalls) {
+    let drained: Vec<PendingReply> = {
         let mut p = pending.lock().expect("pending mutex");
         p.drain().map(|(_, tx)| tx).collect()
     };
@@ -591,7 +601,7 @@ fn drain_pending(pending: &Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse
 fn dispatch_frame(
     body: &[u8],
     notify_tx: &broadcast::Sender<AcpNotification>,
-    pending: &Arc<StdMutex<HashMap<i64, oneshot::Sender<AcpResponse>>>>,
+    pending: &PendingCalls,
     peer: &PeerInbox,
 ) -> bool {
     // Iteration 3.6 — JSON-RPC demux correctness.
@@ -675,8 +685,9 @@ fn dispatch_frame(
             p.remove(&resp.id)
         };
         match tx {
-            Some(tx) => {
-                let _ = tx.send(resp);
+            Some(mut reply) => {
+                reply.finish();
+                if let Some(tx)=reply.sender.take() { let _ = tx.send(resp); }
             }
             None => {
                 eprintln!(

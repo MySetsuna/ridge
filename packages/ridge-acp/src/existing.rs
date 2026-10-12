@@ -272,6 +272,9 @@ impl ExistingConversation {
         &self,
         text: String,
     ) -> Result<oneshot::Receiver<Result<Value, AcpErrorWrap>>, AcpErrorWrap> {
+        self.prompt_observed(text,None)
+    }
+    pub fn prompt_observed(&self, text: String, completion: Option<crate::transport::CallCompletion>) -> Result<oneshot::Receiver<Result<Value,AcpErrorWrap>>,AcpErrorWrap> {
         if self.inner.transport.is_closed() {
             return Err(AcpErrorWrap::SessionClosed);
         }
@@ -287,9 +290,10 @@ impl ExistingConversation {
             ));
         }
         self.inner.cancelled.store(false, Ordering::Release);
-        let pending = match self.inner.transport.begin_call(
+        let pending = match self.inner.transport.begin_call_observed(
             "session/prompt",
             json!({"sessionId":self.inner.session_id,"prompt":[{"type":"text","text":text}]}),
+            completion,
         ) {
             Ok(pending) => pending,
             Err(error) => {
