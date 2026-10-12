@@ -48,7 +48,7 @@
       }
       // The originating request remains suspended. Approval therefore resumes
       // the exact original action without asking the user to re-enter it.
-      queue = queue.slice(1);
+      queue = queue.filter(item => item.id !== req.id);
       editing = false;
       draft = '';
     } catch (error) {
@@ -56,6 +56,24 @@
     } finally {
       busy = false;
     }
+  }
+
+  async function selectOption(optionId: string) {
+    const req = current;
+    if (!req || busy || req.protocol !== 'acp') return;
+    busy = true;
+    decisionError = '';
+    try {
+      if (await invoke<boolean>(RESOLVE_CMD, { id: req.id, optionId })) queue = queue.filter(item => item.id !== req.id);
+      else decisionError = '审批已失效或已由其他客户端处理。';
+    } catch (error) {
+      decisionError = `未能提交审批决定：${error instanceof Error ? error.message : String(error)}`;
+    } finally { busy = false; }
+  }
+
+  async function refreshPending() {
+    const items = await invoke<unknown>('list_hitl_pending_local');
+    if (Array.isArray(items)) queue = [...items.map(parseHitlRequest).filter((item): item is HitlRequest => item !== null), ...queue.filter(item => item.kind === 'external_rejection')];
   }
 
   async function dismissExternalRejection() {
@@ -69,7 +87,7 @@
         decisionError = '该拒绝事件已失效；外部操作未被 Ridge 重试。';
         return;
       }
-      queue = queue.slice(1);
+      queue = queue.filter(item => item.id !== req.id);
     } catch (error) {
       decisionError = `未能确认该拒绝事件：${error instanceof Error ? error.message : String(error)}。事件仍保留，可重试。`;
     } finally {
@@ -89,6 +107,7 @@
       const req = parseHitlRequest(e.payload);
       if (req) enqueue(req);
     });
+    const unChanged = listen('teammate://hitl-pending-changed', () => { void refreshPending().catch(() => {}); });
     // Recover a request emitted before this renderer mounted or after it
     // restarted; pending actions must not silently degrade to a timeout.
     void invoke<unknown>('list_hitl_pending_local')
@@ -115,6 +134,7 @@
       });
     return () => {
       un.then((f) => f()).catch(() => {});
+      unChanged.then((f) => f()).catch(() => {});
     };
   });
 </script>
@@ -179,8 +199,8 @@
       </div>
 
       <!-- 操作区 -->
-      <div class="flex items-center gap-2 px-4 py-3 border-t border-[var(--rg-border)]">
-        {#if current.kind === 'approval'}
+      <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-t border-[var(--rg-border)]">
+        {#if current.kind === 'approval' && current.protocol !== 'acp'}
           <button
             onclick={() => decide('reject')}
             disabled={busy}
@@ -190,7 +210,12 @@
           </button>
         {/if}
         <div class="flex-1"></div>
-        {#if current.kind === 'external_rejection'}
+        {#if current.protocol === 'acp'}
+          {#each current.options ?? [] as option (option.optionId)}
+            <button onclick={() => selectOption(option.optionId)} disabled={busy}
+              class="rounded px-3 py-1.5 text-[12px] font-medium text-[var(--rg-fg)] bg-[var(--rg-surface)] hover:opacity-80 disabled:opacity-50">{option.name}</button>
+          {/each}
+        {:else if current.kind === 'external_rejection'}
           <button
             onclick={dismissExternalRejection}
             disabled={busy}

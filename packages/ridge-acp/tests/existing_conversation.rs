@@ -110,6 +110,55 @@ async fn loads_exact_existing_session_and_preserves_large_replay_without_new() {
 }
 
 #[tokio::test]
+async fn malformed_permission_options_do_not_reach_the_user_or_produce_an_approval() {
+    let (client, peer) = tokio::io::duplex(4096);
+    let (input, output) = tokio::io::split(client);
+    let agent = tokio::spawn(async move {
+        let (reader, mut writer) = tokio::io::split(peer);
+        let mut reader = BufReader::new(reader);
+        let init = read(&mut reader).await;
+        send(&mut writer,json!({"jsonrpc":"2.0","id":init["id"],"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}})).await;
+        let load = read(&mut reader).await;
+        send(
+            &mut writer,
+            json!({"jsonrpc":"2.0","id":load["id"],"result":{}}),
+        )
+        .await;
+        let prompt = read(&mut reader).await;
+        send(&mut writer,json!({"jsonrpc":"2.0","id":"duplicate-options","method":"session/request_permission",
+            "params":{"sessionId":"existing","toolCall":{"toolCallId":"tool"},"options":[{"optionId":"duplicate","name":"Allow","kind":"allow_once"},{"optionId":"duplicate","name":"Deny","kind":"reject_once"}]}})).await;
+        let denied = read(&mut reader).await;
+        assert_eq!(denied["id"], "duplicate-options");
+        assert_eq!(denied["error"]["code"], -32602);
+        assert!(denied["result"].is_null());
+        send(
+            &mut writer,
+            json!({"jsonrpc":"2.0","id":prompt["id"],"result":{"stopReason":"end_turn"}}),
+        )
+        .await;
+    });
+    let session = ExistingConversation::load(
+        AcpTransport::from_io(output, input),
+        "existing".into(),
+        std::env::temp_dir().to_string_lossy().into(),
+        Arc::new(|_| Ok(())),
+        Arc::new(|_| panic!("invalid permission options must not be presented")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        session
+            .prompt("invalid permission".into())
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap()["stopReason"],
+        "end_turn"
+    );
+    agent.await.unwrap();
+}
+
+#[tokio::test]
 async fn missing_load_capability_fails_without_creating_or_loading_a_session() {
     let (client, peer) = tokio::io::duplex(4096);
     let (input, output) = tokio::io::split(client);

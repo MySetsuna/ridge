@@ -1,4 +1,5 @@
 //! Actual owned Kernel/PTY/process/socket registration, no brand adapters.
+use futures::StreamExt;
 use ridge_kernel::{client, registry::KernelEndpoint};
 use serde_json::{json, Value};
 use std::{
@@ -7,6 +8,7 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use uuid::Uuid;
 
 #[test]
@@ -38,6 +40,45 @@ fn existing_protocol_endpoint_fixture() {
                     assert_eq!(value["params"]["sessionId"], "fixture-existing");
                     assert!(pending.is_null(), "one writer per existing conversation");
                     let text = value["params"]["prompt"][0]["text"].as_str().unwrap();
+                    if text == "permission-needed" || text == "cancel-permission" {
+                        writeln!(socket,"{}",json!({"jsonrpc":"2.0","id":"external-permission","method":"session/request_permission",
+                            "params":{"sessionId":"fixture-existing","toolCall":{"toolCallId":"tool","title":"private-operation","rawInput":{"secret":"private-argument"}},
+                            "options":[{"optionId":"once","name":"Allow once","kind":"allow_once"},{"optionId":"always","name":"Allow always","kind":"allow_always"},{"optionId":"deny","name":"Reject","kind":"reject_once"}]}})).unwrap();
+                        let mut cancelled = false;
+                        let outcome = loop {
+                            let mut line = String::new();
+                            assert!(reader.read_line(&mut line).unwrap() > 0);
+                            let reply: Value = serde_json::from_str(&line).unwrap();
+                            if reply["method"] == "session/cancel" {
+                                cancelled = true;
+                                continue;
+                            }
+                            assert_eq!(reply["id"], "external-permission");
+                            assert!(reply["error"].is_null(), "permission response: {reply}");
+                            break reply["result"]["outcome"].clone();
+                        };
+                        if text == "cancel-permission" {
+                            assert_eq!(outcome["outcome"], "cancelled");
+                            if !cancelled {
+                                let mut line = String::new();
+                                reader.read_line(&mut line).unwrap();
+                                assert_eq!(
+                                    serde_json::from_str::<Value>(&line).unwrap()["method"],
+                                    "session/cancel"
+                                );
+                            }
+                        } else {
+                            assert_eq!(outcome["optionId"], "once");
+                        }
+                        let mut log = fs::OpenOptions::new()
+                            .append(true)
+                            .create(true)
+                            .open("permission-decisions")
+                            .unwrap();
+                        writeln!(log, "{outcome}").unwrap();
+                        writeln!(socket,"{}",json!({"jsonrpc":"2.0","id":value["id"],"result":{"stopReason":if text=="cancel-permission" {"cancelled"}else{"end_turn"}}})).unwrap();
+                        continue;
+                    }
                     let mut log = fs::OpenOptions::new()
                         .append(true)
                         .create(true)
@@ -75,6 +116,58 @@ fn existing_protocol_endpoint_fixture() {
             .unwrap();
         }
     }
+}
+
+fn command_reply(endpoint: &KernelEndpoint, method: &str, args: Value, native: bool) -> Value {
+    client::request_json(endpoint,"POST","/v1/domain/commands",Some(&json!({"method":method,"args":args,"native":native,"roots":[],"connectionId":Uuid::new_v4()}))).unwrap()
+}
+fn command(endpoint: &KernelEndpoint, method: &str, args: Value, native: bool) -> Value {
+    let reply = command_reply(endpoint, method, args, native);
+    assert_eq!(reply["ok"], true, "Runtime command failed: {reply}");
+    reply["value"].clone()
+}
+fn wait_permission(endpoint: &KernelEndpoint) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let rows = command(endpoint, "list_hitl_pending_local", json!({}), true);
+        if !rows.as_array().unwrap().is_empty() {
+            return rows[0].clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "real permission request did not reach Runtime"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+type Events =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+async fn event(socket: &mut Events) -> Value {
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        if let tokio_tungstenite::tungstenite::Message::Text(text) = frame {
+            return serde_json::from_str(&text).unwrap();
+        }
+    }
+}
+async fn events(endpoint: &KernelEndpoint, native: bool) -> Events {
+    let mut request = format!(
+        "ws://127.0.0.1:{}/v1/domain/events?connectionId={}&native={native}",
+        endpoint.port,
+        Uuid::new_v4()
+    )
+    .into_client_request()
+    .unwrap();
+    request
+        .headers_mut()
+        .insert("x-ridge-kernel-token", endpoint.token.parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    assert_eq!(event(&mut socket).await["name"], "workspace-list-changed");
+    socket
 }
 
 fn tool(endpoint: &KernelEndpoint, name: &str, args: Value) -> Value {
@@ -231,6 +324,203 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
         .unwrap()
         .contains("existing history"));
     let target = json!({"workspace_id":workspace,"agent_id":identity.agent_id,"generation":identity.generation,"lease":identity.lease});
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (mut local_events, mut remote_events) = runtime.block_on(async {
+        (
+            events(&endpoint, true).await,
+            events(&endpoint, false).await,
+        )
+    });
+    let native_target = json!({"workspaceId":workspace,"paneId":pane,"agentId":identity.agent_id,"generation":identity.generation,"lease":identity.lease});
+    let members = command(
+        &endpoint,
+        "get_teammate_topology",
+        json!({"workspaceId":workspace}),
+        true,
+    );
+    assert_eq!(members["roster"].as_array().unwrap().len(), 1);
+    assert_eq!(members["roster"][0]["name"], "unknown-protocol-process");
+    assert_eq!(members["roster"][0]["sessionId"], "fixture-existing");
+    assert_eq!(
+        command_reply(
+            &endpoint,
+            "get_teammate_topology",
+            json!({"workspaceId":Uuid::new_v4()}),
+            true
+        )["ok"],
+        false
+    );
+    let mut prompt = native_target.clone();
+    prompt["message"] = json!("permission-needed");
+    prompt["idempotency_key"] = json!("permission-prompt");
+    let permission_delivery = command(&endpoint, "send_agent_message", prompt, true);
+    let pending = wait_permission(&endpoint);
+    let remote = command(&endpoint, "list_hitl_pending", json!({}), false);
+    for private in [
+        "private-operation",
+        "private-argument",
+        "action",
+        "options",
+        "toolCall",
+    ] {
+        assert!(!remote.to_string().contains(private));
+    }
+    assert_eq!(
+        command_reply(&endpoint, "list_hitl_pending_local", json!({}), false)["ok"],
+        false
+    );
+    runtime.block_on(async {
+        loop {
+            let value = event(&mut local_events).await;
+            if value["name"] == "teammate://hitl-approval-required" {
+                assert_eq!(
+                    value["payload"]["toolCall"]["rawInput"]["secret"],
+                    "private-argument"
+                );
+                break;
+            }
+        }
+        loop {
+            let value = event(&mut remote_events).await;
+            assert_ne!(value["name"], "teammate://hitl-approval-required");
+            assert!(!value.to_string().contains("private-argument"));
+            if value["name"] == "teammate://hitl-pending-changed" {
+                break;
+            }
+        }
+    });
+    assert_eq!(
+        command(
+            &endpoint,
+            "resolve_hitl_remote",
+            json!({"id":pending["id"],"nonce":"wrong","verdict":"approve"}),
+            false
+        )["outcome"],
+        "nonce-mismatch"
+    );
+    assert_eq!(
+        command_reply(
+            &endpoint,
+            "resolve_hitl_request",
+            json!({"id":pending["id"],"optionId":"not-offered"}),
+            true
+        )["ok"],
+        false
+    );
+    assert_eq!(
+        command_reply(
+            &endpoint,
+            "resolve_hitl_request",
+            json!({"id":pending["id"],"optionId":"once","workspaceId":Uuid::new_v4()}),
+            true
+        )["ok"],
+        false
+    );
+    assert_eq!(
+        command_reply(
+            &endpoint,
+            "resolve_hitl_request",
+            json!({"id":pending["id"],"verdict":"modify","replacement":"arbitrary command"}),
+            true
+        )["ok"],
+        false
+    );
+    let approve = {
+        let endpoint = endpoint.clone();
+        let id = pending["id"].clone();
+        std::thread::spawn(move || {
+            command(
+                &endpoint,
+                "resolve_hitl_request",
+                json!({"id":id,"optionId":"once"}),
+                true,
+            )
+        })
+    };
+    let remote_approve = {
+        let endpoint = endpoint.clone();
+        let id = pending["id"].clone();
+        let nonce = pending["resolutionNonce"].clone();
+        std::thread::spawn(move || {
+            command(
+                &endpoint,
+                "resolve_hitl_remote",
+                json!({"id":id,"nonce":nonce,"verdict":"approve"}),
+                false,
+            )
+        })
+    };
+    let local_won = approve.join().unwrap() == true;
+    let remote_won = remote_approve.join().unwrap()["outcome"] == "consumed";
+    assert_eq!(
+        usize::from(local_won) + usize::from(remote_won),
+        1,
+        "only one real client may resolve the Agent request"
+    );
+    assert_eq!(
+        command(
+            &endpoint,
+            "resolve_hitl_remote",
+            json!({"id":pending["id"],"nonce":pending["resolutionNonce"],"verdict":"approve"}),
+            false
+        )["outcome"],
+        "already-resolved"
+    );
+    wait_execution(
+        &endpoint,
+        &target,
+        &permission_delivery["deliveryId"],
+        "turn_ended",
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("permission-decisions"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    let mut prompt = native_target.clone();
+    prompt["message"] = json!("cancel-permission");
+    prompt["idempotency_key"] = json!("cancel-permission-prompt");
+    let cancellation = command(&endpoint, "send_agent_message", prompt, true);
+    let cancelled_permission = wait_permission(&endpoint);
+    let mut cancel = native_target.clone();
+    cancel["deliveryId"] = cancellation["deliveryId"].clone();
+    command(&endpoint, "cancel_agent_message", cancel, true);
+    wait_execution(&endpoint, &target, &cancellation["deliveryId"], "cancelled");
+    assert!(
+        command(&endpoint, "list_hitl_pending_local", json!({}), true)
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        command(
+            &endpoint,
+            "resolve_hitl_request",
+            json!({"id":cancelled_permission["id"],"optionId":"once"}),
+            true
+        ),
+        false
+    );
+    let records = fs::read_to_string(&history)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(records
+        .iter()
+        .any(|row| row["kind"] == "permission_decided"));
+    assert!(records
+        .iter()
+        .any(|row| row["kind"] == "permission_cancelled"));
+    assert!(records
+        .windows(2)
+        .all(|pair| pair[0]["sequence"].as_u64().unwrap() < pair[1]["sequence"].as_u64().unwrap()));
+    runtime.block_on(async {
+        local_events.close(None).await.unwrap();
+        remote_events.close(None).await.unwrap();
+    });
     let mut first = target.clone();
     first["message"] = json!("wait-for-cancel");
     first["idempotency_key"] = json!("prompt-1");
@@ -253,6 +543,16 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
     second["message"] = json!("after-cancel");
     second["idempotency_key"] = json!("prompt-2");
     let queued = tool(&endpoint, "ridge_send_message", second.clone());
+    assert_eq!(
+        command(
+            &endpoint,
+            "get_teammate_topology",
+            json!({"workspaceId":workspace}),
+            true
+        )["roster"][0]["currentDelivery"]["deliveryId"],
+        sent["deliveryId"],
+        "queued work must not replace the executing task projection"
+    );
     assert_eq!(
         fs::read_to_string(root.join("prompt-log")).unwrap(),
         "wait-for-cancel\n"

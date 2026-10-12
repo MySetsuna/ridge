@@ -10,7 +10,7 @@
 
   import { invoke } from '@tauri-apps/api/core';
   import { tick } from 'svelte';
-  import { Crown, Pause, Play, Send, X, Ghost } from 'lucide-svelte';
+  import { Crown, Square, Send, X, Ghost } from 'lucide-svelte';
   import { autoGrow } from '$lib/actions/autoGrow';
   import { memberTasksStore, recordMemberTask } from './memberTasks';
   import { showToast } from '$lib/stores/toast';
@@ -20,7 +20,7 @@
     clearAgentPaneAttention,
     switchWorkspace,
   } from '$lib/stores/paneTree';
-  import type { TeammateProfile, PendingApproval } from './teammateModel';
+  import type { TeammateProfile, PendingApproval, ProtocolDelivery } from './teammateModel';
 
   interface Props {
     /** 花名册条目；失联成员（编组里留了名但 roster 已无）传 null。 */
@@ -58,16 +58,15 @@
     onRefresh,
   }: Props = $props();
 
-  interface DeliveryReceipt {
-    deliveryId?: string;
-    status?: string;
-    deliveryAdapter?: string;
+  interface DeliveryReceipt extends Partial<ProtocolDelivery> {
     terminalAccepted?: boolean;
     agentAcknowledged?: boolean;
   }
 
   let input = $state('');
   let deliveryReceipt = $state<DeliveryReceipt | null>(null);
+  let sending = $state(false);
+  let pendingSend: { request: string; key: string } | null = null;
 
   async function refreshDeliveryReceipt(deliveryId: string, attempts = 0): Promise<void> {
     if (!workspaceId || !paneId || attempts >= 12) return;
@@ -81,7 +80,7 @@
         deliveryId,
       });
       if (receipt) deliveryReceipt = receipt;
-      if (receipt?.agentAcknowledged) return;
+      if (receipt?.agentAcknowledged || ['turn_ended', 'cancelled', 'rejected', 'unknown'].includes(receipt?.execution?.state ?? '')) return;
     } catch {
       // The original durable receipt remains useful if a transient poll fails.
       return;
@@ -91,12 +90,20 @@
 
   const present = $derived(profile !== null);
   const paneId = $derived(profile?.paneId ?? '');
-  const lastTask = $derived($memberTasksStore[agentId]);
+  const lastTask = $derived(profile?.currentDelivery?.payload?.text
+    ? { text: profile.currentDelivery.payload.text } : $memberTasksStore[agentId]);
+  const activeDelivery = $derived(
+    ['running', 'dispatching'].includes(profile?.currentDelivery?.execution?.state ?? '')
+      ? profile?.currentDelivery : deliveryReceipt,
+  );
+  const canSend = $derived(profile?.canSend === true && profile.online === true && profile.capabilities?.includes('acp.prompt') === true);
+  const canCancel = $derived(profile?.canCancel === true && profile.online === true && profile.capabilities?.includes('acp.cancel') === true
+    && ['running', 'dispatching'].includes(activeDelivery?.execution?.state ?? ''));
   const attention = $derived(
     workspaceId && paneId ? $agentPaneAttentionStore[`${workspaceId}:${paneId}`] : undefined
   );
   const attentionText = $derived(
-    attention === 'waiting' ? '待审批' : attention === 'stopped' ? '已下线，待查看' : attention === 'idle' ? '已完成，待查看' : ''
+    attention === 'waiting' ? '待审批' : attention === 'stopped' ? '连接已失效，待查看' : attention === 'idle' ? '回复已结束，待查看' : ''
   );
 
   function acknowledgeAttention(): void {
@@ -107,6 +114,8 @@
   const status = $derived.by(() => {
     if (pending.length > 0) return { text: '等待审批', cls: 'text-amber-300', dot: 'bg-amber-400 animate-pulse', rail: 'border-l-amber-400' };
     if (!profile) return { text: '失联', cls: 'text-red-300', dot: 'bg-red-400', rail: 'border-l-red-400' };
+    if (profile.online === false)
+      return { text: profile.lifecycle === 'Stopped' ? '已退出' : '失联', cls: 'text-red-300', dot: 'bg-red-400', rail: 'border-l-red-400' };
     if (profile.status === 'Suspended')
       return { text: '已暂停', cls: 'text-amber-300', dot: 'bg-amber-400', rail: 'border-l-amber-400' };
     if (profile.status === 'Disappeared')
@@ -139,7 +148,10 @@
   /** Give the member a task through the durable teammate Hub only. */
   async function send() {
     const text = input.trim();
-    if (!text || !paneId) return;
+    if (!text || !paneId || !canSend || sending) return;
+    const request = JSON.stringify([workspaceId, agentId, profile?.generation, profile?.lease, text]);
+    if (pendingSend?.request !== request) pendingSend = { request, key: crypto.randomUUID() };
+    sending = true;
     try {
       const receipt = await invoke<DeliveryReceipt>('send_agent_message', {
         workspaceId,
@@ -149,36 +161,42 @@
         lease: profile?.lease,
         message: text,
         from: 'desktop-ui',
-        idempotency_key: crypto.randomUUID(),
+        idempotency_key: pendingSend.key,
       });
       deliveryReceipt = receipt ?? { status: 'queued' };
       if (receipt?.deliveryId) void refreshDeliveryReceipt(receipt.deliveryId);
       recordMemberTask(agentId, text);
       input = '';
+      pendingSend = null;
     } catch (e) {
       console.warn('[agent-member] dispatch failed', e);
-      showToast(`向 ${name} 投递失败`, 'error');
-    }
+      showToast(`未取得投递确认：${e instanceof Error ? e.message : String(e)}`, 'error');
+    } finally { sending = false; }
   }
 
-  async function toggleSuspend() {
-    if (!workspaceId || !paneId) return;
+  async function cancelCurrentTask() {
+    if (!workspaceId || !canCancel || !activeDelivery?.deliveryId) return;
     try {
-      await invoke(profile?.status === 'Suspended' ? 'resume_agent' : 'suspend_agent', {
-        workspaceId,
-        paneId,
+      await invoke('cancel_agent_message', {
+        workspaceId, agentId, generation: profile?.generation, lease: profile?.lease,
+        deliveryId: activeDelivery.deliveryId,
       });
+      showToast('已请求取消，等待 Agent 返回', 'info');
       onRefresh?.();
     } catch (e) {
-      console.warn('[agent-member] suspend/resume failed', e);
+      showToast(`取消失败：${e instanceof Error ? e.message : String(e)}`, 'error');
     }
   }
 
   async function decide(id: string, verdict: 'approve' | 'reject') {
     try {
-      await invoke('resolve_hitl_request', { id, verdict, replacement: null });
+      const nonce = pending.find(item => item.id === id)?.resolutionNonce;
+      const consumed = nonce
+        ? (await invoke<{ outcome: string }>('resolve_hitl_remote', { id, nonce, verdict })).outcome === 'consumed'
+        : await invoke<boolean>('resolve_hitl_request', { id, verdict, replacement: null });
+      if (!consumed) showToast('审批已失效或已由其他客户端处理', 'info');
     } catch (e) {
-      console.warn('[agent-member] resolve_hitl_request failed', e);
+      showToast(`审批失败：${e instanceof Error ? e.message : String(e)}`, 'error');
     }
     onRefresh?.();
   }
@@ -256,16 +274,16 @@
           <Crown class="h-4 w-4" />
         </button>
       {/if}
-      {#if present && paneId}
+      {#if canCancel}
         <button
           type="button"
-          title={profile?.status === 'Suspended' ? '恢复 agent 输入' : '暂停 agent 输入（人类输入不受限）'}
-          aria-label="暂停或恢复 agent"
-          onclick={toggleSuspend}
+          title="停止当前任务；保留 Agent 进程"
+          aria-label="停止当前任务"
+          onclick={cancelCurrentTask}
           class="rounded-md p-1.5 text-[var(--rg-fg-muted)] opacity-0 transition hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)]
             group-hover/mem:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60"
         >
-          {#if profile?.status === 'Suspended'}<Play class="h-4 w-4" />{:else}<Pause class="h-4 w-4" />{/if}
+          <Square class="h-4 w-4" />
         </button>
       {/if}
       {#if leader && !present}
@@ -290,8 +308,18 @@
 
   {#if deliveryReceipt}
     <p class="mt-2 rounded-md bg-sky-500/10 px-2 py-1.5 text-[11px] leading-4 text-sky-200" aria-live="polite">
-      已进入 Hub 队列{deliveryReceipt.deliveryId ? ` · ${deliveryReceipt.deliveryId.slice(0, 8)}` : ''}
-      {#if deliveryReceipt.agentAcknowledged}
+      Hub 投递{deliveryReceipt.deliveryId ? ` · ${deliveryReceipt.deliveryId.slice(0, 8)}` : ''}
+      {#if deliveryReceipt.execution?.state === 'turn_ended'}
+        · 回复已结束（{deliveryReceipt.execution.response?.stopReason ?? '未知原因'}）
+      {:else if deliveryReceipt.execution?.state === 'cancelled'}
+        · 已取消
+      {:else if deliveryReceipt.execution?.state === 'unknown'}
+        · 结果待确认，不自动重发
+      {:else if deliveryReceipt.execution?.state === 'rejected'}
+        · 未执行：{deliveryReceipt.execution.reason ?? '请求被拒绝'}
+      {:else if deliveryReceipt.execution?.state === 'running'}
+        · Agent 执行中
+      {:else if deliveryReceipt.agentAcknowledged}
         · agent 已确认
       {:else if deliveryReceipt.terminalAccepted}
         · 终端适配器已接收
@@ -352,10 +380,10 @@
         ></textarea>
         <button
           type="button"
-          title="发送给该成员"
+          title={canSend ? '发送给该成员' : '需先连接支持 ACP prompt 的既有会话'}
           aria-label="发送给该成员"
           onclick={send}
-          disabled={!input.trim()}
+          disabled={!input.trim() || !canSend || sending}
           class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--rg-accent)]/14 text-[var(--rg-accent)] transition
             hover:bg-[var(--rg-accent)]/24 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-35
             focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60"
@@ -363,6 +391,7 @@
           <Send class="h-4 w-4" />
         </button>
       </div>
+      {#if !canSend}<p class="mt-1 text-[11px] text-[var(--rg-fg-muted)]">协议未连接或能力未确认，暂不能发送。</p>{/if}
     </section>
   {/if}
 </li>

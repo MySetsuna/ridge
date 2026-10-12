@@ -761,6 +761,42 @@ impl McpSessionState {
         Ok(entry.clone())
     }
 
+    /// Read the newest durable protocol delivery for a precise live binding.
+    pub fn latest_runtime_receipt(
+        &self,
+        agent_id: &str,
+        generation: u64,
+        lease: &str,
+    ) -> Result<Option<Value>, String> {
+        let receipts = self
+            .receipts
+            .lock()
+            .map_err(|_| "Hub receipt lock poisoned")?;
+        let target = |entry: &&Value| {
+            entry["to"]["agentId"] == agent_id
+                && entry["to"]["generation"] == generation
+                && entry["to"]["lease"] == lease
+                && entry["deliveryAdapter"] == "runtime_api"
+        };
+        let entries = || {
+            receipts
+                .order
+                .iter()
+                .rev()
+                .filter_map(|id| receipts.by_id.get(id))
+                .filter(target)
+        };
+        Ok(entries()
+            .find(|entry| {
+                matches!(
+                    entry["execution"]["state"].as_str(),
+                    Some("running" | "dispatching")
+                )
+            })
+            .or_else(|| entries().next())
+            .cloned())
+    }
+
     pub fn record_runtime_execution(
         &self,
         agent_id: &str,
@@ -1826,6 +1862,12 @@ fn enqueue_hub_entry(
     } else if !target.pane_addressed {
         probe.pty = HubPtySafety::default();
     }
+    if target.acp_bound && !probe.runtime_api {
+        return Err(hub_error(
+            "delivery_unavailable",
+            "existing ACP conversation has no live Runtime route",
+        ));
+    }
     let adapter = choose_delivery_adapter(probe).ok_or_else(|| {
         hub_error(
             "delivery_unavailable",
@@ -2291,6 +2333,7 @@ struct HubTarget {
     /// adapter. Agent-id-only targets may carry a synthetic pane locator, but
     /// that locator is never a PTY authorization.
     pane_addressed: bool,
+    acp_bound: bool,
 }
 
 impl HubTarget {
@@ -2440,6 +2483,8 @@ fn resolve_hub_target(
     }
     let pane_addressed = target.is_some();
     let target_key = identity_target_key(&workspace_id, &agent_id, generation, &lease);
+    let acp_bound = identity["protocolBinding"]["protocol"] == "acp"
+        || identity["protocol_binding"]["protocol"] == "acp";
     Ok(HubTarget {
         target_key,
         agent_id,
@@ -2449,6 +2494,7 @@ fn resolve_hub_target(
         generation,
         lease,
         pane_addressed,
+        acp_bound,
     })
 }
 
@@ -4897,6 +4943,7 @@ mod tests {
             generation: 1,
             lease: "adapter-lease".into(),
             pane_addressed: true,
+            acp_bound: false,
         }
     }
 
@@ -5195,6 +5242,34 @@ mod tests {
     }
 
     #[test]
+    fn acp_conversation_without_a_live_route_cannot_degrade_to_mcp_pull() {
+        let mut profile = identity_profile(
+            "registered",
+            "workspace",
+            1,
+            "lease",
+            true,
+            "Online",
+            &["messages", "acp.prompt"],
+        );
+        profile["roster"][0]["protocolBinding"] = json!({"protocol":"acp"});
+        let host = FencedHost::new(profile);
+        let state = McpSessionState::default();
+        let reply = call_tool_rpc(
+            "ridge_send_message",
+            json!({"workspace_id":"workspace","agent_id":"registered","generation":1,"lease":"lease","message":"must not silently queue","idempotency_key":"request"}),
+            &host,
+            &state,
+        );
+        assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        assert!(reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("delivery_unavailable"));
+        assert!(state.receipts.lock().unwrap().by_id.is_empty());
+    }
+
+    #[test]
     fn runtime_execution_is_fenced_durable_and_separate_from_acknowledgement() {
         let path =
             std::env::temp_dir().join(format!("ridge-runtime-receipt-{}.sqlite3", Uuid::new_v4()));
@@ -5353,6 +5428,7 @@ mod tests {
             generation: 2,
             lease: "lease-2".into(),
             pane_addressed: true,
+            acp_bound: false,
         };
         let first = {
             let state = McpSessionState::with_sqlite(&path).expect("create SQLite Hub");

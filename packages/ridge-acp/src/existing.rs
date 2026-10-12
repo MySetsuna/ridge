@@ -125,8 +125,22 @@ impl ExistingConversation {
                     let response = if request.method != "session/request_permission" {
                         Err(rpc_error(-32601, "client method not supported"))
                     } else if params["sessionId"].as_str() != Some(&selected)
-                        || !params["toolCall"]["toolCallId"].is_string()
+                        || params["toolCall"]["toolCallId"]
+                            .as_str()
+                            .is_none_or(str::is_empty)
                         || !params["options"].is_array()
+                        || params["options"].as_array().is_some_and(|options| {
+                            let mut ids = std::collections::HashSet::new();
+                            options.is_empty()
+                                || options.len() > 256
+                                || options.iter().any(|option| {
+                                    option["optionId"]
+                                        .as_str()
+                                        .is_none_or(|id| id.is_empty() || !ids.insert(id))
+                                        || option["name"].as_str().is_none_or(str::is_empty)
+                                        || !option["kind"].is_string()
+                                })
+                        })
                     {
                         Err(rpc_error(-32602, "invalid permission request"))
                     } else {
@@ -228,10 +242,13 @@ impl ExistingConversation {
     pub fn is_busy(&self) -> bool {
         self.inner.busy.load(Ordering::Acquire)
     }
-    pub fn is_connected(&self) -> bool { !self.inner.transport.is_closed() }
+    pub fn is_connected(&self) -> bool {
+        !self.inner.transport.is_closed()
+    }
 
     /// Retires this connection only. Runtime owns the external process lifetime.
     pub fn disconnect(&self) {
+        self.inner.permissions.abort();
         self.inner.transport.shutdown();
     }
 

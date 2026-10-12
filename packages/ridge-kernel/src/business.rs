@@ -89,56 +89,51 @@ pub async fn command(
     if uuid::Uuid::parse_str(&request.connection_id).is_err() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    if request.method=="register_commune_member" {
-        if !request.native {return Ok(Json(json!({"ok":false,"error":ridge_core::CoreError::CapabilityDenied(request.method).to_json_rpc()})));}
-        let ctx=crate::host_core::runtime_ctx(state.fs_scope.roots(),true);
-        let value=match ridge_core::dispatch::validate_request(&request.method,&request.args,&ctx) {
-            Err(error)=>json!({"ok":false,"error":error.to_json_rpc()}),
-            Ok(_)=>match serde_json::from_value::<crate::commune::RegisterRequest>(request.args) {
-                Err(error)=>json!({"ok":false,"error":ridge_core::CoreError::InvalidArgs(error.to_string()).to_json_rpc()}),
-                Ok(args)=>match crate::commune::attach(&state,args).await {Ok(value)=>json!({"ok":true,"value":value}),Err(error)=>json!({"ok":false,"error":ridge_core::CoreError::InvalidArgs(error).to_json_rpc()})}
-            }
-        };
-        return Ok(Json(value));
-    }
-    let result = tokio::task::spawn_blocking(move || {
-        let ctx = crate::host_core::runtime_ctx_with_events(
-            &request.roots,
-            request.native,
-            Arc::new(state.business_events.clone()),
-        )
-        .with_connection(request.connection_id);
+    let ctx = crate::host_core::runtime_ctx_with_events(
+        &request.roots,
+        request.native,
+        Arc::new(state.business_events.clone()),
+    )
+    .with_connection(request.connection_id.clone());
+    let admission = (|| {
         let method = if request.native {
             ridge_core::protocol_guard::admit_desktop_method(&request.method)
         } else {
             ridge_core::protocol_guard::admit_remote_method(&request.method)
-        };
-        let result = method
-            .map_err(ridge_core::CoreError::InvalidArgs)
-            .and_then(|method| {
-                // Operator scope and client scope both constrain execution;
-                // a privately issued native grant cannot widen the Kernel root.
-                let operator =
-                    crate::host_core::runtime_ctx(state.fs_scope.roots(), request.native);
-                ridge_core::dispatch::validate_request(&method, &request.args, &operator)?;
-                ridge_core::dispatch::validate_request(&method, &request.args, &ctx)?;
-                crate::workspace_commands::dispatch(&state, &method, &request.args, &ctx)
-                    .unwrap_or_else(||ridge_core::dispatch(&method, request.args, &ctx))
-            });
-        match result {
-            Ok(value) => json!({"ok":true,"value":value}),
-            Err(error) => json!({"ok":false,"error":error.to_json_rpc()}),
         }
-    })
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(result))
+        .map_err(ridge_core::CoreError::InvalidArgs)?;
+        let operator = crate::host_core::runtime_ctx(state.fs_scope.roots(), request.native);
+        ridge_core::dispatch::validate_request(&method, &request.args, &operator)?;
+        ridge_core::dispatch::validate_request(&method, &request.args, &ctx)
+    })();
+    let method = match admission {
+        Ok(method) => method,
+        Err(error) => return Ok(Json(json!({"ok":false,"error":error.to_json_rpc()}))),
+    };
+    let result = if crate::commune::owns_method(&method) {
+        crate::commune::dispatch(&state, &method, &request.args, request.native)
+            .await
+            .map_err(ridge_core::CoreError::InvalidArgs)
+    } else {
+        tokio::task::spawn_blocking(move || {
+            crate::workspace_commands::dispatch(&state, &method, &request.args, &ctx)
+                .unwrap_or_else(|| ridge_core::dispatch(&method, request.args, &ctx))
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+    Ok(Json(match result {
+        Ok(value) => json!({"ok":true,"value":value}),
+        Err(error) => json!({"ok":false,"error":error.to_json_rpc()}),
+    }))
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EventQuery {
     connection_id: String,
+    #[serde(default)]
+    native: bool,
 }
 pub async fn stream(
     State(state): State<AppState>,
@@ -168,6 +163,7 @@ pub async fn stream(
                 next = events.recv() => match next {
                     Ok(mut event) => {
                         if !targets_connection(&event, &query.connection_id) { continue; }
+                        if !query.native && event["name"]=="teammate://hitl-approval-required" { continue; }
                         event["runtimeEpoch"] = json!(state.runtime_epoch);
                         if sink.send(Message::Text(event.to_string())).await.is_err() { break; }
                     }

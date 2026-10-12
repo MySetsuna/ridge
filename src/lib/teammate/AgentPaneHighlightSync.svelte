@@ -99,6 +99,9 @@
     schedule();
     const unsubs = [
       listen('teammate-layout-changed', (event) => scheduleEvent(event.payload)),
+      listen('commune-members-changed', (event) => scheduleEvent(event.payload)),
+      listen('commune-task-changed', (event) => scheduleEvent(event.payload)),
+      listen('teammate://hitl-pending-changed', () => schedule()),
       listen('pane-output-activity', (event) => scheduleEvent(event.payload)),
       listen('pane-tree-changed', (event) => scheduleEvent(event.payload)),
       listen('pane-pty-closed', (event) => scheduleEvent(event.payload)),

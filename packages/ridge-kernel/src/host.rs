@@ -926,7 +926,7 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsCon
     let (out_tx, mut out_rx) = mpsc::channel::<Message>(64);
     let connection_id = Uuid::new_v4().to_string();
     let endpoint = host.current_endpoint();
-    let Ok(mut events_request) = format!("ws://127.0.0.1:{}/v1/domain/events?connectionId={connection_id}", endpoint.port).into_client_request() else { return; };
+    let Ok(mut events_request) = format!("ws://127.0.0.1:{}/v1/domain/events?connectionId={connection_id}&native={}", endpoint.port, binding.is_some()).into_client_request() else { return; };
     let Ok(token) = endpoint.token.parse() else { return; };
     events_request.headers_mut().insert("x-ridge-kernel-token", token);
     let Ok(Ok((mut events, _))) = tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(events_request)).await else { return; };
@@ -1702,8 +1702,6 @@ fn dispatch(
             | "get_pane_foreground_process"
             | "get_pty_runtime_identity"
             | "get_workspace_memory"
-            | "get_teammate_topology"
-            | "list_hitl_pending"
             | "get_orchestration_health"
             | "read_agent_recent_replies"
     ) {
@@ -1951,8 +1949,6 @@ fn is_kernel_host_method(method: &str) -> bool {
             | "get_pane_foreground_process"
             | "get_pty_runtime_identity"
             | "get_workspace_memory"
-            | "get_teammate_topology"
-            | "list_hitl_pending"
             | "get_orchestration_health"
             | "read_agent_recent_replies"
             | "open_workspace_from_file"

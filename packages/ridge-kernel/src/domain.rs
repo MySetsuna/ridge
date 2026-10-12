@@ -2338,6 +2338,7 @@ mod tests {
         let ptys = Arc::new(crate::pty::PtyRegistry::default());
         ptys.set_runtime_epoch(epoch.clone());
         AppState {
+            permissions: Default::default(),
             commune: Default::default(),
             retired_workspaces: Default::default(),
             business_events: Default::default(),

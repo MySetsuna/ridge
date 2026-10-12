@@ -425,6 +425,7 @@
     initiator: string;
     reason: string;
     createdAt: number;
+    resolutionNonce?: string;
   }
   function parseHitlPending(raw: unknown): HitlPendingItem[] {
     if (!Array.isArray(raw)) return [];
@@ -435,6 +436,7 @@
         id: r.id,
         initiator: typeof r.initiator === 'string' ? r.initiator : '',
         reason: typeof r.reason === 'string' ? r.reason : '',
+        resolutionNonce: typeof r.resolutionNonce === 'string' ? r.resolutionNonce : undefined,
         createdAt: typeof r.createdAt === 'number' ? r.createdAt : 0,
       }];
     });
@@ -626,6 +628,9 @@
     const unOutput = listen('pane-output-activity', (e) => {
       if (eventPaneIsAgent(e.payload)) scheduleHistoryRefresh();
     });
+    const unCommune = ['commune-members-changed', 'commune-task-changed', 'teammate://hitl-pending-changed']
+      .map(name => listen(name, () => scheduleRefresh({ heavy: true })));
+    const unConversation = listen('commune-session-update', () => scheduleHistoryRefresh());
     // Agent 自助拉入：后端 `ridge_join_group` emit → 落到该工作区的编组 store。
     // 后端 emit 的 workspaceId = MCP 的活动工作区，与本面板的 `workspaceId`(焦点工作区)
     // 常态一致；仅在两者短暂不同步时才 mismatch。失败一律 warn（勿静默吞——评审 HIGH）。
@@ -670,6 +675,7 @@
       unJoin.then((f) => f()).catch(() => {});
       unLayout.then((f) => f()).catch(() => {});
       unOutput.then((f) => f()).catch(() => {});
+      for (const un of [...unCommune, unConversation]) un.then((f) => f()).catch(() => {});
     };
   });
 </script>

@@ -72,7 +72,21 @@ export interface TeammateProfile {
   readonly lifecycle?: string;
   readonly online?: boolean;
   readonly capabilities?: readonly string[];
+  readonly currentDelivery?: ProtocolDelivery;
+  readonly canSend?: boolean;
+  readonly canCancel?: boolean;
 }
+
+export interface ProtocolDelivery {
+  readonly deliveryId: string;
+  readonly status?: string;
+  readonly agentAcknowledged?: boolean;
+  readonly deliveryAdapter?: string;
+  readonly payload?: { text?: string; objective?: string };
+  readonly execution?: { state?: string; reason?: string; response?: { stopReason?: string } };
+}
+
+export interface PermissionOption { readonly optionId: string; readonly name: string; readonly kind: string }
 
 export interface TopologyEdge {
   readonly from: string;
@@ -115,6 +129,8 @@ export interface HitlRequest {
   readonly nextStep?: string;
   /** A report from another execution gateway, not a Ridge-pending approval. */
   readonly kind: 'approval' | 'external_rejection';
+  readonly protocol?: 'acp';
+  readonly options?: readonly PermissionOption[];
 }
 
 /** 面板行内裁决用的**脱敏**待审批项（`list_hitl_pending` 投影，无命令全文）。 */
@@ -122,6 +138,7 @@ export interface PendingApproval {
   readonly id: string;
   readonly initiator: string;
   readonly reason: string;
+  readonly resolutionNonce?: string;
 }
 
 export type HitlVerdict = 'approve' | 'reject' | 'modify';
@@ -207,7 +224,21 @@ function parseProfile(v: unknown): TeammateProfile | null {
     capabilities: Array.isArray(rec.capabilities)
       ? rec.capabilities.filter((item): item is string => typeof item === 'string')
       : undefined,
+    currentDelivery: parseProtocolDelivery(rec.currentDelivery),
+    canSend: typeof rec.canSend === 'boolean' ? rec.canSend : undefined,
+    canCancel: typeof rec.canCancel === 'boolean' ? rec.canCancel : undefined,
   };
+}
+
+export function parseProtocolDelivery(value: unknown): ProtocolDelivery | undefined {
+  const rec = asRecord(value);
+  if (!rec || typeof rec.deliveryId !== 'string') return undefined;
+  const payload = asRecord(rec.payload);
+  const execution = asRecord(rec.execution);
+  const response = asRecord(execution?.response);
+  return { deliveryId: rec.deliveryId, status: asString(rec.status), agentAcknowledged: rec.agentAcknowledged === true,
+    deliveryAdapter: asString(rec.deliveryAdapter), payload: payload ? { text: asString(payload.text), objective: asString(payload.objective) } : undefined,
+    execution: execution ? { state: asString(execution.state), reason: asString(execution.reason), response: response ? { stopReason: asString(response.stopReason) } : undefined } : undefined };
 }
 
 /**
@@ -261,6 +292,12 @@ export function parseHitlRequest(payload: unknown): HitlRequest | null {
     requestId: asString(rec.requestId) ?? asString(rec.request_id),
     nextStep: asString(rec.nextStep) ?? asString(rec.next_step),
     kind: rec.kind === 'external_rejection' ? 'external_rejection' : 'approval',
+    protocol: rec.protocol === 'acp' ? 'acp' : undefined,
+    options: rec.protocol === 'acp' && Array.isArray(rec.options) ? rec.options.flatMap((value) => {
+      const option = asRecord(value);
+      return option && typeof option.optionId === 'string' && typeof option.name === 'string' && typeof option.kind === 'string'
+        ? [{ optionId: option.optionId, name: option.name, kind: option.kind }] : [];
+    }) : undefined,
   };
 }
 

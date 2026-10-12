@@ -23,6 +23,14 @@ describe('riskLabel', () => {
 });
 
 describe('parseTopologySnapshot', () => {
+  it('preserves the shared Runtime delivery without treating a prompt end as objective success', () => {
+    const snapshot = parseTopologySnapshot({ roster: [{ id: 'registered', sessionId: 'existing',
+      currentDelivery: { deliveryId: 'delivery', status: 'adapter_accepted', payload: { text: 'task' },
+        execution: { state: 'turn_ended', response: { stopReason: 'end_turn' } } } }] });
+    expect(snapshot.roster[0].currentDelivery?.execution?.state).toBe('turn_ended');
+    expect(snapshot.roster[0].currentDelivery?.status).toBe('adapter_accepted');
+    expect(snapshot.roster[0].currentDelivery?.payload?.text).toBe('task');
+  });
   it('parses a full snapshot', () => {
     const snap = parseTopologySnapshot({
       roster: [
@@ -101,6 +109,17 @@ describe('parseTopologySnapshot', () => {
     expect(parseTopologySnapshot({ rosterChanged: false }).rosterChanged).toBe(false);
     expect(parseTopologySnapshot({ rosterChanged: 'true' }).rosterChanged).toBe(false);
   });
+});
+
+it('renders only permission options offered by the protocol peer, preserving opaque IDs', () => {
+  const request = parseHitlRequest({ id: 'permission', protocol: 'acp', options: [
+    { optionId: 'opaque:allow-7', name: '允许本次', kind: 'allow_once' },
+    { optionId: 'opaque:deny-9', name: '拒绝', kind: 'reject_once' },
+    { name: 'invalid without ID', kind: 'allow_always' },
+  ] });
+  expect(request?.protocol).toBe('acp');
+  expect(request?.options?.map(option => option.optionId)).toEqual(['opaque:allow-7', 'opaque:deny-9']);
+  expect(parseHitlRequest({ id: 'legacy' })?.options).toBeUndefined();
 });
 
 describe('parseHitlRequest', () => {

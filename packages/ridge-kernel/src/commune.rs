@@ -1,5 +1,6 @@
 //! Generic ACP registration using OS-attested, already-running terminal endpoints.
 use crate::{
+    commune_permissions::ApprovalBinding,
     registry::{ridge_data_dir, save_roster_at},
     server::AppState,
 };
@@ -15,15 +16,245 @@ use ridge_core::{
     EventSink,
 };
 use ridge_mcp::delivery::HubDeliveryAdapter;
+use ridge_mcp::server::McpHost;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
-    io::Write,
     net::{SocketAddr, SocketAddrV4},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
+
+pub fn owns_method(method: &str) -> bool {
+    matches!(
+        method,
+        "register_commune_member"
+            | "get_teammate_topology"
+            | "list_hitl_pending"
+            | "list_hitl_pending_local"
+            | "get_pending_hitl_count"
+            | "resolve_hitl_request"
+            | "resolve_hitl_remote"
+            | "send_agent_message"
+            | "get_agent_message_delivery_status"
+            | "cancel_agent_message"
+    )
+}
+
+pub async fn dispatch(
+    state: &AppState,
+    method: &str,
+    args: &Value,
+    native: bool,
+) -> Result<Value, String> {
+    match method {
+        "register_commune_member" => {
+            if !native {
+                return Err("only a native trusted client may register an existing process".into());
+            }
+            attach(
+                state,
+                serde_json::from_value(args.clone()).map_err(|e| e.to_string())?,
+            )
+            .await
+        }
+        "get_teammate_topology" => {
+            let mut profile = crate::kernel_mcp::KernelMcpHost::new(state.clone())
+                .team_profile_for(args["workspaceId"].as_str())
+                .map_err(|error| match error {
+                    ridge_mcp::server::HostError::InvalidParams(message)
+                    | ridge_mcp::server::HostError::Internal(message)
+                    | ridge_mcp::server::HostError::Unsupported(message) => message,
+                })?;
+            let connections = state.commune.lock().await;
+            if let Some(roster) = profile["roster"].as_array_mut() {
+                roster.retain(|row| row["protocolBinding"].is_object());
+                for row in roster {
+                    let id = row["agentId"]
+                        .as_str()
+                        .ok_or("member has no ID")?
+                        .to_owned();
+                    let session = connections.get(&id);
+                    let connected = row["online"] == true
+                        && session.is_some_and(|session| session.is_connected());
+                    let working = connected && session.is_some_and(|session| session.is_busy());
+                    row["online"] = json!(connected);
+                    row["canSend"] = json!(native);
+                    row["canCancel"] = json!(native);
+                    row["status"] = json!(if !connected {
+                        "Disappeared"
+                    } else if working {
+                        "Working"
+                    } else {
+                        "Idle"
+                    });
+                    row["activity"] = json!(if working { "working" } else { "idle" });
+                    if let Some(info) = session.and_then(|session| session.agent_info()) {
+                        row["agentInfo"] = info.clone();
+                        row["name"] = info["title"]
+                            .as_str()
+                            .or(info["name"].as_str())
+                            .map(|name| json!(name))
+                            .unwrap_or_else(|| json!(id));
+                    }
+                    row["currentDelivery"] = state
+                        .mcp_state
+                        .latest_runtime_receipt(
+                            &id,
+                            row["generation"]
+                                .as_u64()
+                                .ok_or("member generation missing")?,
+                            row["lease"].as_str().ok_or("member lease missing")?,
+                        )?
+                        .unwrap_or(Value::Null);
+                }
+            }
+            Ok(profile)
+        }
+        "list_hitl_pending" => state.permissions.snapshot(false),
+        "list_hitl_pending_local" => {
+            if !native {
+                return Err("local permission details require native trust".into());
+            }
+            state.permissions.snapshot(true)
+        }
+        "get_pending_hitl_count" => Ok(json!(state
+            .permissions
+            .snapshot(false)?
+            .as_array()
+            .ok_or("invalid permission snapshot")?
+            .len())),
+        "resolve_hitl_request" | "resolve_hitl_remote" => {
+            if method == "resolve_hitl_request" && !native {
+                return Err("local permission resolution requires native trust".into());
+            }
+            if !args["replacement"].is_null() {
+                return Err("ACP permission requests cannot be rewritten".into());
+            }
+            let id = args["id"].as_str().ok_or("missing permission ID")?;
+            let Some(binding) = state.permissions.binding(id) else {
+                return Ok(if native && method == "resolve_hitl_request" {
+                    json!(false)
+                } else {
+                    json!({"outcome":"already-resolved"})
+                });
+            };
+            for (key, expected) in [
+                ("workspaceId", json!(binding.workspace_id)),
+                ("agentId", json!(binding.agent_id)),
+                ("generation", json!(binding.generation)),
+                ("lease", json!(binding.lease)),
+            ] {
+                if !args[key].is_null() && args[key] != expected {
+                    return Err("permission binding mismatch".into());
+                }
+            }
+            if !args["optionId"].is_null() && !args["optionId"].is_string() {
+                return Err("invalid permission option ID".into());
+            }
+            let session = state.commune.lock().await.get(&binding.agent_id).cloned();
+            let roster = state.roster.lock().map_err(|_| "roster unavailable")?;
+            let live = roster.agent_identities().into_iter().any(|member| {
+                member.online
+                    && member.agent_id == binding.agent_id
+                    && member.workspace_id == binding.workspace_id
+                    && member.session_id == binding.session_id
+                    && member.generation == binding.generation
+                    && member.lease == binding.lease
+                    && member.protocol_binding.as_ref().is_some_and(|peer| {
+                        process_identity::validate(&peer.process).is_ok()
+                            && process_identity::validate(&peer.endpoint_owner).is_ok()
+                    })
+            });
+            if !live || !session.is_some_and(|session| session.is_connected()) {
+                return Err("permission binding no longer live".into());
+            }
+            let outcome = state.permissions.resolve(
+                id,
+                args["optionId"].as_str(),
+                args["verdict"].as_str(),
+                if method == "resolve_hitl_remote" {
+                    Some(
+                        args["nonce"]
+                            .as_str()
+                            .ok_or("missing remote permission nonce")?,
+                    )
+                } else {
+                    None
+                },
+            )?;
+            drop(roster);
+            state
+                .business_events
+                .broadcast("teammate://hitl-pending-changed", Value::Null);
+            if method == "resolve_hitl_request" {
+                if outcome == "bad-verdict" {
+                    return Err("select an option actually offered by the Agent".into());
+                }
+                Ok(json!(outcome == "consumed"))
+            } else {
+                Ok(json!({"outcome":outcome}))
+            }
+        }
+        "send_agent_message" | "get_agent_message_delivery_status" | "cancel_agent_message" => {
+            let tool = match method {
+                "send_agent_message" => "ridge_send_message",
+                "cancel_agent_message" => "ridge_cancel_delivery",
+                _ => "ridge_delivery_status",
+            };
+            let mut request = json!({"workspace_id":args["workspaceId"],"agent_id":args["agentId"],"generation":args["generation"],"lease":args["lease"]});
+            if args["agentId"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .is_none()
+                || args["workspaceId"]
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+            {
+                return Err("message request requires exact member and workspace IDs".into());
+            }
+            if args["generation"]
+                .as_u64()
+                .filter(|value| *value > 0)
+                .is_none()
+                || args["lease"]
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+            {
+                return Err("message request requires an exact generation and lease".into());
+            }
+            if method == "send_agent_message" && !args["paneId"].is_null() {
+                request["target_pane_id"] = args["paneId"].clone();
+            }
+            if method == "send_agent_message" {
+                request["message"] = args["message"].clone();
+                request["idempotency_key"] = args["idempotency_key"].clone();
+                request["from"] = json!("user-client");
+            } else {
+                request["delivery_id"] = args["deliveryId"].clone();
+            }
+            let state = state.clone();
+            tokio::task::spawn_blocking(move || {
+                let host = crate::kernel_mcp::KernelMcpHost::new(state.clone());
+                let reply =
+                    ridge_mcp::server::call_tool_rpc(tool, request, &host, &state.mcp_state);
+                let content = reply["result"]["content"][0]["text"]
+                    .as_str()
+                    .ok_or_else(|| format!("invalid Hub result: {}", reply["error"]))?;
+                if reply["result"]["isError"] == true {
+                    return Err(content.to_owned());
+                }
+                serde_json::from_str(content).map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| e.to_string())?
+        }
+        _ => Err("unsupported Commune method".into()),
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -135,18 +366,27 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     let folder = ridge_data_dir().join("commune-history");
     std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
-    let mut options = std::fs::OpenOptions::new();
-    options.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let history = Arc::new(std::sync::Mutex::new(
-        options
-            .open(folder.join(format!("{agent_id}.jsonl")))
-            .map_err(|error| error.to_string())?,
-    ));
+    let history = state
+        .permissions
+        .history(&agent_id, &folder.join(format!("{agent_id}.jsonl")))?;
+    let generation = state
+        .roster
+        .lock()
+        .map_err(|_| "roster unavailable")?
+        .next_agent_generation(&agent_id);
+    let lease = Uuid::new_v4().to_string();
+    let approval = ApprovalBinding {
+        agent_id: agent_id.clone(),
+        workspace_id: request.workspace_id.to_string(),
+        pane_id: request.pane_id.to_string(),
+        session_id: request.session_id.clone(),
+        generation,
+        lease: lease.clone(),
+    };
+    let permission_log = history.clone();
+    let permissions = state.permissions.clone();
+    let permission_roster = state.roster.clone();
+    let permission_events = state.business_events.clone();
     let (read, write) = stream.into_split();
     let events = state.business_events.clone();
     let event_agent = agent_id.clone();
@@ -155,25 +395,34 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
         request.session_id.clone(),
         request.cwd.clone(),
         Arc::new(move |update| {
-            let mut history = history
-                .lock()
-                .map_err(|_| ridge_acp::AcpErrorWrap::Io("history lock unavailable".into()))?;
-            writeln!(
-                history,
-                "{}",
-                json!({"agentId":event_agent,"params":update})
-            )
-            .map_err(|error| ridge_acp::AcpErrorWrap::Io(error.to_string()))?;
-            history
-                .sync_data()
-                .map_err(|error| ridge_acp::AcpErrorWrap::Io(error.to_string()))?;
-            events.broadcast(
-                "commune-session-update",
-                json!({"agentId":event_agent,"params":update}),
-            );
+            let record = history
+                .append(json!({"kind":"session_update","agentId":event_agent,"params":update}))
+                .map_err(ridge_acp::AcpErrorWrap::Io)?;
+            events.broadcast("commune-session-update", record);
             Ok(())
         }),
-        Arc::new(|_| Box::pin(async { None })),
+        Arc::new(move |params| {
+            let permissions = permissions.clone();
+            let approval = approval.clone();
+            let roster = permission_roster.clone();
+            let log = permission_log.clone();
+            let events = permission_events.clone();
+            Box::pin(async move {
+                let live = roster.lock().is_ok_and(|roster| {
+                    roster.agent_identities().into_iter().any(|member| {
+                        member.online
+                            && member.agent_id == approval.agent_id
+                            && member.session_id == approval.session_id
+                            && member.generation == approval.generation
+                            && member.lease == approval.lease
+                    })
+                });
+                if !live {
+                    return None;
+                }
+                permissions.request(approval, params, log, events).await
+            })
+        }),
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -188,8 +437,10 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
     }
     let mut roster = state.roster.lock().map_err(|_| "roster unavailable")?;
     let mut next = roster.clone();
-    let generation = next.next_agent_generation(&agent_id);
-    let lease = Uuid::new_v4().to_string();
+    if next.next_agent_generation(&agent_id) != generation {
+        session.disconnect();
+        return Err("Agent generation changed during registration".into());
+    }
     let binding = ProtocolBinding {
         protocol: "acp".into(),
         host_id: state.host_id.clone(),

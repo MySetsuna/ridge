@@ -46,6 +46,7 @@ pub(crate) struct OutputLeaseSlot {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub(crate) permissions: Arc<crate::commune_permissions::Permissions>,
     pub(crate) commune: Arc<tokio::sync::Mutex<std::collections::HashMap<String,Arc<ridge_acp::existing::ExistingConversation>>>>,
     /// Serializes workspace retirement with legacy topology/PTY registration.
     pub(crate) retired_workspaces: Arc<std::sync::Mutex<std::collections::HashSet<Uuid>>>,
@@ -272,6 +273,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
     let port = local.port();
 
     let state = AppState {
+        permissions: Default::default(),
         commune: Default::default(),
         retired_workspaces: Default::default(),
         business_events: Default::default(),
