@@ -87,6 +87,7 @@ pub async fn dispatch(
             let groups = crate::commune_groups::projection(state, workspace)?;
             profile["groups"] = groups["groups"].clone();
             profile["groupsRevision"] = groups["groupsRevision"].clone();
+            profile["groupTasks"] = crate::commune_tasks::list(state, workspace)?;
             if let Some(roster) = profile["roster"].as_array_mut() {
                 roster.retain(|row| row["protocolBinding"].is_object());
                 for row in roster {
@@ -217,6 +218,14 @@ pub async fn dispatch(
             }
         }
         "send_agent_message" | "get_agent_message_delivery_status" | "cancel_agent_message" => {
+            if args.get("groupAction").is_some() || args.get("groupTaskId").is_some() {
+                let state = state.clone(); let args = args.clone(); let method = method.to_owned();
+                return tokio::task::spawn_blocking(move || match method.as_str() {
+                    "send_agent_message" => crate::commune_tasks::send(&state,&args),
+                    "cancel_agent_message" => crate::commune_tasks::cancel(&state,&args),
+                    _ => crate::commune_tasks::status(&state,&args),
+                }).await.map_err(|e| e.to_string())?;
+            }
             let grouped = method == "send_agent_message" && args.get("groupId").is_some();
             let tool = match method {
                 "send_agent_message" if grouped => "ridge_create_task",
@@ -412,6 +421,7 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
     let permissions = state.permissions.clone();
     let permission_roster = state.roster.clone();
     let permission_events = state.business_events.clone();
+    let permission_hub = state.mcp_state.clone();
     let replay_id = Uuid::new_v4().to_string();
     history.append(json!({"kind":"replay_begin","agentId":agent_id,"sessionId":request.session_id,"replayId":replay_id,"generation":generation}))?;
     let replaying = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -439,6 +449,7 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
             let roster = permission_roster.clone();
             let log = permission_log.clone();
             let events = permission_events.clone();
+            let hub = permission_hub.clone();
             Box::pin(async move {
                 let live = roster.lock().is_ok_and(|roster| {
                     roster.agent_identities().into_iter().any(|member| {
@@ -452,7 +463,11 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
                 if !live {
                     return None;
                 }
-                permissions.request(approval, params, log, events).await
+                let context = match hub.latest_runtime_receipt(&approval.agent_id,approval.generation,&approval.lease) {
+                    Ok(Some(receipt)) if receipt["execution"]["state"] == "running" => json!({"deliveryId":receipt["deliveryId"],"taskId":receipt["taskId"],"groupTaskId":receipt["payload"]["groupContext"]["groupTaskId"]}),
+                    _ => Value::Null,
+                };
+                permissions.request(approval, params, log, events, context).await
             })
         }),
     )

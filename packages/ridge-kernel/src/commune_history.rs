@@ -133,7 +133,7 @@ fn visible(sequence: u64, record: &Value, replay: &Replay) -> bool {
     }
     replay.id.is_none() || sequence > replay.committed
 }
-fn content(record: &Value, native: bool) -> (String, String) {
+pub(crate) fn content(record: &Value, native: bool) -> (String, String) {
     let update = &record["params"]["update"];
     if let Some(kind) = update["sessionUpdate"].as_str() {
         if matches!(
@@ -162,6 +162,7 @@ fn content(record: &Value, native: bool) -> (String, String) {
     let text=match kind {
         "permission_requested" if !native=>"Agent 请求工具权限".into(),
         "execution" if !native=>json!({"deliveryId":record["deliveryId"],"taskId":record["taskId"],"groupId":record["payload"]["groupContext"]["groupId"],"groupRevision":record["payload"]["groupContext"]["groupRevision"],"state":record["execution"]["state"],"stopReason":record["execution"]["response"]["stopReason"]}).to_string(),
+        _ if !native=>json!({"kind":kind,"id":record["id"],"agentId":record["agentId"],"sessionId":record["sessionId"],"sequence":record["sequence"],"timestamp":record["timestamp"],"taskId":record["taskId"],"deliveryId":record["deliveryId"],"groupTaskId":record["groupTaskId"]}).to_string(),
         _=>record.to_string(),
     };
     (kind.into(), text)
@@ -216,7 +217,7 @@ fn row(
         "source":if record["phase"]=="replay" {"acp-replay"}else if !record["params"]["update"].is_null() {"acp-live"}else{"ridge-ledger"},
         "coverage":if replay.id.is_some() {"Agent 回放与接入后记录；接入前完整度未独立验证"}else{"自接入起记录；接入前覆盖未知"},
         "textOffset":offset,"textLength":count,"textCursor":next,"previousTextCursor":previous,
-        "groupId":record["payload"]["groupContext"]["groupId"],"groupRevision":record["payload"]["groupContext"]["groupRevision"],
+        "groupId":record["payload"]["groupContext"]["groupId"],"groupRevision":record["payload"]["groupContext"]["groupRevision"],"groupTaskId":record["groupTaskId"].as_str().or(record["payload"]["groupContext"]["groupTaskId"].as_str()),
         "deliveryId":record["deliveryId"],"taskId":record["taskId"],"correlationId":record["correlationId"],"causationId":record["causationId"]}),
     )
 }

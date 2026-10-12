@@ -1,5 +1,6 @@
 /** Runtime owns group definitions; legacy persistence helpers support read-only migration. */
 import type { TeammateProfile } from './teammateModel';
+import type { CommuneGroupTask } from '../../../packages/remote/src/shared/transport/wsRemote';
 // ── 数据模型 ──
 
 /** 一个手动编组：成员用稳定 agent_id 引用（D1）。 */
@@ -374,6 +375,7 @@ class TeammateGroupStore {
   private requestVersion = 0;
   private refreshRequested = false;
   groups = $state<TeammateGroup[]>([]);
+  dispatches = $state<CommuneGroupTask[]>([]);
   revision = $state(0);
   busy = $state(false);
   error = $state('');
@@ -386,7 +388,7 @@ class TeammateGroupStore {
     this.runtimeWorkspaceId = workspaceId;
     this.storageKey = groupsStorageKey(stableWorkspaceKey(workspaceId, filePath));
     this.requestVersion++;
-    this.groups = []; this.revision = 0; this.busy = false; this.error = ''; this.notice = '';
+    this.groups = []; this.dispatches = []; this.revision = 0; this.busy = false; this.error = ''; this.notice = '';
     this.tasks = loadPersisted(this.storageKey).tasks;
     void this.refresh(true);
   }
@@ -425,9 +427,10 @@ class TeammateGroupStore {
       if (version === this.requestVersion) this.error = String(failure);
     } finally { this.finish(version); }
   }
-  private apply(projection: {groups: TeammateGroup[]; groupsRevision: number}): void {
+  private apply(projection: {groups: TeammateGroup[]; groupsRevision: number; groupTasks?: CommuneGroupTask[]}): void {
     if (!Array.isArray(projection.groups) || !Number.isSafeInteger(projection.groupsRevision)) throw new Error('Invalid group projection');
     this.groups = projection.groups; this.revision = projection.groupsRevision;
+    if (Array.isArray(projection.groupTasks)) this.dispatches = projection.groupTasks;
   }
   private async change(update: (groups: readonly TeammateGroup[]) => TeammateGroup[]): Promise<boolean> {
     if (!this.runtimeWorkspaceId || this.busy) { this.error = '编组同步中，请稍候再改。'; return false; }

@@ -19,6 +19,8 @@
   import { autoGrow } from '$lib/actions/autoGrow';
   import { recordMemberTask } from './memberTasks';
   import AgentMemberRow from './AgentMemberRow.svelte';
+  import CommuneGroupTasks from './CommuneGroupTasks.svelte';
+  import type { CommuneGroupTask } from '../../../packages/remote/src/shared/transport/wsRemote';
   import type { TeammateProfile, PendingApproval } from './teammateModel';
   import {
     teammateGroupStore,
@@ -59,10 +61,11 @@
     store.setWorkspace(workspaceId, filePath);
   });
   onMount(() => {
-    const stop = listen<{workspaceId:string}>('commune-groups-changed', event => {
-      if (event.payload.workspaceId === workspaceId) void store.refresh();
-    });
-    return () => { stop.then(fn => fn()).catch(() => {}); };
+    const stops = ['commune-groups-changed','commune-task-changed','teammate://hitl-pending-changed'].map(name =>
+      listen<{workspaceId?:string} | null>(name, event => {
+        if (!event.payload?.workspaceId || event.payload.workspaceId === workspaceId) void store.refresh();
+      }));
+    return () => { for (const stop of stops) stop.then(fn => fn()).catch(() => {}); };
   });
 
   // ── 新建编组的本地选择态 ──
@@ -444,6 +447,12 @@
               <Send class="h-3 w-3" />
             </button>
           </div>
+
+          <CommuneGroupTasks {workspaceId} {group} members={roster} tasks={store.dispatches}
+            read={request => invoke<CommuneGroupTask>('get_agent_message_delivery_status',{...request})}
+            submit={roster.some(member => member.canSend === true) ? request => invoke<CommuneGroupTask>('send_agent_message',{...request}) : undefined}
+            cancel={roster.some(member => member.canCancel === true) ? groupTaskId => invoke<CommuneGroupTask>('cancel_agent_message',{workspaceId,groupTaskId}) : undefined}
+            onRefresh={async () => { await store.refresh(); onRefresh?.(); }} />
 
           <!-- Read-only pre-migration record, not a current execution result. -->
           {#if store.tasksFor(group.id)[0]}

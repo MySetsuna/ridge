@@ -130,6 +130,12 @@ export interface HitlRequest {
   /** A report from another execution gateway, not a Ridge-pending approval. */
   readonly kind: 'approval' | 'external_rejection';
   readonly protocol?: 'acp';
+  readonly workspaceId?: string;
+  readonly agentId?: string;
+  readonly generation?: number;
+  readonly lease?: string;
+  readonly deliveryId?: string;
+  readonly groupTaskId?: string;
   readonly options?: readonly PermissionOption[];
 }
 
@@ -293,6 +299,9 @@ export function parseHitlRequest(payload: unknown): HitlRequest | null {
     nextStep: asString(rec.nextStep) ?? asString(rec.next_step),
     kind: rec.kind === 'external_rejection' ? 'external_rejection' : 'approval',
     protocol: rec.protocol === 'acp' ? 'acp' : undefined,
+    workspaceId: asString(rec.workspaceId), agentId: asString(rec.agentId),
+    generation: typeof rec.generation === 'number' ? rec.generation : undefined, lease: asString(rec.lease),
+    deliveryId: asString(rec.deliveryId), groupTaskId: asString(rec.groupTaskId),
     options: rec.protocol === 'acp' && Array.isArray(rec.options) ? rec.options.flatMap((value) => {
       const option = asRecord(value);
       return option && typeof option.optionId === 'string' && typeof option.name === 'string' && typeof option.kind === 'string'

@@ -332,7 +332,7 @@ pub trait McpHost: Send + Sync {
     }
 
     /// Freeze an authorized existing group leader and its exact conversation binding.
-    fn group_task_snapshot(&self, _id: &str, _revision: u64, _target: &Value) -> HostResult<Value> {
+    fn group_task_snapshot(&self, _id: &str, _revision: u64, _target: &Value, _args: &Value) -> HostResult<Value> {
         Err(HostError::Unsupported("group task authority unavailable".into()))
     }
 
@@ -752,10 +752,12 @@ impl McpSessionState {
             .receipts
             .lock()
             .map_err(|_| "Hub receipt lock poisoned")?;
-        let entry = receipts
-            .by_id
-            .get(delivery_id)
-            .ok_or("delivery receipt does not exist")?;
+        let entry = receipts.by_id.get(delivery_id).cloned();
+        drop(receipts);
+        let entry = match entry {
+            Some(entry) => entry,
+            None => self.persistence.as_ref().ok_or("delivery receipt does not exist")?.archived_receipt(delivery_id)?.ok_or("delivery receipt does not exist")?,
+        };
         let target = &entry["to"];
         if target["agentId"].as_str() != Some(agent_id)
             || target["generation"].as_u64() != Some(generation)
@@ -763,7 +765,66 @@ impl McpSessionState {
         {
             return Err("execution identity fence mismatch".into());
         }
-        Ok(entry.clone())
+        Ok(entry)
+    }
+
+    /// Read an exact accepted key without enqueueing, retrying, or consulting a live route.
+    pub fn receipt_for_key(&self, binding: &Value, from: &str, key: &str) -> Result<Option<Value>, String> {
+        let text = |field| binding[field].as_str().ok_or_else(|| format!("missing receipt binding {field}"));
+        let target = identity_target_key(text("workspaceId")?, text("agentId")?,
+            binding["generation"].as_u64().ok_or("missing receipt generation")?, text("lease")?);
+        let key = idempotency_key(&target, from, key);
+        if let Some(entry) = self.idempotency.lock().map_err(|_| "Hub idempotency lock poisoned")?.by_key.get(&key).cloned() {
+            return Ok(Some(entry));
+        }
+        self.persistence.as_ref().map(|persistence| persistence.lookup_idempotency(&key)).transpose().map(Option::flatten)
+    }
+
+    fn group_persistence(&self) -> Result<&HubPersistence, String> {
+        self.persistence.as_ref().ok_or("group dispatch requires durable Hub storage".into())
+    }
+    pub fn group_task(&self, workspace: &str, selector: &str, by_key: bool) -> Result<Option<Value>, String> {
+        let connection = self.group_persistence()?.connection.lock().map_err(|_| "Hub database lock poisoned")?;
+        group_task_row(&connection, workspace, selector, by_key)
+    }
+    pub fn group_tasks(&self, workspace: &str, limit: usize) -> Result<Vec<Value>, String> {
+        let connection = self.group_persistence()?.connection.lock().map_err(|_| "Hub database lock poisoned")?;
+        let mut statement = connection.prepare("SELECT entry_json FROM hub_group_tasks WHERE workspace_id = ?1 ORDER BY rowid DESC LIMIT ?2").map_err(|e| e.to_string())?;
+        let rows = statement.query_map(params![workspace,limit.clamp(1,50) as i64], |row| row.get::<_,String>(0)).map_err(|e| e.to_string())?;
+        rows.map(|row| serde_json::from_str(&row.map_err(|e| e.to_string())?).map_err(|e| e.to_string())).collect()
+    }
+    /// Reserve the complete frozen relation before handing any child to an adapter.
+    pub fn prepare_group_task(&self, workspace: &str, key: &str, record: Value) -> Result<(Value,bool), String> {
+        if record["request"]["workspaceId"] != workspace || record["request"]["idempotency_key"] != key || record["coordinating"] != true {
+            return Err("group dispatch reservation scope mismatch".into());
+        }
+        let mut connection = self.group_persistence()?.connection.lock().map_err(|_| "Hub database lock poisoned")?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        if let Some(previous) = group_task_row(&transaction,workspace,key,true)? { return Ok((previous,false)); }
+        let epoch = record["runtimeEpoch"].as_str().ok_or("missing coordinator epoch")?;
+        let active: i64 = transaction.query_row("SELECT COUNT(*) FROM hub_group_tasks WHERE runtime_epoch = ?1 AND coordinating = 1",params![epoch],|row|row.get(0)).map_err(|e| e.to_string())?;
+        if active >= 64 { return Err("group dispatch coordinator queue full (64)".into()); }
+        transaction.execute("INSERT INTO hub_group_tasks(task_id, workspace_id, idempotency_key, runtime_epoch, coordinating, entry_json) VALUES (?1,?2,?3,?4,1,?5)",
+            params![record["id"].as_str().ok_or("missing group task ID")?,workspace,key,epoch,record.to_string()]).map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
+        Ok((record,true))
+    }
+    pub fn update_group_task(&self, workspace: &str, id: &str, update: impl FnOnce(&mut Value) -> Result<(),String>) -> Result<Value,String> {
+        let mut connection = self.group_persistence()?.connection.lock().map_err(|_| "Hub database lock poisoned")?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let mut record = group_task_row(&transaction,workspace,id,false)?.ok_or("group task not found in workspace")?;
+        let original = record.clone();
+        update(&mut record)?;
+        if ["id","request","group","runtimeEpoch","createdAt"].iter().any(|field| original[*field] != record[*field])
+            || original["children"].as_array().map(Vec::len) != record["children"].as_array().map(Vec::len)
+            || original["children"].as_array().into_iter().flatten().zip(record["children"].as_array().into_iter().flatten())
+                .any(|(a,b)| ["key","binding","objective"].iter().any(|field| a[*field] != b[*field])) {
+            return Err("accepted group dispatch relation is immutable".into());
+        }
+        transaction.execute("UPDATE hub_group_tasks SET entry_json = ?1, coordinating = ?2 WHERE workspace_id = ?3 AND task_id = ?4",
+            params![record.to_string(),record["coordinating"].as_bool().unwrap_or(false) as i64,workspace,id]).map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
+        Ok(record)
     }
 
     /// Read the newest durable protocol delivery for a precise live binding.
@@ -773,6 +834,9 @@ impl McpSessionState {
         generation: u64,
         lease: &str,
     ) -> Result<Option<Value>, String> {
+        if let Some(persistence) = &self.persistence {
+            return Ok(persistence.archived_runtime_receipts(agent_id,generation,lease,true)?.into_iter().next());
+        }
         let receipts = self
             .receipts
             .lock()
@@ -834,7 +898,10 @@ impl McpSessionState {
         generation: u64,
         lease: &str,
     ) -> Result<usize, String> {
-        let pending = {
+        let pending = if let Some(persistence) = &self.persistence {
+            persistence.archived_runtime_receipts(agent_id,generation,lease,false)?.into_iter()
+                .map(|entry|entry["deliveryId"].as_str().map(str::to_owned).ok_or("archived delivery ID missing".to_string())).collect::<Result<Vec<_>,_>>()?
+        } else {
             let receipts = self
                 .receipts
                 .lock()
@@ -892,6 +959,12 @@ struct IdempotencyStore {
 struct HubPersistence {
     connection: Mutex<Connection>,
 }
+fn group_task_row(connection: &Connection, workspace: &str, selector: &str, by_key: bool) -> Result<Option<Value>,String> {
+    let query = if by_key { "SELECT entry_json FROM hub_group_tasks WHERE workspace_id = ?1 AND idempotency_key = ?2" }
+        else { "SELECT entry_json FROM hub_group_tasks WHERE workspace_id = ?1 AND task_id = ?2" };
+    let row: Option<String> = connection.query_row(query,params![workspace,selector],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+    row.map(|row| serde_json::from_str(&row).map_err(|e|e.to_string())).transpose()
+}
 
 struct PersistedHubState {
     messages: Vec<(String, Value)>,
@@ -901,6 +974,22 @@ struct PersistedHubState {
 }
 
 impl HubPersistence {
+    fn archived_receipt(&self, id: &str) -> Result<Option<Value>,String> {
+        let connection=self.connection.lock().map_err(|_| "Hub database lock poisoned")?;
+        let row: Option<String> = connection.query_row("SELECT entry_json FROM hub_receipt_archive WHERE delivery_id = ?1",params![id],|row|row.get(0)).optional().map_err(|e| e.to_string())?;
+        row.map(|row|serde_json::from_str(&row).map_err(|e|e.to_string())).transpose()
+    }
+    fn archived_runtime_receipts(&self, agent: &str, generation: u64, lease: &str, latest: bool) -> Result<Vec<Value>,String> {
+        let connection=self.connection.lock().map_err(|_|"Hub database lock poisoned")?;
+        let query=if latest {
+            "SELECT entry_json FROM hub_receipt_archive WHERE json_extract(entry_json,'$.to.agentId')=?1 AND json_extract(entry_json,'$.to.generation')=?2 AND json_extract(entry_json,'$.to.lease')=?3 AND json_extract(entry_json,'$.deliveryAdapter')='runtime_api' ORDER BY CASE WHEN json_extract(entry_json,'$.execution.state') IN ('running','dispatching') THEN 1 ELSE 0 END DESC, rowid DESC LIMIT 1"
+        } else {
+            "SELECT entry_json FROM hub_receipt_archive WHERE json_extract(entry_json,'$.to.agentId')=?1 AND json_extract(entry_json,'$.to.generation')=?2 AND json_extract(entry_json,'$.to.lease')=?3 AND json_extract(entry_json,'$.deliveryAdapter')='runtime_api' AND (json_extract(entry_json,'$.execution.state') IN ('running','dispatching') OR (json_extract(entry_json,'$.execution.state') IS NULL AND json_extract(entry_json,'$.status') IN ('queued','adapter_accepted')))"
+        };
+        let mut statement=connection.prepare(query).map_err(|e|e.to_string())?;
+        let rows=statement.query_map(params![agent,generation,lease],|row|row.get::<_,String>(0)).map_err(|e|e.to_string())?;
+        rows.map(|row|serde_json::from_str(&row.map_err(|e|e.to_string())?).map_err(|e|e.to_string())).collect()
+    }
     fn open(path: &Path) -> Result<Self, String> {
         if let Some(parent) = path
             .parent()
@@ -942,7 +1031,28 @@ impl HubPersistence {
                  CREATE TABLE IF NOT EXISTS hub_sequences (
                      target_key TEXT PRIMARY KEY,
                      sequence INTEGER NOT NULL
-                 );",
+                 );
+                 CREATE TABLE IF NOT EXISTS hub_group_tasks (
+                     task_id TEXT PRIMARY KEY,
+                     workspace_id TEXT NOT NULL,
+                     idempotency_key TEXT NOT NULL,
+                     runtime_epoch TEXT NOT NULL,
+                     coordinating INTEGER NOT NULL,
+                     entry_json TEXT NOT NULL,
+                     UNIQUE(workspace_id, idempotency_key)
+                 );
+                 CREATE INDEX IF NOT EXISTS hub_group_tasks_workspace ON hub_group_tasks(workspace_id);
+                 CREATE INDEX IF NOT EXISTS hub_group_tasks_coordinator ON hub_group_tasks(runtime_epoch, coordinating);
+                 CREATE TABLE IF NOT EXISTS hub_receipt_archive (
+                     idempotency_key TEXT PRIMARY KEY,
+                     target_key TEXT NOT NULL,
+                     delivery_id TEXT NOT NULL UNIQUE,
+                     entry_json TEXT NOT NULL,
+                     created_at INTEGER NOT NULL
+                 );
+                 INSERT OR IGNORE INTO hub_receipt_archive
+                     SELECT idempotency_key, target_key, json_extract(entry_json, '$.deliveryId'), entry_json, created_at FROM hub_idempotency;
+                 CREATE INDEX IF NOT EXISTS hub_receipt_archive_identity ON hub_receipt_archive(json_extract(entry_json,'$.to.agentId'), json_extract(entry_json,'$.to.generation'), json_extract(entry_json,'$.to.lease'));",
             )
             .map_err(|error| format!("initialize Hub schema: {error}"))?;
         Ok(Self {
@@ -1002,7 +1112,7 @@ impl HubPersistence {
         let connection = self.connection.lock().unwrap();
         let raw = connection
             .query_row(
-                "SELECT entry_json FROM hub_idempotency WHERE idempotency_key = ?1",
+                "SELECT entry_json FROM hub_idempotency WHERE idempotency_key = ?1 UNION ALL SELECT entry_json FROM hub_receipt_archive WHERE idempotency_key = ?1 LIMIT 1",
                 params![key],
                 |row| row.get::<_, String>(0),
             )
@@ -1061,7 +1171,7 @@ impl HubPersistence {
             .map_err(|error| format!("begin Hub transaction: {error}"))?;
         let existing = transaction
             .query_row(
-                "SELECT entry_json FROM hub_idempotency WHERE idempotency_key = ?1",
+                "SELECT entry_json FROM hub_idempotency WHERE idempotency_key = ?1 UNION ALL SELECT entry_json FROM hub_receipt_archive WHERE idempotency_key = ?1 LIMIT 1",
                 params![idempotency_key],
                 |row| row.get::<_, String>(0),
             )
@@ -1116,6 +1226,8 @@ impl HubPersistence {
                 params![idempotency_key, target_key, raw, now],
             )
             .map_err(|error| format!("persist Hub idempotency: {error}"))?;
+        transaction.execute("INSERT INTO hub_receipt_archive(idempotency_key,target_key,delivery_id,entry_json,created_at) VALUES (?1,?2,?3,?4,?5)",
+            params![idempotency_key,target_key,delivery_id,raw,now]).map_err(|e| format!("archive Hub receipt: {e}"))?;
         transaction
             .execute(
                 "DELETE FROM hub_idempotency
@@ -1145,7 +1257,9 @@ impl HubPersistence {
                 params![raw, delivery_id, key],
             )
             .map_err(|error| format!("update Hub receipt: {error}"))?;
-        if changed == 0 {
+        let archived = transaction.execute("UPDATE hub_receipt_archive SET entry_json = ?1 WHERE delivery_id = ?2 AND target_key = ?3",
+            params![raw,delivery_id,key]).map_err(|e| format!("update archived Hub receipt: {e}"))?;
+        if changed == 0 && archived == 0 {
             return Err("Hub receipt disappeared during update".into());
         }
         transaction
@@ -1174,13 +1288,16 @@ impl HubPersistence {
         let raw = serde_json::to_string(entry)
             .map_err(|error| format!("encode Hub dedupe update: {error}"))?;
         let connection = self.connection.lock().unwrap();
-        connection
+        let transaction=connection.unchecked_transaction().map_err(|e|e.to_string())?;
+        transaction.execute("UPDATE hub_receipt_archive SET entry_json = ?1 WHERE idempotency_key = ?2",params![raw,key])
+            .map_err(|e| format!("update archived Hub idempotency: {e}"))?;
+        transaction
             .execute(
                 "UPDATE hub_idempotency SET entry_json = ?1 WHERE idempotency_key = ?2",
                 params![raw, key],
             )
-            .map(|_| ())
-            .map_err(|error| format!("update Hub idempotency: {error}"))
+            .map_err(|error| format!("update Hub idempotency: {error}"))?;
+        transaction.commit().map_err(|e|e.to_string())
     }
 
     fn consume(&self, key: &str, delivery_ids: &[String]) -> Result<(), String> {
@@ -2711,7 +2828,8 @@ fn tool_hub_message(
         if let Some(existing) = dedupe_lookup(state, &self::idempotency_key(&target.target_key, from, idempotency_key)) {
             if existing["kind"] == "task" && existing["payload"]["objective"] == payload["objective"]
                 && existing["payload"]["groupContext"]["groupId"] == group_id
-                && existing["payload"]["groupContext"]["groupRevision"] == revision {
+                && existing["payload"]["groupContext"]["groupRevision"] == revision
+                && existing["payload"]["groupContext"]["groupTaskId"] == args["group_task_id"] {
                 let mut reply = existing;
                 reply["deduplicated"] = json!(true);
                 return Ok(reply.to_string());
@@ -2719,7 +2837,7 @@ fn tool_hub_message(
             return Err(hub_error("idempotency_conflict", "key already belongs to another group objective"));
         }
         let binding = json!({"agentId":target.agent_id,"sessionId":target.session_id,"workspaceId":target.workspace_id,"paneId":target.pane_id,"generation":target.generation,"lease":target.lease});
-        payload["groupContext"] = host.group_task_snapshot(group_id, revision, &binding)?;
+        payload["groupContext"] = host.group_task_snapshot(group_id, revision, &binding, args)?;
     }
     enqueue_hub_entry(
         host,
@@ -5370,6 +5488,35 @@ mod tests {
     }
 
     #[test]
+    fn archived_protocol_receipts_survive_cache_eviction_and_pane_retirement() {
+        let path=std::env::temp_dir().join(format!("ridge-receipt-archive-{}.sqlite3",Uuid::new_v4()));
+        let state=McpSessionState::with_sqlite(&path).unwrap();
+        let binding=json!({"workspaceId":"workspace","agentId":"member","generation":1,"lease":"lease","paneId":"pane"});
+        let target=identity_target_key("workspace","member",1,"lease");
+        for index in 0..=INBOX_CAP {
+            let key=index.to_string();
+            let entry=json!({"deliveryId":key,"targetKey":target,"from":"user-client","idempotencyKey":key,"to":binding,
+                "deliveryAdapter":"runtime_api","status":"adapter_accepted","execution":{"state":if index==0 {"running"}else{"turn_ended"}}});
+            state.persistence.as_ref().unwrap().persist_enqueue(&target,&entry,&idempotency_key(&target,"user-client",&key)).unwrap();
+        }
+        drop(state);
+        let state=McpSessionState::with_sqlite(&path).unwrap();
+        assert_eq!(state.receipts.lock().unwrap().by_id.len(),INBOX_CAP);
+        assert!(!state.receipts.lock().unwrap().by_id.contains_key("0"));
+        assert_eq!(state.latest_runtime_receipt("member",1,"lease").unwrap().unwrap()["deliveryId"],"0","active work has priority even after cache eviction");
+        assert_eq!(state.recover_runtime_executions("member",1,"lease").unwrap(),1);
+        assert_eq!(state.runtime_receipt("member",1,"lease","0").unwrap()["execution"]["state"],"unknown");
+        state.purge_pane("pane").unwrap();
+        let archived=state.receipt_for_key(&binding,"user-client","0").unwrap().unwrap();
+        assert_eq!(archived["execution"]["state"],"unknown");
+        assert_eq!(state.receipt_for_key(&binding,"user-client","1").unwrap().unwrap()["execution"]["state"],"turn_ended");
+        drop(state);
+        let reopened=McpSessionState::with_sqlite(&path).unwrap();
+        assert_eq!(reopened.receipt_for_key(&binding,"user-client","0").unwrap().unwrap(),archived);
+        assert_eq!(reopened.recover_runtime_executions("member",1,"lease").unwrap(),0);
+    }
+
+    #[test]
     fn sqlite_hub_rehydrates_and_persists_ack_and_consume() {
         let path = std::env::temp_dir().join(format!("ridge-mcp-hub-{}.sqlite3", Uuid::new_v4()));
         let entry = json!({
@@ -5522,6 +5669,49 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
         let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
+    }
+
+    #[test]
+    fn group_relations_are_scoped_immutable_and_persisted_without_replay() {
+        let path=std::env::temp_dir().join(format!("ridge-group-relations-{}.sqlite3",Uuid::new_v4()));
+        let state=McpSessionState::with_sqlite(&path).unwrap();
+        let record=json!({"id":"parent","request":{"workspaceId":"workspace","idempotency_key":"key"},"group":{"id":"group","revision":1},"runtimeEpoch":"epoch","createdAt":1,"coordinating":true,
+            "children":[{"key":"child-key","binding":{"agentId":"exact-member"},"objective":"approved","submission":"prepared"}],"cancellationRequested":false});
+        assert_eq!(state.prepare_group_task("workspace","key",record.clone()).unwrap(),(record.clone(),true));
+        assert_eq!(state.prepare_group_task("workspace","key",record.clone()).unwrap(),(record.clone(),false));
+        assert!(state.group_task("foreign","parent",false).unwrap().is_none());
+        assert!(state.update_group_task("workspace","parent",|task| {task["children"][0]["objective"]=json!("unapproved");Ok(())}).is_err());
+        assert_eq!(state.group_task("workspace","parent",false).unwrap(),Some(record.clone()));
+        state.update_group_task("workspace","parent",|task| {task["cancellationRequested"]=json!(true);task["coordinating"]=json!(false);Ok(())}).unwrap();
+        drop(state);
+        let reopened=McpSessionState::with_sqlite(&path).unwrap();
+        let persisted=reopened.group_task("workspace","parent",false).unwrap().unwrap();
+        assert_eq!(persisted["cancellationRequested"],true);
+        assert_eq!(persisted["children"][0]["submission"],"prepared","opening/querying cannot enqueue unresolved children");
+        assert_eq!(reopened.group_tasks("workspace",1).unwrap().len(),1);
+    }
+    #[test]
+    fn failed_parent_commit_does_not_publish_acceptance() {
+        let path=std::env::temp_dir().join(format!("ridge-group-readonly-{}.sqlite3",Uuid::new_v4()));
+        let state=McpSessionState::with_sqlite(path).unwrap();
+        state.persistence.as_ref().unwrap().connection.lock().unwrap().execute_batch("PRAGMA query_only=ON").unwrap();
+        assert!(state.prepare_group_task("workspace","key",json!({"id":"parent","request":{"workspaceId":"workspace","idempotency_key":"key"},"runtimeEpoch":"epoch","coordinating":true})).is_err());
+        assert!(state.group_tasks("workspace",50).unwrap().is_empty());
+    }
+    #[test]
+    fn group_coordinator_slots_are_bounded_and_retired_epochs_do_not_replay() {
+        let path=std::env::temp_dir().join(format!("ridge-group-slots-{}.sqlite3",Uuid::new_v4()));
+        let state=McpSessionState::with_sqlite(path).unwrap();
+        for index in 0..64 {
+            let key=index.to_string();
+            state.prepare_group_task("workspace",&key,json!({"id":key,"request":{"workspaceId":"workspace","idempotency_key":key},"runtimeEpoch":"epoch","coordinating":true})).unwrap();
+        }
+        let extra=json!({"id":"extra","request":{"workspaceId":"workspace","idempotency_key":"extra"},"runtimeEpoch":"epoch","coordinating":true});
+        assert!(state.prepare_group_task("workspace","extra",extra.clone()).unwrap_err().contains("queue full"));
+        assert_eq!(state.group_tasks("workspace",1000).unwrap().len(),50);
+        let mut new_epoch=extra;new_epoch["runtimeEpoch"]=json!("new-epoch");
+        state.prepare_group_task("workspace","extra",new_epoch).unwrap();
+        assert_eq!(state.group_task("workspace","0",false).unwrap().unwrap()["coordinating"],true,"new epoch cannot rewrite or replay the old relation");
     }
 
     #[test]

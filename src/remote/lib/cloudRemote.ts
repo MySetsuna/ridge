@@ -335,9 +335,14 @@ export class CloudRemoteConnection implements RemoteLink {
     });
     if (this.disposed) { this.terminalErrorUnlisten(); this.terminalErrorUnlisten = null; return; }
     try {
-      this.groupUnlisten = await this.bridge.listen('commune-groups-changed', event => {
-        this.emitMessage({type:'event', name:'commune-groups-changed', payload:event.payload});
-      });
+      const stops: UnlistenFn[] = [];
+      for (const name of ['commune-groups-changed','commune-task-changed','teammate://hitl-pending-changed']) {
+        try {
+          const stop = await this.bridge.listen(name, event => this.emitMessage({type:'event', name, payload:event.payload}));
+          stops.push(stop);
+        } catch { /* Explicit refresh remains available for unsupported events. */ }
+      }
+      this.groupUnlisten = () => { for (const stop of stops) stop(); };
       if (this.disposed) { this.groupUnlisten(); this.groupUnlisten = null; return; }
     } catch { /* Explicit refresh remains available when event subscription fails. */ }
     try {

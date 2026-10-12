@@ -496,7 +496,10 @@ impl KernelMcpHost {
 }
 
 impl McpHost for KernelMcpHost {
-    fn group_task_snapshot(&self, id: &str, revision: u64, target: &Value) -> HostResult<Value> {
+    fn group_task_snapshot(&self, id: &str, revision: u64, target: &Value, args: &Value) -> HostResult<Value> {
+        if args.get("group_task_id").is_some() {
+            return crate::commune_tasks::frozen_context(&self.state,id,revision,target,args).map_err(HostError::InvalidParams);
+        }
         let workspace = target["workspaceId"].as_str().ok_or_else(|| HostError::InvalidParams("missing target workspace".into()))?;
         let store = self.state.groups.lock().map_err(|_| HostError::Internal("group authority unavailable".into()))?;
         let snapshot = store.snapshot(workspace);

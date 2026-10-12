@@ -68,6 +68,24 @@ fn authorized(headers: &HeaderMap, state: &AppState) -> bool {
 fn targets_connection(event: &Value, connection: &str) -> bool {
     event["connectionId"].is_null() || event["connectionId"].as_str() == Some(connection)
 }
+fn project_event(mut event: Value, native: bool) -> Option<Value> {
+    if native { return Some(event); }
+    match event["name"].as_str() {
+        Some("teammate://hitl-approval-required") => return None,
+        Some("commune-session-update") => {
+            let record = &event["payload"];
+            let (kind,text) = crate::commune_history::content(record,false);
+            event["payload"] = json!({"agentId":record["agentId"],"sequence":record["sequence"],"timestamp":record["timestamp"],"kind":kind,"text":text.chars().take(4096).collect::<String>()});
+        }
+        Some("commune-task-changed") => {
+            let record = &event["payload"];
+            event["payload"] = json!({"workspaceId":record["workspaceId"],"groupTaskId":record["groupTaskId"].as_str().or(record["payload"]["groupContext"]["groupTaskId"].as_str()),
+                "deliveryId":record["deliveryId"],"taskId":record["taskId"],"state":record["execution"]["state"]});
+        }
+        _ => {},
+    }
+    Some(event)
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -161,9 +179,9 @@ pub async fn stream(
         loop {
             tokio::select! {
                 next = events.recv() => match next {
-                    Ok(mut event) => {
+                    Ok(event) => {
                         if !targets_connection(&event, &query.connection_id) { continue; }
-                        if !query.native && event["name"]=="teammate://hitl-approval-required" { continue; }
+                        let Some(mut event) = project_event(event, query.native) else {continue;};
                         event["runtimeEpoch"] = json!(state.runtime_epoch);
                         if sink.send(Message::Text(event.to_string())).await.is_err() { break; }
                     }
@@ -184,6 +202,17 @@ pub async fn stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remote_notifications_cannot_bypass_history_or_permission_redaction() {
+        let event=json!({"name":"commune-session-update","payload":{"kind":"session_update","params":{"update":{"sessionUpdate":"tool_call","rawInput":{"secret":"private-input"}}}}});
+        assert!(project_event(event.clone(),true).unwrap().to_string().contains("private-input"));
+        assert!(!project_event(event,false).unwrap().to_string().contains("private-input"));
+        let unknown=json!({"name":"commune-session-update","payload":{"kind":"session_update","params":{"unknownPrivateField":"private-input"}}});
+        assert!(!project_event(unknown,false).unwrap().to_string().contains("private-input"));
+        let task=json!({"name":"commune-task-changed","payload":{"workspaceId":"workspace","execution":{"state":"unknown","reason":"private-input"}}});
+        assert!(!project_event(task,false).unwrap().to_string().contains("private-input"));
+        assert!(project_event(json!({"name":"teammate://hitl-approval-required"}),false).is_none());
+    }
     #[test]
     fn broadcast_order_and_connection_privacy() {
         let events = BusinessEvents::default();

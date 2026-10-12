@@ -400,6 +400,7 @@ fn communication_tool_specs() -> Vec<ToolSpec> {
                     "objective": { "type": "string" },
                     "group_id": { "type": "string", "description": "Optional exact group ID; requires group_revision and its existing leader as target." },
                     "group_revision": { "type": "integer", "minimum": 1 },
+                    "group_task_id": { "type": "string", "description": "Existing authorized parent dispatch; target, objective and key must match its frozen child." },
                     "from": { "type": "string" },
                     "idempotency_key": { "type": "string" },
                     "correlation_id": { "type": "string" },

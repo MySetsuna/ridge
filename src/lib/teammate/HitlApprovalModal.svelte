@@ -75,6 +75,20 @@
     const items = await invoke<unknown>('list_hitl_pending_local');
     if (Array.isArray(items)) queue = [...items.map(parseHitlRequest).filter((item): item is HitlRequest => item !== null), ...queue.filter(item => item.kind === 'external_rejection')];
   }
+  async function cancelOriginalTask() {
+    const req = current;
+    if (!req || busy || req.protocol !== 'acp' || !req.workspaceId || !req.deliveryId) return;
+    busy = true; decisionError = '';
+    try {
+      const result = await invoke<{cancellationErrors?: {memberId:string;error:string}[]}>('cancel_agent_message',req.groupTaskId
+        ? {workspaceId:req.workspaceId,groupTaskId:req.groupTaskId}
+        : {workspaceId:req.workspaceId,agentId:req.agentId,generation:req.generation,lease:req.lease,deliveryId:req.deliveryId});
+      if (result.cancellationErrors?.length) decisionError = result.cancellationErrors.map(item => `${item.memberId}: ${item.error}`).join('\n');
+      // Keep the permission visible until the original protocol turn actually settles.
+      await refreshPending();
+    } catch (failure) { decisionError = `取消尚未确认：${String(failure)}`; }
+    finally { busy = false; }
+  }
 
   async function dismissExternalRejection() {
     const req = current;
@@ -211,6 +225,7 @@
         {/if}
         <div class="flex-1"></div>
         {#if current.protocol === 'acp'}
+          {#if current.workspaceId && current.deliveryId}<button onclick={cancelOriginalTask} disabled={busy} class="rounded px-3 py-1.5 text-[12px] text-red-300 hover:bg-red-500/15 disabled:opacity-50">{current.groupTaskId ? '取消所属组任务' : '取消此任务'}</button>{/if}
           {#each current.options ?? [] as option (option.optionId)}
             <button onclick={() => selectOption(option.optionId)} disabled={busy}
               class="rounded px-3 py-1.5 text-[12px] font-medium text-[var(--rg-fg)] bg-[var(--rg-surface)] hover:opacity-80 disabled:opacity-50">{option.name}</button>

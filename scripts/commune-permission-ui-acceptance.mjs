@@ -67,6 +67,17 @@ try {
     process: descriptor.process, endpointOwner: descriptor.process, endpoint: descriptor.endpoint, sessionId: descriptor.sessionId, cwd: root });
   assert.equal(registered.ok, true, registered.error);
   identity = registered.value;
+  const secondRoot = path.join(root,'second'); fs.mkdirSync(secondRoot);
+  const secondDescriptorPath = path.join(secondRoot,'endpoint.json');
+  const secondPane = crypto.randomUUID();
+  await call('POST','/v1/domain/ptys',{pty_id:secondPane,workspace_id:workspaceId,program:fixtureBinary,
+    args:['--exact','existing_protocol_endpoint_fixture','--ignored'],cwd:secondRoot,
+    env:{RIDGE_COMMUNE_FIXTURE:secondDescriptorPath,RIDGE_COMMUNE_LABEL:'custom-process-two'},role:'shell',cols:80,rows:24});
+  await until(() => fs.existsSync(secondDescriptorPath));
+  const secondDescriptor = JSON.parse(fs.readFileSync(secondDescriptorPath));
+  const secondRegistered = await call('POST','/v1/domain/commune/register',{workspaceId,paneId:secondPane,
+    process:secondDescriptor.process,endpointOwner:secondDescriptor.process,endpoint:secondDescriptor.endpoint,sessionId:secondDescriptor.sessionId,cwd:secondRoot});
+  assert.equal(secondRegistered.ok,true,secondRegistered.error);
   const grant = await call('POST', '/v1/local/clients', { deviceId: 'owned-approval-window', origin: new URL(devUrl).origin });
   browser = await chromium.launch({ headless: true });
   page = await browser.newPage({ viewport: { width: 900, height: 700 } });
@@ -128,7 +139,7 @@ try {
   await until(() => page.evaluate(() => !window.ownedGroups.busy));
   const groupUi = page.getByTestId('commune-groups');
   await groupUi.getByRole('button', {name:'新建编组',exact:true}).click();
-  await groupUi.getByRole('checkbox').check();
+  await groupUi.getByRole('checkbox',{name:'unknown-protocol-process',exact:true}).check();
   await groupUi.getByPlaceholder('组名（可选）').fill('Browser group');
   await groupUi.getByRole('button', {name:'建组（1）',exact:true}).click();
   await until(() => page.evaluate(() => !window.ownedGroups.busy && window.ownedGroups.groups.length === 1));
@@ -144,7 +155,7 @@ try {
   await groupUi.getByRole('button', {name:'给组派任务',exact:true}).click();
   let groupReceipt;
   await until(async () => {
-    groupReceipt = await page.evaluate(async () => (await window.ownedApproval.invoke('get_teammate_topology',{workspaceId:window.ownedApproval.target.workspaceId})).roster[0].currentDelivery);
+    groupReceipt = await page.evaluate(async () => (await window.ownedApproval.invoke('get_teammate_topology',{workspaceId:window.ownedApproval.target.workspaceId})).roster.find(member => member.agentId === window.ownedApproval.target.agentId).currentDelivery);
     return groupReceipt?.kind === 'task' && groupReceipt.execution?.state === 'turn_ended';
   });
   assert.equal(groupReceipt.payload.groupContext.groupId,projection.groups[0].id);
@@ -152,6 +163,39 @@ try {
   assert.ok(groupReceipt.taskId);
   assert.equal(groupReceipt.agentAcknowledged,false);
   assert.equal(fs.readFileSync(path.join(root,'prompt-log'),'utf8'),'browser-group-objective\n');
+  await groupUi.getByRole('button',{name:'向该组加成员',exact:true}).click();
+  await groupUi.getByRole('button',{name:'custom-process-two',exact:true}).click();
+  await until(() => page.evaluate(() => !window.ownedGroups.busy && window.ownedGroups.groups[0].memberAgentIds.length === 2));
+  const taskUi = groupUi.getByTestId('commune-group-tasks');
+  await taskUi.getByText('审定成员与目标，再派发',{exact:true}).click();
+  await taskUi.getByRole('checkbox',{name:'选择 unknown-protocol-process',exact:true}).check();
+  await taskUi.getByRole('checkbox',{name:'选择 custom-process-two',exact:true}).check();
+  await taskUi.getByRole('textbox',{name:'广播目标',exact:true}).fill('browser-broadcast');
+  const selectedDefinition = await page.evaluate(() => ({groups:JSON.parse(JSON.stringify(window.ownedGroups.groups)),groupsRevision:window.ownedGroups.revision}));
+  selectedDefinition.groups[0].color = '#123456';
+  const changed = await call('POST','/v1/domain/commands',{method:'set_teammate_groups',args:{workspaceId,groups:selectedDefinition.groups,expectedRevision:selectedDefinition.groupsRevision},native:false,roots:[],connectionId:crypto.randomUUID()});
+  assert.equal(changed.ok,true);
+  await taskUi.getByText('编组或会话绑定已变，须重新审定。',{exact:false}).waitFor();
+  assert.equal(await taskUi.getByRole('button',{name:'确认派发（2）',exact:true}).isDisabled(),true);
+  await taskUi.getByRole('button',{name:'清除旧选择',exact:true}).click();
+  await taskUi.getByRole('checkbox',{name:'选择 unknown-protocol-process',exact:true}).check();
+  await taskUi.getByRole('checkbox',{name:'选择 custom-process-two',exact:true}).check();
+  await taskUi.getByRole('button',{name:'确认派发（2）',exact:true}).click();
+  await until(async () => await taskUi.locator('[data-child-state="reply_ended"]').count() === 2);
+  await taskUi.getByRole('combobox',{name:'协作动作',exact:true}).selectOption('assign');
+  await taskUi.getByRole('checkbox',{name:'选择 unknown-protocol-process',exact:true}).check();
+  await taskUi.getByRole('checkbox',{name:'选择 custom-process-two',exact:true}).check();
+  await taskUi.getByRole('textbox',{name:'unknown-protocol-process 的审定任务',exact:true}).fill('cancel-permission');
+  await taskUi.getByRole('textbox',{name:'custom-process-two 的审定任务',exact:true}).fill('wait-for-cancel');
+  await taskUi.getByRole('button',{name:'确认派发（2）',exact:true}).click();
+  await until(async () => await taskUi.locator('[data-child-state="waiting_permission"]').count() === 1 && await taskUi.locator('[data-child-state="running"]').count() === 1);
+  const activeParent = taskUi.locator('article').filter({has:page.locator('[data-child-state="waiting_permission"]')});
+  const activeParentId = await activeParent.getAttribute('data-group-task-id');
+  await dialog.getByRole('button',{name:'取消所属组任务',exact:true}).click();
+  await until(async () => await taskUi.locator(`[data-group-task-id="${activeParentId}"] [data-child-state="cancelled"]`).count() === 2);
+  await until(async () => await dialog.count() === 0);
+  assert.equal(fs.readFileSync(path.join(root,'prompt-log'),'utf8'),'browser-group-objective\nbrowser-broadcast\n');
+  assert.equal(fs.readFileSync(path.join(secondRoot,'prompt-log'),'utf8'),'browser-broadcast\nwait-for-cancel\n');
   await groupUi.scrollIntoViewIfNeeded();
   await page.screenshot({path:path.resolve('.webview2-dev-cdp/070-commune-groups-ui.png')});
   const calls = await page.evaluate(() => window.ownedApproval.osCalls);
@@ -160,13 +204,16 @@ try {
   assert.deepEqual(pageErrors, [], 'production component reported browser errors');
   const ptys = await call('GET', '/v1/domain/ptys');
   assert.ok(ptys.ptys.some(pty => pty.id === paneId && pty.child_pid === descriptor.process.pid));
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, 'permission-decisions'), 'utf8').trim()), { optionId: 'once', outcome: 'selected' });
+  const decisions = fs.readFileSync(path.join(root,'permission-decisions'),'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(decisions,[{optionId:'once',outcome:'selected'},{outcome:'cancelled'}]);
+  assert.ok(ptys.ptys.some(pty => pty.id === secondPane && pty.child_pid === secondDescriptor.process.pid));
   evidence.checks = ['Actual peer options appear in the production modal with actual tool input', 'No Modify action for standard ACP permissions',
     'A real click resolves the original permission ID and the original prompt ends', 'Business RPC and permission events use Runtime; OS IPC only issues bootstrap grant',
     'Unmounting the presentation client preserves the exact existing Agent process',
     'Production history component reads replay, Runtime execution and approval records without a launch/resume action',
     'Production group UI creates exact registered membership through Runtime and converges to a remote revision event',
-    'A real group-leader task click freezes group and conversation binding in a durable task receipt; end_turn does not claim objective success'];
+    'A real group-leader task click freezes group and conversation binding in a durable task receipt; end_turn does not claim objective success',
+    'Production multi-member task UI preserves draft across refresh, blocks changed group revision, broadcasts once, shows permission/running per child and cancels both original turns'];
   evidence.screenshot = screenshot; evidence.result = 'PASS';
 } catch (error) {
   evidence.result = 'FAIL'; evidence.error = error.message; evidence.pageErrors = pageErrors;

@@ -1,5 +1,6 @@
 <script lang="ts">
   import CommuneHistory from '$lib/teammate/CommuneHistory.svelte';
+  import CommuneGroupTasks from '$lib/teammate/CommuneGroupTasks.svelte';
   import { onMount } from 'svelte';
   import { ArrowDown, ArrowUp, Check, Crown, Palette, Send, ShieldAlert, X } from 'lucide-svelte';
   import type {
@@ -391,9 +392,9 @@
         if (message.workspaceId === workspaceId) scheduleLiveRefresh();
       } else if (message.type === 'panes' && (!message.workspaceId || message.workspaceId === workspaceId)) {
         scheduleLiveRefresh();
-      } else if (message.type === 'event' && message.name === 'commune-groups-changed') {
+      } else if (message.type === 'event' && ['commune-groups-changed','commune-task-changed','teammate://hitl-pending-changed'].includes(message.name)) {
         const payload = message.payload as {workspaceId?: string} | undefined;
-        if (payload?.workspaceId === workspaceId) {
+        if (!payload?.workspaceId || payload.workspaceId === workspaceId) {
           void invalidateRosterQuery().then(() => scheduleLiveRefresh());
         }
       }
@@ -558,6 +559,7 @@
           {#each sortedGroupCandidates(g) as m (m.id)}
             <button class="member-add" onclick={() => toggleMember(g, m.id)}>+ {m.name}</button>
           {/each}
+          <CommuneGroupTasks {workspaceId} group={g} members={topo.roster} tasks={topo.groupTasks ?? []} />
         </div>
       {/each}
     {/if}

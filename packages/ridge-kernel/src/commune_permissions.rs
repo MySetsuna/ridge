@@ -94,6 +94,13 @@ pub struct Permissions(
     Mutex<HashMap<String, std::sync::Weak<HistoryLog>>>,
 );
 impl Permissions {
+    pub fn is_waiting(&self, binding: &Value) -> Result<bool, String> {
+        Ok(self.0.lock().map_err(|_| "permission registry unavailable")?.values().any(|entry| {
+            binding["agentId"] == entry.binding.agent_id && binding["workspaceId"] == entry.binding.workspace_id
+                && binding["sessionId"] == entry.binding.session_id && binding["generation"] == entry.binding.generation
+                && binding["lease"] == entry.binding.lease
+        }))
+    }
     /// Snapshot committed bytes only; history reads never create files or writers.
     pub fn history_length(&self, agent_id: &str, path: &Path) -> Result<Option<u64>, String> {
         let writer = self
@@ -136,6 +143,7 @@ impl Permissions {
         params: Value,
         log: Arc<HistoryLog>,
         events: BusinessEvents,
+        context: Value,
     ) -> Option<String> {
         let id = Uuid::new_v4().to_string();
         let nonce = Uuid::new_v4().simple().to_string();
@@ -148,7 +156,8 @@ impl Permissions {
             if pending.len() >= 256 {
                 return Err("permission queue full".into());
             }
-            let record = log.append(json!({"kind":"permission_requested","id":id,"agentId":binding.agent_id,"workspaceId":binding.workspace_id,"sessionId":binding.session_id,"params":params}))?;
+            let record = log.append(json!({"kind":"permission_requested","id":id,"agentId":binding.agent_id,"workspaceId":binding.workspace_id,"sessionId":binding.session_id,"params":params,
+                "deliveryId":context["deliveryId"],"taskId":context["taskId"],"groupTaskId":context["groupTaskId"]}))?;
             let title = params["toolCall"]["title"]
                 .as_str()
                 .or(params["toolCall"]["toolCallId"].as_str())
@@ -166,6 +175,7 @@ impl Permissions {
                 "sessionId":binding.session_id,"generation":binding.generation,"lease":binding.lease,
                 "kind":"approval","protocol":"acp","executor":"ACP Agent","level":"Dangerous","reason":"Agent 请求工具权限",
                 "action":action,
+                "deliveryId":context["deliveryId"],"groupTaskId":context["groupTaskId"],
                 "toolCall":params["toolCall"],"options":params["options"],"createdAt":record["timestamp"],"resolutionNonce":nonce});
             pending.insert(
                 id.clone(),
@@ -353,6 +363,7 @@ mod tests {
             params(),
             log,
             BusinessEvents::default(),
+            Value::Null,
         ));
         let pending = waiting(&permissions).await;
         let remote = permissions.snapshot(false).unwrap().to_string();
@@ -445,6 +456,7 @@ mod tests {
             params(),
             log,
             BusinessEvents::default(),
+            Value::Null,
         ));
         let pending = waiting(&permissions).await;
         request.abort();

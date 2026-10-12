@@ -377,6 +377,7 @@ export interface AgentMessageReceipt {
  * and exact member/session identities preserve the cached snapshot boundary.
  */
 export interface AgentHistoryReply {
+  groupTaskId?: string;
   groupId?: string;
   groupRevision?: number;
   id?: string;
@@ -418,6 +419,21 @@ export interface TeammateGroup {
   revision?: number;
 }
 export interface TeammateGroupSnapshot { groups: TeammateGroup[]; groupsRevision: number }
+export interface CommuneGroupDispatchRequest {
+  workspaceId: string; groupId: string; groupRevision: number; groupAction: 'broadcast' | 'assign';
+  message?: string; idempotency_key: string;
+  targets: {agentId: string; generation: number; lease: string; objective?: string}[];
+}
+export interface CommuneGroupTask {
+  groupTaskId: string; workspaceId: string; groupId: string; groupRevision: number; groupName: string;
+  action: string; createdAt: number; cancellationRequested: boolean; counts: Record<string,number>;
+  objectiveVerified: boolean;
+  children: {member: {agentId: string; sessionId: string; paneId: string; generation: number; lease: string};
+    objective: string; objectiveTruncated?: boolean; state: string; taskId?: string; deliveryId?: string; submissionError?: string; deliveryError?: string;
+    artifacts: unknown[]; artifactCoverage: string}[];
+  cancellationErrors?: {memberId:string;error:string}[];
+  objectiveDetail?: {memberId:string;text:string;offset:number;length:number;next?:string;previous?:string};
+}
 
 /** P1 teammate 拓扑快照（roster + leader；edges 预留）。 */
 export interface TeammateTopology {
@@ -427,6 +443,7 @@ export interface TeammateTopology {
   /** Optional for older hosts; populated by current hosts from workspace-memory. */
   groups?: TeammateGroup[];
   groupsRevision?: number;
+  groupTasks?: CommuneGroupTask[];
 }
 
 /** P2：待裁决高危动作的脱敏快照——绝不含 action 命令全文。 */
