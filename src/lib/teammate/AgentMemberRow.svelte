@@ -90,11 +90,11 @@
 
   const present = $derived(profile !== null);
   const paneId = $derived(profile?.paneId ?? '');
-  const lastTask = $derived(profile?.currentDelivery?.payload?.text
-    ? { text: profile.currentDelivery.payload.text } : $memberTasksStore[agentId]);
+  const observedTask = $derived(profile?.currentDelivery?.payload?.text ?? profile?.currentDelivery?.payload?.objective);
+  const lastTask = $derived(observedTask ? { text: observedTask } : $memberTasksStore[agentId]);
   const activeDelivery = $derived(
     ['running', 'dispatching'].includes(profile?.currentDelivery?.execution?.state ?? '')
-      ? profile?.currentDelivery : deliveryReceipt,
+      ? profile?.currentDelivery : deliveryReceipt ?? profile?.currentDelivery,
   );
   const canSend = $derived(profile?.canSend === true && profile.online === true && profile.capabilities?.includes('acp.prompt') === true);
   const canCancel = $derived(profile?.canCancel === true && profile.online === true && profile.capabilities?.includes('acp.cancel') === true

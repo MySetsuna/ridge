@@ -138,6 +138,20 @@ try {
   const remoteEdit = await call('POST','/v1/domain/commands',{method:'set_teammate_groups',args:{workspaceId,groups:projection.groups,expectedRevision:projection.groupsRevision},native:false,roots:[],connectionId:crypto.randomUUID()});
   assert.equal(remoteEdit.ok,true,JSON.stringify(remoteEdit.error));
   await groupUi.getByText('Remote revision',{exact:true}).waitFor();
+  await groupUi.getByRole('button', {name:'设为组长',exact:true}).click();
+  await until(() => page.evaluate(() => !window.ownedGroups.busy && !!window.ownedGroups.groups[0]?.leaderAgentId));
+  await groupUi.getByPlaceholder('给组长派任务…（Enter 发送 / Shift+Enter 换行）').fill('browser-group-objective');
+  await groupUi.getByRole('button', {name:'给组派任务',exact:true}).click();
+  let groupReceipt;
+  await until(async () => {
+    groupReceipt = await page.evaluate(async () => (await window.ownedApproval.invoke('get_teammate_topology',{workspaceId:window.ownedApproval.target.workspaceId})).roster[0].currentDelivery);
+    return groupReceipt?.kind === 'task' && groupReceipt.execution?.state === 'turn_ended';
+  });
+  assert.equal(groupReceipt.payload.groupContext.groupId,projection.groups[0].id);
+  assert.equal(groupReceipt.payload.groupContext.targets[0].sessionId,descriptor.sessionId);
+  assert.ok(groupReceipt.taskId);
+  assert.equal(groupReceipt.agentAcknowledged,false);
+  assert.equal(fs.readFileSync(path.join(root,'prompt-log'),'utf8'),'browser-group-objective\n');
   await groupUi.scrollIntoViewIfNeeded();
   await page.screenshot({path:path.resolve('.webview2-dev-cdp/070-commune-groups-ui.png')});
   const calls = await page.evaluate(() => window.ownedApproval.osCalls);
@@ -151,7 +165,8 @@ try {
     'A real click resolves the original permission ID and the original prompt ends', 'Business RPC and permission events use Runtime; OS IPC only issues bootstrap grant',
     'Unmounting the presentation client preserves the exact existing Agent process',
     'Production history component reads replay, Runtime execution and approval records without a launch/resume action',
-    'Production group UI creates exact registered membership through Runtime and converges to a remote revision event'];
+    'Production group UI creates exact registered membership through Runtime and converges to a remote revision event',
+    'A real group-leader task click freezes group and conversation binding in a durable task receipt; end_turn does not claim objective success'];
   evidence.screenshot = screenshot; evidence.result = 'PASS';
 } catch (error) {
   evidence.result = 'FAIL'; evidence.error = error.message; evidence.pageErrors = pageErrors;

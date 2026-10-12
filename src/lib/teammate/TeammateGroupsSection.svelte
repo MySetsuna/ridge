@@ -107,6 +107,8 @@
 
   // ── 组卡片操作 ──
   let taskInput = $state<Record<string, string>>({});
+  let sending = $state<Record<string, boolean>>({});
+  const dispatchKeys = new Map<string, {draft: string; key: string}>();
 
   // 「＋加成员」：当前展开加成员选择器的组 id（null = 未展开）。
   let addingFor = $state<string | null>(null);
@@ -147,6 +149,7 @@
   // 投递只能走内置 teammate 服务/HUB。编组绝不把文本写入 PTY：那会绕过
   // durable receipt、身份围栏以及 agent 自己的 inbox 消费协议。
   async function dispatchTask(g: TeammateGroup) {
+    if (sending[g.id] || store.busy) return;
     const text = (taskInput[g.id] ?? '').trim();
     if (!text) return;
     if (!g.leaderAgentId) {
@@ -160,6 +163,10 @@
       void alertDialog({ title: '给组派任务', message: '该组组长当前不在线，无法接收任务。' });
       return;
     }
+    const draft = JSON.stringify([workspaceId,g.id,g.revision,leader.agentId,leader.profile?.generation,leader.profile?.lease,text]);
+    const attempt = dispatchKeys.get(g.id)?.draft === draft ? dispatchKeys.get(g.id)! : {draft,key:crypto.randomUUID()};
+    dispatchKeys.set(g.id,attempt);
+    sending = {...sending,[g.id]:true};
     try {
       await invoke('send_agent_message', {
         workspaceId,
@@ -167,17 +174,20 @@
         agentId: leader.agentId,
         generation: leader.profile?.generation,
         lease: leader.profile?.lease,
+        groupId: g.id,
+        groupRevision: g.revision,
         message: text,
         from: 'desktop-group-ui',
-        idempotency_key: crypto.randomUUID(),
+        idempotency_key: attempt.key,
       });
 
       recordMemberTask(leader.agentId, text); // 成员级「旧本地任务记录」同步（成员列表展示）
       taskInput = { ...taskInput, [g.id]: '' };
+      dispatchKeys.delete(g.id);
     } catch (e) {
       console.error('[teammate-groups] teammate service dispatch failed', e);
       void alertDialog({ title: '给组派任务', message: '向组长投递任务失败，请重试。' });
-    }
+    } finally { sending = {...sending,[g.id]:false}; }
   }
 </script>
 
@@ -427,7 +437,7 @@
               type="button"
               title={group.leaderAgentId ? '把任务派给组长' : '请先指定组长'}
               aria-label="给组派任务"
-              disabled={!group.leaderAgentId}
+              disabled={!group.leaderAgentId || sending[group.id] || store.busy}
               onclick={() => dispatchTask(group)}
               class="flex items-center justify-center rounded border border-[var(--rg-border)] p-1 text-[var(--rg-fg-muted)] transition-colors hover:text-[var(--rg-accent)] disabled:opacity-40 disabled:hover:text-[var(--rg-fg-muted)]"
             >
@@ -435,11 +445,11 @@
             </button>
           </div>
 
-          <!-- 最近一条组任务 -->
+          <!-- Read-only pre-migration record, not a current execution result. -->
           {#if store.tasksFor(group.id)[0]}
             {@const last = store.tasksFor(group.id)[0]}
             <p class="truncate text-[10px] text-[var(--rg-fg-muted)]" title={last.objective}>
-              上次：{last.objective}（{last.targets.length} 名成员）
+              旧本地记录：{last.objective}（{last.targets.length} 名成员；执行未核实）
             </p>
           {/if}
         </div>

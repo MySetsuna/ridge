@@ -496,6 +496,19 @@ impl KernelMcpHost {
 }
 
 impl McpHost for KernelMcpHost {
+    fn group_task_snapshot(&self, id: &str, revision: u64, target: &Value) -> HostResult<Value> {
+        let workspace = target["workspaceId"].as_str().ok_or_else(|| HostError::InvalidParams("missing target workspace".into()))?;
+        let store = self.state.groups.lock().map_err(|_| HostError::Internal("group authority unavailable".into()))?;
+        let snapshot = store.snapshot(workspace);
+        let group = snapshot.groups.iter().find(|group| group.id == id).ok_or_else(|| HostError::InvalidParams("group not found in target workspace".into()))?;
+        if group.revision != revision { return Err(HostError::InvalidParams("group revision changed; refresh before dispatch".into())); }
+        if group.leader_agent_id.as_deref() != target["agentId"].as_str() {
+            return Err(HostError::InvalidParams("group objective must target its existing leader".into()));
+        }
+        Ok(json!({"groupId":group.id,"groupRevision":group.revision,"name":group.name,
+            "members":group.member_agent_ids,"action":"leader","targets":[target]}))
+    }
+
     fn team_profile(&self) -> Value {
         self.team_profile_snapshot(None)
     }

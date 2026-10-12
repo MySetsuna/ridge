@@ -398,6 +398,8 @@ fn communication_tool_specs() -> Vec<ToolSpec> {
                     "generation": { "type": "integer", "minimum": 1 },
                     "lease": { "type": "string" },
                     "objective": { "type": "string" },
+                    "group_id": { "type": "string", "description": "Optional exact group ID; requires group_revision and its existing leader as target." },
+                    "group_revision": { "type": "integer", "minimum": 1 },
                     "from": { "type": "string" },
                     "idempotency_key": { "type": "string" },
                     "correlation_id": { "type": "string" },

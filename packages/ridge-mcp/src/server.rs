@@ -331,6 +331,11 @@ pub trait McpHost: Send + Sync {
         ))
     }
 
+    /// Freeze an authorized existing group leader and its exact conversation binding.
+    fn group_task_snapshot(&self, _id: &str, _revision: u64, _target: &Value) -> HostResult<Value> {
+        Err(HostError::Unsupported("group task authority unavailable".into()))
+    }
+
     /// 进度回流：worker 主动汇报，宿主自行落前端事件/日志。
     fn report_progress(&self, _from: &Value, _status: &str, _detail: &str) -> HostResult<()> {
         Err(HostError::Unsupported(
@@ -2683,7 +2688,7 @@ fn tool_hub_message(
             arg_str(args, "topic"),
         ),
     };
-    let payload = payload?;
+    let mut payload = payload?;
     let idempotency_key = arg_str(args, "idempotency_key")
         .ok_or_else(|| HostError::InvalidParams("idempotency_key must not be empty".into()))?;
     let priority = arg_str(args, "priority").unwrap_or(match kind {
@@ -2698,6 +2703,24 @@ fn tool_hub_message(
         ));
     }
     let target = resolve_hub_target(args, host, capability)?;
+    if args.get("group_id").is_some() {
+        if kind != "task" { return Err(HostError::InvalidParams("group objectives must use task delivery".into())); }
+        let group_id = arg_str(args, "group_id").ok_or_else(|| HostError::InvalidParams("missing group_id".into()))?;
+        let revision = arg_u64(args, "group_revision").ok_or_else(|| HostError::InvalidParams("missing group_revision".into()))?;
+        let from = arg_str(args, "from").unwrap_or("mcp-client");
+        if let Some(existing) = dedupe_lookup(state, &self::idempotency_key(&target.target_key, from, idempotency_key)) {
+            if existing["kind"] == "task" && existing["payload"]["objective"] == payload["objective"]
+                && existing["payload"]["groupContext"]["groupId"] == group_id
+                && existing["payload"]["groupContext"]["groupRevision"] == revision {
+                let mut reply = existing;
+                reply["deduplicated"] = json!(true);
+                return Ok(reply.to_string());
+            }
+            return Err(hub_error("idempotency_conflict", "key already belongs to another group objective"));
+        }
+        let binding = json!({"agentId":target.agent_id,"sessionId":target.session_id,"workspaceId":target.workspace_id,"paneId":target.pane_id,"generation":target.generation,"lease":target.lease});
+        payload["groupContext"] = host.group_task_snapshot(group_id, revision, &binding)?;
+    }
     enqueue_hub_entry(
         host,
         state,

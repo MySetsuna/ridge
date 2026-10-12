@@ -217,7 +217,9 @@ pub async fn dispatch(
             }
         }
         "send_agent_message" | "get_agent_message_delivery_status" | "cancel_agent_message" => {
+            let grouped = method == "send_agent_message" && args.get("groupId").is_some();
             let tool = match method {
+                "send_agent_message" if grouped => "ridge_create_task",
                 "send_agent_message" => "ridge_send_message",
                 "cancel_agent_message" => "ridge_cancel_delivery",
                 _ => "ridge_delivery_status",
@@ -249,7 +251,11 @@ pub async fn dispatch(
                 request["target_pane_id"] = args["paneId"].clone();
             }
             if method == "send_agent_message" {
-                request["message"] = args["message"].clone();
+                request[if grouped {"objective"} else {"message"}] = args["message"].clone();
+                if grouped {
+                    request["group_id"] = args["groupId"].clone();
+                    request["group_revision"] = args["groupRevision"].clone();
+                }
                 request["idempotency_key"] = args["idempotency_key"].clone();
                 request["from"] = json!("user-client");
             } else {

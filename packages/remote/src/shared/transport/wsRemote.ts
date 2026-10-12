@@ -373,11 +373,12 @@ export interface AgentMessageReceipt {
 
 /** Durable Agent history row shared by desktop and Remote.
  *
- * The host reads real Claude/Codex/Grok session files and returns this
- * projection. Keep `cwd` and `sessionId` in the wire contract: grouping by
- * Agent must not discard the context needed to resume a session.
+ * Runtime projects observed protocol and execution records. Opaque cursors
+ * and exact member/session identities preserve the cached snapshot boundary.
  */
 export interface AgentHistoryReply {
+  groupId?: string;
+  groupRevision?: number;
   id?: string;
   memberId?: string;
   workspaceId?: string;

@@ -554,7 +554,7 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
     assert_eq!(command_reply(&endpoint,"set_teammate_groups",json!({"workspaceId":workspace,"expectedRevision":0,"groups":[]}),false)["ok"],false);
     assert_eq!(command_reply(&endpoint,"set_teammate_groups",json!({"workspaceId":other_workspace,"expectedRevision":0,"groups":[group]}),false)["ok"],false);
     let mut renamed = group.clone(); renamed["name"] = json!("remote-rename");
-    let remote_edit = command(&endpoint,"set_teammate_groups",json!({"workspaceId":workspace,"expectedRevision":1,"groups":[renamed]}),false);
+    let mut remote_edit = command(&endpoint,"set_teammate_groups",json!({"workspaceId":workspace,"expectedRevision":1,"groups":[renamed]}),false);
     assert_eq!(remote_edit["groups"][0]["revision"],2);
     assert_eq!(command(&endpoint,"get_teammate_topology",json!({"workspaceId":workspace}),true)["groups"],remote_edit["groups"]);
     assert_eq!(
@@ -631,9 +631,34 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
     assert_eq!(replay["deliveryId"], sent["deliveryId"]);
     assert_eq!(replay["deduplicated"], true);
     let mut second = target.clone();
-    second["message"] = json!("after-cancel");
+    second["objective"] = json!("after-cancel");
+    second["group_id"] = json!(group_id);
+    second["group_revision"] = json!(2);
+    second["from"] = json!("user-client");
     second["idempotency_key"] = json!("prompt-2");
-    let queued = tool(&endpoint, "ridge_send_message", second.clone());
+    let mut group_request = native_target.clone();
+    group_request["message"] = json!("after-cancel");
+    group_request["idempotency_key"] = json!("prompt-2");
+    group_request["groupId"] = json!(group_id);
+    group_request["groupRevision"] = json!(2);
+    let queued = command(&endpoint,"send_agent_message",group_request.clone(),true);
+    assert_eq!(queued["kind"],"task");
+    assert!(queued["taskId"].is_string());
+    assert_eq!(queued["payload"]["groupContext"]["groupRevision"],2);
+    assert_eq!(queued["payload"]["groupContext"]["targets"][0]["generation"],identity.generation);
+    let mut edited_group = remote_edit["groups"][0].clone();
+    edited_group["color"] = json!("#123456");
+    edited_group.as_object_mut().unwrap().remove("leaderAgentId");
+    remote_edit = command(&endpoint,"set_teammate_groups",json!({"workspaceId":workspace,"expectedRevision":2,"groups":[edited_group]}),false);
+    let duplicate = command(&endpoint,"send_agent_message",group_request.clone(),true);
+    assert_eq!(duplicate["deliveryId"],queued["deliveryId"]);
+    assert_eq!(duplicate["payload"]["groupContext"]["groupRevision"],2);
+    let mut conflicting = group_request.clone(); conflicting["message"] = json!("different-objective");
+    assert_eq!(command_reply(&endpoint,"send_agent_message",conflicting,true)["ok"],false);
+    group_request["idempotency_key"] = json!("stale-new-task");
+    assert_eq!(command_reply(&endpoint,"send_agent_message",group_request.clone(),true)["ok"],false);
+    group_request["groupRevision"] = json!(3);
+    assert_eq!(command_reply(&endpoint,"send_agent_message",group_request,true)["ok"],false,"a leaderless group cannot choose another recipient");
     assert_eq!(
         command(
             &endpoint,
@@ -662,7 +687,7 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
     assert_eq!(ended["status"], "adapter_accepted");
     assert_eq!(ended["agentAcknowledged"], false);
     assert_eq!(
-        tool(&endpoint, "ridge_send_message", second)["execution"],
+        tool(&endpoint, "ridge_create_task", second)["execution"],
         ended["execution"]
     );
     assert_eq!(

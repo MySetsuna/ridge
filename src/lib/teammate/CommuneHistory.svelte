@@ -85,7 +85,7 @@
           <span class="text-[var(--rg-fg-muted)]">{row.kind ?? row.title}</span>
           <time class="ml-auto text-[var(--rg-fg-muted)]">{row.timestamp ? new Date(row.timestamp).toLocaleString() : '观察时间未知'}</time>
         </div>
-        <p class="mt-1 break-all text-[10px] text-[var(--rg-fg-muted)]">session {row.sessionId}{row.taskId ? ` · task ${row.taskId}` : ''}{row.deliveryId ? ` · delivery ${row.deliveryId}` : ''}</p>
+        <p class="mt-1 break-all text-[10px] text-[var(--rg-fg-muted)]">session {row.sessionId}{row.groupId ? ` · group ${row.groupId}@${row.groupRevision}` : ''}{row.taskId ? ` · task ${row.taskId}` : ''}{row.deliveryId ? ` · delivery ${row.deliveryId}` : ''}</p>
         <p class="mt-1 text-[10px] text-[var(--rg-fg-muted)]">{row.source} · {row.coverage}</p>
         <pre class="mt-2 whitespace-pre-wrap break-all text-[12px] leading-5 text-[var(--rg-fg)]" class:line-clamp-4={!expanded[key(row)]}>{row.text}</pre>
         <div class="mt-2 flex flex-wrap items-center gap-2 text-[11px]">

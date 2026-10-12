@@ -161,7 +161,7 @@ fn content(record: &Value, native: bool) -> (String, String) {
     let kind = record["kind"].as_str().unwrap_or("runtime_event");
     let text=match kind {
         "permission_requested" if !native=>"Agent 请求工具权限".into(),
-        "execution" if !native=>json!({"deliveryId":record["deliveryId"],"taskId":record["taskId"],"state":record["execution"]["state"],"stopReason":record["execution"]["response"]["stopReason"]}).to_string(),
+        "execution" if !native=>json!({"deliveryId":record["deliveryId"],"taskId":record["taskId"],"groupId":record["payload"]["groupContext"]["groupId"],"groupRevision":record["payload"]["groupContext"]["groupRevision"],"state":record["execution"]["state"],"stopReason":record["execution"]["response"]["stopReason"]}).to_string(),
         _=>record.to_string(),
     };
     (kind.into(), text)
@@ -216,6 +216,7 @@ fn row(
         "source":if record["phase"]=="replay" {"acp-replay"}else if !record["params"]["update"].is_null() {"acp-live"}else{"ridge-ledger"},
         "coverage":if replay.id.is_some() {"Agent 回放与接入后记录；接入前完整度未独立验证"}else{"自接入起记录；接入前覆盖未知"},
         "textOffset":offset,"textLength":count,"textCursor":next,"previousTextCursor":previous,
+        "groupId":record["payload"]["groupContext"]["groupId"],"groupRevision":record["payload"]["groupContext"]["groupRevision"],
         "deliveryId":record["deliveryId"],"taskId":record["taskId"],"correlationId":record["correlationId"],"causationId":record["causationId"]}),
     )
 }
