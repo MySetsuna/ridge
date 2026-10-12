@@ -260,9 +260,18 @@ fn cancel_task(ctx: &NativeA2aCtx, params: &Value) -> Result<Value, (i64, String
 fn task_from_entry(id: &str, entry: &Value, message: &Value) -> Value {
     let state = match entry.get("status").and_then(Value::as_str) {
         Some("cancelled") => "canceled",
-        Some("completed") | Some("adapter_accepted") => "completed",
+        Some("completed") | Some("agent_completed") => "completed",
         Some("failed") | Some("delivery_failed") | Some("delivery_rejected") => "failed",
         _ => "submitted",
+    };
+    let state = match entry["execution"]["state"].as_str() {
+        Some("dispatching" | "running") => "working",
+        Some("cancelled") => "canceled",
+        Some("rejected") => "rejected",
+        // ACP end_turn proves a conversation turn ended, not that the user's
+        // objective succeeded. Keep the raw response for an explicit decision.
+        Some("turn_ended" | "unknown") => "input-required",
+        _ => state,
     };
     let mut task = json!({
         "id": id,
@@ -273,6 +282,9 @@ fn task_from_entry(id: &str, entry: &Value, message: &Value) -> Value {
             "targetKey": entry.get("targetKey")
         }}
     });
+    if let Some(execution) = entry.get("execution") {
+        task["metadata"]["ridge"]["execution"] = execution.clone();
+    }
     if !message.is_null() {
         task["history"] = json!([message]);
     }
@@ -546,6 +558,37 @@ mod tests {
             "test",
             Arc::new(McpSessionState::default()),
         ))
+    }
+
+    #[test]
+    fn delivery_acceptance_and_prompt_end_do_not_claim_task_success() {
+        let accepted = json!({"status":"adapter_accepted"});
+        assert_eq!(
+            task_from_entry("id", &accepted, &Value::Null)["status"]["state"],
+            "submitted"
+        );
+        for (execution, expected) in [
+            (json!({"state":"running"}), "working"),
+            (
+                json!({"state":"turn_ended","response":{"stopReason":"end_turn"}}),
+                "input-required",
+            ),
+            (
+                json!({"state":"unknown","reason":"connection lost"}),
+                "input-required",
+            ),
+            (
+                json!({"state":"cancelled","response":{"stopReason":"cancelled"}}),
+                "canceled",
+            ),
+            (json!({"state":"rejected","sent":false}), "rejected"),
+        ] {
+            let mut entry = accepted.clone();
+            entry["execution"] = execution.clone();
+            let task = task_from_entry("id", &entry, &Value::Null);
+            assert_eq!(task["status"]["state"], expected);
+            assert_eq!(task["metadata"]["ridge"]["execution"], execution);
+        }
     }
 
     #[test]

@@ -313,6 +313,19 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         fs_scope: domain::fs_scope_from_env(),
     };
 
+    // The instance lock makes this an owner recovery, never a reader-side
+    // mutation. Old bindings remain offline and uncertain prompts are not replayed.
+    {
+        let roster = state.roster.lock()
+            .map_err(|_| anyhow::anyhow!("roster unavailable during recovery"))?;
+        for member in roster.agent_identities().into_iter()
+            .filter(|member| member.protocol_binding.is_some())
+        {
+            state.mcp_state
+                .recover_runtime_executions(&member.agent_id, member.generation, &member.lease)
+                .map_err(|error| anyhow::anyhow!("recover protocol execution: {error}"))?;
+        }
+    }
     let mcp = KernelMcpHost::router(state.clone(), Arc::new(token.clone()));
     let app = Router::new()
         .route("/v1/local/clients", post(crate::local_client::issue))

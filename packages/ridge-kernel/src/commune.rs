@@ -14,6 +14,7 @@ use ridge_core::{
     teammate::communication::{AgentIdentity, AgentLifecycle, ProtocolBinding},
     EventSink,
 };
+use ridge_mcp::delivery::HubDeliveryAdapter;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -216,34 +217,70 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
             .map_err(|error| error.to_string())?
             .as_millis() as u64,
         capabilities: vec![
+            "messages".into(),
+            "tasks".into(),
             "acp.prompt".into(),
             "acp.cancel".into(),
             "acp.history".into(),
         ],
     })
     .map_err(|error| error.to_string())?;
+    let receiver = state.mcp_state.register_delivery_endpoint(
+        HubDeliveryAdapter::RuntimeApi,
+        request.workspace_id.to_string(),
+        agent_id.clone(),
+        generation,
+        lease.clone(),
+    )?;
     if let Err(error) = save_roster_at(&state.roster_path, &next) {
+        let _ = state.mcp_state.unregister_delivery_endpoint(
+            HubDeliveryAdapter::RuntimeApi,
+            &request.workspace_id.to_string(),
+            &agent_id,
+            generation,
+            &lease,
+        );
         session.disconnect();
         return Err(error.to_string());
     }
     *roster = next;
     connections.insert(agent_id.clone(), session.clone());
     drop(roster);
+    tokio::spawn(consume_deliveries(
+        state.clone(),
+        session.clone(),
+        receiver,
+        agent_id.clone(),
+        generation,
+        lease.clone(),
+        request.workspace_id.to_string(),
+    ));
     tokio::spawn({
         let state = state.clone();
         let agent_id = agent_id.clone();
         let lease = lease.clone();
         let process = binding.process.clone();
         async move {
+            let mut disconnected = false;
             loop {
                 tokio::time::sleep(Duration::from_millis(500)).await;
+                if disconnected {
+                    let roster = state.roster.lock().expect("roster lock");
+                    if !roster.agent_identities().into_iter().any(|member| {
+                        member.agent_id == agent_id
+                            && member.generation == generation
+                            && member.lease == lease
+                    }) {
+                        break;
+                    }
+                }
                 let observed = process_identity::instance(process.pid);
                 let verified = observed.as_ref().is_ok_and(|current| current == &process);
                 let exited = observed.as_ref().is_ok_and(|current| current != &process)
                     || observed
                         .as_ref()
                         .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
-                if session.is_connected() && verified {
+                if (session.is_connected() && verified) || (disconnected && !exited) {
                     continue;
                 }
                 session.disconnect();
@@ -268,7 +305,10 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
                     state
                         .business_events
                         .broadcast("commune-members-changed", Value::Null);
-                    break;
+                    disconnected = true;
+                    if exited {
+                        break;
+                    }
                 }
             }
         }
@@ -279,6 +319,144 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
     Ok(
         json!({"agentId":agent_id,"generation":generation,"lease":lease,"sessionId":request.session_id,"binding":binding}),
     )
+}
+
+/// One bounded Hub receiver per exact conversation; one prompt at a time.
+/// No retry after a transport error: the Agent may already have executed it.
+async fn consume_deliveries(
+    state: AppState,
+    session: Arc<ExistingConversation>,
+    receiver: std::sync::mpsc::Receiver<Value>,
+    agent_id: String,
+    generation: u64,
+    lease: String,
+    workspace: String,
+) {
+    loop {
+        let entry = match receiver.try_recv() {
+            Ok(entry) => entry,
+            Err(std::sync::mpsc::TryRecvError::Empty) if session.is_connected() => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                continue;
+            }
+            _ => break,
+        };
+        let Some(id) = entry["deliveryId"].as_str() else {
+            continue;
+        };
+        let publish = |execution: Value| -> Result<Value, String> {
+            let receipt = state
+                .mcp_state
+                .record_runtime_execution(&agent_id, generation, &lease, id, execution)?;
+            state
+                .business_events
+                .broadcast("commune-task-changed", receipt.clone());
+            Ok(receipt)
+        };
+        let live = {
+            let roster = state.roster.lock().expect("roster lock");
+            roster
+                .agent_identities()
+                .into_iter()
+                .find(|member| member.agent_id == agent_id)
+                .filter(|member| {
+                    member.online && member.generation == generation && member.lease == lease
+                })
+                .and_then(|member| member.protocol_binding.clone())
+        };
+        let verified = live.as_ref().is_some_and(|binding| {
+            binding.runtime_epoch == state.runtime_epoch
+                && process_identity::validate(&binding.process).is_ok()
+                && process_identity::validate(&binding.endpoint_owner).is_ok()
+        });
+        if !verified {
+            if let Err(error) =
+                publish(json!({"state":"rejected","reason":"Agent binding changed before prompt"}))
+            {
+                tracing::error!(%id, %error, "cannot persist rejected protocol delivery");
+            }
+            continue;
+        }
+        let receipt = match publish(json!({"state":"dispatching"})) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                tracing::error!(%id, %error, "protocol prompt refused without durable execution receipt");
+                session.disconnect();
+                break;
+            }
+        };
+        let cancelled =
+            receipt["cancellationRequested"] == true || receipt["status"] == "cancelled";
+        let expired = receipt["status"] == "expired"
+            || receipt["deadlineUnixMs"].as_u64().is_some_and(|deadline| {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(true, |now| now.as_millis() >= deadline as u128)
+            });
+        let text = receipt["payload"]["text"]
+            .as_str()
+            .or_else(|| receipt["payload"]["objective"].as_str());
+        let execution = if cancelled {
+            json!({"state":"cancelled","sent":false})
+        } else if expired {
+            json!({"state":"rejected","reason":"delivery deadline elapsed","sent":false})
+        } else if let Some(text) = text {
+            match session.prompt(text.to_owned()) {
+                Err(error) => json!({"state":"rejected","reason":error.to_string(),"sent":false}),
+                Ok(mut pending) => {
+                    if let Err(error) = publish(json!({"state":"running"})) {
+                        tracing::error!(%id, %error, "protocol dispatch outcome cannot be tracked durably");
+                        session.disconnect();
+                    }
+                    let mut cancel_sent = false;
+                    let response = loop {
+                        tokio::select! {
+                            response = &mut pending => break response,
+                            _ = tokio::time::sleep(Duration::from_millis(20)), if !cancel_sent => {
+                                match state.mcp_state.runtime_receipt(&agent_id, generation, &lease, id) {
+                                    Ok(receipt) if receipt["cancellationRequested"] == true => {
+                                        // A cancel notification is not a terminal response.
+                                        if let Err(error) = session.cancel().await {
+                                            tracing::error!(%id, %error, "protocol cancellation result unknown");
+                                        }
+                                        cancel_sent = true;
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(%id, %error, "protocol receipt lost during execution");
+                                        session.disconnect();
+                                    }
+                                    _ => {},
+                                }
+                            }
+                        }
+                    };
+                    match response {
+                        Ok(Ok(result)) => {
+                            json!({"state":if result["stopReason"] == "cancelled" {"cancelled"} else {"turn_ended"},"response":result})
+                        }
+                        Ok(Err(error)) => json!({"state":"unknown","reason":error.to_string()}),
+                        Err(error) => json!({"state":"unknown","reason":error.to_string()}),
+                    }
+                }
+            }
+        } else {
+            json!({"state":"rejected","reason":"ACP prompt requires text","sent":false})
+        };
+        if let Err(error) = publish(execution) {
+            tracing::error!(%id, %error, "protocol result could not be persisted");
+            session.disconnect();
+            break;
+        }
+    }
+    if let Err(error) = state.mcp_state.unregister_delivery_endpoint(
+        HubDeliveryAdapter::RuntimeApi,
+        &workspace,
+        &agent_id,
+        generation,
+        &lease,
+    ) {
+        tracing::warn!(%agent_id, %error, "protocol delivery route already superseded");
+    }
 }
 
 pub async fn register(

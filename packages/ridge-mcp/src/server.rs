@@ -733,6 +733,97 @@ impl McpSessionState {
         };
         receipt_ack(self, &target_key, delivery_id, status, detail).map_err(|error| error.message())
     }
+
+    /// Runtime execution is separate from delivery/Agent acknowledgements.
+    /// A protocol turn ending does not assert that a task objective succeeded.
+    pub fn runtime_receipt(
+        &self,
+        agent_id: &str,
+        generation: u64,
+        lease: &str,
+        delivery_id: &str,
+    ) -> Result<Value, String> {
+        let receipts = self
+            .receipts
+            .lock()
+            .map_err(|_| "Hub receipt lock poisoned")?;
+        let entry = receipts
+            .by_id
+            .get(delivery_id)
+            .ok_or("delivery receipt does not exist")?;
+        let target = &entry["to"];
+        if target["agentId"].as_str() != Some(agent_id)
+            || target["generation"].as_u64() != Some(generation)
+            || target["lease"].as_str() != Some(lease)
+        {
+            return Err("execution identity fence mismatch".into());
+        }
+        Ok(entry.clone())
+    }
+
+    pub fn record_runtime_execution(
+        &self,
+        agent_id: &str,
+        generation: u64,
+        lease: &str,
+        delivery_id: &str,
+        execution: Value,
+    ) -> Result<Value, String> {
+        // The adapter result must be committed before its consumer can publish
+        // execution; otherwise the send path overwrites a fast Agent's reply.
+        let _enqueue = self
+            .enqueue_lock
+            .lock()
+            .map_err(|_| "Hub enqueue lock poisoned")?;
+        let mut next = self.runtime_receipt(agent_id, generation, lease, delivery_id)?;
+        let key = next["targetKey"]
+            .as_str()
+            .ok_or("delivery target key missing")?
+            .to_owned();
+        next["execution"] = execution;
+        replace_receipt_entry(self, &key, delivery_id, &next)?;
+        Ok(next)
+    }
+
+    /// Only the exclusive Runtime owner calls this during startup, before
+    /// serving clients. Reopening SQLite for a reader must never settle work.
+    pub fn recover_runtime_executions(
+        &self,
+        agent_id: &str,
+        generation: u64,
+        lease: &str,
+    ) -> Result<usize, String> {
+        let pending = {
+            let receipts = self
+                .receipts
+                .lock()
+                .map_err(|_| "Hub receipt lock poisoned")?;
+            receipts
+                .by_id
+                .iter()
+                .filter(|(_, entry)| {
+                    entry["to"]["agentId"] == agent_id
+                        && entry["to"]["generation"] == generation
+                        && entry["to"]["lease"] == lease
+                        && entry["deliveryAdapter"] == "runtime_api"
+                        && matches!(
+                            entry["status"].as_str(),
+                            Some("queued" | "adapter_accepted")
+                        )
+                        && !matches!(
+                            entry["execution"]["state"].as_str(),
+                            Some("turn_ended" | "cancelled" | "rejected" | "unknown")
+                        )
+                })
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>()
+        };
+        for id in &pending {
+            self.record_runtime_execution(agent_id, generation, lease, id,
+                json!({"state":"unknown","reason":"Runtime restarted before the protocol execution was settled"}))?;
+        }
+        Ok(pending.len())
+    }
 }
 
 fn default_state() -> &'static McpSessionState {
@@ -1023,6 +1114,16 @@ impl HubPersistence {
                 params![raw, delivery_id, key],
             )
             .map_err(|error| format!("update Hub message: {error}"))?;
+        if let (Some(from), Some(idempotency)) =
+            (entry["from"].as_str(), entry["idempotencyKey"].as_str())
+        {
+            transaction
+                .execute(
+                    "UPDATE hub_idempotency SET entry_json = ?1 WHERE idempotency_key = ?2",
+                    params![raw, idempotency_key(key, from, idempotency)],
+                )
+                .map_err(|error| format!("update Hub idempotency: {error}"))?;
+        }
         transaction
             .commit()
             .map_err(|error| format!("commit Hub update: {error}"))
@@ -1425,6 +1526,7 @@ fn cancel_hub_entry(
     cancellation_id: Option<&str>,
     reason: Option<&str>,
 ) -> HostResult<Value> {
+    let _enqueue = state.enqueue_lock.lock().unwrap();
     let (receipt_id, mut entry) = {
         let receipts = state.receipts.lock().unwrap();
         receipts
@@ -1447,6 +1549,22 @@ fn cancel_hub_entry(
         .and_then(Value::as_str)
         .unwrap_or("queued");
     if status == "cancelled" {
+        return Ok(entry);
+    }
+    // Runtime prompt delivery is not its terminal execution result. Request
+    // cancellation and let the actual protocol response settle the outcome.
+    if entry["deliveryAdapter"] == "runtime_api" && status == "adapter_accepted" {
+        if matches!(
+            entry["execution"]["state"].as_str(),
+            Some("turn_ended" | "cancelled" | "rejected" | "unknown")
+        ) {
+            return Err(hub_error(
+                "delivery_terminal",
+                "protocol execution already stopped",
+            ));
+        }
+        entry["cancellationRequested"] = json!(true);
+        replace_receipt_entry(state, key, &receipt_id, &entry).map_err(HostError::Internal)?;
         return Ok(entry);
     }
     if matches!(
@@ -2291,11 +2409,11 @@ fn resolve_hub_target(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let lifecycle = value_string(identity, &["lifecycle"]).unwrap_or_default();
-    if !online
+    if required_capability != "read_delivery" && (!online
         || !matches!(
             lifecycle.as_str(),
             "Online" | "Working" | "Waiting" | "Attention"
-        )
+        ))
     {
         return Err(hub_error(
             "target_offline",
@@ -2307,7 +2425,7 @@ fn resolve_hub_target(
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
         .unwrap_or_default();
-    let capability_allowed = if required_capability == "delivery" {
+    let capability_allowed = if matches!(required_capability, "delivery" | "read_delivery") {
         capabilities
             .iter()
             .any(|item| matches!(*item, "messages" | "tasks" | "events" | "control"))
@@ -2802,7 +2920,8 @@ fn tool_delivery_status(
 ) -> HostResult<String> {
     let delivery_id = arg_str(args, "delivery_id")
         .ok_or_else(|| HostError::InvalidParams("delivery_id must not be empty".into()))?;
-    let target = resolve_hub_target(args, host, "delivery")?;
+    // Disconnect revokes control, not read access to an existing fenced receipt.
+    let target = resolve_hub_target(args, host, "read_delivery")?;
     let key = target.target_key;
     receipt_get(state, &key, delivery_id).map(|receipt| receipt.to_string())
 }
@@ -4948,6 +5067,208 @@ mod tests {
                 .expect_err("unknown cursor must fail closed")
                 .contains("cursor")
         );
+    }
+
+    #[test]
+    fn owner_recovery_marks_unsettled_protocol_work_unknown_without_reader_side_effects() {
+        let path =
+            std::env::temp_dir().join(format!("ridge-runtime-recovery-{}.sqlite3", Uuid::new_v4()));
+        let running = json!({
+            "deliveryId":"running", "targetKey":"target", "from":"sender", "idempotencyKey":"key",
+            "to":{"agentId":"agent","generation":1,"lease":"lease"},
+            "deliveryAdapter":"runtime_api", "status":"adapter_accepted", "execution":{"state":"running"}
+        });
+        {
+            let state = McpSessionState::with_sqlite(&path).unwrap();
+            state
+                .persistence
+                .as_ref()
+                .unwrap()
+                .persist_enqueue(
+                    "target",
+                    &running,
+                    &idempotency_key("target", "sender", "key"),
+                )
+                .unwrap();
+            let mut ended = running.clone();
+            ended["deliveryId"] = json!("ended");
+            ended["idempotencyKey"] = json!("ended-key");
+            ended["execution"] = json!({"state":"turn_ended","response":{"stopReason":"end_turn"}});
+            state
+                .persistence
+                .as_ref()
+                .unwrap()
+                .persist_enqueue(
+                    "target",
+                    &ended,
+                    &idempotency_key("target", "sender", "ended-key"),
+                )
+                .unwrap();
+        }
+        {
+            let state = McpSessionState::with_sqlite(&path).unwrap();
+            assert_eq!(
+                state
+                    .runtime_receipt("agent", 1, "lease", "running")
+                    .unwrap(),
+                running,
+                "opening a reader must not settle a live execution"
+            );
+            assert_eq!(
+                state
+                    .recover_runtime_executions("agent", 2, "other-lease")
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                state
+                    .recover_runtime_executions("agent", 1, "lease")
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                state
+                    .recover_runtime_executions("agent", 1, "lease")
+                    .unwrap(),
+                0
+            );
+        }
+        let restored = McpSessionState::with_sqlite(&path).unwrap();
+        let receipt = restored
+            .runtime_receipt("agent", 1, "lease", "running")
+            .unwrap();
+        assert_eq!(receipt["execution"]["state"], "unknown");
+        assert_eq!(receipt["status"], "adapter_accepted");
+        assert_eq!(
+            dedupe_lookup(&restored, &idempotency_key("target", "sender", "key")).unwrap(),
+            receipt
+        );
+        assert_eq!(
+            restored
+                .runtime_receipt("agent", 1, "lease", "ended")
+                .unwrap()["execution"]["response"]["stopReason"],
+            "end_turn"
+        );
+    }
+
+    #[test]
+    fn fast_runtime_reply_waits_for_the_delivery_result_commit() {
+        let state = std::sync::Arc::new(McpSessionState::default());
+        let entry = json!({"deliveryId":"delivery","targetKey":"target","to":{"agentId":"agent","generation":1,"lease":"lease"},"status":"queued"});
+        receipt_insert(&state, "delivery".into(), entry.clone());
+        let gate = state.enqueue_lock.lock().unwrap();
+        let (finished, done) = std::sync::mpsc::channel();
+        let consumer = {
+            let state = state.clone();
+            std::thread::spawn(move || {
+                let result = state.record_runtime_execution(
+                    "agent",
+                    1,
+                    "lease",
+                    "delivery",
+                    json!({"state":"turn_ended"}),
+                );
+                finished.send(result).unwrap();
+            })
+        };
+        assert!(matches!(
+            done.recv_timeout(std::time::Duration::from_millis(30)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        let mut accepted = entry;
+        accepted["status"] = json!("adapter_accepted");
+        replace_receipt_entry(&state, "target", "delivery", &accepted).unwrap();
+        drop(gate);
+        let result = done
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        consumer.join().unwrap();
+        assert_eq!(result["status"], "adapter_accepted");
+        assert_eq!(result["execution"]["state"], "turn_ended");
+        assert_eq!(
+            state
+                .runtime_receipt("agent", 1, "lease", "delivery")
+                .unwrap(),
+            result
+        );
+    }
+
+    #[test]
+    fn runtime_execution_is_fenced_durable_and_separate_from_acknowledgement() {
+        let path =
+            std::env::temp_dir().join(format!("ridge-runtime-receipt-{}.sqlite3", Uuid::new_v4()));
+        let entry = json!({
+            "deliveryId":"delivery-1", "targetKey":"target-1", "from":"sender", "idempotencyKey":"key-1",
+            "to":{"agentId":"agent-1","generation":2,"lease":"lease-2"},
+            "status":"adapter_accepted", "deliveryAdapter":"runtime_api", "agentAcknowledged":false
+        });
+        let dedupe = idempotency_key("target-1", "sender", "key-1");
+        {
+            let state = McpSessionState::with_sqlite(&path).unwrap();
+            state
+                .persistence
+                .as_ref()
+                .unwrap()
+                .persist_enqueue("target-1", &entry, &dedupe)
+                .unwrap();
+        }
+        {
+            let state = McpSessionState::with_sqlite(&path).unwrap();
+            for (agent, generation, lease) in [
+                ("other", 2, "lease-2"),
+                ("agent-1", 1, "lease-2"),
+                ("agent-1", 2, "old"),
+            ] {
+                assert!(state
+                    .record_runtime_execution(
+                        agent,
+                        generation,
+                        lease,
+                        "delivery-1",
+                        json!({"state":"running"})
+                    )
+                    .is_err());
+            }
+            state
+                .record_runtime_execution(
+                    "agent-1",
+                    2,
+                    "lease-2",
+                    "delivery-1",
+                    json!({"state":"running"}),
+                )
+                .unwrap();
+            let cancelled =
+                cancel_hub_entry(&state, "target-1", Some("delivery-1"), None, None).unwrap();
+            assert_eq!(cancelled["status"], "adapter_accepted");
+            assert_eq!(cancelled["execution"]["state"], "running");
+            assert_eq!(cancelled["cancellationRequested"], true);
+            state
+                .record_runtime_execution(
+                    "agent-1",
+                    2,
+                    "lease-2",
+                    "delivery-1",
+                    json!({"state":"cancelled","response":{"stopReason":"cancelled"}}),
+                )
+                .unwrap();
+        }
+        {
+            let state = McpSessionState::with_sqlite(&path).unwrap();
+            let receipt = state
+                .runtime_receipt("agent-1", 2, "lease-2", "delivery-1")
+                .unwrap();
+            assert_eq!(receipt["execution"]["response"]["stopReason"], "cancelled");
+            assert_eq!(receipt["status"], "adapter_accepted");
+            assert_eq!(receipt["agentAcknowledged"], false);
+            assert_eq!(dedupe_lookup(&state, &dedupe).unwrap(), receipt);
+            assert_eq!(
+                inbox_fetch(&state, "target-1", true, false, 10, None).unwrap(),
+                vec![receipt]
+            );
+            assert!(cancel_hub_entry(&state, "target-1", Some("delivery-1"), None, None).is_err());
+        }
     }
 
     #[test]
