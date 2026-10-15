@@ -153,6 +153,9 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "dock_pane",
     "close_pane",
     "toggle_mode",
+    "clear_pane_terminal",
+    "save_clipboard_image_to_temp",
+    "resolve_pasted_image_path",
     "set_split_ratios_at_path",
     "set_split_ratios_batch",
     "create_pane",
@@ -218,12 +221,14 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "clear_recent_workspaces",
     "get_last_opened_workspace_path",
     "get_startup_context",
+    "get_workspace_file_in_directory",
     "browse_directory",
     // ── Theme / settings ──
     "get_theme_data",
     "set_active_theme",
     "get_active_theme_entry",
     "set_user_default_cwd",
+    "get_user_default_cwd",
     // ── Teammate（P1 控制台 MVP）──
     // 只读 roster 快照（id/name/paneId/paneIndex/role/status/capability + leaderId）。
     // 投影本身不含 MCP endpoint/token/env；HITL 裁决（resolve_hitl_request 等）与
@@ -240,13 +245,11 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     // Agent history is a bounded, redacted session-file projection. Group
     // writes update workspace-memory only; neither method launches a process.
     "read_agent_recent_replies",
+    "send_agent_message",
+    "get_agent_message_delivery_status",
+    "cancel_agent_message",
     "set_teammate_groups",
     "resume_agent_session",
-    // iter-61：把某 pane 标记/取消标记为 agent（远端工作区弹层的「标记」按钮）。
-    // 只改本机 teammate 侧表（pane 状态 + agent→pane 映射），不 spawn、不写文件、
-    // 不暴露 token；等价于桌面 SplitContainer 上早有的同名按钮。列 MUTATING。
-    "register_teammate_agent",
-    "release_teammate_agent",
     // ── Search ──
     "text_search",
     // `search` is the alias the headless ridge-cli control protocol
@@ -293,6 +296,8 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
 /// an access gate — remote sessions are always read-write (there is no read-only
 /// session mode).
 pub const MUTATING_METHODS: &[&str] = &[
+    "initialize_cloud_controller_identity",
+    "save_clipboard_image_to_temp",
     "write_terminal_input",
     // ── Filesystem writes ──
     "write_file",
@@ -318,6 +323,21 @@ pub const MUTATING_METHODS: &[&str] = &[
     "git_create_tag",
     "git_discard",
     "git_clean_untracked",
+    "git_fetch",
+    "git_push_branch",
+    "git_merge_branch",
+    "git_delete_branch",
+    "git_rename_branch",
+    "git_rebase",
+    "git_delete_tag",
+    "git_push_tag",
+    "git_stash_push",
+    "git_stash_apply",
+    "git_stash_pop",
+    "git_stash_drop",
+    "git_stash_branch",
+    "git_cherry_pick_abort",
+    "git_revert_abort",
     // ── Workspace / pane writes（#19 迁入 core；phase-2 前置：只读会话不得执行）──
     // 破坏性尤须（close_workspace 杀 PTY、delete_workspace_file 删档），故列 MUTATING 让
     // dispatch 只读门（D-GM-9）在只读远端会话下拒之。非只读会话不受影响。
@@ -327,18 +347,22 @@ pub const MUTATING_METHODS: &[&str] = &[
     "create_workspace",
     "close_workspace",
     "save_workspace",
+    "delete_saved_workspace",
+    "rename_saved_workspace",
     "save_workspace_to_file",
     "delete_workspace_file",
     "resize_pane",
     "create_pane",
     "split_pane",
+    "dock_pane",
     // ── Teammate（P2 阶段 2）──
     // 远端裁决放行高危命令 = 写操作；只读会话拒。
     "resolve_hitl_remote",
     "set_teammate_groups",
+    "send_agent_message",
+    "cancel_agent_message",
     "resume_agent_session",
-    // iter-61：agent 标记切换改 teammate 侧表 = 写操作。
-    "register_teammate_agent",
+    // Native-only protocol membership retirement remains a state mutation.
     "release_teammate_agent",
 ];
 

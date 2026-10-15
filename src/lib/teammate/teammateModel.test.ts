@@ -1,7 +1,7 @@
 /**
  * teammateModel.test.ts — tests for the front-end teammate domain mirror.
  *
- * Mirrors the defensive posture of layoutEvent.test.ts: every parser must
+ * Every parser must
  * degrade gracefully on malformed input, and the risk parser must NEVER silently
  * downgrade an unknown risk (fail-closed to Dangerous so the human is asked).
  */
@@ -10,7 +10,6 @@ import {
   riskLabel,
   parseTopologySnapshot,
   parseHitlRequest,
-  parseCircuitTripped,
   EMPTY_TOPOLOGY,
 } from './teammateModel';
 
@@ -109,6 +108,14 @@ describe('parseTopologySnapshot', () => {
     expect(parseTopologySnapshot({ rosterChanged: false }).rosterChanged).toBe(false);
     expect(parseTopologySnapshot({ rosterChanged: 'true' }).rosterChanged).toBe(false);
   });
+
+  it('keeps observed processes separate from protocol members and rejects incomplete identities', () => {
+    const candidate = { workspaceId: 'ws', paneId: 'pane', name: 'custom-agent', process: { pid: 42, startInstance: 'os:42' }, connectionState: 'discovered' };
+    const result = parseTopologySnapshot({ discovered: [candidate, { ...candidate, process: { pid: 42 } }] });
+    expect(result.roster).toEqual([]);
+    expect(result.discovered).toHaveLength(1);
+    expect(result.discovered?.[0].process).toEqual(candidate.process);
+  });
 });
 
 it('renders only permission options offered by the protocol peer, preserving opaque IDs', () => {
@@ -175,22 +182,5 @@ describe('parseHitlRequest', () => {
       policySource: 'organization policy',
       requestId: 'request-42',
     });
-  });
-});
-
-describe('parseCircuitTripped', () => {
-  it('parses a circuit-tripped payload', () => {
-    const trip = parseCircuitTripped({ workspaceId: 'ws', paneId: 'uuid-2', reason: '递归/批量删除' });
-    expect(trip).toEqual({ paneId: 'uuid-2', reason: '递归/批量删除' });
-  });
-
-  it('degrades empty/missing reason to a generic one', () => {
-    expect(parseCircuitTripped({ paneId: 'p', reason: '' })?.reason).toBe('逻辑死锁');
-    expect(parseCircuitTripped({ pane_id: 'p2' })?.reason).toBe('逻辑死锁');
-  });
-
-  it('returns null without a pane id', () => {
-    expect(parseCircuitTripped({ reason: 'x' })).toBeNull();
-    expect(parseCircuitTripped(null)).toBeNull();
   });
 });

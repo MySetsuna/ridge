@@ -353,24 +353,6 @@
     }
   }
 
-  // iter-61：把终端标记 / 取消标记为 agent（纳入指挥部花名册）。位置在关闭按钮左侧。
-  // agentId 取终端标题（缺省 'agent'）——与桌面 SplitContainer 的同名按钮同口径。
-  async function toggleAgentMark(e: Event, wsId: string, pane: PaneInfo) {
-    e.stopPropagation();
-    if (!ws?.markPaneAgent || busy) return;
-    busy = true;
-    err = '';
-    try {
-      await ws.markPaneAgent(wsId, pane.id, !pane.isAgent, pane.title || 'agent');
-      if (wsId === activeWorkspaceId) ws.listPanes();
-      else await fetchPeek(wsId);
-    } catch (e2) {
-      err = e2 instanceof Error ? e2.message : String(e2);
-    } finally {
-      busy = false;
-    }
-  }
-
   async function closePaneRow(e: Event, id: string) {
     e.stopPropagation();
     if (!ws || busy || !canManagePanes) return;
@@ -495,7 +477,7 @@
                   <div
                     class="pane-row"
                     class:active={isActiveWs && pane.id === activePaneId}
-                    class:agent-working={pane.agentState === 'busy' || (pane.isAgent && !pane.agentState)}
+                    class:agent-working={pane.agentState === 'busy'}
                     class:agent-starting={pane.agentState === 'starting'}
                     class:agent-idle={pane.agentState === 'idle'}
                     role="button"
@@ -513,20 +495,12 @@
                       <span class="pane-name">{pane.title || $t('mobile.terminalDefault')}</span>
                       {#if pane.cwd}<span class="pane-cwd">{pane.cwd}</span>{/if}
                     </span>
-                    <!-- agent 标记：终端项右侧、关闭按钮左侧。与桌面分屏标题栏同款
-                         「图标 + 文字」，光一个淡图标在手机上根本看不出标没标（iter-62）。 -->
-                    {#if canManagePanes && ws?.markPaneAgent}
+                    {#if canManagePanes}
                       <span
                         class="row-agent"
-                        class:on={pane.isAgent}
-                        role="button"
-                        tabindex="-1"
-                        onclick={(e) => toggleAgentMark(e, wsp.id, pane)}
-                        onkeydown={() => {}}
-                        title={pane.isAgent ? $t('mobile.unmarkAgent') : $t('mobile.markAgent')}
-                        aria-label={pane.isAgent ? $t('mobile.unmarkAgent') : $t('mobile.markAgent')}
+                        title="连接既有 Agent 会话及移出登记，请在会话所属主机操作；成员状态见 Commune"
                       >
-                        <Bot class="w-3 h-3" />
+                        <Bot class="w-3 h-3" /><span>主机登记</span>
                       </span>
                     {/if}
                     {#if canManagePanes && isActiveWs}
@@ -720,8 +694,7 @@
   .row-close{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:4px;color:var(--rg-fg-muted);opacity:.55;flex-shrink:0;margin-left:auto}
   .row-close:active{background:rgba(255,255,255,.1);opacity:1;color:var(--rg-ansi-red)}
   /* Pure icon; transparent hit box keeps the former text-pill width. */
-  .row-agent{display:flex;align-items:center;justify-content:center;width:36px;height:20px;padding:0;border:0;border-radius:0;background:transparent;color:var(--rg-fg-muted);opacity:.7;flex-shrink:0;margin-left:auto}
-  .row-agent.on,.row-agent:active{color:var(--rg-accent);opacity:1;background:transparent}
+  .row-agent{display:flex;align-items:center;justify-content:center;gap:3px;height:20px;font-size:9px;white-space:nowrap;color:var(--rg-fg-muted);opacity:.7;flex-shrink:0;margin-left:auto}
 
   .tree-foot{display:flex;align-items:center;gap:6px;padding:6px 10px;border-top:1px solid var(--rg-border-bright);font-size:10px;color:var(--rg-fg-muted)}
   .foot-dot{width:6px;height:6px;border-radius:50%;background:var(--rg-ansi-green)}

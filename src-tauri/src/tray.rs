@@ -8,7 +8,7 @@ use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, Manager, Runtime};
 
-use crate::deep_root::{prepare_for_hide, restore_window};
+use crate::deep_root::restore_window;
 use crate::kernel_lifecycle;
 use crate::state::AppState;
 
@@ -56,7 +56,7 @@ pub fn build_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
 fn on_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, event: MenuEvent) {
     match event.id().as_ref() {
         MENU_ID_RESTORE => restore_from_tray(app, "restore from tray menu failed"),
-        MENU_ID_EXIT_DESKTOP => hide_desktop(app),
+        MENU_ID_EXIT_DESKTOP => exit_desktop(app),
         MENU_ID_QUIT_KERNEL => quit_kernel(app),
         _ => {}
     }
@@ -71,20 +71,11 @@ fn restore_from_tray<R: Runtime>(app: &tauri::AppHandle<R>, message: &str) {
     }
 }
 
-fn hide_desktop<R: Runtime>(app: &tauri::AppHandle<R>) {
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-    crate::commands::ridge_file::save_restore_set(app, &app.state::<AppState>());
-    prepare_for_hide(&window);
-    match window.hide() {
-        Ok(()) => {
-            tracing::info!(target: "ridge::tray", "desktop UI hidden; kernel and remote remain running")
-        }
-        Err(error) => {
-            tracing::warn!(target: "ridge::tray", error = %error, "hide desktop shell failed")
-        }
-    }
+fn exit_desktop<R: Runtime>(app: &tauri::AppHandle<R>) {
+    let state=app.state::<AppState>();
+    if state.quitting.swap(true,std::sync::atomic::Ordering::AcqRel){return;}
+    crate::commands::ridge_file::save_restore_set();
+    app.exit(0);
 }
 
 fn quit_kernel<R: Runtime>(app: &tauri::AppHandle<R>) {
@@ -92,7 +83,6 @@ fn quit_kernel<R: Runtime>(app: &tauri::AppHandle<R>) {
     if quitting.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return;
     }
-    crate::commands::remote::stop_remote_server(&app.state::<AppState>());
     if let Err(error) = kernel_lifecycle::shutdown_kernel() {
         tracing::warn!(target: "ridge::tray", error = %error, "kernel shutdown failed");
         quitting.store(false, std::sync::atomic::Ordering::Release);

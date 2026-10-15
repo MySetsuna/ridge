@@ -107,7 +107,7 @@ pub fn agent_hub_path() -> PathBuf {
 
 pub fn load_roster() -> Result<ridge_core::teammate::topology::TopologyGraph> {
     let path = roster_path();
-    if !path.exists() {
+    if !path.try_exists().with_context(|| format!("inspect {}", path.display()))? {
         return Ok(ridge_core::teammate::topology::TopologyGraph::new());
     }
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
@@ -118,21 +118,22 @@ pub fn save_roster_at(
     path: &std::path::Path,
     roster: &ridge_core::teammate::topology::TopologyGraph,
 ) -> Result<()> {
-    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(
-        &tmp,
-        serde_json::to_vec_pretty(roster).context("serialize agent roster")?,
-    )
-    .with_context(|| format!("write {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))?;
-    Ok(())
+    let bytes = serde_json::to_vec_pretty(roster).context("serialize agent roster")?;
+    match fs::read(path) {
+        Ok(previous) => {
+            serde_json::from_slice::<ridge_core::teammate::topology::TopologyGraph>(&previous)
+                .with_context(|| format!("validate {}; original preserved", path.display()))?;
+            if previous == bytes { return Ok(()); }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).with_context(|| format!("read {}; original preserved", path.display())),
+    }
+    crate::workspace_history::write_at(path, &bytes).map_err(anyhow::Error::msg)
 }
 
 pub fn load_workspace_graph() -> Result<ridge_core::workspace::graph::WorkspaceGraph> {
     let path = workspace_graph_path();
-    if !path.exists() {
+    if !path.try_exists().with_context(|| format!("inspect {}", path.display()))? {
         return Ok(ridge_core::workspace::graph::WorkspaceGraph::new());
     }
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
@@ -145,7 +146,7 @@ pub fn save_workspace_graph_at(
 ) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-    if path.exists() {
+    if path.try_exists().with_context(|| format!("inspect {}", path.display()))? {
         let bytes = fs::read(path).with_context(||format!("read {} before replacing",path.display()))?;
         let old: serde_json::Value = serde_json::from_slice(&bytes).context("validate existing workspace graph before replacing")?;
         if old.get("order").is_none() || old.get("next_display_seq").is_none() {
@@ -160,7 +161,7 @@ pub fn save_workspace_graph_at(
 
 pub fn load_remote_hosts() -> Result<HashMap<String, ridge_core::remote::HostRecord>> {
     let path = remote_hosts_path();
-    if !path.exists() {
+    if !path.try_exists().with_context(|| format!("inspect {}", path.display()))? {
         return Ok(HashMap::new());
     }
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
@@ -176,12 +177,17 @@ pub fn save_remote_hosts_at(
     path: &std::path::Path,
     hosts: &HashMap<String, ridge_core::remote::HostRecord>,
 ) -> Result<()> {
-    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    match fs::read(path) {
+        Ok(bytes) => {
+            let previous = serde_json::from_slice::<HashMap<String, ridge_core::remote::HostRecord>>(&bytes)
+                .with_context(|| format!("validate existing {}; original preserved", path.display()))?;
+            if &previous == hosts { return Ok(()); }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).with_context(|| format!("read {}; original preserved", path.display())),
+    }
     let raw = serde_json::to_vec_pretty(hosts).context("serialize remote hosts")?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, raw).with_context(|| format!("write {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))?;
+    crate::workspace_history::write_at(path, &raw).map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
@@ -240,6 +246,62 @@ pub fn read_endpoint() -> Option<KernelEndpoint> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_roster_archive_restores_original_members_and_unknown_fields() {
+        use ridge_core::teammate::{model::Teammate, topology::TopologyGraph};
+        let root = std::env::temp_dir().join(format!("ridge-roster-archive-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("agent-roster.json");
+        let mut roster = TopologyGraph::new();
+        roster.add_teammate(Teammate::new("kept", "Original member", 71));
+        let mut legacy = serde_json::to_value(&roster).unwrap();
+        legacy["legacyOpaque"] = serde_json::json!({"preserve":true});
+        let original = serde_json::to_vec_pretty(&legacy).unwrap();
+        fs::write(&path, &original).unwrap();
+        roster.remove_teammate("kept");
+        save_roster_at(&path, &roster).unwrap();
+        save_roster_at(&path, &roster).unwrap();
+        let archives: Vec<_> = fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().path())
+            .filter(|path| path.file_name().unwrap().to_string_lossy().starts_with("agent-roster.archive-")).collect();
+        assert_eq!(archives.len(), 1);
+        assert_eq!(fs::read(&archives[0]).unwrap(), original);
+        let restored = root.join("restored.json");
+        fs::copy(&archives[0], &restored).unwrap();
+        let recovered: TopologyGraph = serde_json::from_slice(&fs::read(&restored).unwrap()).unwrap();
+        assert_eq!(recovered.get("kept").unwrap().name, "Original member");
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(restored).unwrap()).unwrap()["legacyOpaque"]["preserve"], true);
+    }
+
+    #[test]
+    fn invalid_roster_is_not_overwritten_or_archived_as_valid_state() {
+        let root = std::env::temp_dir().join(format!("ridge-roster-invalid-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("agent-roster.json");
+        for bytes in [b"{interrupted".as_slice(), b"{}".as_slice()] {
+            fs::write(&path, bytes).unwrap();
+            assert!(save_roster_at(&path, &Default::default()).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_roster_is_preserved_until_the_os_share_lock_is_released() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = std::env::temp_dir().join(format!("ridge-roster-denied-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("agent-roster.json");
+        let original = serde_json::to_vec(&ridge_core::teammate::topology::TopologyGraph::new()).unwrap();
+        fs::write(&path, &original).unwrap();
+        let lock = OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+        assert!(save_roster_at(&path, &Default::default()).is_err());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        drop(lock);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        save_roster_at(&path, &Default::default()).unwrap();
+    }
 
     #[test]
     fn first_legacy_graph_write_archives_exact_source_bytes() {

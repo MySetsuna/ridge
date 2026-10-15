@@ -61,12 +61,6 @@ export interface HostTopologyLink extends HostForestLink {
     owner?: PaneRenderOwner,
   ): void;
   getPaneOutput(pane: PaneRef): string[];
-  markPaneAgent?(
-    workspaceId: string,
-    paneId: string,
-    on: boolean,
-    agentId?: string,
-  ): Promise<void>;
   listShells?: NonNullable<RemoteLink['listShells']>;
   changePaneShell?: NonNullable<RemoteLink['changePaneShell']>;
   /** Read-only filesystem probes must execute on this host, never on the

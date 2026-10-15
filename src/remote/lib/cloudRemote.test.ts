@@ -215,8 +215,9 @@ describe('CloudRemoteConnection.init', () => {
     handlers['pane-meta-changed']({ payload: null });
     handlers['pane-meta-changed']({ payload: { paneId: 42, title: 'bad' } });
     handlers['pane-meta-changed']({ payload: { paneId: 'pane-a', title: 'new', cwd: '/new' } });
+    handlers['pane-meta-changed']({ payload: { workspaceId: 'ws2', paneId: 'pane-a', title: 'new', cwd: '/new' } });
 
-    expect(seen).toEqual([[{ workspaceId: 'ws1', paneId: 'pane-a' }, 'new', '/new']]);
+    expect(seen).toEqual([[{ workspaceId: 'ws2', paneId: 'pane-a' }, 'new', '/new']]);
   });
 
   it('forwards the canonical grid and refresh owner from host events', async () => {
@@ -233,14 +234,17 @@ describe('CloudRemoteConnection.init', () => {
 });
 
 describe('CloudRemoteConnection panes', () => {
-  it('shows active terminal source failure and ignores obsolete activations', async () => {
+  it('reports only the current pane failure without failing the Host connection', async () => {
     const conn = await connected();
     const pane = { workspaceId: 'ws1', paneId: 'pane-a' };
     conn.subscribePane(pane, { activationId: 7, active: true });
+    const messages = vi.fn(); conn.onMessage(messages);
     handlers['pane-terminal-error']({ payload: { ...pane, activationId: 6 } });
     expect(conn.lastFailure()).toBeNull();
     handlers['pane-terminal-error']({ payload: { ...pane, activationId: 7 } });
-    expect(conn.lastFailure()).toMatchObject({ category: 'channel', message: expect.stringContaining('Terminal connection failed') });
+    expect(conn.lastFailure()).toBeNull();
+    expect(conn.state()).toBe('connected');
+    expect(messages).toHaveBeenCalledWith({type:'event',name:'pane-terminal-error',payload:{...pane,activationId:7}});
     conn.disconnect();
     expect(handlers['pane-terminal-error']).toBeUndefined();
   });
@@ -290,11 +294,10 @@ describe('CloudRemoteConnection panes', () => {
     await flush();
 
     const panesMsg = msgs.find((m) => m.type === 'panes');
-    // Agent runtime state travels with the pane so mobile terminal chrome can
-    // show the same working/idle cue as the desktop pane.
+    // Legacy pane metadata cannot manufacture protocol membership.
     expect(panesMsg).toEqual({ type: 'panes', workspaceId: 'ws1', panes: [
-      { id: 'pane-a', title: 'A', cwd: '/a', isAgent: true, agentState: 'busy', agentId: 'agent-a' },
-      { id: 'pane-b', title: undefined, cwd: undefined, isAgent: true, agentState: 'idle' },
+      { id: 'pane-a', title: 'A', cwd: '/a' },
+      { id: 'pane-b', title: undefined, cwd: undefined },
     ] });
     expect(metas).toContainEqual([{ workspaceId: 'ws1', paneId: 'pane-a' }, 'A', '/a']);
     expect(metas).toContainEqual([{ workspaceId: 'ws1', paneId: 'pane-b' }, null, null]);
@@ -1024,8 +1027,7 @@ describe('CloudRemoteConnection bounded parity guards', () => {
     capabilityOff();
     expect(conn.hasCapability('agent-messages')).toBe(true);
 
-    await conn.markPaneAgent('ws1', 'pane-a', true, 'agent-42');
-    await conn.markPaneAgent('ws1', 'pane-a', false);
+    expect('markPaneAgent' in conn).toBe(false);
     expect(await conn.listShells()).toEqual([]);
     await conn.changePaneShell('ws1', 'pane-a', {
       id: 'pwsh', label: 'PowerShell', program: 'pwsh', args: ['-NoLogo'],
@@ -1040,9 +1042,7 @@ describe('CloudRemoteConnection bounded parity guards', () => {
     expect(await conn.closeWorkspace('ws1')).toBe(true);
     expect(await conn.createWorkspace()).toBe('ws-new');
 
-    expect(invokeMock).toHaveBeenCalledWith('register_teammate_agent', {
-      workspaceId: 'ws1', paneId: 'pane-a', agentId: 'agent-42',
-    }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(invokeMock.mock.calls.some(([method]) => method === 'register_teammate_agent' || method === 'release_teammate_agent')).toBe(false);
     expect(invokeMock).toHaveBeenCalledWith('change_pane_shell', {
       paneId: 'pane-a', shell: 'pwsh', args: ['-NoLogo'],
     }, expect.objectContaining({ signal: expect.any(AbortSignal) }));

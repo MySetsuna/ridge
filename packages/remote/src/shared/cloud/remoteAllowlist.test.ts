@@ -86,10 +86,22 @@ describe('isMutatingMethod', () => {
     }
   });
 
-  it('every mutating method is also in the allow-list', () => {
+  it('classifies native-only writes without widening the Remote capability set', () => {
+    const nativeOnly = new Set(['release_teammate_agent', 'initialize_cloud_controller_identity',
+      'git_push_branch', 'git_merge_branch', 'git_delete_branch', 'git_rename_branch', 'git_rebase',
+      'git_delete_tag', 'git_push_tag', 'git_stash_push', 'git_stash_apply', 'git_stash_pop',
+      'git_stash_drop', 'git_stash_branch', 'git_cherry_pick_abort', 'git_revert_abort']);
     for (const m of MUTATING_METHODS) {
-      expect(REMOTE_ALLOWLIST).toContain(m);
+      if (nativeOnly.has(m)) expect(REMOTE_ALLOWLIST).not.toContain(m);
+      else expect(REMOTE_ALLOWLIST).toContain(m);
     }
+    for (const m of nativeOnly) {
+      expect(isMutatingMethod(m)).toBe(true);
+      expect(isRemoteAllowed(m)).toBe(false);
+    }
+    expect(isMutatingMethod('git_fetch')).toBe(true);
+    expect(isMutatingMethod('release_teammate_agent')).toBe(true);
+    expect(isRemoteAllowed('release_teammate_agent')).toBe(false);
   });
 });
 

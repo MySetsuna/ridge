@@ -8,8 +8,8 @@
 //! 用途（后续 P2 握手帧接线）：E2EE 握手时 host 用本私钥**签名本次临时 X25519 公钥**，
 //! controller 验签 + TOFU 固定指纹 → 被攻陷 relay 无私钥，无法替换公钥做 MITM。
 //!
-//! 失败一律降级：`load_or_create` 加载异常当"无身份"→ 现生成；保存失败仅 `warn`
-//! （不阻断远控启动）。
+//! 旧 `load_or_create` 保留历史降级行为；Runtime 的 checked/migration 入口
+//! 显式拒绝损坏、不可读或冲突身份，不生成临时身份。
 //!
 //! 注意：DPAPI FFI 与 `seed_store` 各持一份——本任务为**零回归**不改 `seed_store`；
 //! 后续可抽共享 `dpapi` 模块统一。
@@ -31,7 +31,70 @@ pub struct DeviceIdentity {
     signing: SigningKey,
 }
 
+pub const DEVICE_BIND_DOMAIN: &[u8] = b"ridge-id-bind-v1";
+/// Public identity plus the one permitted binding-signature operation.
+pub trait DeviceBindingSigner: Send + Sync {
+    fn public_bytes(&self) -> [u8; PUBLIC_KEY_LEN];
+    fn sign_binding(&self, context: &[u8]) -> Result<[u8; SIGNATURE_LEN], String>;
+    fn fingerprint(&self) -> String { fingerprint_of(&self.public_bytes()) }
+}
+impl DeviceBindingSigner for DeviceIdentity {
+    fn public_bytes(&self) -> [u8; PUBLIC_KEY_LEN] { self.public_bytes() }
+    fn sign_binding(&self, context: &[u8]) -> Result<[u8; SIGNATURE_LEN], String> {
+        let mut message = DEVICE_BIND_DOMAIN.to_vec();
+        message.extend_from_slice(context);
+        Ok(self.sign(&message))
+    }
+}
+
 impl DeviceIdentity {
+    /// Read an existing encrypted identity without creating or repairing it.
+    pub fn load_existing_at(path: &Path) -> Result<Option<Self>, String> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("read identity; original preserved: {error}")),
+        };
+        let seed: [u8; SEED_LEN] = decrypt(&bytes).and_then(|seed| seed.try_into().ok())
+            .ok_or("invalid encrypted identity; original preserved")?;
+        Ok(Some(Self::from_seed(&seed)))
+    }
+
+    /// Publish a complete encrypted copy, without replacing a different identity.
+    pub fn persist_at(&self, path: &Path) -> Result<Self, String> {
+        if let Some(existing) = Self::load_existing_at(path)? {
+            return if existing.public_bytes() == self.public_bytes() { Ok(existing) }
+                else { Err("identity migration conflict; original preserved".into()) };
+        }
+        if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
+        let blob = encrypt(&self.signing.to_bytes()).ok_or("identity encryption failed")?;
+        let temporary = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+        let result = (|| {
+            use std::io::Write;
+            let mut options = std::fs::OpenOptions::new(); options.write(true).create_new(true);
+            #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+            let mut file = options.open(&temporary).map_err(|error| error.to_string())?;
+            file.write_all(&blob).and_then(|_| file.sync_all()).map_err(|error| error.to_string())?;
+            drop(file);
+            // Same-directory hard-link publication is atomic and cannot overwrite
+            // a competing committed key. Unsupported filesystems fail explicitly.
+            match std::fs::hard_link(&temporary, path) {
+                Ok(()) => {},
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+                Err(error) => return Err(format!("publish identity: {error}")),
+            }
+            let existing = Self::load_existing_at(path)?.ok_or("published identity unavailable")?;
+            if existing.public_bytes() != self.public_bytes() { return Err("identity migration conflict; original preserved".into()); }
+            Ok(existing)
+        })();
+        let _ = std::fs::remove_file(temporary);
+        result
+    }
+
+    /// Preserve the legacy device namespace while refusing an ephemeral identity.
+    pub fn load_or_create_checked() -> Result<Self, String> {
+        Self::load_or_create_at(&identity_path().ok_or("device identity namespace unavailable")?)
+    }
     /// 从默认路径加载持久化身份；无/损坏则现生成并落盘（跨重启稳定的入口）。
     ///
     /// 路径：`ProjectDirs("ridge").config_dir()/device_identity.key`（与 cli `auth.json`
@@ -60,6 +123,23 @@ impl DeviceIdentity {
                 );
                 Self::from_seed(&random_seed())
             }
+        }
+    }
+
+    /// Explicit owned namespace; existing damaged keys are retained, never reset.
+    pub fn load_or_create_at(path: &Path) -> Result<Self, String> {
+        if let Some(seed)=load_seed_at(path) {return Ok(Self::from_seed(&seed));}
+        if path.try_exists().map_err(|error|error.to_string())? {return Err("invalid device identity; original preserved".into());}
+        if let Some(parent)=path.parent() {std::fs::create_dir_all(parent).map_err(|error|error.to_string())?;}
+        let seed=random_seed();
+        let blob=encrypt(&seed).ok_or("device identity encryption failed")?;
+        use std::io::Write;
+        let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);
+        #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+        match options.open(path) {
+            Ok(mut file)=>{file.write_all(&blob).and_then(|_|file.sync_all()).map_err(|error|error.to_string())?;set_owner_only_perms(path);Ok(Self::from_seed(&seed))},
+            Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists=>load_seed_at(path).map(|seed|Self::from_seed(&seed)).ok_or_else(||"device identity creation raced; retry after the owner commits".into()),
+            Err(error)=>Err(error.to_string()),
         }
     }
 
@@ -297,6 +377,42 @@ mod tests {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
     #[test]
+    fn encrypted_import_is_complete_idempotent_and_never_replaces_a_different_key() {
+        let root = std::env::temp_dir().join(format!("ridge-identity-import-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("controller.key");
+        std::fs::write(root.join("controller.tmp-interrupted"), b"incomplete encrypted candidate").unwrap();
+        let original = DeviceIdentity::from_seed(&[9;32]);
+        assert_eq!(original.persist_at(&path).unwrap().public_bytes(), original.public_bytes());
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(original.persist_at(&path).unwrap().public_bytes(), original.public_bytes());
+        assert!(DeviceIdentity::from_seed(&[10;32]).persist_at(&path).is_err());
+        assert!(std::fs::read(&path).unwrap() == bytes);
+        assert_eq!(DeviceIdentity::load_existing_at(&path).unwrap().unwrap().public_bytes(), original.public_bytes());
+        #[cfg(windows)] assert!(bytes.as_slice() != [9;32]);
+        #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600); }
+        std::fs::write(&path, b"damaged canonical").unwrap();
+        assert!(original.persist_at(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"damaged canonical");
+    }
+
+    #[test]
+    fn simultaneous_imports_publish_one_complete_identity() {
+        let root = std::env::temp_dir().join(format!("ridge-identity-race-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("controller.key");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = [11u8,12].into_iter().map(|value| {
+            let path = path.clone(); let barrier = barrier.clone();
+            std::thread::spawn(move || { barrier.wait(); DeviceIdentity::from_seed(&[value;32]).persist_at(&path) })
+        }).collect();
+        let winners: Vec<_> = workers.into_iter().filter_map(|worker| worker.join().unwrap().ok()).collect();
+        assert_eq!(winners.len(), 1);
+        assert_eq!(DeviceIdentity::load_existing_at(&path).unwrap().unwrap().public_bytes(), winners[0].public_bytes());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+    }
+
+    #[test]
     fn from_seed_is_deterministic() {
         let seed = [7u8; SEED_LEN];
         assert_eq!(
@@ -447,4 +563,18 @@ mod tests {
         assert_eq!(load_seed_at(&path), Some(seed), "须能解回");
         let _ = std::fs::remove_dir_all(&dir);
     }
+    #[test]
+    fn explicit_identity_namespace_is_stable_and_preserves_corrupt_bytes() {
+        let root=std::env::temp_dir().join(format!("ridge-owned-identity-{}",uuid::Uuid::new_v4()));
+        let path=root.join("identity.key");
+        let first=DeviceIdentity::load_or_create_at(&path).unwrap();
+        let original=std::fs::read(&path).unwrap();
+        let second=DeviceIdentity::load_or_create_at(&path).unwrap();
+        assert_eq!(first.public_bytes(),second.public_bytes());
+        assert_eq!(std::fs::read(&path).unwrap(),original);
+        std::fs::write(&path,b"corrupt-original").unwrap();
+        assert!(DeviceIdentity::load_or_create_at(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(),b"corrupt-original");
+    }
+
 }

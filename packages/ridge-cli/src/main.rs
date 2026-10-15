@@ -22,7 +22,6 @@ mod batching;
 mod config;
 mod core_host;
 mod daemon;
-mod daemon_ctl;
 mod e2ee;
 mod envelope;
 mod fs_reuse;
@@ -38,7 +37,6 @@ mod pty;
 mod rpc;
 mod rtc;
 mod rtp1_kernel_client;
-mod session;
 mod session_control;
 mod signaling;
 mod totp;
@@ -373,15 +371,10 @@ async fn run_tmux(args: TmuxArgs) -> Result<()> {
     eprintln!();
     eprintln!("将 `tmux` shim 放入 PATH 后，本 host 上的 agent 即可创建无头 tmux 会话。");
 
-    let mcp_state =
-        ridge_mcp::server::McpSessionState::with_sqlite(ridge_kernel::registry::agent_hub_path())
-            .map_err(anyhow::Error::msg)
-            .map(std::sync::Arc::new)
-            .context("open persistent Agent Hub")?;
-    let ctx = ridge_tmux::http::NativeHttpCtx::headless(token).with_mcp_state(mcp_state);
-    ridge_tmux::http::serve(listener, ctx)
-        .await
-        .context("tmux engine server stopped")?;
+    let endpoint=kernel_ctl::ensure_kernel_running().map_err(anyhow::Error::msg)?;
+    let app=axum::Router::new().route("/api/v1/tmux/*operation",axum::routing::get(tmux_proxy).post(tmux_proxy))
+        .with_state((std::sync::Arc::new(token),endpoint));
+    axum::serve(listener,app).await.context("tmux transport stopped")?;
     Ok(())
 }
 
@@ -483,5 +476,22 @@ impl std::io::Write for FileWriterGuard<'_> {
     }
     fn flush(&mut self) -> std::io::Result<()> {
         self.0.flush()
+    }
+}
+
+async fn tmux_proxy(
+    axum::extract::State((token,endpoint)):axum::extract::State<(std::sync::Arc<String>,ridge_kernel::registry::KernelEndpoint)>,
+    uri:axum::http::Uri,method:axum::http::Method,headers:axum::http::HeaderMap,body:axum::body::Bytes,
+)->axum::response::Response {
+    use axum::response::IntoResponse;
+    let supplied=headers.get("x-ridge-token").and_then(|value|value.to_str().ok()).or_else(||headers.get(axum::http::header::AUTHORIZATION).and_then(|value|value.to_str().ok()).and_then(|value|value.strip_prefix("Bearer ")));
+    if supplied!=Some(token.as_str()){return (axum::http::StatusCode::UNAUTHORIZED,"unauthorized").into_response();}
+    let url=format!("http://127.0.0.1:{}{}",endpoint.port,uri.path_and_query().map(|value|value.as_str()).unwrap_or(uri.path()));
+    let client=match reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(30)).build(){Ok(client)=>client,Err(_)=>return (axum::http::StatusCode::SERVICE_UNAVAILABLE,"Runtime transport unavailable").into_response()};
+    let mut request=client.request(method,url).header("x-ridge-token",endpoint.token).body(body);
+    for key in ["content-type","x-ridge-workspace"] {if let Some(value)=headers.get(key){request=request.header(key,value.clone());}}
+    match request.send().await {
+        Ok(reply)=>{let status=reply.status();match reply.bytes().await{Ok(body)=>(status,body).into_response(),Err(_)=>(axum::http::StatusCode::BAD_GATEWAY,"Runtime reply unavailable").into_response()}},
+        Err(_)=>(axum::http::StatusCode::BAD_GATEWAY,"Runtime request failed").into_response(),
     }
 }

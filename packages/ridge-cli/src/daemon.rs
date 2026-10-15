@@ -13,12 +13,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::config::{self, AuthFile};
-use crate::ice;
-use crate::rtc::WebRtcHost;
-use crate::session::{HostIdentity, RemoteSession};
-use crate::signaling::{Role, SignalMsg, Signaling};
-use ridge_core::DeviceIdentity;
+use crate::config;
 
 /// 重连退避上下限。
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -183,180 +178,35 @@ fn fatal_hint(code: &str) -> &'static str {
     }
 }
 
-/// 跑 daemon。`shell` / `cwd` 透传给每个会话的 PTY；`root` 透传为 fs 服务根沙箱
+/// 向 Runtime 请求公网服务。`shell` / `cwd` 透传给 PTY；`root` 为 fs 服务根沙箱
 /// （D-GM-9，缺省回退 `cwd` → 进程当前目录）。
-pub async fn run(shell: Option<String>, cwd: Option<String>, root: Option<String>) -> Result<()> {
-    let _status_guard = StatusGuard;
-    publish_status("starting", "正在读取设备凭据");
-    let auth = match config::load_auth()
-        .context("failed to load credentials")?
-        .context("本机尚未激活云端设备：先跑 `ridge login`（或 `ridge login --browser`）绑定本机，再启动公网远控")
-    {
-        Ok(auth) => auth,
-        Err(error) => {
-            publish_status("error", &format!("{error:#}"));
-            return Err(error);
-        }
-    };
-
-    // WebRTC is a detached shell adapter over the long-lived kernel.  Ensure
-    // the kernel exists before a controller can create its first PTY; this
-    // prevents a startup race from falling back to a daemon-local PTY.
-    if let Err(error) = crate::kernel_ctl::ensure_kernel_running() {
-        tracing::warn!(target: "ridge_cli::daemon", %error, "kernel bootstrap unavailable; session may retry");
+pub(crate) fn start(endpoint:&ridge_kernel::registry::KernelEndpoint,shell:Option<String>,cwd:Option<String>,root:Option<String>)->Result<()> {
+    let auth=config::load_auth()?.context("本机尚未激活云端设备：先运行 ridge login")?;
+    if shell.is_some()||cwd.is_some() {
+        let workspace=ridge_kernel::client::request_json(&endpoint,"POST","/v1/domain/workspaces",Some(&serde_json::json!({"name":"CLI remote"}))).map_err(anyhow::Error::msg)?;
+        let workspace=uuid::Uuid::parse_str(workspace["workspace_id"].as_str().context("missing workspace identity")?)?;
+        let pane=uuid::Uuid::new_v4();
+        let topology=serde_json::json!({"pane_tree":{"root":{"Leaf":pane},"panes":{pane.to_string():{"id":pane,"mode":"Terminal","cwd":cwd}}}});
+        let updated=ridge_kernel::client::request_json(&endpoint,"PUT",&format!("/v1/domain/workspaces/{workspace}/topology"),Some(&topology)).map_err(anyhow::Error::msg)?;
+        if updated["ok"]!=true {anyhow::bail!("CLI remote workspace could not be prepared");}
+        ridge_kernel::client::create_domain_pty(&endpoint,pane,shell.as_deref(),cwd.as_deref(),Some(workspace),"shell",None).map_err(anyhow::Error::msg)?;
     }
-
-    tracing::info!(
-        target: "ridge_cli::daemon",
-        device = %auth.device_name,
-        username = %auth.username,
-        entry = %auth.public_entry(),
-        "starting ridge-cli daemon"
-    );
-
-    // 零信任 #2：进程级初始化 Ed25519 设备身份（生成/加载 device_identity.key，
-    // DPAPI/0600，与 auth.json 同根）。指纹打到日志，供 TOFU 首次信任时用户带外核对。
-    // P2 握手将用它签名本次临时 X25519 公钥（本任务仅做密钥基建，不接握手帧）。
-    let device_identity = ridge_core::DeviceIdentity::load_or_create();
-    tracing::info!(
-        target: "ridge_cli::daemon",
-        fingerprint = %device_identity.fingerprint(),
-        "device identity ready (Ed25519, zero-trust #2)"
-    );
-
-    let http = reqwest::Client::builder()
-        .build()
-        .context("failed to build HTTP client")?;
-
-    let mut backoff = MIN_BACKOFF;
-    loop {
-        publish_status("connecting", "正在连接信令中继");
-        match serve_once(
-            &http,
-            &auth,
-            &device_identity,
-            shell.clone(),
-            cwd.clone(),
-            root.clone(),
-        )
-        .await
-        {
-            Ok(()) => {
-                // 信令正常断开：重置退避后立即重连。
-                backoff = MIN_BACKOFF;
-            }
-            Err(e) => {
-                if e.downcast_ref::<FatalSignalError>().is_some() {
-                    return Err(e);
-                }
-                publish_status(
-                    "connecting",
-                    &format!("连接失败，{} 秒后重试：{e:#}", backoff.as_secs()),
-                );
-                tracing::warn!(
-                    target: "ridge_cli::daemon",
-                    error = %e,
-                    backoff_secs = backoff.as_secs(),
-                    "session loop error; reconnecting"
-                );
-                // 可见性（iter-62）：连不上中继时旧实现只 warn 进日志再静默退避，前台
-                // `ridge remote` 一片空白，用户只能从控制端的「远程主机当前不在线」反推。
-                // 把失败原因与下次重试间隔直接打到 stderr（TUI 模式下 stderr 已重定向到
-                // 日志文件，不会糊屏）。
-                eprintln!(
-                    "! 连接信令中继失败（{}s 后重试）：{e:#}\n  入口：{}",
-                    backoff.as_secs(),
-                    auth.public_entry()
-                );
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(MAX_BACKOFF);
-            }
-        }
-    }
+    let runtime=ridge_kernel::auth_client::remote_auth(endpoint.clone());
+    let root=root.or(cwd).or_else(||std::env::current_dir().ok().map(|path|path.to_string_lossy().into_owned()));
+    runtime.call("cloud_host_online",serde_json::json!({"deviceToken":auth.token,"deviceName":auth.device_name,"username":auth.username,"baseDomain":config::base_domain(),"root":root,"plaintext":std::env::var("RIDGE_CLOUD_DEV_PLAINTEXT").ok().as_deref()==Some("1")})).map_err(anyhow::Error::msg)?;
+    Ok(())
 }
 
-/// 连一次信令，处理其上的所有会话直到信令断开。
-async fn serve_once(
-    http: &reqwest::Client,
-    auth: &AuthFile,
-    device_identity: &DeviceIdentity,
-    shell: Option<String>,
-    cwd: Option<String>,
-    root: Option<String>,
-) -> Result<()> {
-    let ice_servers = ice::fetch_ice_servers(http, &auth.token).await;
-    let mut signaling = Signaling::connect(&auth.signaling_ws_url())
-        .await
-        .context("signaling connect failed")?;
-    let sender = signaling.sender();
-    let peer = WebRtcHost;
-
-    tracing::info!(target: "ridge_cli::daemon", "signaling socket connected; waiting for relay welcome");
-    // 可见性（iter-61）：daemon 是长驻前台进程，用户只有 stdout 可看。日志默认进
-    // 文件/stderr，「连上了没有」全靠猜——这里把关键节点直接打到 stdout。
+pub async fn run(shell:Option<String>,cwd:Option<String>,root:Option<String>)->Result<()> {
+    let endpoint=crate::kernel_ctl::ensure_kernel_running().map_err(anyhow::Error::msg)?;
+    start(&endpoint,shell,cwd,root)?;
+    let runtime=ridge_kernel::auth_client::remote_auth(endpoint);
     loop {
-        let ev = match signaling.incoming.recv().await {
-            Some(ev) => ev,
-            None => {
-                tracing::info!(target: "ridge_cli::daemon", "signaling closed");
-                return Ok(());
-            }
-        };
-
-        // controller 在场 → 起会话（host 作 answerer）。
-        // `..` 忽略共享 schema 新增的 cid 字段：此处只判定「是否有 controller」，cid 的
-        // 捕获/回盖在 RemoteSession 内进行（见 session.rs，从入站 offer 取 cid）。
-        let controller_present = match ev {
-            SignalMsg::Welcome { peer_present, .. } => {
-                publish_status("online", "已连接信令中继，等待控制端接入");
-                println!(
-                    "✓ 已连接信令中继：{}（等待控制端接入…）",
-                    auth.public_entry()
-                );
-                peer_present
-            }
-            SignalMsg::PeerJoin { ref role, .. } => *role == Role::Controller,
-            SignalMsg::Error { code, message } => {
-                tracing::warn!(target: "ridge_cli::daemon", %code, %message, "signaling error");
-                if FATAL_SIGNAL_CODES.contains(&code.as_str()) {
-                    // 终态：重连必然重蹈覆辙。打印可读指引并让 daemon 退出（非零码），
-                    // 而非静默热重连——否则 controller 侧只能看到永远的「正在连接」。
-                    eprintln!("✗ 云端拒绝本设备接入（{code}）：{message}");
-                    eprintln!("  {}", fatal_hint(&code));
-                    let detail = fatal_hint(&code).to_string();
-                    publish_status("error", &format!("{code}: {detail}"));
-                    return Err(FatalSignalError { code, detail }.into());
-                }
-                eprintln!("! 信令错误（{code}）：{message}");
-                continue;
-            }
-            _ => false,
-        };
-
-        if controller_present {
-            tracing::info!(target: "ridge_cli::daemon", "controller present; starting session");
-            println!("→ 控制端已接入，正在建立加密会话…");
-            // 会话借用 incoming 读 offer/ICE，并用 cheap-clone 的 sender 回 answer/ICE。
-            // 零信任 #2：注入设备身份签名材料（host 握手发 0x02）。
-            if let Err(e) = RemoteSession::run(
-                &peer,
-                ice_servers.clone(),
-                &sender,
-                &mut signaling.incoming,
-                shell.clone(),
-                cwd.clone(),
-                root.clone(),
-                HostIdentity {
-                    device_identity,
-                    device_name: &auth.device_name,
-                    username: &auth.username,
-                },
-            )
-            .await
-            {
-                tracing::warn!(target: "ridge_cli::daemon", error = %e, "session ended with error");
-            }
-            tracing::info!(target: "ridge_cli::daemon", "session ended; waiting for next controller");
+        let state=runtime.call("get_cloud_host_state",serde_json::json!({})).map_err(anyhow::Error::msg)?;
+        publish_status(state["state"].as_str().unwrap_or("error"),state["error"].as_str().unwrap_or(""));
+        tokio::select! {
+            _=tokio::signal::ctrl_c()=>{runtime.call("cloud_host_offline",serde_json::json!({})).map_err(anyhow::Error::msg)?;return Ok(());},
+            _=tokio::time::sleep(Duration::from_secs(2))=>{},
         }
     }
 }

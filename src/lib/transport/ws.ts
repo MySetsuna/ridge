@@ -1,4 +1,4 @@
-import type { DataProvider, GitGraphResult, GitStatusResult, SearchResult } from './types';
+import type { DataProvider, GitGraphResult, GitStatusResult, SearchResult, ScmRepoStatusRaw } from './types';
 import type { RemoteConnection } from '@ridge/remote';
 import type { FileNode, DirectoryPage } from '$lib/stores/project';
 
@@ -162,7 +162,14 @@ export class WsDataProvider implements DataProvider {
     // Remote Git tab needs working-tree state first; history/branches are a
     // separate lazy query so opening the mobile drawer never waits on `git log`
     // or branch enumeration.
-    return this.request<GitStatusResult>('git_status', { repoRoot, includeDetails: false }, signal);
+    const scm = await this.request<ScmRepoStatusRaw>('get_scm_status', { repoRoot }, signal);
+    return {
+      is_git_repo: scm.is_git_repo ?? true, current_branch: scm.current_branch,
+      has_upstream: scm.has_upstream ?? false, branches: [], commits: [],
+      staged: scm.staged.map(file => ({ name: file.path, status: file.status })),
+      unstaged: scm.changes.map(file => ({ name: file.path, status: file.status })),
+      untracked: scm.untracked.map(file => file.path),
+    };
   }
   async gitGraph(repoRoot: string, signal?: AbortSignal): Promise<GitGraphResult> {
     const controller = new AbortController();
@@ -224,7 +231,7 @@ export class WsDataProvider implements DataProvider {
     await this.request<void>('git_cherry_pick', { repoRoot, hash });
   }
   async gitReset(repoRoot: string, mode: string, commit: string): Promise<void> {
-    await this.request<void>('git_reset', { repoRoot, mode, commit });
+    await this.request<void>('git_reset', { repoRoot, mode, hash: commit });
   }
   async gitCreateTag(repoRoot: string, name: string, message?: string): Promise<void> {
     await this.request<void>('git_create_tag', { repoRoot, name, message: message ?? '' });
@@ -233,7 +240,8 @@ export class WsDataProvider implements DataProvider {
     await this.request<void>('git_discard', { repoRoot, paths });
   }
   async gitCleanUntracked(repoRoot: string): Promise<void> {
-    await this.request<void>('git_clean_untracked', { repoRoot });
+    const status = await this.gitStatus(repoRoot);
+    if (status.untracked.length) await this.request<void>('git_clean_untracked', { repoRoot, paths: status.untracked });
   }
   async gitDiffFile(repoRoot: string, path: string, cached = false, signal?: AbortSignal): Promise<string> {
     return this.request<string>('git_diff_file', { repoRoot, path, cached }, signal);

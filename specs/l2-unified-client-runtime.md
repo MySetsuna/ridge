@@ -27,6 +27,10 @@ code_targets:
   - scripts/**
   - docs/archive/**
   - svelte.config.js
+  - packages/ridge-term-font/pkg/**
+  - packages/ridge-term-render/pkg/**
+  - src-tauri/binaries/ridge-mcp-x86_64-pc-windows-msvc.exe
+  - src-tauri/installer-hooks.nsh
 test_targets:
   - packages/ridge-core/**
   - packages/ridge-kernel/**
@@ -179,3 +183,21 @@ Response: {protocolVersion, hostId, runtimeEpoch, deviceId, origin, wsUrl, token
 The WebView keeps this grant only in memory. Websocket presents the nonsecret deviceId query, Origin header and Sec-WebSocket-Protocol values ridge-client and auth-<token>. Server selects only ridge-client, requires exact origin/device/token matching and accepts only loopback peers. Origin-bound local grants are rejected by ordinary LAN session validators and private Kernel API authentication. Missing/changed identity, expiry and Kernel generation changes fail visibly; no anonymous localhost or desktop business fallback. Socket closure only detaches subscriptions, never stops Kernel/PTY. OS bootstrap may issue a fresh bounded grant; it never extends stale credentials or creates Agent sessions.
 
 Acceptance: real Kernel/websocket clients test unauthorized issuance, wrong origin/device, private-API and LAN reuse, normal RPC/terminal exchange, detach with stable PTY identity and restart invalidation. Browser/native integration must prove Kernel credentials never appear in WebView state, URLs, storage or logs before this slice is complete.
+
+## Native Cloud controller identity migration
+
+Runtime owns native Cloud controller signaling, RTC, E2EE, remote Host connections and controller trust proof. Desktop supplies explicit account/TOTP input and consumes a limited loopback projection; browser Remote clients keep their transport adapters. Existing wire schemas and nonce direction remain unchanged.
+
+Native controller TOFU pins move from the existing ridge.cloud.trust.<device>-<username> localStorage entries to cloud-device-fingerprints.json in the Runtime data namespace. The file is version 1 with a pins object mapping the same host key to the existing XXXX-XXXX-XXXX-XXXX fingerprint. Native desktop reads legacy pins only as migration evidence; it never writes new pins. Runtime imports a validated legacy pin only when no canonical pin exists, persists atomically, and retains that original pin on identity change. Preserve the existing warn-only policy; show identity changes in the Host projection. Invalid, oversized or unreadable persisted data fails visibly with original bytes retained; no empty-state fallback. Pins are public fingerprints, never credentials or private keys.
+
+# CHG-070 Controller identity migration — approved for implementation
+
+Preserve the old native WebView controller public key when moving signing into Runtime. Host identity remains unchanged.
+
+- Runtime owns a separate `cloud-controller-identity.key`, using ridge-core DeviceIdentity's existing encrypted seed format (Windows user-scope DPAPI; Unix 0600). No new key format or crypto algorithm.
+- Before native Cloud connection, WebView reads existing `ridge-cloud` / `identity` / `controller-ed25519-priv` and `ridge_ctrl_identity` only. It never generates, signs, updates, or deletes keys during migration. Seed must be exactly 32 bytes. Unreadable, malformed, or conflicting sources fail with original data retained.
+- An authenticated local migration request accepts the existing seed or verified absence. Remote callers are rejected before storage access. Runtime returns public identity only; private data never enters topology, URLs, logs, or receipts.
+- A present canonical controller key wins. Matching re-import is idempotent; a different legacy key is a visible conflict and cannot overwrite it.
+- With no controller key yet, import the valid legacy seed. If no legacy identity exists, preserve the current Runtime device key for the controller role. If prior Runtime Cloud records already exist, preserve that current identity instead of silently rotating it; conflicting legacy material remains untouched and requires explicit recovery.
+- Publish the key completely before opening Cloud. Concurrent imports serialize; interrupted or failed publication must not produce an ephemeral identity or a successful acknowledgement. Retain the browser original as recovery evidence; future native signing occurs only in Runtime. Browser Remote identity ownership stays unchanged.
+- Acceptance: actual IndexedDB/localStorage read without creation; same legacy public key after Runtime restart; real Rust trust proof accepted by a Host that trusted the legacy browser key; existing Host identity unchanged; malformed/conflicting/denied/interrupted imports preserve bytes and do not connect.

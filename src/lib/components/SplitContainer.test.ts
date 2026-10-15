@@ -95,7 +95,8 @@ describe('desktop Pane Agent border contract', () => {
     );
     expect(refreshNow).not.toContain('refreshAgentPaneHighlight');
     expect(communeSource).toContain('async function refreshSharedState');
-    expect(highlightComponentSource).toContain('rosterChanged');
-    expect(highlightComponentSource).toContain("emit('teammate-layout-changed'");
+    expect(highlightComponentSource).toContain('await refreshAgentPaneHighlight({ workspaceIds, invoke })');
+    expect(highlightComponentSource).not.toContain("emit('teammate-layout-changed'");
+    expect(highlightComponentSource).toContain("listen('commune-members-changed'");
   });
 });

@@ -91,7 +91,8 @@ describe('TauriDataProvider injected invocation', () => {
 	});
 
 	it('forwards every git mutation with stable defaults', async () => {
-		const call = vi.fn(async () => undefined);
+		const call = vi.fn(async (method: string) => method === 'get_scm_status'
+      ? { untracked: [{ path: 'new.txt', status: '?' }] } : undefined);
 		const provider = new TauriDataProvider(call as unknown as DataInvoke);
 		await provider.gitStage('/r', ['a']);
 		await provider.gitUnstage('/r', ['a']);
@@ -116,6 +117,18 @@ describe('TauriDataProvider injected invocation', () => {
 		expect(call).toHaveBeenCalledWith('git_push', { repoRoot: '/r', setUpstream: false });
 		expect(call).toHaveBeenCalledWith('git_checkout', { repoRoot: '/r', branch: 'main', create: false });
 		expect(call).toHaveBeenCalledWith('git_create_tag', { repoRoot: '/r', name: 'v1', message: '' });
+    expect(call).toHaveBeenCalledWith('git_reset', { repoRoot: '/r', mode: 'mixed', hash: 'ghi' });
+    expect(call).toHaveBeenCalledWith('git_clean_untracked', { repoRoot: '/r', paths: ['new.txt'] });
 		expect(call).toHaveBeenCalledWith('git_diff_file', { repoRoot: '/r', path: 'a', cached: false });
 	});
+
+  it('never cleans files when current targets are empty or cannot be read', async () => {
+    const call = vi.fn(async (_method: string) => ({ untracked: [] }));
+    const provider = new TauriDataProvider(call as unknown as DataInvoke);
+    await provider.gitCleanUntracked('/repo');
+    expect(call).toHaveBeenCalledTimes(1);
+    call.mockRejectedValueOnce(new Error('Runtime unavailable'));
+    await expect(provider.gitCleanUntracked('/repo')).rejects.toThrow('Runtime unavailable');
+    expect(call.mock.calls.every(args => args[0] !== 'git_clean_untracked')).toBe(true);
+  });
 });

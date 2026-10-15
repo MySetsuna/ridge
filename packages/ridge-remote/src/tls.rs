@@ -90,13 +90,56 @@ mod fixture_dir_tests {
     }
 }
 
+#[cfg(test)]
+mod durable_trust_tests {
+    use super::*;
+    #[tokio::test]
+    async fn legacy_leaf_and_metadata_are_reused_without_creating_another_ca(){
+        let _=rustls::crypto::ring::default_provider().install_default();
+        let root=std::env::temp_dir().join(format!("ridge-legacy-leaf-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let key=KeyPair::generate().unwrap();let ca=ca_params().unwrap().self_signed(&key).unwrap();
+        let (cert,leaf_key)=generate_leaf(&["127.0.0.1".into()],"fixture",&ca,&key).unwrap();
+        let original=[("cert.pem",cert.as_bytes()),("key.pem",leaf_key.as_bytes()),("meta.txt",b"legacy leaf metadata".as_slice())];
+        for (name,bytes) in original{std::fs::write(root.join(name),bytes).unwrap();}
+        assert!(resolve_config_at(&root,&["127.0.0.1".into()],"fixture").await.is_some());
+        for (name,bytes) in original{assert!(std::fs::read(root.join(name)).unwrap()==bytes,"legacy file changed: {name}");}
+        assert!(!root.join("ca-key.pem").exists());assert!(!root.join("ca.pem").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn corrupt_or_missing_ca_private_key_never_rotates_existing_trust(){
+        let root=std::env::temp_dir().join(format!("ridge-ca-preserve-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let old=[("ca-key.pem",b"corrupt private material".as_slice()),("ca.pem",b"old public anchor".as_slice()),("ca.der",b"old DER anchor".as_slice()),("cert.pem",b"cached leaf".as_slice()),("key.pem",b"cached leaf key".as_slice()),("meta.txt",b"old metadata".as_slice())];
+        for (name,bytes) in old {std::fs::write(root.join(name),bytes).unwrap();}
+        assert!(ensure_ca_and_leaf(&root,&["127.0.0.1".into()],"fixture").is_none());
+        for (name,bytes) in old {assert_eq!(std::fs::read(root.join(name)).unwrap(),bytes);}
+        std::fs::rename(root.join("ca-key.pem"),root.join("archived-key.pem")).unwrap();
+        assert!(ensure_ca_and_leaf(&root,&["127.0.0.1".into()],"fixture").is_none());
+        assert!(!root.join("ca-key.pem").exists());
+        for (name,bytes) in old.into_iter().filter(|(name,_)|*name!="ca-key.pem") {assert_eq!(std::fs::read(root.join(name)).unwrap(),bytes);}
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn failed_ca_persistence_cannot_produce_ephemeral_trust(){
+        let root=std::env::temp_dir().join(format!("ridge-ca-persist-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(root.join("ca.pem")).unwrap();
+        assert!(ensure_ca_and_leaf(&root,&["127.0.0.1".into()],"fixture").is_none());
+        assert!(!root.join("ca-key.pem").exists());
+        assert!(!root.join("cert.pem").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 /// Root CA certificate in DER form, for the `/ridge-ca.crt` download endpoint
 /// (iOS / Android / Windows install the CA as a trust anchor in this form).
 ///
 /// Returns `None` before the server has generated a CA, or when the install is
 /// running a user-provided cert with no Ridge CA.
 pub fn ca_cert_der() -> Option<Vec<u8>> {
-    let dir = tls_dir();
+    let dir=tls_dir();
     if let Ok(der) = std::fs::read(dir.join("ca.der")) {
         if !der.is_empty() {
             return Some(der);
@@ -120,8 +163,8 @@ pub fn ca_cert_pem() -> Option<String> {
 /// and minting a fresh CA-signed leaf for `lan_ip` / `hostname` whenever the
 /// cached leaf is missing, stale (LAN IP / hostname changed), or aged out.
 ///
-/// Returns `None` (caller falls back to plain HTTP) if cert material can't be
-/// produced or parsed — TLS is best-effort, the server must still come up.
+/// Returns `None` if durable TLS material cannot be read, persisted or parsed.
+/// Callers must report failure unless plaintext was explicitly configured.
 pub async fn resolve_config(lan_ip: &str, hostname: &str) -> Option<RustlsConfig> {
     let ips = [lan_ip.to_string()];
     resolve_config_multi(&ips, hostname).await
@@ -138,20 +181,19 @@ pub async fn resolve_config_multi(lan_ips: &[String], hostname: &str) -> Option<
     // `tls-rustls-no-provider`; install ring once for the whole process.
     // `install_default` errors only if one is already set — harmless.
     let _ = rustls::crypto::ring::default_provider().install_default();
+    resolve_config_at(&tls_dir(),lan_ips,hostname).await
+}
 
-    let dir = tls_dir();
+async fn resolve_config_at(dir:&Path,lan_ips:&[String],hostname:&str)->Option<RustlsConfig>{
     let cert_path = dir.join("cert.pem");
     let key_path = dir.join("key.pem");
-    let meta_path = dir.join("meta.txt");
     let ca_key_path = dir.join("ca-key.pem");
 
-    // User-provided cert: cert+key present, but no meta and no Ridge CA → treat
-    // as a user-supplied cert (mkcert / corporate). Reuse verbatim.
-    let have_leaf = cert_path.exists() && key_path.exists();
-    if have_leaf && !meta_path.exists() && !ca_key_path.exists() {
-        if let (Ok(c), Ok(k)) = (std::fs::read(&cert_path), std::fs::read(&key_path)) {
-            return build_config(c, k).await;
-        }
+    // User-provided or legacy leaf-only identity: preserve the original pair,
+    // including older installs which also retained leaf metadata.
+    let have_leaf = cert_path.try_exists().ok()? && key_path.try_exists().ok()?;
+    if have_leaf && !ca_key_path.try_exists().ok()? && !dir.join("ca.pem").try_exists().ok()? && !dir.join("ca.der").try_exists().ok()? {
+        return build_config(std::fs::read(&cert_path).ok()?,std::fs::read(&key_path).ok()?).await;
     }
 
     // Ridge-managed CA + leaf.
@@ -159,11 +201,7 @@ pub async fn resolve_config_multi(lan_ips: &[String], hostname: &str) -> Option<
         return build_config(cert_pem.into_bytes(), key_pem.into_bytes()).await;
     }
 
-    // Last-ditch fallback: serve whatever cert/key pair is on disk.
-    match (std::fs::read(&cert_path), std::fs::read(&key_path)) {
-        (Ok(c), Ok(k)) => build_config(c, k).await,
-        _ => None,
-    }
+    None
 }
 
 /// Canonicalize a set of LAN IPs for stable cache keying + SANs: drop empties,
@@ -197,19 +235,14 @@ async fn build_config(cert_pem: Vec<u8>, key_pem: Vec<u8>) -> Option<RustlsConfi
 fn ensure_ca_and_leaf(dir: &Path, lan_ips: &[String], hostname: &str) -> Option<(String, String)> {
     if let Err(e) = std::fs::create_dir_all(dir) {
         tracing::error!(target: "ridge::remote", error = %e, "remote TLS: mkdir failed");
-        // Persistence will fail, but we can still mint an in-memory leaf below.
+        return None;
     }
 
     let (ca_cert, ca_key) = load_or_create_ca(dir)?;
 
     // Reuse the cached leaf when its SANs still match and it is not aged out.
     if leaf_should_reuse(dir, lan_ips, hostname) {
-        if let (Ok(cert), Ok(key)) = (
-            std::fs::read_to_string(dir.join("cert.pem")),
-            std::fs::read_to_string(dir.join("key.pem")),
-        ) {
-            return Some((cert, key));
-        }
+        return Some((std::fs::read_to_string(dir.join("cert.pem")).ok()?,std::fs::read_to_string(dir.join("key.pem")).ok()?));
     }
 
     let (leaf_pem, leaf_key_pem) = match generate_leaf(lan_ips, hostname, &ca_cert, &ca_key) {
@@ -220,9 +253,9 @@ fn ensure_ca_and_leaf(dir: &Path, lan_ips: &[String], hostname: &str) -> Option<
         }
     };
 
-    let _ = std::fs::write(dir.join("cert.pem"), &leaf_pem);
-    let _ = std::fs::write(dir.join("key.pem"), &leaf_key_pem);
-    let _ = std::fs::write(dir.join("meta.txt"), leaf_meta(lan_ips, hostname));
+    ridge_core::workspace::file::write_atomic(&dir.join("cert.pem"), leaf_pem.as_bytes()).ok()?;
+    ridge_core::workspace::file::write_atomic(&dir.join("key.pem"), leaf_key_pem.as_bytes()).ok()?;
+    ridge_core::workspace::file::write_atomic(&dir.join("meta.txt"), leaf_meta(lan_ips, hostname).as_bytes()).ok()?;
     let san_ips = canon_ips(lan_ips).join(",");
     tracing::info!(target: "ridge::remote", san_ips = %san_ips, hostname, "remote TLS: issued CA-signed leaf cert");
 
@@ -239,25 +272,29 @@ fn ensure_ca_and_leaf(dir: &Path, lan_ips: &[String], hostname: &str) -> Option<
 fn load_or_create_ca(dir: &Path) -> Option<(Certificate, KeyPair)> {
     let ca_key_path = dir.join("ca-key.pem");
 
-    let ca_key = if ca_key_path.exists() {
+    let ca_key = if ca_key_path.try_exists().ok()? {
         match std::fs::read_to_string(&ca_key_path)
             .ok()
             .and_then(|p| KeyPair::from_pem(&p).ok())
         {
             Some(kp) => kp,
             None => {
-                tracing::error!(target: "ridge::remote", "remote TLS: CA key unreadable; regenerating");
-                let kp = KeyPair::generate().ok()?;
-                let _ = std::fs::write(&ca_key_path, kp.serialize_pem());
-                // Force a fresh anchor so the new key's cert is the one served.
-                let _ = std::fs::remove_file(dir.join("ca.pem"));
-                let _ = std::fs::remove_file(dir.join("ca.der"));
-                kp
+                tracing::error!(target: "ridge::remote", "remote TLS: CA key unreadable; original trust material retained");
+                return None;
             }
         }
     } else {
+        if dir.join("ca.pem").try_exists().ok()?||dir.join("ca.der").try_exists().ok()? {
+            tracing::error!(target: "ridge::remote", "remote TLS: existing CA identity has no private key; original material retained");
+            return None;
+        }
         let kp = KeyPair::generate().ok()?;
-        let _ = std::fs::write(&ca_key_path, kp.serialize_pem());
+        use std::io::Write;
+        let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);
+        #[cfg(unix)]
+        {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+        let mut file=options.open(&ca_key_path).ok()?;
+        file.write_all(kp.serialize_pem().as_bytes()).and_then(|_|file.sync_all()).ok()?;
         kp
     };
 
@@ -265,12 +302,12 @@ fn load_or_create_ca(dir: &Path) -> Option<(Certificate, KeyPair)> {
 
     // Persist the downloadable anchor exactly once so it stays byte-stable.
     let ca_pem_path = dir.join("ca.pem");
-    if !ca_pem_path.exists() {
-        let _ = std::fs::write(&ca_pem_path, ca_cert.pem());
+    if !ca_pem_path.try_exists().ok()? {
+        ridge_core::workspace::file::write_atomic(&ca_pem_path, ca_cert.pem().as_bytes()).ok()?;
     }
     let ca_der_path = dir.join("ca.der");
-    if !ca_der_path.exists() {
-        let _ = std::fs::write(&ca_der_path, ca_cert.der().as_ref());
+    if !ca_der_path.try_exists().ok()? {
+        ridge_core::workspace::file::write_atomic(&ca_der_path, ca_cert.der().as_ref()).ok()?;
     }
 
     Some((ca_cert, ca_key))

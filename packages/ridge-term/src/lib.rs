@@ -230,13 +230,8 @@ impl JsTerminal {
             }
             TerminalBody::HistoryPage(page) => {
                 if self.remote_activation_id != Some(activation) || self.remote_epoch.as_deref() != Some(frame.terminal_epoch.as_str()) { return Ok(false); }
-                if self.remote_history.is_none_or(|history| history.epoch != page.history.epoch) { return Ok(false); }
-                let end = page.start.checked_add(page.lines.len() as u64);
-                if !page.lines.is_empty() && self.remote_scrollback_start.is_some_and(|start|
-                    page.start >= start && end.is_some_and(|end| end <= start.saturating_add(self.inner.scrollback_len() as u64))) { return Ok(false); }
-                if end != self.remote_scrollback_start { return Err("HISTORY_RANGE_GAP"); }
-                if page.lines.len() > self.inner.grid().scrollback.capacity().saturating_sub(self.inner.scrollback_len()) { return Err("HISTORY_CAPACITY"); }
-                self.inner.prepend_semantic_history(&page); self.remote_scrollback_start = Some(page.start);
+                if !crate::semantic::prepend_history_page(&mut self.inner,self.remote_history,self.remote_scrollback_start,&page)?{return Ok(false);}
+                self.remote_scrollback_start = Some(page.start);
                 self.remote_history_has_more = page.start > page.history.start.max(self.remote_history.unwrap().start);
                 self.selection.prepend_rows(page.lines.len()); self.search.prepend_rows(page.lines.len());
                 self.restore_recovery_anchor(); Ok(true)

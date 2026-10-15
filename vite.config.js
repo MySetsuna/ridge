@@ -15,9 +15,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // desktop UI for serving to plain browsers by the LAN remote server. Every
 // `@tauri-apps/api/*` import is redirected to the WS-backed shims in
 // src/lib/transport/tauriShim so the desktop code runs untouched outside Tauri.
-// In the normal Tauri build the flag is unset and none of this applies.
+// Native desktop always uses shared Runtime business APIs and minimal OS adapters.
 const WEB_REMOTE = !!process.env.RIDGE_WEB_REMOTE;
-const NATIVE_RUNTIME = !WEB_REMOTE && process.env.RIDGE_NATIVE_RUNTIME === '1';
+const NATIVE_RUNTIME = !WEB_REMOTE;
 const TAURI_DEV_PORT = Number(process.env.RIDGE_DEV_SERVER_PORT || 5173);
 const TAURI_DEV_CDP = !!process.env.RIDGE_DEV_SERVER_PORT;
 /** @param {string} f */
@@ -45,7 +45,7 @@ export default defineConfig({
       transformIndexHtml: {
         order: 'post',
         handler(html) {
-          return syncGeneratedCsp(html);
+          return syncGeneratedCsp(html, { nativeRuntime: NATIVE_RUNTIME });
         },
       },
     },

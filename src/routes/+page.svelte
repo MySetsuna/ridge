@@ -223,7 +223,6 @@
 
   import { reportDevIssue } from '$lib/devIssue';
   import { dev } from '$app/environment';
-  import { parseLayoutChange, type LayoutChange } from '$lib/teammate/layoutEvent';
   import { get } from 'svelte/store';
 
   import { onMount, tick, untrack } from 'svelte';
@@ -1314,6 +1313,10 @@ function expandSidebar(minWidth = 0) {
     let unlisten: (() => void) | undefined;
     let unlistenResized: (() => void) | undefined;
     let unsubDefaultCwd: (() => void) | undefined;
+    let stopTeammateSettings: (() => void) | undefined;
+    let unlistenDefaultCwd: (() => void) | undefined;
+    let unlistenDefaultCwdReconnect: (() => void) | undefined;
+    let defaultCwdReadGeneration = 0;
     let defaultCwdSyncTimer: ReturnType<typeof setTimeout> | undefined;
     let defaultCwdSyncInFlight = false;
     let defaultCwdSyncPending = false;
@@ -1345,9 +1348,8 @@ function expandSidebar(minWidth = 0) {
       await initThemeSystem();
       // 主题数据就绪后，把当前主题写到 CSS 变量
       initSettingsBoot();
-      // 智能体协同：把持久化的 HITL/TML 偏好镜像到后端网关（否则重启后 UI 显示
-      // 开、后端实为关）。容错，旧二进制无对应命令时静默降级。
-      initTeammateBoot();
+      // 首次导入审批偏好，随后订阅 Runtime 设置与重连；失败显错。
+      if (defaultCwdSyncActive) stopTeammateSettings = initTeammateBoot();
       // CSS 变量就绪后再设置终端主题桥，确保 readRidgeTheme 读到正确值
       // 避免竞态：若 themeBridge 订阅先于 CSS 变量设置触发，
       // push() 会读到空 CSS 变量 → 终端底色展示缓存／错误颜色
@@ -1392,6 +1394,24 @@ function expandSidebar(minWidth = 0) {
       // 把用户配置的默认工作目录同步到后端 AppState。只观察 defaultCwd，且
       // 对输入框逐字变化做 trailing debounce；否则任何设置项（主题、滚动行数等）
       // 都会重复发 set_user_default_cwd，设置页和 RPC 队列一起抖动。
+      async function hydrateDefaultCwd(): Promise<boolean> {
+        if (!defaultCwdSyncActive || defaultCwdSyncInFlight || defaultCwdSyncPending) return false;
+        const generation = ++defaultCwdReadGeneration;
+        const saved = await invoke<{ configured: boolean; path: string | null }>('get_user_default_cwd');
+        if (!defaultCwdSyncActive || generation !== defaultCwdReadGeneration) return false;
+        if (saved.configured) {
+          defaultCwdSyncLastQueued = saved.path;
+          setSetting('defaultCwd', saved.path ?? '');
+        }
+        return true;
+      }
+      async function startDefaultCwdSync(): Promise<void> {
+        if (!await hydrateDefaultCwd() || !defaultCwdSyncActive || unsubDefaultCwd) return;
+        unsubDefaultCwd = settingsStore.subscribe((s) => queueDefaultCwdSync(s.defaultCwd));
+      }
+      function refreshDefaultCwd(): void {
+        void startDefaultCwdSync().catch(err => console.warn('Runtime default cwd refresh failed', err));
+      }
       async function flushDefaultCwdSync(): Promise<void> {
         if (!defaultCwdSyncActive || defaultCwdSyncInFlight || !defaultCwdSyncPending) return;
         const path = defaultCwdSyncValue;
@@ -1403,6 +1423,7 @@ function expandSidebar(minWidth = 0) {
           console.warn('set_user_default_cwd failed', err);
         } finally {
           defaultCwdSyncInFlight = false;
+          if (!defaultCwdSyncPending) refreshDefaultCwd();
           if (defaultCwdSyncActive && defaultCwdSyncPending) {
             if (defaultCwdSyncTimer !== undefined) clearTimeout(defaultCwdSyncTimer);
             defaultCwdSyncTimer = setTimeout(() => {
@@ -1416,6 +1437,7 @@ function expandSidebar(minWidth = 0) {
         if (!defaultCwdSyncActive) return;
         const path = value || null;
         if (path === defaultCwdSyncLastQueued) return;
+        ++defaultCwdReadGeneration;
         defaultCwdSyncLastQueued = path;
         defaultCwdSyncValue = path;
         defaultCwdSyncPending = true;
@@ -1429,9 +1451,19 @@ function expandSidebar(minWidth = 0) {
         }
         void flushDefaultCwdSync();
       }
-      unsubDefaultCwd = settingsStore.subscribe((s) => {
-        queueDefaultCwdSync(s.defaultCwd);
-      });
+      try {
+        unlistenDefaultCwd = await listen('user-default-cwd-changed', refreshDefaultCwd);
+        const { bridge } = await import('$lib/transport/tauriShim/bridge');
+        unlistenDefaultCwdReconnect = bridge.onReady(refreshDefaultCwd);
+        await startDefaultCwdSync();
+        if (!defaultCwdSyncActive) {
+          unlistenDefaultCwd?.();
+          unlistenDefaultCwdReconnect?.();
+          return;
+        }
+      } catch (err) {
+        console.warn('Runtime default cwd hydration failed', err);
+      }
 
       // §web-remote 工作区兜底（关键）：refreshWorkspaces() 在 catch 里 re-throw
       // （paneTree.ts），而它在 web-remote/cloud-controller 下经 bridge invoke 取
@@ -1492,24 +1524,9 @@ function expandSidebar(minWidth = 0) {
       // activeWorkspaceId 仍为空，这里主动恢复：优先切到列表里的第一个工作区
       // （即采用 host 当前工作区），列表为空才新建一个，确保用户可立即操作。
       await ensureActiveWorkspace();
-      // The kernel survives a tray exit. Rebind its stable pane-owned PTYs
-      // after saved workspaces are restored, before Pane onMount can issue a
-      // duplicate create/activate pair.
-      if (!webRemote) {
-        try {
-          await withTimeout(
-            invoke<number>('reattach_kernel_ptys'),
-            15_000,
-            'kernel PTY reattach timed out after 15s',
-          );
-        } catch (e) {
-          console.warn('kernel PTY reattach unavailable', e);
-        } finally {
-          releaseDesktopKernelReattachGate();
-        }
-      } else {
-        releaseDesktopKernelReattachGate();
-      }
+      // Workspace projection already references Runtime-owned PTYs. Release
+      // the mount barrier only after the original workspace has been selected.
+      releaseDesktopKernelReattachGate();
       // 工作区就绪后强制 fit 一次：web-remote/cloud-controller 连接后若漏了这次
       // fit，pane 终端不铺满（容器尺寸已定但 PTY cols/rows 未跟随）。
       scheduleForceFitActivePanes();
@@ -1535,92 +1552,11 @@ function expandSidebar(minWidth = 0) {
         isMaximized = await getCurrentWindow().isMaximized();
       });
 
-      // Re-sync the pane layout from authoritative backend state, then (in dev)
-      // flag any store/DOM pane-count drift. Shared action for every kind.
-      const applyLayoutSync = async (change: LayoutChange) => {
-        await syncPaneLayoutFromBackend();
-        // §teammate-fit (2026-06-11): backend-driven layout changes (teammate
-        // split/reused/detach/remove) only re-sync the tree here — unlike the
-        // front-end `splitPane`, which schedules `scheduleForceFitAfterSplit`.
-        // Without a matching forced re-fit, a backend-created teammate pane
-        // relies solely on its single attach-time fit, which races SvelteKit
-        // mount + `manager.ready()`; losing that race strands the kernel grid
-        // at the 24×80 attach default while the container is already its
-        // post-split width → 终端右侧死区、且不随 pane resize 自适应。`state`
-        // 仅翻 agent badge、不改布局，跳过（fitPaneNow 本就幂等，跳过只为省事）。
-        if (change.kind !== 'state') {
-          scheduleForceFitActivePanes();
-        }
-        if (!dev) return;
-        requestAnimationFrame(() => {
-          const storeCount = getAllPaneIds(get(paneTreeStore)).length;
-          // Mounted pane roots carry class `.rg-pane-container` (RidgePane.svelte:
-          // the `[data-rg-pane-id]` div), NOT `.rg-pane-root` — that class never
-          // existed in the rendered DOM, so this query always returned 0 and every
-          // teammate split spuriously tripped the guard ("mounted panes=0"). Scope
-          // the count to the ACTIVE workspace's pane host: the keep-alive renderer
-          // mounts EVERY workspace's SplitContainer at once (inactive ones are
-          // `display:none` but still in the DOM), while `storeCount` reflects only
-          // the active workspace's tree — an unscoped query would over-count.
-          const wsId = get(activeWorkspaceId);
-          const host = wsId
-            ? document.querySelector(`[data-rg-ws-pane-host="${wsId}"]`)
-            : null;
-          const domCount = (host ?? document).querySelectorAll(
-            '.rg-pane-container'
-          ).length;
-          if (storeCount > 0 && domCount !== storeCount) {
-            reportDevIssue({
-              title: 'Layout sync mismatch',
-              message: `teammate-layout-changed[${change.kind}] 后 store panes=${storeCount}, mounted panes=${domCount}`,
-            });
-          }
-        });
-      };
-      // Dispatch seam keyed on the envelope `kind`. Today every kind re-syncs
-      // from backend state; the P1 follow-ups specialize individual branches
-      // (split/reused → deterministic await-Channel-then-fit per 5b; state →
-      // agent badge flip per #6) without changing this contract.
-      const handleLayoutChange = async (change: LayoutChange) => {
-        switch (change.kind) {
-          case 'split':
-          case 'reused':
-          case 'detached':
-          case 'removed':
-          case 'state':
-            await applyLayoutSync(change);
-            break;
-          default: {
-            // Exhaustiveness guard: if a new LayoutChangeKind is added to the
-            // envelope, TS errors here until this switch handles it. Unreachable
-            // at runtime (parseLayoutChange degrades unknown kinds to 'state').
-            const _exhaustive: never = change.kind;
-            void _exhaustive;
-            await applyLayoutSync(change);
-          }
-        }
-      };
-      unlisten = await listen('teammate-layout-changed', (event) => {
-        void handleLayoutChange(parseLayoutChange(event.payload));
-      });
-
-      const unlistenActive = await listen<string>(
-        'teammate-active-pane-changed',
-        (e) => {
-          const id = typeof e.payload === 'string' ? e.payload : '';
-          if (!id) return;
-          void (async () => {
-            await syncPaneLayoutFromBackend();
-            focusPane(id, get(activeWorkspaceId));
-          })();
-        }
-      );
-
       // Remote-initiated pane/workspace changes: refresh the desktop UI.
       const unlistenPaneTreeChanged = await listen<{ workspaceId: string }>(
         'pane-tree-changed',
         () => {
-          void syncPaneLayoutFromBackend();
+          void syncPaneLayoutFromBackend().then(scheduleForceFitActivePanes);
         }
       );
       const unlistenWorkspaceListChanged = await listen(
@@ -1629,22 +1565,9 @@ function expandSidebar(minWidth = 0) {
           void refreshWorkspaces();
         }
       );
-      const unlistenFocusWorkspace = await listen<string>(
-        'ridge://focus-workspace',
-        (event) => {
-          if (typeof event.payload === 'string' && event.payload) {
-            void switchWorkspace(event.payload);
-          }
-        }
-      );
-
-      const prevUnlisten = unlisten;
       unlisten = () => {
-        prevUnlisten?.();
-        unlistenActive();
         unlistenPaneTreeChanged();
         unlistenWorkspaceListChanged();
-        unlistenFocusWorkspace();
       };
       } catch (err) {
         console.error('[boot] init failed', err);
@@ -1658,6 +1581,9 @@ function expandSidebar(minWidth = 0) {
       unlisten?.();
       unlistenResized?.();
       unsubDefaultCwd?.();
+      stopTeammateSettings?.();
+      unlistenDefaultCwd?.();
+      unlistenDefaultCwdReconnect?.();
       defaultCwdSyncActive = false;
       if (defaultCwdSyncTimer !== undefined) clearTimeout(defaultCwdSyncTimer);
       unlistenDrop?.();

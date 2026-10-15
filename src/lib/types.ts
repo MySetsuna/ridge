@@ -1,10 +1,8 @@
 // src/lib/types.ts
 
 /**
- * Teammate (Claude Code sub-agent) runtime state surfaced on a leaf pane.
- * Populated by the backend when `/api/v1/register-agent` or the Tauri
- * `register_teammate_agent` command binds an agent to the pane; null when
- * the pane has never been touched by teammate routing.
+ * Legacy pane-layout display metadata retained for stored workspace compatibility.
+ * Current membership and capabilities come from the Runtime protocol roster.
  */
 export type AgentState = 'idle' | 'busy' | 'starting';
 
@@ -17,8 +15,8 @@ export type AgentState = 'idle' | 'busy' | 'starting';
  */
 export type PaneOrigin =
   | { kind: 'headless'; host_id: string; host_label: string; session_id: string }
-  | { kind: 'remote'; host_id: string; host_label: string; session_id: string }
-  | { kind: 'rdg'; host_id: string; host_label: string; session_id: string };
+  | { kind: 'remote'; host_id: string; host_label: string; session_id: string; workspace_id?: string }
+  | { kind: 'rdg'; host_id: string; host_label: string; session_id: string; workspace_id?: string };
 
 export type PaneNode =
   | {

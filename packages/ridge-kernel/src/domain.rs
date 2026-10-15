@@ -32,7 +32,7 @@ pub(crate) const KERNEL_FS_ROOT_ENV: &str = "RIDGE_KERNEL_FS_ROOT";
 const DEFAULT_OUTPUT_POLL_TIMEOUT_MS: u64 = 15_000;
 const MAX_OUTPUT_POLL_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_OUTPUT_POLL_FRAMES: usize = 32;
-const MAX_OUTPUT_POLL_FRAMES: usize = 64;
+pub const MAX_OUTPUT_POLL_FRAMES: usize = 64;
 
 /// Read the host-granted filesystem root once when the kernel starts. Empty or
 /// unset keeps the existing desktop compatibility mode; a non-empty root makes
@@ -129,6 +129,7 @@ fn workspace_detail(
         "active": graph.active() == Some(workspace_id),
         "layout": layout,
         "panes": leaves,
+        "foreignPanes":graph.workspace(workspace_id).map(|meta|&meta.foreign_panes),
     }))
 }
 
@@ -611,11 +612,12 @@ pub async fn domain_agents(
     if !auth_ok(&headers, &st.token) {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    Ok(Json(json!({
-        "ok": true,
-        "source": "ridge-kernel",
-        "profiles": builtin_agent_profiles(),
-    })))
+    let profiles = tokio::task::spawn_blocking(|| crate::agent_profiles::catalog("list_agent_profiles", &json!({})))
+        .await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(match profiles {
+        Ok(profiles) => Json(json!({"ok":true,"source":"ridge-kernel","profiles":profiles})),
+        Err(error) => bad_request(error),
+    })
 }
 
 fn roster_snapshot(graph: &ridge_core::teammate::topology::TopologyGraph) -> Value {
@@ -813,6 +815,7 @@ pub async fn domain_workspace_topology(
         next.insert_workspace(
             workspace_id,
             WorkspaceMeta {
+                foreign_panes:HashMap::new(),
                 display_seq: 0,
                 file: None,
                 pane_tree: request.pane_tree,
@@ -880,6 +883,7 @@ fn seed_workspace_for_pty(
     graph.insert_workspace(
         workspace_id,
         ridge_core::workspace::graph::WorkspaceMeta {
+            foreign_panes:HashMap::new(),
             display_seq: 0,
             file: None,
             pane_tree: ridge_core::workspace::pane_tree::PaneTree {
@@ -906,7 +910,7 @@ fn rollback_seeded_workspace(st: &AppState, workspace_id: Option<Uuid>) {
 pub async fn domain_pty_create(
     State(st): State<AppState>,
     headers: HeaderMap,
-    Json(request): Json<PtyCreateRequest>,
+    Json(mut request): Json<PtyCreateRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     tracing::info!(target: "ridge_kernel::domain_pty",
         pty_id = ?request.pty_id,
@@ -934,6 +938,12 @@ pub async fn domain_pty_create(
     // A desktop shell may create the first PTY before it has persisted the
     // corresponding graph entry.  Seed that stable workspace identity here so
     // a detached LAN/WebRTC host can expose a real layout after a hard kill.
+    if request.cwd.is_none() {
+        request.cwd = match crate::settings::default_cwd() {
+            Ok(path) => path,
+            Err(error) => return Ok(bad_request(error)),
+        };
+    }
     let inserted_workspace = seed_workspace_for_pty(&st, &request, pty_id)?;
     tracing::info!(target: "ridge_kernel::domain_pty",
         pty_id = %pty_id, inserted_workspace = ?inserted_workspace,
@@ -966,6 +976,10 @@ pub async fn domain_pty_create(
                 let _ = st.ptys.destroy(pty_id);
                 rollback_seeded_workspace(&st, inserted_workspace);
                 return Ok(bad_request(error));
+            }
+            if let Some(metadata) = st.ptys.terminal_metadata(pty_id, None) {
+                use ridge_core::EventSink;
+                st.business_events.broadcast("pane-meta-changed", metadata);
             }
             Ok(Json(
                 json!({ "ok": true, "source": "ridge-kernel", "pty_id": pty_id }),
@@ -1026,7 +1040,7 @@ pub async fn domain_pty_list(
 }
 
 #[derive(Deserialize)]
-pub struct TerminalStreamQuery { pub activation: u64 }
+pub struct TerminalStreamQuery { pub activation: u64, pub connection: Option<String>, pub workspace: Option<Uuid> }
 
 pub async fn domain_terminal_stream(
     State(st): State<AppState>, headers: HeaderMap, Path(pty_id): Path<String>,
@@ -1035,14 +1049,27 @@ pub async fn domain_terminal_stream(
     if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
     if query.activation == 0 || query.activation > 9_007_199_254_740_991 { return Err(StatusCode::BAD_REQUEST); }
     let id = Uuid::parse_str(&pty_id).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let info = st.ptys.list().into_iter().find(|info| info.id == id).ok_or(StatusCode::NOT_FOUND)?;
-    let workspace = info.workspace_id.ok_or(StatusCode::BAD_REQUEST)?;
-    let (initial, mut updates) = st.ptys.subscribe_semantic(id).map_err(|_| StatusCode::NOT_FOUND)?;
+    if crate::foreign_terminal::binding(&st,id).map_err(|_|StatusCode::CONFLICT)?.is_some(){
+        return crate::foreign_terminal::stream(State(st),headers,Path(pty_id),Query(crate::foreign_terminal::StreamQuery{activation:query.activation,connection:query.connection.ok_or(StatusCode::BAD_REQUEST)?,workspace:query.workspace}),upgrade).await;
+    }
+    let (workspace, initial, mut updates) = st.ptys.subscribe_semantic_in_workspace(id, query.workspace).map_err(|_| StatusCode::CONFLICT)?;
     let pane = ridge_term::terminal_protocol::PaneRef::new(workspace.to_string(), id.to_string());
     Ok(upgrade.on_upgrade(move |socket| async move {
         let (mut sink, mut incoming) = socket.split();
         let mut next = initial;
+        let mut last_metadata = None;
         loop {
+            if !st.ptys.workspace_matches(id, workspace) { break; }
+            let epoch = next.terminal_epoch.clone();
+            if matches!(next.body, ridge_term::terminal_protocol::TerminalBody::Snapshot(_)) {
+                if let Some(mut metadata) = st.ptys.terminal_metadata(id, Some(&epoch)) {
+                    metadata["activationId"] = json!(query.activation);
+                    if last_metadata.as_ref() != Some(&metadata) {
+                        if sink.send(Message::Text(json!({"type":"event","name":"pane-meta-changed","payload":metadata}).to_string())).await.is_err() { return; }
+                        last_metadata = Some(metadata);
+                    }
+                }
+            }
             let bytes = match ridge_term::terminal_protocol::encode_frame(&next.into_frame(pane.clone(), query.activation)) {
                 Ok(bytes) => bytes, Err(_) => break,
             };
@@ -1056,10 +1083,16 @@ pub async fn domain_terminal_stream(
                     },
                     update = updates.recv() => match update {
                         Ok(update) => break update,
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => match st.ptys.terminal_snapshot(id) {
-                            Ok(snapshot) => break snapshot, Err(_) => return,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => match st.ptys.subscribe_semantic_in_workspace(id, Some(workspace)) {
+                            Ok((_, snapshot, receiver)) => { updates = receiver; break snapshot; }, Err(_) => return,
                         },
-                        Err(_) => return,
+                        Err(_) => match st.ptys.subscribe_semantic_in_workspace(id, Some(workspace)) {
+                            Ok((_, snapshot, receiver)) if snapshot.terminal_epoch != epoch => { updates = receiver; break snapshot; }
+                            _ => return,
+                        },
+                    },
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                        if !st.ptys.workspace_matches(id, workspace) { return; }
                     },
                 }
             };
@@ -1071,6 +1104,10 @@ pub async fn domain_terminal_request(
     State(st): State<AppState>, headers: HeaderMap, Path(pty_id): Path<String>, Json(args): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
     if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
+    if let Ok(id)=Uuid::parse_str(&pty_id){if crate::foreign_terminal::binding(&st,id).map_err(|_|StatusCode::CONFLICT)?.is_some(){
+        let result=st.foreign_terminals.request(&st,id,&args).await;
+        return Ok(Json(match result{Ok(value)=>json!({"ok":true,"value":value}),Err(error)=>bad_request(&error).0}));
+    }}
     let result = (|| -> Result<Value, String> {
         let id = Uuid::parse_str(&pty_id).map_err(|_| "invalid terminal")?;
         match args["method"].as_str().unwrap_or_default() {
@@ -1089,9 +1126,9 @@ pub async fn domain_terminal_request(
             "get_terminal_snapshot" => {
                 let pane: ridge_term::terminal_protocol::PaneRef = serde_json::from_value(json!({"workspaceId":args["params"]["workspaceId"],"paneId":args["params"]["paneId"]})).map_err(|error| error.to_string())?;
                 let activation = args["params"]["activationId"].as_u64().filter(|id| *id > 0).ok_or("invalid activation")?;
-                let info = st.ptys.list().into_iter().find(|info| info.id == id).ok_or("terminal unavailable")?;
-                if pane.pane_id != id.to_string() || info.workspace_id.map(|id| id.to_string()).as_deref() != Some(&pane.workspace_id) { return Err("terminal binding mismatch".into()); }
-                let update = st.ptys.terminal_snapshot(id).map_err(|error| error.to_string())?;
+                if pane.pane_id != id.to_string() { return Err("terminal binding mismatch".into()); }
+                let workspace = Uuid::parse_str(&pane.workspace_id).map_err(|_| "invalid workspace")?;
+                let (_, update, _) = st.ptys.subscribe_semantic_in_workspace(id, Some(workspace)).map_err(|error| error.to_string())?;
                 let bytes = ridge_term::terminal_protocol::encode_frame(&update.into_frame(pane, activation)).map_err(|error| error.to_string())?;
                 Ok(Value::String(base64::engine::general_purpose::STANDARD.encode(bytes)))
             }
@@ -1104,6 +1141,8 @@ pub async fn domain_terminal_request(
 #[derive(Deserialize)]
 pub struct PtyWriteRequest {
     pub data_b64: String,
+    #[serde(default)]
+    pub workspace_id: Option<Uuid>,
     /// `controller_id` is **not** accepted from the legacy HTTP path
     /// (audit C7). A previous version accepted arbitrary body
     /// `controller_id`, letting any caller with the kernel token
@@ -1120,6 +1159,14 @@ pub async fn domain_pty_write(
     Path(pty_id): Path<String>,
     Json(request): Json<PtyWriteRequest>,
 ) -> Result<Json<Value>, StatusCode> {
+    domain_pty_write_inner(st,headers,pty_id,request,false).await
+}
+pub async fn domain_agent_pty_write(
+    State(st):State<AppState>,headers:HeaderMap,Path(pty_id):Path<String>,Json(request):Json<PtyWriteRequest>,
+)->Result<Json<Value>,StatusCode> {
+    domain_pty_write_inner(st,headers,pty_id,request,true).await
+}
+async fn domain_pty_write_inner(st:AppState,headers:HeaderMap,pty_id:String,request:PtyWriteRequest,agent:bool)->Result<Json<Value>,StatusCode> {
     if !auth_ok(&headers, &st.token) {
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -1136,11 +1183,37 @@ pub async fn domain_pty_write(
         Ok(data) => data,
         Err(_) => return Ok(bad_request("data_b64 must be valid base64")),
     };
+    if !st.ptys.contains(pty_id){if let Some((workspace,bound))=crate::foreign_terminal::binding(&st,pty_id).map_err(|_|StatusCode::CONFLICT)?{
+        if request.workspace_id.is_some_and(|expected| expected != workspace) { return Ok(bad_request("foreign terminal workspace changed")); }
+        if agent{return Ok(bad_request("foreign Agent input requires its existing remote protocol"));}
+        let text=match std::str::from_utf8(&data){Ok(text)=>text,Err(_)=>return Ok(bad_request("foreign byte input requires write_terminal_input"))};
+        return Ok(match st.outbound_hosts.request(&bound.host_id,"write_to_pty",json!({"workspaceId":bound.workspace_id,"paneId":bound.session_id,"data":text})).await{Ok(_)=>Json(json!({"ok":true})),Err(error)=>bad_request(error)});
+    }}
+    let data = if agent {
+        std::str::from_utf8(&data).ok().filter(|text| text.ends_with(['\r','\n']))
+            .map(|text| ridge_mcp::server::enter_terminated(text).into_bytes()).unwrap_or(data)
+    } else { data };
     let controller_id = format!("legacy-http:{}", pty_id);
     let ptys = st.ptys.clone();
     let write_result = match tokio::task::spawn_blocking(move || {
-        ptys.attach_controller(pty_id, controller_id.clone());
-        ptys.write_with_controller(pty_id, &controller_id, &data)
+        let roster = if agent {Some(st.roster.lock().map_err(|_|"roster unavailable".to_string())?)} else {None};
+        if roster.as_ref().is_some_and(|roster|roster.agent_identities().iter().any(|member|
+            member.pane_id == pty_id.to_string() && member.protocol_binding.is_some())) {return Ok(false);}
+        let workspace = if agent { Some(request.workspace_id.or_else(||ptys.list().into_iter().find(|terminal|terminal.id==pty_id).and_then(|terminal|terminal.workspace_id)).ok_or("automation terminal workspace binding missing")?) } else { request.workspace_id };
+        let write=||{
+            if let Some(workspace) = workspace {
+                return ptys.write_in_workspace(pty_id, workspace, &data, !agent).map(|_|true).map_err(|error|error.to_string());
+            }
+            ptys.attach_controller(pty_id,controller_id.clone());
+            ptys.write_with_controller(pty_id,&controller_id,&data).map(|_|true).map_err(|error|match error {
+                crate::pty::PtyInputError::ControllerIdUnknown=>"controller_id_unknown: input rejected (no attached controller matches)".into(),
+                crate::pty::PtyInputError::UnknownTerminal=>"unknown terminal".into(),
+                crate::pty::PtyInputError::NotReady=>"pty not ready".into(),
+            })
+        };
+        if agent {
+            crate::workspace_memory::with_agent_input(workspace.unwrap(),pty_id,write)
+        }else{write()}
     })
     .await
     {
@@ -1148,12 +1221,9 @@ pub async fn domain_pty_write(
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
     match write_result {
-        Ok(()) => Ok(Json(json!({ "ok": true }))),
-        Err(crate::pty::PtyInputError::ControllerIdUnknown) => Ok(bad_request(
-            "controller_id_unknown: input rejected (no attached controller matches)",
-        )),
-        Err(crate::pty::PtyInputError::UnknownTerminal) => Ok(bad_request("unknown terminal")),
-        Err(crate::pty::PtyInputError::NotReady) => Ok(bad_request("pty not ready")),
+        Ok(true) => Ok(Json(json!({ "ok": true }))),
+        Ok(false) => Ok(bad_request("registered Agent messages require the existing protocol; use send_agent_message")),
+        Err(error) => Ok(bad_request(error)),
     }
 }
 
@@ -1161,6 +1231,9 @@ pub async fn domain_pty_write(
 pub struct PtyResizeRequest {
     pub cols: u16,
     pub rows: u16,
+    #[serde(default)]
+    pub workspace_id: Option<Uuid>,
+    pub owner: Option<String>,
     /// `controller_id` is rejected on legacy HTTP — see
     /// `PtyWriteRequest::controller_id`.
     #[serde(default)]
@@ -1185,10 +1258,19 @@ pub async fn domain_pty_resize(
             "controller_id rejected on legacy HTTP adapter; migrate to RTP1 /v1/rtp1",
         ));
     }
+    if !st.ptys.contains(pty_id){if let Some((workspace,bound))=crate::foreign_terminal::binding(&st,pty_id).map_err(|_|StatusCode::CONFLICT)?{
+        if request.workspace_id.is_some_and(|expected|expected!=workspace){return Ok(bad_request("foreign terminal workspace changed"));}
+        let owner=request.owner.as_deref().unwrap_or("host");if !matches!(owner,"host"|"remote"){return Ok(bad_request("invalid resize owner"));}
+        return Ok(match st.outbound_hosts.request(&bound.host_id,"resize_pane",json!({"workspaceId":bound.workspace_id,"paneId":bound.session_id,"rows":request.rows,"cols":request.cols,"owner":owner})).await{Ok(_)=>Json(json!({"ok":true})),Err(error)=>bad_request(error)});
+    }}
     let controller_id = format!("legacy-http:{}", pty_id);
-    st.ptys.attach_controller(pty_id, controller_id.clone());
-    match st.ptys.resize(pty_id, request.cols, request.rows) {
-        Ok(()) => Ok(Json(json!({ "ok": true }))),
+    let resized = if let Some(workspace) = request.workspace_id { st.ptys.resize_in_workspace(pty_id, workspace, request.cols, request.rows) }
+        else { st.ptys.resize(pty_id, request.cols, request.rows) };
+    match resized {
+        Ok(()) => {
+            st.ptys.attach_controller(pty_id, controller_id);
+            Ok(Json(json!({ "ok": true })))
+        },
         Err(error) => Ok(bad_request(error.to_string())),
     }
 }
@@ -1833,8 +1915,15 @@ pub async fn domain_git_mutate(
     if !auth_ok(&headers, &st.token) {
         return Err(StatusCode::UNAUTHORIZED);
     }
+    execute_git_mutation(request).await
+}
+
+pub(crate) async fn execute_git_mutation(request: GitMutationRequest) -> Result<Json<Value>, StatusCode> {
     let repo_root = request.repo_root().to_string();
-    if ridge_core::commands::git::find_git_repo_root(repo_root.clone()).is_none() {
+    let detect_path = repo_root.clone();
+    let is_repo = tokio::task::spawn_blocking(move || ridge_core::commands::git::find_git_repo_root(detect_path).is_some())
+        .await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !is_repo {
         return Ok(Json(json!({
             "ok": false,
             "source": "ridge-kernel",
@@ -2029,6 +2118,10 @@ pub async fn domain_git_read(
     if !auth_ok(&headers, &st.token) {
         return Err(StatusCode::UNAUTHORIZED);
     }
+    execute_git_read(request).await
+}
+
+pub(crate) async fn execute_git_read(request: GitReadRequest) -> Result<Json<Value>, StatusCode> {
     let repo_root = request.repo_root().to_string();
     let detect_path = repo_root.clone();
     let is_repo = tokio::task::spawn_blocking(move || {
@@ -2338,10 +2431,21 @@ mod tests {
         let ptys = Arc::new(crate::pty::PtyRegistry::default());
         ptys.set_runtime_epoch(epoch.clone());
         AppState {
+            cloud:Default::default(),
+            remote_invokes: Default::default(),
+            foreign_terminals: Default::default(),
+            lan: Arc::new(crate::remote_control::Lan::default()),
+            remote_auth: Arc::new(ridge_remote::auth::RemoteAuth::ephemeral()),
+            device_identity: Arc::new(ridge_core::DeviceIdentity::from_seed(&[7;32])),
+            controller_identity: Default::default(),
+            projects: Arc::new(crate::projects::Projects::open(std::env::temp_dir().join(format!("ridge-projects-{}",Uuid::new_v4())).join("projects.db")).unwrap()),
             permissions: Default::default(),
+            gateway_permissions: Default::default(),
+            execution_rejections: Default::default(),
             commune: Default::default(),
             retired_workspaces: Default::default(),
             business_events: Default::default(),
+            fs_watches: Default::default(),
             local_host: Arc::new(std::sync::OnceLock::new()),
             token: "test-token".to_string(),
             pid: 1,
@@ -2366,6 +2470,7 @@ mod tests {
             remote_hosts: Arc::new(std::sync::Mutex::new(
                 ridge_core::remote::RemoteHostTopology::default(),
             )),
+            outbound_hosts: Arc::new(crate::outbound_hosts::Manager::default()),
             remote_hosts_path: std::env::temp_dir()
                 .join(format!("ridge-kernel-test-{}.json", Uuid::new_v4())),
             ptys,

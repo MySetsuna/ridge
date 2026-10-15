@@ -6,6 +6,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
+  import { bridge } from '$lib/transport/tauriShim/bridge';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, FolderOpen, Bug, Languages, Pencil, Trash2, Plus, Image as ImageIcon, Bot } from 'lucide-svelte';
   import {
@@ -14,6 +16,7 @@
     setTheme,
   } from '$lib/stores/settings';
   import {
+    hitlSync,
     setTeammateEnabled,
     setTeammateHitlEnabled,
   } from '$lib/teammate/teammateSettings';
@@ -37,9 +40,10 @@
   let customModalOpen = $state(false);
   let customEditingId = $state<string | null>(null);
 
-  // Agent 配置覆盖（localStorage）；与 Rust agent_catalog 合并。
+  // Runtime 清单为保存来源；旧 localStorage 仅保留历史草稿。
   const AGENT_OVERRIDES_KEY = 'ridge.agentProfiles.overrides';
   let agentOverridesJson = $state('[]');
+  let agentSavedJson = '[]';
   let agentProfilesHint = $state('');
   let agentProfilesPreview = $state<Array<{
     id: string;
@@ -86,25 +90,20 @@
   }
   async function loadAgentProfilesPreview(): Promise<void> {
     const generation = ++agentLoadGeneration;
-    loadAgentOverridesRaw();
-    let overrides: unknown[] = [];
-    try {
-      const parsed = JSON.parse(agentOverridesJson) as unknown;
-      overrides = Array.isArray(parsed) ? parsed : [];
-    } catch {
-      if (generation === agentLoadGeneration && open && activeSection === 'agents') {
-        agentProfilesHint = '覆盖 JSON 无效';
-      }
-      return;
-    }
     try {
       if (isTauri()) {
+        const overrides = await invoke<unknown>('read_agent_profile_overrides');
+        if (!Array.isArray(overrides)) throw new Error('Invalid Agent catalog response');
+        if (generation !== agentLoadGeneration || !open || activeSection !== 'agents') return;
         const profiles = await invoke<typeof agentProfilesPreview>('list_agent_profiles', { overrides });
         if (generation !== agentLoadGeneration || !open || activeSection !== 'agents') return;
+        agentOverridesJson = JSON.stringify(overrides, null, 2);
+        agentSavedJson = agentOverridesJson;
         agentProfilesPreview = profiles;
         agentProfilesHint = `${profiles.length} 条（默认+覆盖）`;
       } else {
         if (generation !== agentLoadGeneration || !open || activeSection !== 'agents') return;
+        loadAgentOverridesRaw();
         agentProfilesHint = '非 Tauri：仅显示本地覆盖草稿';
       }
     } catch (e) {
@@ -114,14 +113,19 @@
   }
   async function saveAgentOverrides(): Promise<void> {
     try {
+      const submitted = agentOverridesJson;
       const parsed = JSON.parse(agentOverridesJson) as unknown;
       if (!Array.isArray(parsed)) throw new Error('须为 JSON 数组');
-      localStorage.setItem(AGENT_OVERRIDES_KEY, JSON.stringify(parsed, null, 2));
-      agentOverridesJson = JSON.stringify(parsed, null, 2);
-      // 后端持久化：autodiscover 读 processNames，仅 localStorage 则发现永不认自定义名。
-      if (isTauri()) {
-        await invoke('save_agent_profile_overrides', { overrides: parsed });
+      if (!isTauri()) throw new Error('当前连接不能保存 Agent 清单');
+      await invoke('save_agent_profile_overrides', { overrides: parsed });
+      const saved = JSON.stringify(parsed, null, 2);
+
+      if (agentOverridesJson !== submitted) {
+        agentProfilesHint = '服务已保存；当前草稿尚未保存';
+        return;
       }
+      agentOverridesJson = saved;
+      agentSavedJson = saved;
       agentProfilesHint = '已保存覆盖（含发现名单）';
       void loadAgentProfilesPreview();
     } catch (e) {
@@ -129,21 +133,32 @@
     }
   }
   $effect(() => {
-    const isOpen = open;
-    const section = activeSection;
-    if (isOpen && section === 'agents') {
-      untrack(() => {
-        cancelAgentSchedule?.();
-        cancelAgentSchedule = scheduleIdle(() => {
-          cancelAgentSchedule = undefined;
-          if (open && activeSection === 'agents') void loadAgentProfilesPreview();
-        });
+    if (!open || activeSection !== 'agents') return;
+    let active = true;
+    const refresh = () => {
+      if (!active) return;
+      if (agentOverridesJson !== agentSavedJson) {
+        ++agentLoadGeneration;
+        agentProfilesHint = '服务清单可能已更新；当前草稿保留，重新加载前请保存草稿';
+        return;
+      }
+      cancelAgentSchedule?.();
+      cancelAgentSchedule = scheduleIdle(() => {
+        cancelAgentSchedule = undefined;
+        if (active) void loadAgentProfilesPreview();
       });
-    }
+    };
+    const stopReady = untrack(() => bridge.onReady(refresh));
+    const subscription = listen('agent-profiles-changed', refresh);
+    void subscription.catch(error => { if (active) agentProfilesHint = `清单监听失败：${String(error)}`; });
+    untrack(refresh);
     return () => {
-      agentLoadGeneration += 1;
+      active = false;
+      ++agentLoadGeneration;
       cancelAgentSchedule?.();
       cancelAgentSchedule = undefined;
+      stopReady();
+      void subscription.then(stop => stop()).catch(() => {});
     };
   });
 
@@ -649,20 +664,28 @@
                 </div>
                 <Toggle
                   checked={$settingsStore.teammateHitlEnabled}
+                  disabled={$hitlSync.pending}
                   ariaLabel="安全审批"
                   onchange={(next) => setTeammateHitlEnabled(next)}
                 />
               </div>
+
+              {#if $hitlSync.error}
+                <p role="alert" class="text-[11px] text-red-400">{$hitlSync.error}</p>
+              {/if}
 
               <!-- Agent 启动表：进程名 / resume / yolo；识别与恢复同读此表 -->
               <div class="p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50 space-y-2">
                 <div class="text-[12px] text-[var(--rg-fg)]">Agent 启动与识别</div>
                 <div class="text-[11px] text-[var(--rg-fg-muted)]">
                   内置 claude / codex / grok 等默认进程名与 YOLO 参数。可在下方 JSON 覆盖或追加自定义 agent（id、processNames、executable、resumeArgv 含 {'{session}'}、yoloArgs）。
+                  自动接入可配置 connection：protocol 为 acp 或 app-server，descriptorFile 为运行方提供的连接描述绝对路径（支持 {'{pid}'}），autoConnect 为 true。未开放协议端点的普通 CLI 只能定位终端。
                 </div>
                 <textarea
                   class="w-full min-h-[140px] rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] p-2 font-mono text-[10px] text-[var(--rg-fg)]"
                   bind:value={agentOverridesJson}
+                  aria-label="Agent 清单 JSON"
+                  oninput={() => { ++agentLoadGeneration; cancelAgentSchedule?.(); cancelAgentSchedule = undefined; agentProfilesHint = '未保存草稿'; }}
                   spellcheck="false"
                 ></textarea>
                 <div class="flex items-center gap-2">

@@ -32,6 +32,27 @@ pub struct RemoteTotp {
 }
 
 impl RemoteTotp {
+    pub fn seed_directory() -> Option<std::path::PathBuf> { crate::seed_store::seed_dir() }
+    pub fn load_or_create_checked_in(dir: &std::path::Path, identity: &str) -> std::io::Result<Self> {
+        let secret = match crate::seed_store::load_checked_in(dir, identity)? {
+            Some(secret) => secret,
+            None => {
+                let secret = generate_secret();
+                crate::seed_store::save_in(dir, identity, &secret)?;
+                secret
+            }
+        };
+        Ok(Self { secret, identity: identity.into() })
+    }
+
+    pub fn reset_checked_in(&mut self, dir: &std::path::Path) -> std::io::Result<()> {
+        // Commit memory only after durable replacement succeeds.
+        crate::seed_store::load_checked_in(dir, &self.identity)?;
+        let secret = generate_secret();
+        crate::seed_store::save_in(dir, &self.identity, &secret)?;
+        self.secret = secret;
+        Ok(())
+    }
     /// 生成随机 secret 的新实例（OS 熵源），**不落盘**。供单测与不关心持久化处。
     pub fn new() -> Self {
         Self {
@@ -223,7 +244,7 @@ fn hkdf_sha256_32(ikm: &[u8], salt: &[u8], info: &[u8]) -> [u8; 32] {
 ///   K   = HKDF-SHA256(ikm=code_ascii, salt=transcript, info="ridge-bind", L=32)
 ///   tag = HMAC-SHA256(K, transcript)
 /// 与 `e2ee.ts::computeBindTag` 逐字节对齐（HKDF/HMAC 均 RFC 标准 + 相同输入）。
-fn bind_tag_at(code: &str, transcript: &[u8]) -> [u8; 32] {
+pub fn bind_tag_at(code: &str, transcript: &[u8]) -> [u8; 32] {
     let k = hkdf_sha256_32(code.as_bytes(), transcript, BIND_HKDF_INFO);
     let mac = hmac_sha256(&k, transcript);
     let mut out = [0u8; 32];

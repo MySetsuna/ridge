@@ -6,6 +6,7 @@ import { createLanWsTransport } from '@ridge/remote/shared/transport/lanWsAdapte
  * for URLs, localStorage, sessionStorage or the business RPC argument stream. */
 export async function connectPresentationRuntime(
   bootstrap: () => Promise<Record<string, unknown>> = () => invoke('bootstrap_runtime_client'),
+  hostId?: string,
 ) {
   const grant = await bootstrap();
   const text = (key: string) => {
@@ -24,6 +25,7 @@ export async function connectPresentationRuntime(
     throw new Error('Runtime presentation grant identity mismatch');
   }
   const target = new URL(url);
+  if (hostId) target.pathname = `/v1/local/host-link/${encodeURIComponent(hostId)}`;
   target.searchParams.set('deviceId', deviceId);
   const connection = new RemoteConnection(() => new WebSocket(target, ['ridge-client', `auth-${token}`]));
   await new Promise<void>((resolve, reject) => {

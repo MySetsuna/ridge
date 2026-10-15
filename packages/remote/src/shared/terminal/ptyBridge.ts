@@ -1,6 +1,6 @@
 // src/lib/terminal/ptyBridge.ts
 //
-// Per-pane Tauri ↔ wasm-kernel listener glue.
+// Per-pane Runtime canonical stream projection glue.
 //
 // Why a sidecar instead of putting this in manager.ts or RidgePane.svelte:
 //
@@ -30,7 +30,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { TerminalManager } from './manager';
 import { paneRefKey } from '../transport/paneRef';
-import { unknownText } from '../transport/unknownText';
+import { readTerminalLifecycle, type TerminalLifecycle } from './lifecycle';
 
 /**
  * P4.3 — pty-delta byte payload as received on the frontend. Tauri 2's
@@ -42,7 +42,10 @@ let nativeActivationCounter = 0;
 type DeltaPayload = ArrayBuffer | Uint8Array | number[];
 
 interface Bridge {
-	closedUnlisten: UnlistenFn;
+	unlisten: UnlistenFn[];
+	state: PtyViewState;
+	watchers: Set<(state: PtyViewState) => void>;
+	refresh: () => Promise<void>;
 	paneId: string;
 	workspaceId: string;
 	/// P4.3 — strong reference to the Tauri Channel for delta bytes.
@@ -59,15 +62,20 @@ interface Bridge {
 	closed: boolean;
 }
 
+export interface PtyViewState { lifecycle: TerminalLifecycle | null; error: string | null; retrying: boolean }
+function stopListeners(bridge: Bridge): void { for (const stop of bridge.unlisten.splice(0)) { try { stop(); } catch { /* already stopped */ } } }
+export function observePtyView(paneId: string, workspaceId: string, receive: (state: PtyViewState) => void): () => void {
+    const bridge = bridges.get(paneRefKey({paneId, workspaceId}));
+    if (!bridge) return () => {};
+    bridge.watchers.add(receive); receive(bridge.state);
+    return () => { bridge.watchers.delete(receive); };
+}
+
 const bridges = new Map<string, Bridge>();
 /** Attach is asynchronous; keep one in-flight operation per stable pane key. */
 const pendingBridges = new Map<string, Promise<void>>();
 /** A real close may race the two Tauri listener registrations. */
 const teardownRequested = new Set<string>();
-
-function isPaneNotFoundError(error: unknown): boolean {
-	return /\bpane\s+not\s+found\b/i.test(unknownText(error));
-}
 
 function deltaBytes(payload: DeltaPayload | null | undefined): Uint8Array {
 	if (payload instanceof Uint8Array) return payload;
@@ -76,22 +84,18 @@ function deltaBytes(payload: DeltaPayload | null | undefined): Uint8Array {
 }
 
 /**
- * Subscribe to `pty-output-{workspaceId}-{paneId}` and `pane-pty-closed`
- * events for this pane. Idempotent: re-calling for the same paneId is a
+ * Register the canonical stream and `pane-pty-closed` presentation listener.
+ * Idempotent: re-calling for the same paneId is a
  * no-op.
  *
- * On `pty-output`: forward bytes to the wasm kernel via `manager.feed`.
- *
  * On `pane-pty-closed` (e.g. shell exits via `exit` or external kill):
- * recreate the backend PTY via `create_pane` + `activate_pane_pty` so
- * the user sees a fresh prompt. Same logic as the inline rebuild that
- * lived in RidgePane before TASKS §5.1; centralizing it here means the
- * rebuild fires correctly even when the Svelte component is currently
- * unmounted (e.g. split happened mid-shell-exit).
+ * Runtime decides whether to replace the shell. A replacement notification
+ * only refreshes this presentation's canonical stream and activation.
  */
 export function ensurePtyBridge(paneId: string, workspaceId: string): Promise<void> {
 	const key = paneRefKey({ paneId, workspaceId });
-	if (bridges.has(key)) return Promise.resolve();
+	const existing = bridges.get(key);
+	if (existing) return existing.state.error ? existing.refresh() : Promise.resolve();
 	const pending = pendingBridges.get(key);
 	if (pending !== undefined) return pending;
 	teardownRequested.delete(key);
@@ -109,61 +113,18 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 
 	const manager = TerminalManager.instance();
 
-	const closedUnlisten = await listen<{ workspaceId: string; paneId: string }>(
+	let lastReplacement: string | null = null;
+	const closedUnlisten = await listen<{ workspaceId: string; paneId: string; replacementEpoch?: string | null }>(
 		'pane-pty-closed',
-		async (e) => {
+		(e) => {
 			if (e.payload.workspaceId !== workspaceId || e.payload.paneId !== paneId) return;
 			// If the bridge has been torn down between event dispatch and
 			// our handler running, bail out — the pane is being closed
 			// for real and we shouldn't resurrect the PTY.
-			if (!bridges.has(key)) return;
-
-			// §1.35 — force-leave alt screen before spawning a new shell.
-			// If the previous process was in alt screen mode (TUI crashed
-			// or exited without sending ?1049l), the new shell's output
-			// would go into the alt buffer, hiding primary screen content
-			// and giving the user the impression the screen was cleared.
-			manager.leaveAltScreen(paneId);
-			// A rebuilt PTY starts in raw mode. Restore the raw-side resize
-			// authority until the replacement delta stream is confirmed, otherwise
-			// a failed re-enable leaves this live pane unable to fit again.
-			manager.setLocalGridAuthority(paneId, true);
-
-			try {
-				await invoke('create_pane', {
-					workspaceId,
-					paneId,
-					shell: TerminalManager.hostPorts()?.settings?.get()?.defaultShell || null,
-					rows: manager.rows(paneId) || 24,
-					cols: manager.cols(paneId) || 80,
-				});
-			} catch (err) {
-				if (!isPaneNotFoundError(err)) {
-					console.error('create_pane (rebuild) failed', err);
-				}
-				return;
-			}
-			if (!bridges.has(key)) return;
-			try {
-				await invoke('activate_pane_pty', {
-					workspaceId,
-					paneId,
-					rows: manager.rows(paneId) || 24,
-					cols: manager.cols(paneId) || 80,
-				});
-			} catch (err) {
-				const msg = String(err);
-				if (!isPaneNotFoundError(msg)) {
-					console.error('activate_pane_pty (rebuild) failed', err);
-				}
-				return;
-			}
-			if (!bridges.has(key)) return;
-			await enableDeltaModeThenFit(
-				paneId,
-				() => manager.fitPaneNow(paneId, true),
-				workspaceId,
-			);
+			const replacement = e.payload.replacementEpoch;
+			if (!bridges.has(key) || typeof replacement !== 'string' || !replacement || replacement === lastReplacement) return;
+			lastReplacement = replacement;
+			recoverDelta('Runtime replaced the exited shell', true);
 		},
 	);
 	if (teardownRequested.has(key)) {
@@ -179,8 +140,13 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 	// all, so registering here is safe even before `set_pane_delta_mode`
 	// flips the gate — the channel simply stays quiet until then.
 	const deltaChannel = new Channel<DeltaPayload>();
+	let state: PtyViewState = {lifecycle:null, error:null, retrying:false};
+	const watchers = new Set<(state: PtyViewState) => void>();
+	const publish = (patch: Partial<PtyViewState>) => { state = {...state,...patch}; for (const receive of watchers) receive(state); };
 	const bridge: Bridge = {
-		closedUnlisten,
+		unlisten: [closedUnlisten],
+		get state() { return state; }, watchers,
+		refresh: () => recoverDelta('Retry terminal connection'),
 		paneId,
 		workspaceId,
 		deltaChannel,
@@ -192,28 +158,53 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 	};
 	let activationId = ++nativeActivationCounter;
 	let recoveryInFlight = false;
+	let recoveryPending = false;
+	let snapshotStarted = false;
+	let snapshotReplacement: string | null = null;
+	let recoveryPromise: Promise<void> | null = null;
 	manager.setNativeActivation(paneId, activationId);
-	const recoverDelta = (err: unknown) => {
-		if (bridge.closed || recoveryInFlight) return;
+	const recoverDelta = (err: unknown, replacement = false): Promise<void> => {
+		if (bridge.closed) return Promise.resolve();
+		if (recoveryInFlight) {
+			if (replacement && snapshotStarted && snapshotReplacement !== lastReplacement) recoveryPending = true;
+			return recoveryPromise ?? Promise.resolve();
+		}
 		recoveryInFlight = true;
+		snapshotStarted = false;
+		publish({retrying:true});
 		activationId = ++nativeActivationCounter;
 		manager.setNativeActivation(paneId, activationId);
 		console.warn('[ridge-term] terminal stream requires snapshot', { paneId, error: String(err) });
-		void invoke('register_pane_delta_channel', { workspaceId, paneId, channel: deltaChannel, activationId })
-			.then(() => invoke<string>('get_terminal_snapshot', { workspaceId, paneId, activationId }))
-			.then(encoded => {
-				if (bridge.closed) return;
-				const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
-				manager.enqueueDeltaFrame(paneId, bytes, error => console.error('[ridge-term] terminal recovery failed', error));
+		recoveryPromise = invoke('register_pane_delta_channel', { workspaceId, paneId, channel: deltaChannel, activationId })
+			.then(() => {
+				snapshotStarted = true;
+				snapshotReplacement = lastReplacement;
+				return invoke<string>('get_terminal_snapshot', { workspaceId, paneId, activationId });
 			})
-			.catch(error => { if (!bridge.closed) console.error('[ridge-term] terminal recovery failed', error); })
-			.finally(() => { recoveryInFlight = false; });
+			.then(encoded => {
+				if (bridge.closed || recoveryPending) return;
+				const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+				publish({error:null});
+				manager.enqueueDeltaFrame(paneId, bytes, error => publish({error:String(error)}));
+			})
+			.catch(error => { if (!bridge.closed) publish({error:String(error)}); })
+			.finally(() => {
+				recoveryInFlight = false;
+				recoveryPromise = null;
+				publish({retrying:false});
+				if (recoveryPending) { recoveryPending = false; return recoverDelta('A newer Runtime snapshot is pending'); }
+			});
+		return recoveryPromise;
 	};
 	const consumeDelta = (payload: DeltaPayload | null | undefined) => {
 		const bytes = deltaBytes(payload);
-		if (bytes.byteLength === 0 || bridge.closed || recoveryInFlight) return;
+		// Keep the replacement stream's Snapshot and Deltas while the explicit
+		// snapshot RPC is pending. Dropping them creates a revision gap and a
+		// second activation switch during user input; the decoder fences old frames.
+		if (bytes.byteLength === 0 || bridge.closed) return;
+		const frameActivation = activationId;
 		manager.enqueueDeltaFrame(paneId, bytes, (err) => {
-			recoverDelta(err);
+			if (frameActivation === activationId) void recoverDelta(err);
 		});
 	};
 	const requestMailboxPull = () => {
@@ -252,6 +243,20 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 	// if registration fails (e.g. backend not ready) we don't end up with
 	// a half-wired bridge whose Channel never gets fed.
 	try {
+		bridge.unlisten.push(await listen('pane-meta-changed', event => {
+			if (bridge.closed || teardownRequested.has(key)) return;
+			const next = readTerminalLifecycle(event.payload, {workspaceId,paneId}, state.lifecycle, activationId);
+			if (!next) return;
+			const previous = state.lifecycle;
+			publish({lifecycle:next});
+			if (previous && next.status === 'Idle' && next.terminalEpoch !== previous.terminalEpoch && bridges.has(key) && lastReplacement !== next.terminalEpoch) {
+				lastReplacement = next.terminalEpoch;
+				void recoverDelta('Runtime created a new terminal', true);
+			}
+		}));
+		bridge.unlisten.push(await listen<{workspaceId:string;paneId:string;activationId:number}>('pane-terminal-error', event => {
+			if (!bridge.closed && event.payload.workspaceId === workspaceId && event.payload.paneId === paneId && event.payload.activationId === activationId) publish({error:'Terminal connection failed'});
+		}));
 		await invoke('register_pane_delta_channel', {
 			workspaceId,
 			paneId,
@@ -259,11 +264,11 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 			activationId,
 		});
 	} catch (error) {
-		try { closedUnlisten(); } catch { /* event bus already closed */ }
+		bridge.closed = true; stopListeners(bridge);
 		throw error;
 	}
 	if (teardownRequested.has(key)) {
-		try { closedUnlisten(); } catch { /* already unsubscribed */ }
+		bridge.closed = true; stopListeners(bridge);
 		return;
 	}
 
@@ -370,7 +375,7 @@ export function teardownPtyBridge(paneId: string, workspaceId?: string): void {
 	if (key && pendingBridges.has(key)) teardownRequested.add(key);
 	const b = key ? bridges.get(key) : undefined;
 	if (!b) return;
-	try { b.closedUnlisten(); } catch { /* already unsubscribed */ }
+	stopListeners(b); b.watchers.clear();
 	b.closed = true;
 	if (b.deltaPullRaf !== null && typeof cancelAnimationFrame === 'function') {
 		cancelAnimationFrame(b.deltaPullRaf);

@@ -7,10 +7,15 @@ describe('current-source Remote acceptance startup', () => {
     const launcher = readFileSync(new URL('./tauri-dev-cdp.mjs', import.meta.url), 'utf8');
     expect(launcher).toContain("['build', '-p', 'ridge']");
     expect(launcher).toContain('RIDGE_KERNEL_HOST_BINARY = ridgeKernelCopy');
+    expect(launcher).toContain("buildKernelSidecar(['--debug']).destination");
     expect(launcher).toContain("path.join(userDataDir, 'dev-kernel')");
     expect(launcher).toContain("RIDGE_REMOTE_UI_ROOT = path.join(root, 'remote-dist')");
+    expect(launcher).toContain("identifier: cdpApplicationIdentifier(userDataDir)");
+    expect(launcher).toContain("RIDGE_CDP_NATIVE_DATA_DIR = path.join(userDataDir, 'native-data')");
     expect(launcher).not.toContain("'--bin', 'rdg'");
     expect(launcher).not.toContain('RIDGE_RDG_BINARY');
+    expect(launcher).toContain('applyKernelBreakawayPolicy(process.env);');
+    expect(launcher).not.toContain('applyKernelBreakawayPolicy(process.env, true)');
     expect(launcher).not.toContain("'.iteration'");
   });
 

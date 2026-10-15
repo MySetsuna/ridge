@@ -202,10 +202,10 @@ fn direct_child_pid(entry: std::fs::DirEntry, shell_pid: &str) -> Option<u32> {
 
 #[cfg(windows)]
 pub fn get_process_cwd(shell_pid: u32) -> Option<String> {
-    use sysinfo::{ProcessesToUpdate, System};
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
     let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All);
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, ProcessRefreshKind::new().with_cwd(UpdateKind::Always));
     let shell_pid = sysinfo::Pid::from_u32(shell_pid);
     let shell_names = ["powershell", "pwsh", "cmd", "bash", "zsh", "sh", "fish"];
     let mut children = Vec::new();

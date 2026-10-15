@@ -297,6 +297,9 @@ mod tests {
         );
         assert_eq!(classify_method("read_file").level, RiskLevel::ReadOnly);
         assert_eq!(classify_method("get_scm_status").level, RiskLevel::ReadOnly);
+        for method in ["git_delete_branch", "git_fetch", "git_stash_push"] {
+            assert_eq!(classify_method(method).level, RiskLevel::WorkspaceWrite);
+        }
     }
 
     #[test]

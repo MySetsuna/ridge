@@ -9,7 +9,7 @@
 //! 轻量自动竞选 [`elect_leader`]（档最高者当选，同档取 id 最小者，确定性）。派活仍由
 //! 人/调用方显式发起。详见 specs/2026-06-20-team-agent-upgrade-plan-design.md。
 
-use std::collections::HashMap;
+use std::collections::{HashMap,BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +70,9 @@ pub struct TopologyGraph {
     /// teardown so pane/session reuse cannot accept an old generation.
     #[serde(default)]
     generations: HashMap<String, u64>,
+    /// Explicit membership retirement preserves identity/history and generation fences.
+    #[serde(default)]
+    retired_protocol_members: BTreeSet<String>,
     /// 边：`(from_id, to_id, edge)`。
     edges: Vec<(String, String, TaskEdge)>,
     /// 当前 Leader 的 id。
@@ -184,6 +187,8 @@ impl TopologyGraph {
             }
         }
         let agent_id = identity.agent_id.clone();
+        if self.retired_protocol_members.contains(&agent_id)&&self.identities.get(&agent_id).is_some_and(|old|identity.generation<=old.generation){return Err(CommunicationError::StaleLease);}
+        self.retired_protocol_members.remove(&agent_id);
         self.generations
             .insert(agent_id.clone(), identity.generation);
         self.identities.insert(agent_id, identity);
@@ -192,6 +197,15 @@ impl TopologyGraph {
 
     pub fn agent_identity(&self, agent_id: &str) -> Option<&AgentIdentity> {
         self.identities.get(agent_id)
+    }
+
+    pub fn protocol_member_retired(&self,agent_id:&str)->bool {self.retired_protocol_members.contains(agent_id)}
+
+    pub fn retire_protocol_member(&mut self,agent_id:&str,generation:u64,lease:&str)->Result<(),CommunicationError>{
+        let identity=self.identities.get_mut(agent_id).ok_or(CommunicationError::StaleLease)?;
+        if identity.generation!=generation||identity.lease!=lease||identity.protocol_binding.is_none(){return Err(CommunicationError::StaleLease);}
+        identity.online=false;identity.lifecycle=super::communication::AgentLifecycle::Stopped;
+        self.retired_protocol_members.insert(agent_id.into());Ok(())
     }
 
     /// Persisted protocol bindings are evidence, not live control leases.

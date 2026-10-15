@@ -112,6 +112,9 @@ pub fn theme_assets_dir() -> PathBuf {
 /// (`LOCALAPPDATA` on Windows, `XDG_DATA_HOME`/`HOME` on unix) — the same
 /// directory `dirs::data_local_dir()` returns on each platform.
 pub fn app_data_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("RIDGE_KERNEL_DATA_DIR").filter(|path| !path.is_empty()) {
+        return PathBuf::from(path);
+    }
     local_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ridge")
@@ -151,8 +154,22 @@ pub fn read_active_theme_id(app_data_dir: &Path) -> String {
 }
 
 fn write_active_theme_id(app_data_dir: &Path, id: &str) -> std::io::Result<()> {
-    std::fs::create_dir_all(app_data_dir)?;
-    std::fs::write(active_theme_path(app_data_dir), id.trim())
+    write_preserving_previous(&active_theme_path(app_data_dir), id.trim().as_bytes())
+}
+
+// All production writers now execute in the shared Runtime. Serialize read/modify/write.
+static THEME_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn write_preserving_previous(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    match std::fs::read(path) {
+        Ok(previous) => crate::workspace::file::write_atomic(
+            &path.with_extension(format!("archive-{}", uuid::Uuid::new_v4())),
+            &previous,
+        )?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    crate::workspace::file::write_atomic(path, bytes)
 }
 
 /// Locate `ridge.theme` without any Tauri handle: it sits next to the running
@@ -216,18 +233,30 @@ fn make_custom_id(label: &str, existing: &[String]) -> String {
 
 /// 读用户自定义主题列表。文件缺失/解析失败 → 空 Vec（绝不让启动失败）。
 pub fn read_user_themes(app_data_dir: &Path) -> Vec<ThemeEntry> {
-    let path = user_themes_path(app_data_dir);
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    match serde_json::from_str::<ThemeFile>(&content) {
-        Ok(tf) => tf.themes,
-        Err(e) => {
-            tracing::warn!(target: "ridge::theme", error = %e, "user-themes.json 解析失败，忽略");
+    match read_user_themes_checked(app_data_dir) {
+        Ok(themes) => themes,
+        Err(error) => {
+            tracing::warn!(target: "ridge::theme", %error, "cannot read user themes");
             Vec::new()
         }
     }
+}
+
+fn read_user_themes_checked(dir: &Path) -> CoreResult<Vec<ThemeEntry>> {
+    let bytes = match std::fs::read(user_themes_path(dir)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(CoreError::io(format!("read user themes: {error}"))),
+    };
+    let file: ThemeFile = serde_json::from_slice(&bytes).map_err(|error| {
+        CoreError::io(format!("invalid user themes; original preserved: {error}"))
+    })?;
+    if file.version != 1 {
+        return Err(CoreError::InvalidArgs(
+            "unsupported user theme version".into(),
+        ));
+    }
+    Ok(file.themes)
 }
 
 fn write_user_themes(app_data_dir: &Path, themes: &[ThemeEntry]) -> CoreResult<()> {
@@ -238,15 +267,21 @@ fn write_user_themes(app_data_dir: &Path, themes: &[ThemeEntry]) -> CoreResult<(
     };
     let json = serde_json::to_string_pretty(&tf)
         .map_err(|e| CoreError::internal(format!("serialize user themes: {e}")))?;
-    std::fs::write(user_themes_path(app_data_dir), json)
+    write_preserving_previous(&user_themes_path(app_data_dir), json.as_bytes())
         .map_err(|e| CoreError::io(format!("write user-themes.json: {e}")))
 }
 
 /// upsert 一个自定义主题到 user-themes.json，返回最终落盘的 entry。
 /// id 为空或不带 `custom-` 前缀 → 视为新增、由 label 生成唯一 id；否则按 id 覆盖。
 pub fn save_user_theme(mut entry: ThemeEntry) -> CoreResult<ThemeEntry> {
+    if let Some(image) = &entry.bg_image {
+        validate_asset_name(image)?;
+    }
+    let _guard = THEME_WRITES
+        .lock()
+        .map_err(|_| CoreError::internal("theme writer unavailable"))?;
     let dir = app_data_dir();
-    let mut themes = read_user_themes(&dir);
+    let mut themes = read_user_themes_checked(&dir)?;
     let is_new = entry.id.is_empty() || !entry.id.starts_with(CUSTOM_ID_PREFIX);
     if is_new {
         let existing: Vec<String> = themes.iter().map(|t| t.id.clone()).collect();
@@ -262,14 +297,15 @@ pub fn save_user_theme(mut entry: ThemeEntry) -> CoreResult<ThemeEntry> {
     Ok(entry)
 }
 
-/// 删除一个自定义主题及其背景图（best-effort）。
+/// Delete a custom theme; archive previous metadata and retain recoverable assets.
 pub fn delete_user_theme(id: &str) -> CoreResult<()> {
+    let _guard = THEME_WRITES
+        .lock()
+        .map_err(|_| CoreError::internal("theme writer unavailable"))?;
     let dir = app_data_dir();
-    let mut themes = read_user_themes(&dir);
+    let mut themes = read_user_themes_checked(&dir)?;
     if let Some(pos) = themes.iter().position(|t| t.id == id) {
-        if let Some(img) = themes[pos].bg_image.clone() {
-            let _ = std::fs::remove_file(theme_assets_dir().join(img));
-        }
+        // Retain the asset so archived theme versions remain recoverable.
         themes.remove(pos);
         write_user_themes(&dir, &themes)?;
     }
@@ -278,6 +314,15 @@ pub fn delete_user_theme(id: &str) -> CoreResult<()> {
 
 const ALLOWED_IMG_EXT: &[&str] = &["png", "jpg", "jpeg", "webp", "gif"];
 const MAX_IMG_BYTES: usize = 20 * 1024 * 1024;
+
+fn validate_asset_name(name: &str) -> CoreResult<()> {
+    if name.is_empty() || name.contains(['/', '\\', ':']) || name == "." || name == ".." {
+        return Err(CoreError::InvalidArgs(
+            "theme image must be a local asset filename".into(),
+        ));
+    }
+    Ok(())
+}
 
 /// 把背景图字节写入 `theme-assets/<uuid>.<ext>`，返回文件名。
 pub fn save_theme_bg_image(bytes: Vec<u8>, ext: &str) -> CoreResult<String> {
@@ -297,7 +342,7 @@ pub fn save_theme_bg_image(bytes: Vec<u8>, ext: &str) -> CoreResult<String> {
     std::fs::create_dir_all(&dir)
         .map_err(|e| CoreError::io(format!("create theme-assets: {e}")))?;
     let name = format!("{}.{}", uuid::Uuid::new_v4(), ext);
-    std::fs::write(dir.join(&name), &bytes)
+    crate::workspace::file::write_atomic(&dir.join(&name), &bytes)
         .map_err(|e| CoreError::io(format!("write image: {e}")))?;
     Ok(name)
 }
@@ -310,7 +355,14 @@ pub fn save_theme_bg_image_from_path(src: &str) -> CoreResult<String> {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_string();
-    let bytes = std::fs::read(src).map_err(|e| CoreError::io(format!("read image {src}: {e}")))?;
+    use std::io::Read;
+    let source =
+        std::fs::File::open(src).map_err(|e| CoreError::io(format!("read image {src}: {e}")))?;
+    let mut bytes = Vec::new();
+    source
+        .take((MAX_IMG_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| CoreError::io(format!("read image {src}: {e}")))?;
     save_theme_bg_image(bytes, &ext)
 }
 
@@ -369,7 +421,7 @@ pub fn get_theme_data() -> ThemeFile {
     }
     ThemeFile {
         version: 1,
-        themes: Vec::new(),
+        themes: read_user_themes(&app_data_dir()),
     }
 }
 
@@ -380,10 +432,7 @@ pub fn get_theme_data() -> ThemeFile {
 pub fn active_theme_entry() -> Option<ThemeEntry> {
     let dir = app_data_dir();
     let theme_id = read_active_theme_id(&dir);
-    let path = find_theme_path()?;
-    let content = std::fs::read_to_string(&path).ok()?;
-    let tf: ThemeFile = serde_json::from_str(&content).ok()?;
-    let tf = merge_user_theme_list(tf, read_user_themes(&dir));
+    let tf = get_theme_data();
     let mut themes = tf.themes;
     if themes.is_empty() {
         return None;
@@ -420,6 +469,9 @@ pub fn active_theme_frame() -> serde_json::Value {
 /// splash can use it. Verbatim port (the desktop original took no `State`/
 /// `AppHandle`); error message preserved for parity.
 pub fn set_active_theme(theme_id: &str) -> CoreResult<()> {
+    let _guard = THEME_WRITES
+        .lock()
+        .map_err(|_| CoreError::internal("theme writer unavailable"))?;
     let dir = app_data_dir();
     write_active_theme_id(&dir, theme_id).map_err(|e| {
         tracing::error!(
@@ -619,6 +671,83 @@ mod tests {
         delete_user_theme("custom-my-theme").unwrap();
         assert!(read_user_themes(&app_data_dir()).is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn concurrent_theme_writes_preserve_every_entry_and_archive_previous_versions() {
+        let tmp = std::env::temp_dir().join(format!("ridge-themes-{}", uuid::Uuid::new_v4()));
+        let _guard = SetEnvGuard::new("LOCALAPPDATA", &tmp.to_string_lossy());
+        let threads: Vec<_> = (0..8)
+            .map(|index| {
+                std::thread::spawn(move || {
+                    let mut entry = sample_user_entry(&format!("Theme {index}"));
+                    entry.id.clear();
+                    save_user_theme(entry).unwrap()
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(read_user_themes_checked(&app_data_dir()).unwrap().len(), 8);
+        let archives: Vec<_> = std::fs::read_dir(app_data_dir())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("user-themes.archive-")
+            })
+            .collect();
+        assert_eq!(archives.len(), 7);
+        for archive in archives {
+            serde_json::from_slice::<ThemeFile>(&std::fs::read(archive.path()).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn damaged_theme_store_and_unsafe_asset_reference_never_overwrite_user_data() {
+        let tmp =
+            std::env::temp_dir().join(format!("ridge-themes-damaged-{}", uuid::Uuid::new_v4()));
+        let _guard = SetEnvGuard::new("LOCALAPPDATA", &tmp.to_string_lossy());
+        std::fs::create_dir_all(app_data_dir()).unwrap();
+        let path = user_themes_path(&app_data_dir());
+        let original = b"{damaged but recoverable";
+        std::fs::write(&path, original).unwrap();
+        assert!(save_user_theme(sample_user_entry("New")).is_err());
+        assert!(delete_user_theme("custom-tmp").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let mut entry = sample_user_entry("Unsafe");
+        entry.bg_image = Some("../private.txt".into());
+        assert!(save_user_theme(entry).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn failed_theme_commit_keeps_previous_bytes_and_deleted_theme_assets_are_recoverable() {
+        let tmp =
+            std::env::temp_dir().join(format!("ridge-themes-recovery-{}", uuid::Uuid::new_v4()));
+        let _guard = SetEnvGuard::new("LOCALAPPDATA", &tmp.to_string_lossy());
+        let image = save_theme_bg_image(vec![1, 2, 3], "png").unwrap();
+        let mut entry = sample_user_entry("Image");
+        entry.bg_image = Some(image.clone());
+        let saved = save_user_theme(entry).unwrap();
+        let path = user_themes_path(&app_data_dir());
+        let original = std::fs::read(&path).unwrap();
+        // An invalid destination rejects commit without modifying stored themes.
+        let blocked = app_data_dir().join("blocked");
+        std::fs::create_dir_all(&blocked).unwrap();
+        assert!(write_preserving_previous(&blocked, b"replacement").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        delete_user_theme(&saved.id).unwrap();
+        assert!(read_user_themes_checked(&app_data_dir())
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            std::fs::read(theme_assets_dir().join(image)).unwrap(),
+            vec![1, 2, 3]
+        );
     }
 
     #[test]

@@ -67,6 +67,31 @@ export class TauriBridge {
   // sequence from leaking across two independent PTY streams.
   private readonly ptyDecoders = new Map<string, TextDecoder>();
   private readonly disposers: Unsubscribe[] = [];
+  private readonly readyListeners = new Set<() => void>();
+
+  private resubscribe(): void {
+    for (const [paneId, options] of this.subscribedPanes) {
+      this.rpc?.notify('subscribe-pane', { paneId, ...options });
+    }
+    for (const subscription of this.terminalChannels.values()) {
+      this.rpc?.notify('subscribe-pane', {
+        paneId: subscription.paneId, workspaceId: subscription.workspaceId,
+        activationId: subscription.activationId, active: true,
+      });
+    }
+  }
+
+  private notifyReady(): void {
+    for (const callback of this.readyListeners) {
+      try { callback(); } catch (error) { console.error('[tauriShim] ready listener threw', error); }
+    }
+  }
+
+  onReady(callback: () => void): Unsubscribe {
+    this.readyListeners.add(callback);
+    if (this.transport?.state() === 'connected' && this.transport.authState() === 'authorized') callback();
+    return () => this.readyListeners.delete(callback);
+  }
 
   /** True once a transport has been attached (after auth succeeds). */
   get ready(): boolean {
@@ -78,7 +103,7 @@ export class TauriBridge {
    *  adapter (e.g. `createLanWsTransport(conn)`) so the bridge stays free of any
    *  concrete-transport dependency. */
   attach(transport: ChannelTransport, options: { useGlobalWorkspace?: boolean } = {}): void {
-    this.detach();
+    this.detach({ preserveListeners: true });
     this.transport = transport;
     this.rpc = new RpcClient(transport, { defaultTimeoutMs: INVOKE_TIMEOUT_MS });
 
@@ -90,15 +115,8 @@ export class TauriBridge {
       transport.onPaneBytes((paneId, bytes) => this.dispatchRawBytes(paneId, bytes)),
       transport.onControl((frame) => this.handleControlFrame(frame)),
       this.rpc.onReconnected(() => {
-        for (const [paneId, options] of this.subscribedPanes) {
-          this.rpc?.notify('subscribe-pane', { paneId, ...options });
-        }
-        for (const subscription of this.terminalChannels.values()) {
-          this.rpc?.notify('subscribe-pane', {
-            paneId: subscription.paneId, workspaceId: subscription.workspaceId,
-            activationId: subscription.activationId, active: true,
-          });
-        }
+        this.resubscribe();
+        this.notifyReady();
       }),
     );
     if (transport.onTerminalFrame) {
@@ -120,9 +138,10 @@ export class TauriBridge {
     // the host must track the GLOBAL active workspace for this client (not the
     // mobile per-client view). See `use_global_ws` in remote/server.rs.
     if (options.useGlobalWorkspace !== false) this.rpc.notify('use-global-workspace');
+    if (transport.state() === 'connected' && transport.authState() === 'authorized') { this.resubscribe(); this.notifyReady(); }
   }
 
-  detach(): void {
+  detach(options: { preserveListeners?: boolean } = {}): void {
     for (const dispose of this.disposers.splice(0)) {
       try {
         dispose();
@@ -133,11 +152,13 @@ export class TauriBridge {
     this.rpc?.dispose();
     this.rpc = null;
     this.transport = null;
-    this.eventListeners.clear();
-    this.ptyListeners.clear();
+    if (!options.preserveListeners) {
+      this.eventListeners.clear();
+      this.ptyListeners.clear();
+      this.subscribedPanes.clear();
+      this.terminalChannels.clear();
+    }
     this.ptyDecoders.clear();
-    this.subscribedPanes.clear();
-    this.terminalChannels.clear();
   }
 
   /** True if the host advertised `capability` in the D9 `$/hello` intersection

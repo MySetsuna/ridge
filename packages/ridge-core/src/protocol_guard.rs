@@ -13,21 +13,31 @@ pub fn is_valid_method_name(method: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/' || c == '$' || c == '-')
 }
 
-/// Methods that mutate host state and require elevated desktop trust.
+/// Host operations restricted to authenticated local clients across every transport.
+pub const DESKTOP_ONLY_HOST_METHODS: &[&str] = &[
+    "host_list_snapshot",
+    "register_frontend_host",
+    "connect_host",
+    "disconnect_host",
+    "forget_host",
+    "attach_host_session",
+    "detach_host_session",
+    "list_host_sessions",
+    "inject_host_output",
+    "get_outbound_stats",
+    "pump_host_output",
+    "bind_mock_outbound_and_list",
+    "step_host_reconnect",
+    "cancel_host_reconnect",
+    "get_foreign_history_tail",
+    "append_foreign_history",
+    "foreign_history_pull_budget",
+    "set_foreign_history_cap",
+    "get_live_backpressure",
+];
+
 pub fn is_desktop_privileged(method: &str) -> bool {
-    matches!(
-        method,
-        "connect_host"
-            | "disconnect_host"
-            | "forget_host"
-            | "attach_host_session"
-            | "detach_host_session"
-            | "pump_host_output"
-            | "step_host_reconnect"
-            | "cancel_host_reconnect"
-            | "bind_mock_outbound_and_list"
-            | "get_outbound_stats"
-    )
+    DESKTOP_ONLY_HOST_METHODS.contains(&method)
 }
 
 /// Remote controllers must not invoke desktop-privileged methods.
@@ -108,20 +118,9 @@ pub fn method_category(method: &str) -> MethodCategory {
     MethodCategory::Other
 }
 
-/// Full desktop-privileged catalog (keep in sync with hosts desktop_surface).
+/// Shared privileged catalog; OS shells keep no separate admission list.
 pub fn desktop_privileged_catalog() -> &'static [&'static str] {
-    &[
-        "connect_host",
-        "disconnect_host",
-        "forget_host",
-        "attach_host_session",
-        "detach_host_session",
-        "pump_host_output",
-        "step_host_reconnect",
-        "cancel_host_reconnect",
-        "bind_mock_outbound_and_list",
-        "get_outbound_stats",
-    ]
+    DESKTOP_ONLY_HOST_METHODS
 }
 
 /// Ensure every catalog entry is denied for remote.
@@ -167,13 +166,7 @@ mod tests {
 
     #[test]
     fn all_desktop_privileged_are_remote_denied() {
-        for m in [
-            "connect_host",
-            "attach_host_session",
-            "pump_host_output",
-            "step_host_reconnect",
-            "get_outbound_stats",
-        ] {
+        for m in desktop_privileged_catalog() {
             assert!(is_desktop_privileged(m), "{m}");
             assert!(!remote_may_invoke(m, true), "{m}");
         }
@@ -193,6 +186,6 @@ mod tests {
         assert_eq!(method_category("write_to_pty"), MethodCategory::Terminal);
         assert!(admit_desktop_method("connect_host").is_ok());
         assert!(admit_desktop_method("").is_err());
-        assert_eq!(desktop_privileged_catalog().len(), 10);
+        assert!(desktop_privileged_catalog().contains(&"host_list_snapshot"));
     }
 }

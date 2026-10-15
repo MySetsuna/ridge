@@ -276,6 +276,18 @@ pub fn capture_update(
     }
 }
 
+/// Apply a correlated history prefix without replaying VT or exceeding the cache.
+pub fn prepend_history_page(
+    terminal:&mut Terminal,history:Option<HistoryRange>,before:Option<u64>,page:&crate::terminal_protocol::HistoryPage,
+)->Result<bool,&'static str>{
+    if history.is_none_or(|history|history.epoch!=page.history.epoch){return Ok(false);}
+    let end=page.start.checked_add(page.lines.len() as u64).ok_or("HISTORY_RANGE_GAP")?;
+    if !page.lines.is_empty()&&before.is_some_and(|start|page.start>=start&&end<=start.saturating_add(terminal.scrollback_len() as u64)){return Ok(false);}
+    if Some(end)!=before{return Err("HISTORY_RANGE_GAP");}
+    if page.lines.len()>terminal.grid().scrollback.capacity().saturating_sub(terminal.scrollback_len()){return Err("HISTORY_CAPACITY");}
+    terminal.prepend_semantic_history(page);Ok(true)
+}
+
 pub fn history_page(
     terminal: &Terminal,
     request: &crate::terminal_protocol::HistoryRequest,

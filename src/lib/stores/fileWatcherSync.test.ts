@@ -13,6 +13,8 @@ const h = vi.hoisted(() => {
     explorer: store({ columns: [] as Array<{ cwd: string }> }),
     editor: store({ openFiles: [] as Array<{ path: string; diffArgs?: unknown }> }),
     invoke: vi.fn(),
+    reconnect: null as (() => void) | null,
+    toast: vi.fn(),
     refresh: vi.fn(async () => undefined),
     prune: vi.fn(async () => undefined),
     onFsChange: vi.fn(),
@@ -23,6 +25,9 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: h.invoke, isTauri: () => true }));
+vi.mock('@tauri-apps/api/event',()=>({listen:vi.fn(async () => () => {})}));
+vi.mock('$lib/transport/tauriShim/bridge',()=>({bridge:{onReady:(callback:()=>void)=>{h.reconnect=callback;return () => {};}}}));
+vi.mock('./toast',()=>({showToast:h.toast}));
 vi.mock('./fileExplorer', () => ({
   fileExplorerStore: h.explorer,
   refreshColumnsCovering: h.refresh,
@@ -56,7 +61,6 @@ describe('fileWatcherSync', () => {
   });
 
   afterEach(() => vi.useRealTimers());
-
   it('coalesces watcher roots, deduplicates covered files, and avoids redundant IPC', async () => {
     watcher.initFileWatcherSync();
     watcher.initFileWatcherSync();
@@ -94,4 +98,31 @@ describe('fileWatcherSync', () => {
     expect(h.handleExternalChange).toHaveBeenCalledWith('/outside/live.ts');
     expect(h.handleExternalChange).not.toHaveBeenCalledWith('/outside/written.ts');
   });
+  it('serializes replacements so an older request cannot overwrite the current roots', async () => {
+    let finish!: () => void;
+    h.invoke.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    h.editor.set({ openFiles: [] });
+    h.explorer.set({ columns: [{ cwd: 'C:/old-watch' }] });
+    await vi.advanceTimersByTimeAsync(100);
+    h.explorer.set({ columns: [{ cwd: 'C:/new-watch' }] });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    finish();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.invoke).toHaveBeenLastCalledWith('start_watching_paths', {
+      roots: [{ path: 'C:/new-watch', recursive: true }],
+    });
+  });
+
+  it('resends the same watch projection after the event connection is replaced',async () => {
+    watcher.initFileWatcherSync();
+    h.explorer.set({columns:[{cwd:'C:/watch-reconnect'}]});
+    await vi.advanceTimersByTimeAsync(100);
+    h.invoke.mockClear();
+    h.reconnect?.();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.invoke).toHaveBeenCalledWith('start_watching_paths',{roots:[{path:'C:/watch-reconnect',recursive:true}]});
+  });
+
+
 });

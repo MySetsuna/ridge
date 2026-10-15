@@ -15,7 +15,8 @@ const fixtureBinary = process.env.RIDGE_TEST_COMMUNE_BINARY ? path.resolve(proce
     .map(name => path.resolve('target/debug/deps', name)).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
 assert.ok(fixtureBinary, 'build the commune_registration integration fixture first');
 let devUrl = process.env.RIDGE_TEST_DEV_URL;
-const output = path.resolve('.webview2-dev-cdp/070-commune-permission-ui.json');
+const membershipOnly=process.env.RIDGE_TEST_MEMBERSHIP_ONLY==='1';
+const output = path.resolve(membershipOnly?'.webview2-dev-cdp/070-commune-membership-ui.json':'.webview2-dev-cdp/070-commune-permission-ui.json');
 const screenshot = path.resolve('.webview2-dev-cdp/070-commune-permission-ui.png');
 const evidence = { scope: 'Owned Kernel/PTY ACP protocol fixture + real Chromium production approval component; fixture supplies OS bootstrap grant', completeChange: false, checks: [] };
 let endpoint, browser, page, kernel, vite, paneId, identity;
@@ -102,7 +103,7 @@ try {
       import('/src/lib/teammate/TeammateGroupsSection.svelte'), import('/src/lib/teammate/teammateModel.ts'),
       import('/src/lib/teammate/teammateGroups.svelte.ts'),
     ]);
-    const connection = await connectPresentationRuntime();
+    let connection = await connectPresentationRuntime();
     bridge.attach(connection.transport, { useGlobalWorkspace: false });
     const [{ initThemeSystem, getThemeIds }, { applyTheme }] = await Promise.all([
       import('/src/lib/stores/themes.ts'), import('/src/lib/stores/settings.ts'),
@@ -115,8 +116,52 @@ try {
     const topology = parseTopologySnapshot(await invoke('get_teammate_topology', {workspaceId:target.workspaceId}));
     const groups = mount(Groups, {target:groupTarget, props:{workspaceId:target.workspaceId,filePath:null,roster:topology.roster}});
     window.ownedGroups = teammateGroupStore();
-    window.ownedApproval = { invoke, target, osCalls, dispose: async () => { await unmount(groups); await unmount(history); await unmount(modal); bridge.detach(); connection.disconnect(); } };
+    window.ownedApproval = { invoke, target, osCalls,
+      pause: () => { bridge.detach({ preserveListeners: true }); connection.disconnect(); },
+      reconnect: async () => { connection = await connectPresentationRuntime(); bridge.attach(connection.transport, { useGlobalWorkspace: false }); },
+      dispose: async () => { await unmount(groups); await unmount(history); await unmount(modal); bridge.detach(); connection.disconnect(); } };
   }, target);
+  if(membershipOnly){
+    evidence.scope='Owned existing ACP process + production connection/removal dialogs + actual Runtime RPC; no external Agent claim';
+    const memberRoot=path.join(root,'membership');fs.mkdirSync(memberRoot);
+    const memberPane=crypto.randomUUID(),memberDescriptorPath=path.join(memberRoot,'endpoint.json');
+    await call('POST','/v1/domain/ptys',{pty_id:memberPane,workspace_id:workspaceId,program:fixtureBinary,
+      args:['--exact','existing_protocol_endpoint_fixture','--ignored'],cwd:memberRoot,
+      env:{RIDGE_COMMUNE_FIXTURE:memberDescriptorPath,RIDGE_COMMUNE_LABEL:'unlisted-owned-member'},role:'shell',cols:80,rows:24});
+    await until(()=>fs.existsSync(memberDescriptorPath));
+    const descriptor=JSON.parse(fs.readFileSync(memberDescriptorPath));
+    const description={process:descriptor.process,endpointOwner:descriptor.process,endpoint:descriptor.endpoint,sessionId:descriptor.sessionId,cwd:memberRoot};
+    await page.evaluate(async({workspaceId,paneId})=>{
+      const [{default:Dialog},{registerCommuneMember,removeCommuneMember},{parseTopologySnapshot},{mount,unmount}]=await Promise.all([
+        import('/src/lib/components/RidgeDialog.svelte'),import('/src/lib/teammate/communeMembership.ts'),
+        import('/src/lib/teammate/teammateModel.ts'),import('/scripts/commune-permission-ui-client.mjs')]);
+      const target=document.createElement('section');document.body.append(target);const dialog=mount(Dialog,{target});
+      window.ownedMembership={
+        register:()=>registerCommuneMember(workspaceId,paneId),
+        remove:async()=>{const member=parseTopologySnapshot(await window.ownedApproval.invoke('get_teammate_topology',{workspaceId})).roster.find(member=>member.paneId===paneId);if(!member)throw Error('registered member missing');await removeCommuneMember(workspaceId,member);},
+        dispose:()=>unmount(dialog),
+      };
+      window.membershipJob=window.ownedMembership.register().then(()=>({ok:true}),error=>({error:String(error)}));
+    },{workspaceId,paneId:memberPane});
+    const connect=page.getByRole('dialog',{name:'连接既有 Agent 会话'});
+    await connect.getByRole('textbox').fill(JSON.stringify(description));
+    await connect.getByRole('button',{name:'连接',exact:true}).click();
+    assert.deepEqual(await page.evaluate(()=>window.membershipJob),{ok:true});
+    const topology=await page.evaluate(async workspaceId=>window.ownedApproval.invoke('get_teammate_topology',{workspaceId}),workspaceId);
+    const member=topology.roster.find(member=>member.paneId===memberPane);assert.ok(member?.online);assert.equal(member.sessionId,descriptor.sessionId);
+    await page.evaluate(()=>{window.membershipJob=window.ownedMembership.remove().then(()=>({ok:true}),error=>({error:String(error)}));});
+    await page.getByRole('dialog',{name:'移出 Commune'}).getByRole('button',{name:'移出',exact:true}).click();
+    assert.deepEqual(await page.evaluate(()=>window.membershipJob),{ok:true});
+    const after=await page.evaluate(async workspaceId=>window.ownedApproval.invoke('get_teammate_topology',{workspaceId}),workspaceId);
+    assert.equal(after.roster.some(member=>member.paneId===memberPane),false);
+    const ptys=await call('GET','/v1/domain/ptys');assert.ok(ptys.ptys.some(pty=>(pty.id===memberPane||pty.pty_id===memberPane)&&pty.child_pid===descriptor.process.pid));
+    const history=await page.evaluate(async workspaceId=>window.ownedApproval.invoke('read_agent_recent_replies',{workspaceId,limit:100}),workspaceId);
+    assert.ok(JSON.stringify(history).includes('existing history'));
+    await page.evaluate(()=>window.ownedMembership.dispose());await page.evaluate(()=>window.ownedApproval.dispose());
+    assert.deepEqual(pageErrors,[]);
+    evidence.checks=['production connection dialog registers the already-running unlisted process and original protocol session','production removal dialog removes membership through Runtime','exact original process survives removal','protocol history remains readable after removal'];
+    evidence.result='PASS';
+  }else{
   const receipt = await page.evaluate(async () => window.ownedApproval.invoke('send_agent_message', { ...window.ownedApproval.target, message: 'permission-needed', idempotency_key: crypto.randomUUID() }));
   const dialog = page.getByRole('alertdialog');
   await dialog.waitFor();
@@ -125,16 +170,55 @@ try {
   assert.equal(await dialog.getByRole('button', { name: '修改', exact: true }).count(), 0);
   assert.ok((await dialog.textContent()).includes('private-argument'), 'native reviewer must see actual tool input');
   await page.screenshot({ path: screenshot });
+  await page.evaluate(async () => {
+    const {bridge}=await import('/src/lib/transport/tauriShim/bridge.ts');
+    const invoke=bridge.invoke.bind(bridge);
+    window.ownedDecisionCalls=0;
+    window.restoreDecisionReply=()=>{bridge.invoke=invoke;};
+    bridge.invoke=async (...args)=>{
+      const result=await invoke(...args);
+      if(args[0]==='resolve_hitl_request') {window.ownedDecisionCalls++;throw Error('owned lost reply after actual Runtime commit');}
+      return result;
+    };
+  });
   await dialog.getByRole('button', { name: 'Allow once', exact: true }).click();
   await until(async () => await dialog.count() === 0);
+  assert.equal(await page.evaluate(()=>window.ownedDecisionCalls),1,'lost decision reply must not automatically repeat authorization');
+  await page.evaluate(()=>window.restoreDecisionReply());
+
   await until(async () => {
     const value = await page.evaluate(async deliveryId => window.ownedApproval.invoke('get_agent_message_delivery_status', { ...window.ownedApproval.target, deliveryId }), receipt.deliveryId);
     return value.execution?.state === 'turn_ended';
   });
+  await page.evaluate(() => window.ownedApproval.pause());
+  const external = await call('POST', '/v1/domain/commands', {method:'report_execution_rejection',native:true,roots:[],connectionId:crypto.randomUUID(),args:{
+    initiator:'owned-test',action:'offline external command',executor:'external-test-gateway',policySource:'external-test-policy',requestId:'owned-offline-report',
+    reason:'reported while presentation disconnected',nextStep:'external authorization only',
+  }});
+  assert.equal(external.ok,true);
+  assert.equal(await dialog.count(),0,'detached component cannot receive the new report');
+  await page.evaluate(() => window.ownedApproval.reconnect());
+  await dialog.waitFor();
+  assert.ok((await dialog.textContent()).includes('reported while presentation disconnected'));
+  await page.evaluate(() => window.ownedApproval.pause());
+  const dismissed = await call('POST', '/v1/domain/commands', {method:'dismiss_execution_rejection',native:true,roots:[],connectionId:crypto.randomUUID(),args:{id:external.value}});
+  assert.equal(dismissed.value,true);
+  assert.equal(await dialog.count(),1,'offline presentation retains its last projection');
+  await page.evaluate(() => window.ownedApproval.reconnect());
+  await until(async () => await dialog.count() === 0);
   const history = page.getByTestId('commune-history');
   await history.getByRole('button', { name: /刷新/ }).click();
   await history.locator('[data-history-kind="permission_decided"]').waitFor();
   assert.ok((await history.textContent()).includes('existing history'));
+  const audit = await page.evaluate(async () => window.ownedApproval.invoke('list_hitl_audit_remote', {
+    workspaceId: window.ownedApproval.target.workspaceId, limit: 20,
+  }));
+  assert.equal(audit.cap, 50);
+  assert.ok(audit.items.some(item => item.source === 'local' && item.verdict === 'approve' && item.outcome === 'decided'));
+  assert.ok(audit.items.every(item => item.riskLevel === 'unknown'));
+  assert.ok(!JSON.stringify(audit).includes('private-operation'));
+  assert.ok(!JSON.stringify(audit).includes('private-argument'));
+
   assert.equal(await history.getByRole('button', { name: /恢复|Resume|启动/ }).count(), 0);
   await until(() => page.evaluate(() => !window.ownedGroups.busy));
   const groupUi = page.getByTestId('commune-groups');
@@ -201,6 +285,7 @@ try {
   await taskUi.getByRole('textbox',{name:'unknown-protocol-process 的审定任务',exact:true}).fill('produce-outputs');
   await taskUi.getByRole('button',{name:'确认派发（1）',exact:true}).click();
   await taskUi.locator('[data-protocol-output-kind="diff"]').waitFor();
+  await until(async () => await taskUi.locator('[data-protocol-output-kind]').count() === 3);
   assert.equal(await taskUi.locator('[data-protocol-output-kind]').count(),3);
   assert.ok(!(await taskUi.textContent()).includes('urn:fixture:obsolete'));
   assert.ok(!(await taskUi.textContent()).includes('urn:fixture:late'));
@@ -210,7 +295,7 @@ try {
   await groupUi.scrollIntoViewIfNeeded();
   await page.screenshot({path:path.resolve('.webview2-dev-cdp/070-commune-groups-ui.png')});
   const calls = await page.evaluate(() => window.ownedApproval.osCalls);
-  assert.deepEqual(calls, ['bootstrap_runtime_client']);
+  assert.deepEqual(calls, ['bootstrap_runtime_client', 'bootstrap_runtime_client', 'bootstrap_runtime_client']);
   await page.evaluate(() => window.ownedApproval.dispose());
   assert.deepEqual(pageErrors, [], 'production component reported browser errors');
   const ptys = await call('GET', '/v1/domain/ptys');
@@ -218,15 +303,19 @@ try {
   const decisions = fs.readFileSync(path.join(root,'permission-decisions'),'utf8').trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(decisions,[{optionId:'once',outcome:'selected'},{outcome:'cancelled'}]);
   assert.ok(ptys.ptys.some(pty => pty.id === secondPane && pty.child_pid === secondDescriptor.process.pid));
-  evidence.checks = ['Actual peer options appear in the production modal with actual tool input', 'No Modify action for standard ACP permissions',
+  evidence.checks = ['After Runtime consumes a real permission, a simulated lost client reply triggers a readonly refresh without another authorization call',
+    'Production modal reconnect recovers a rejection created offline and removes a card dismissed offline',
+    'Actual peer options appear in the production modal with actual tool input', 'No Modify action for standard ACP permissions',
     'A real click resolves the original permission ID and the original prompt ends', 'Business RPC and permission events use Runtime; OS IPC only issues bootstrap grant',
     'Unmounting the presentation client preserves the exact existing Agent process',
     'Production history component reads replay, Runtime execution and approval records without a launch/resume action',
+    'After a real permission click, production RPC reads the durable redacted audit facts without claiming risk or command execution',
     'Production group UI creates exact registered membership through Runtime and converges to a remote revision event',
     'A real group-leader task click freezes group and conversation binding in a durable task receipt; end_turn does not claim objective success',
     'Production multi-member task UI preserves draft across refresh, blocks changed group revision, broadcasts once, shows permission/running per child and cancels both original turns',
     'Production task UI shows protocol-reported outputs and reads their original journal record; ordinary text and after-response output are excluded'];
   evidence.screenshot = screenshot; evidence.result = 'PASS';
+  }
 } catch (error) {
   evidence.result = 'FAIL'; evidence.error = error.message; evidence.pageErrors = pageErrors;
   if (page) {

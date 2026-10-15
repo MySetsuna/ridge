@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { DataProvider, GitGraphResult, GitStatusResult, SearchResult } from './types';
+import type { DataProvider, GitGraphResult, GitStatusResult, SearchResult, ScmRepoStatusRaw } from './types';
 import type { FileNode, DirectoryPage } from '$lib/stores/project';
 
 export type DataInvoke = <T>(
@@ -8,23 +8,9 @@ export type DataInvoke = <T>(
 ) => Promise<T>;
 
 // Raw backend shapes that need remapping onto the DataProvider contract. These
-// mirror the Rust structs in src-tauri/src/commands/{git,project}.rs and
-// fs/search.rs. `git_status` / `search_files` aren't real Tauri commands — the
-// desktop reaches the same data via `get_scm_status` + `get_git_info_with_cwd`
-// and `text_search`, then converts here so both transports (this and
-// WsDataProvider) hand callers identical shapes.
-interface ScmFileRaw {
-  path: string;
-  status: string;
-}
-interface ScmRepoStatusRaw {
-  is_git_repo?: boolean;
-  current_branch?: string | null;
-  has_upstream?: boolean;
-  staged: ScmFileRaw[];
-  changes: ScmFileRaw[];
-  untracked: ScmFileRaw[];
-}
+// mirror the Runtime's ridge-core Git and search structs. Desktop combines
+// `get_scm_status` + `get_git_info_with_cwd`; Remote loads history separately.
+// Both providers expose the same status fields to product components.
 interface CommitNodeRaw {
   hash: string;
   subject: string;
@@ -162,7 +148,7 @@ export class TauriDataProvider implements DataProvider {
     await this.call('git_cherry_pick', { repoRoot, hash });
   }
   async gitReset(repoRoot: string, mode: string, commit: string): Promise<void> {
-    await this.call('git_reset', { repoRoot, mode, commit });
+    await this.call('git_reset', { repoRoot, mode, hash: commit });
   }
   async gitCreateTag(repoRoot: string, name: string, message?: string): Promise<void> {
     await this.call('git_create_tag', { repoRoot, name, message: message ?? '' });
@@ -171,7 +157,9 @@ export class TauriDataProvider implements DataProvider {
     await this.call('git_discard', { repoRoot, paths });
   }
   async gitCleanUntracked(repoRoot: string): Promise<void> {
-    await this.call('git_clean_untracked', { repoRoot });
+    const status = await this.call<ScmRepoStatusRaw>('get_scm_status', { repoRoot });
+    const paths = status.untracked.map(file => file.path);
+    if (paths.length) await this.call('git_clean_untracked', { repoRoot, paths });
   }
   async gitDiffFile(repoRoot: string, path: string, cached = false, _signal?: AbortSignal): Promise<string> {
     return this.call<string>('git_diff_file', { repoRoot, path, cached });

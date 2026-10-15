@@ -6,20 +6,12 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use ridge_remote::auth::{RemoteAuth, SessionStore};
-use ridge_remote::host::RemoteHost;
-use ridge_remote::serve::UaServeConfig;
 use serde::{Deserialize, Serialize};
-use tokio::sync::oneshot;
 
 use crate::config;
 use crate::kernel_ctl;
-use crate::kernel_host_impl::KernelHost;
 
 const REGISTRY_ENV: &str = "RIDGE_REMOTE_HOST_REGISTRY";
 
@@ -36,109 +28,50 @@ pub struct HostRegistry {
     pub started_at: u64,
 }
 
-pub async fn run(requested_port: u16) -> Result<()> {
-    let endpoint = tokio::task::spawn_blocking(kernel_ctl::ensure_kernel_running)
-        .await
-        .context("kernel bootstrap task failed")?
-        .map_err(anyhow::Error::msg)?;
-    let port = if requested_port == 0 {
-        config::lan_port()
-    } else {
-        requested_port
-    };
-    let lan_ip = config::detect_lan_ip();
-    let machine_name = host_name();
-    let serve_cfg = UaServeConfig::resolve_ui_dirs();
-    let (listener, actual_port) = ridge_remote::server::bind_tcp(port)?;
-    let tls_config = ridge_remote::server::resolve_tls(&lan_ip, &machine_name).await;
-    let tls_enabled = tls_config.is_some();
-    let registry_path = registry_path()?;
-    let enabled_file = enabled_path(&registry_path);
-    let registry = HostRegistry {
-        schema: 1,
-        pid: std::process::id(),
-        port: actual_port,
-        lan_ip: lan_ip.clone(),
-        tls: tls_enabled,
-        enabled: read_enabled_flag(&enabled_file),
-        started_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|value| value.as_secs())
-            .unwrap_or_default(),
-    };
-    write_registry(&registry_path, &registry)?;
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub(crate) struct LanInfo {
+    pub port:u16,
+    pub lan_ip:String,
+    pub totp_code:String,
+    pub tls:bool,
+    ready:bool,
+    remote_enabled:bool,
+}
 
-    let totp = Arc::new(RemoteAuth::new());
-    totp.switch_identity(Some(&config::totp_identity()));
-    let remote_enabled = Arc::new(AtomicBool::new(registry.enabled));
-    let enabled_state = remote_enabled.clone();
-    tokio::spawn(async move {
-        loop {
-            enabled_state.store(read_enabled_flag(&enabled_file), Ordering::Relaxed);
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        }
-    });
-    let host: Arc<dyn RemoteHost> = Arc::new(KernelHost {
-        endpoint,
-        totp: totp.clone(),
-        totp_throttle: Arc::new(ridge_remote::auth::VerifyThrottle::new()),
-        sessions: SessionStore::new(),
-        port: actual_port,
-        lan_ip: lan_ip.clone(),
-        machine_name: machine_name.clone(),
-        serve_cfg,
-        tls_enabled,
-        remote_enabled,
-    });
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let mdns = ridge_remote::mdns::spawn_mdns_broadcast(actual_port);
+pub(crate) fn lan_info(runtime:&ridge_remote::auth::RemoteAuth)->Result<LanInfo>{
+    let info:LanInfo=serde_json::from_value(runtime.call("get_remote_info",serde_json::json!({})).map_err(anyhow::Error::msg)?)?;
+    if !info.ready||!info.remote_enabled||info.port==0{anyhow::bail!("Runtime LAN listener is not ready");}
+    Ok(info)
+}
 
-    eprintln!(
-        "ridge host ready: {}://{}:{} (kernel pid={}, tls={})",
-        if tls_enabled { "https" } else { "http" },
-        lan_ip,
-        actual_port,
-        host_kernel_pid(&host),
-        tls_enabled
-    );
-    // P0-12 (audit C13 fix): printing the raw 6-digit TOTP code to
-    // stderr leaks the active seed for the next 30 seconds to any
-    // session that captures stdout (CI logs, `script`, systemd
-    // journal). The TUI shows the code on the dashboard; CLI exposes
-    // it only when `--print-totp` is passed (or `RIDGE_PRINT_TOTP=1`).
-    if std::env::var("RIDGE_PRINT_TOTP").ok().as_deref() == Some("1")
-        || std::env::args().any(|a| a == "--print-totp")
-    {
-        eprintln!("TOTP: {}", totp.current_code());
-    } else {
-        tracing::info!(
-            "host ready; TOTP code visible in the TUI dashboard (not printed to stderr). \
-             Pass --print-totp or RIDGE_PRINT_TOTP=1 to print to stderr."
-        );
+pub async fn run(requested_port:u16)->Result<()> {
+    let endpoint=tokio::task::spawn_blocking(kernel_ctl::ensure_kernel_running).await.context("kernel bootstrap task failed")?.map_err(anyhow::Error::msg)?;
+    let runtime=ridge_kernel::auth_client::remote_auth(endpoint.clone());
+    runtime.call("remote_set_totp_identity",serde_json::json!({"username":config::totp_identity()})).map_err(anyhow::Error::msg)?;
+    let port=if requested_port==0 {config::lan_port()} else {requested_port};
+    runtime.call("set_remote_enabled",serde_json::json!({"enabled":true,"port":port})).map_err(anyhow::Error::msg)?;
+    let info=lan_info(&runtime)?;
+    let registry_path=registry_path()?;
+    let registry=HostRegistry {schema:1,pid:endpoint.pid,port:info.port,
+        lan_ip:info.lan_ip,tls:info.tls,enabled:true,started_at:endpoint.started_at_unix};
+    write_registry(&registry_path,&registry)?;
+    eprintln!("ridge host ready: {}://{}:{} (kernel pid={}, tls={})",if registry.tls {"https"} else {"http"},registry.lan_ip,registry.port,endpoint.pid,registry.tls);
+    if std::env::var("RIDGE_PRINT_TOTP").ok().as_deref()==Some("1")||std::env::args().any(|arg|arg=="--print-totp") {
+        eprintln!("TOTP: {}",runtime.current_code());
     }
-
-    let server = ridge_remote::server_app::run(
-        host,
-        Arc::new(ridge_remote::lan_trust::LanTrustState::new()),
-        listener,
-        tls_config,
-        shutdown_rx,
-        true,
-    );
-    tokio::pin!(server);
-    let result = tokio::select! {
-        result = &mut server => result.map(|_| ()),
-        signal = tokio::signal::ctrl_c() => {
-            if signal.is_ok() {
-                let _ = shutdown_tx.send(());
-            }
-            server.await.map(|_| ())
-        }
-    };
-    mdns.1.store(true, Ordering::Relaxed);
-    let _ = mdns.0.join();
-    clear_registry(&registry_path, registry.pid);
-    result
+    let result=async {
+        let mut tick=tokio::time::interval(std::time::Duration::from_secs(1));
+        loop{tokio::select!{
+            signal=tokio::signal::ctrl_c()=>{
+                signal?;
+                runtime.call("set_remote_enabled",serde_json::json!({"enabled":false})).map_err(anyhow::Error::msg)?;
+                return Ok(());
+            },
+            _=tick.tick()=>{lan_info(&runtime)?;},
+        }}
+    }.await;
+    clear_registry(&registry_path,registry.pid);result
 }
 
 fn registry_path() -> Result<PathBuf> {
@@ -175,30 +108,6 @@ fn clear_registry(path: &Path, pid: u32) {
     }
 }
 
-fn enabled_path(registry: &Path) -> PathBuf {
-    registry.with_file_name("remote-host.enabled")
-}
-
-fn read_enabled_flag(path: &Path) -> bool {
-    match fs::read_to_string(path) {
-        Ok(value) => value.trim() != "0",
-        Err(_) => true,
-    }
-}
-
 fn default_enabled() -> bool {
     true
-}
-
-fn host_kernel_pid(host: &Arc<dyn RemoteHost>) -> u32 {
-    // The endpoint is intentionally not exposed through RemoteHost.  This is
-    // only a diagnostic value; the kernel registry remains the source of truth.
-    let _ = host;
-    kernel_ctl::read_kernel_pid().unwrap_or_default()
-}
-
-fn host_name() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "unknown".to_string())
 }

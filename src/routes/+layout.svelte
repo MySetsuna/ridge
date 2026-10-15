@@ -11,9 +11,9 @@
   import { clearRemoteToken, readRemoteToken, writeRemoteToken } from '../remote/lib/remoteSession';
   import { t, tr } from '$lib/i18n';
   import { invoke } from '@tauri-apps/api/core';
-  import { listen } from '@tauri-apps/api/event';
-  import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
+  import { startNativePresentationLifecycle } from '$lib/transport/nativePresentationLifecycle';
   import { startTotpIdentitySync } from '$lib/remote/totpIdentitySync';
+  import { startCloudHostProjection } from '$lib/remote/cloud/cloudHostStore';
   import { cloudAuth as cloudAuthStore } from '@ridge/remote/shared/cloud/auth';
   import { BASE_DOMAIN, cloudHttpScheme } from '@ridge/remote/shared/cloud/apiClient';
   import { remoteBootMode } from '$lib/remote/remoteBootMode';
@@ -79,6 +79,7 @@
   };
 
   onMount(() => {
+    const stopNativeLifecycle = WEB_REMOTE ? () => {} : startNativePresentationLifecycle();
     if (NATIVE_RUNTIME) {
       const session = presentationSession(
         async () => {
@@ -89,6 +90,7 @@
         },
         runtime => {
           runtime.bridge.attach(runtime.transport, { useGlobalWorkspace: false });
+          const stopCloudProjection = startCloudHostProjection();
           setTransport(new TauriDataProvider());
           const stop = runtime.connection.onStateChange(state => {
             if (state === 'error') {
@@ -97,7 +99,7 @@
               errorMsg = runtime.connection.lastFailure()?.message ?? 'Runtime connection failed';
             }
           });
-          return () => { stop(); runtime.bridge.detach(); };
+          return () => { stopCloudProjection(); stop(); runtime.bridge.detach(); };
         },
         error => {
           if (error) { errorMsg = error instanceof Error ? error.message : 'Runtime attach failed'; phase = 'error'; }
@@ -107,41 +109,20 @@
       const attach = () => { ready = false; phase = 'connecting'; errorMsg = ''; void session.start(); };
       retryConnection = attach;
       attach();
-      return () => session.dispose();
+      return () => { session.dispose(); stopNativeLifecycle(); };
     }
     if (!WEB_REMOTE) {
       setTransport(new TauriDataProvider());
       // §独立窗口：弹出的编辑器窗口只需 transport（让 invoke 可用），跳过 TOTP 身份同步
       // 等主窗口职责，避免第二个窗口里重复运行。
-      if (editorWindow) return;
+      if (editorWindow) return stopNativeLifecycle;
+      const stopCloudProjection = startCloudHostProjection();
       // §totp-persist：仅真实桌面 host 同步登录态→TOTP 种子（web-remote 已被
       // WEB_REMOTE 分支排除，不会到这）。
       const stopTotpSync = startTotpIdentitySync(invoke, cloudAuthStore);
-      // Native WebView hide/show does not reliably produce a DOM
-      // visibilitychange on every WebView2 build. Keep the terminal memory
-      // policy deterministic by honoring the host lifecycle events too.
-      const unlisteners: Array<() => void> = [];
-      let listenerAlive = true;
-      void Promise.all([
-        listen('ridge://memory-reclaim', () => {
-          TerminalManager.tryInstance()?.reclaimTerminalMemory({
-            documentHidden: true,
-            forceHeapPressure: true,
-          });
-        }),
-        listen('ridge://memory-restore', () => {
-          TerminalManager.tryInstance()?.restoreTerminalMemory();
-        }),
-      ]).then((stops) => {
-        if (listenerAlive) unlisteners.push(...stops);
-        else stops.forEach((stop) => stop());
-      }).catch(() => {
-        // A closing WebView may reject listener registration; hide/restore
-        // remains best-effort and the normal visibility listener still works.
-      });
       return () => {
-        listenerAlive = false;
-        unlisteners.splice(0).forEach((stop) => stop());
+        stopNativeLifecycle();
+        stopCloudProjection();
         stopTotpSync();
       };
     }

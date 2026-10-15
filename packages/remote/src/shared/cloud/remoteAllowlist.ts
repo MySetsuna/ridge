@@ -45,6 +45,9 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   'dock_pane',
   'close_pane',
   'toggle_mode',
+  'clear_pane_terminal',
+  'save_clipboard_image_to_temp',
+  'resolve_pasted_image_path',
   'set_split_ratios_at_path',
   'set_split_ratios_batch',
   'create_pane',
@@ -105,12 +108,14 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   'clear_recent_workspaces',
   'get_last_opened_workspace_path',
   'get_startup_context',
+  'get_workspace_file_in_directory',
   'browse_directory',
   // ── Theme / settings ──
   'get_theme_data',
   'set_active_theme',
   'get_active_theme_entry',
   'set_user_default_cwd',
+  'get_user_default_cwd',
   // ── Teammate（P1 控制台 MVP，只读 roster 快照）──
   'get_teammate_topology',
   // P2 阶段 1：脱敏待审批快照（含 resolutionNonce；无 action 全文）。
@@ -121,11 +126,11 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   // R19：只读编排健康（suspended / pending）——桌面 Agent Center badge 同源。
   'get_orchestration_health',
   'read_agent_recent_replies',
+  'send_agent_message',
+  'get_agent_message_delivery_status',
+  'cancel_agent_message',
   'set_teammate_groups',
   'resume_agent_session',
-  // iter-61：pane 的 agent 标记切换（远端工作区弹层「标记」按钮）。
-  'register_teammate_agent',
-  'release_teammate_agent',
   // ── Search ──
   'text_search',
   'search',
@@ -170,6 +175,8 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
  * read-write. Keep it synchronized for consumers that grade command impact.
  */
 export const MUTATING_METHODS: readonly string[] = [
+  'initialize_cloud_controller_identity',
+  'save_clipboard_image_to_temp',
   'write_terminal_input',
   // ── Filesystem writes ──
   'write_file',
@@ -195,6 +202,21 @@ export const MUTATING_METHODS: readonly string[] = [
   'git_create_tag',
   'git_discard',
   'git_clean_untracked',
+  'git_fetch',
+  'git_push_branch',
+  'git_merge_branch',
+  'git_delete_branch',
+  'git_rename_branch',
+  'git_rebase',
+  'git_delete_tag',
+  'git_push_tag',
+  'git_stash_push',
+  'git_stash_apply',
+  'git_stash_pop',
+  'git_stash_drop',
+  'git_stash_branch',
+  'git_cherry_pick_abort',
+  'git_revert_abort',
   // ── Workspace / pane writes ──
   'switch_workspace',
   'reorder_workspaces',
@@ -202,17 +224,21 @@ export const MUTATING_METHODS: readonly string[] = [
   'create_workspace',
   'close_workspace',
   'save_workspace',
+  'delete_saved_workspace',
+  'rename_saved_workspace',
   'save_workspace_to_file',
   'delete_workspace_file',
   'resize_pane',
   'create_pane',
   'split_pane',
+  'dock_pane',
   // ── Teammate（P2 阶段 2）──
   'resolve_hitl_remote',
   'set_teammate_groups',
+  'send_agent_message',
+  'cancel_agent_message',
   'resume_agent_session',
   // iter-61：agent 标记切换（写 teammate 侧表）。
-  'register_teammate_agent',
   'release_teammate_agent',
 ];
 

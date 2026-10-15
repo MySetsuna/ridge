@@ -479,6 +479,7 @@ async fn scoped_local_client_cannot_become_kernel_or_lan_authority() {
     ridge_core::workspace::file::write(
         &imported_file,
         &ridge_core::workspace::file::RidgeFile {
+            foreign_panes:Default::default(),
             version: 1,
             name: "Legacy import".into(),
             saved_at: "2026-10-11T00:00:00Z".into(),

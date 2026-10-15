@@ -1,5 +1,15 @@
 import type { FileNode, DirectoryPage } from '$lib/stores/project';
 
+interface ScmFileRaw { path: string; status: string; }
+export interface ScmRepoStatusRaw {
+  is_git_repo?: boolean;
+  current_branch?: string | null;
+  has_upstream?: boolean;
+  staged: ScmFileRaw[];
+  changes: ScmFileRaw[];
+  untracked: ScmFileRaw[];
+}
+
 export interface GitStatusResult {
   /** Explicit repository identity; empty files/commits still means Git repo. */
   is_git_repo?: boolean;

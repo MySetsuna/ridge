@@ -36,12 +36,15 @@ import path from 'node:path';
 import { DEV_USER_DATA_DIR, readDevToolsActivePort, shouldAnnounceCdpPort } from './cdp-port.mjs';
 import { applyKernelBreakawayPolicy, cloudBrowserNetworkArgs } from './tauri-dev-cdp-env.mjs';
 import { cargoTool, systemTool } from './lib/toolPath.mjs';
+import { cdpApplicationIdentifier } from './lib/cdpProfile.mjs';
+import { main as buildKernelSidecar } from './build-ridge-kernel-sidecar.mjs';
 
 const userDataDir = DEV_USER_DATA_DIR;
 const root = path.resolve(import.meta.dirname, '..');
 // Tauri CLI runs the debug binary from `src-tauri`; keep CDP's first shell in
 // the caller's project root instead of exposing the crate directory.
-process.env.RIDGE_CDP_STARTUP_CWD = root;
+process.env.RIDGE_CDP_STARTUP_CWD = process.env.RIDGE_CDP_STARTUP_CWD?.trim()
+  ? path.resolve(process.env.RIDGE_CDP_STARTUP_CWD) : root;
 process.env.RIDGE_REMOTE_UI_ROOT = path.join(root, 'remote-dist');
 
 // Windows installations may leave `%NVM_HOME%` / `%NVM_SYMLINK%` literals in
@@ -120,12 +123,12 @@ process.env.RIDGE_DEV_SERVER_PORT = String(vitePort);
 // Do not attach dev:cdp to the installed Ridge kernel. The desktop and its
 // embedded host share this project-local registry/data graph.
 process.env.RIDGE_KERNEL_DATA_DIR = devKernelDataDir;
+process.env.RIDGE_CDP_NATIVE_DATA_DIR = path.join(userDataDir, 'native-data');
 // Some CDP hosts run inside a Windows Job that rejects
 // CREATE_BREAKAWAY_FROM_JOB. The kernel always tries breakaway first; this
-// development-only launcher permits its bounded same-job retry after that
-// specific failure, so a constrained harness still gets a usable shell.
-// Production/default launches retain the fail-closed policy.
-applyKernelBreakawayPolicy(process.env, true);
+// launcher permits a bounded same-job retry only when the caller explicitly
+// sets RIDGE_CDP_ALLOW_NON_BREAKAWAY=1. Default CDP runs exercise production policy.
+applyKernelBreakawayPolicy(process.env);
 fs.mkdirSync(userDataDir, { recursive: true });
 fs.mkdirSync(devKernelDataDir, { recursive: true });
 // The normal Tauri config rebuilds the release teammate shim on every dev
@@ -134,6 +137,7 @@ fs.mkdirSync(devKernelDataDir, { recursive: true });
 // isolated debug target. CDP supplies the current embedded kernel explicitly;
 // only refresh the frontend bundle and start Vite here.
 fs.writeFileSync(configFile, JSON.stringify({
+  identifier: cdpApplicationIdentifier(userDataDir),
   build: {
     beforeDevCommand: 'node packages/ridge-term/build.mjs --dev && node scripts/start-vite-dev.mjs',
     devUrl: `http://127.0.0.1:${vitePort}`,
@@ -154,7 +158,7 @@ if (desktopBuild.status !== 0) {
   process.exit(desktopBuild.status ?? 1);
 }
 
-const ridgeSource = path.join(cargoTargetDir, 'debug', process.platform === 'win32' ? 'ridge.exe' : 'ridge');
+const ridgeSource = buildKernelSidecar(['--debug']).destination;
 const ridgeKernelCopy = path.join(
   userDataDir,
   `ridge-kernel-${process.pid}${process.platform === 'win32' ? '.exe' : ''}`,

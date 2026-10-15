@@ -11,7 +11,7 @@
   import { t, tr } from '$lib/i18n';
   import { Bot } from 'lucide-svelte';
   import { RgSplit, RgPane, RgSplitter } from '@ridge/split';
-  import { isTauri, invoke } from '@tauri-apps/api/core';
+  import { isTauri } from '@tauri-apps/api/core';
   import { settingsStore } from '$lib/stores/settings';
   import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
   import { alertDialog } from './RidgeDialog.svelte';
@@ -22,6 +22,9 @@
   import PaneShellSwitcher from './PaneShellSwitcher.svelte';
   import { paneOriginBadge } from '@ridge/remote/shared/terminal/paneOrigin';
   import { teammateGroupStore, groupOfAgent } from '$lib/teammate/teammateGroups.svelte';
+  import { agentTopologyStore } from '$lib/teammate/agentPaneHighlightSync';
+  import { registerCommuneMember, removeCommuneMember } from '$lib/teammate/communeMembership';
+  import type { TeammateProfile } from '$lib/teammate/teammateModel';
   import type { PaneNode } from '$lib/types';
   import type {
     DockRegion,
@@ -115,26 +118,21 @@ import {
   let dragUpUnlisten: (() => void) | undefined;
   const ORTHOGONAL_TRIGGER_PX = 8;
 
-  // 手动把一个分屏标记为/取消智能体（Domain Zero「手动注册」入口）。已注册
-  // (agent_state==='busy') → 调 release_teammate_agent；否则 register_teammate_agent，
-  // agentId 取终端标题/前台进程名（缺省 'agent'）。后端会 emit teammate-layout-changed
-  // → 重渲染徽章；指挥部 Tab 轮询 get_teammate_topology 即收入花名册。
-  async function toggleTeammateAgent(leafId: string, isAgent: boolean): Promise<void> {
+  const canManageMembership = import.meta.env.RIDGE_WEB_REMOTE !== true && isTauri();
+  let membershipBusy = $state(false);
+  async function manageCommuneMember(leafId: string, member?: TeammateProfile): Promise<void> {
+    if (!canManageMembership || membershipBusy) return;
+    membershipBusy = true;
     try {
-      if (isAgent) {
-        await invoke('release_teammate_agent', { workspaceId, paneId: leafId });
-      } else {
-        const agentId =
-          get(terminalTitles)[leafId] || get(paneForegroundProcessStore)[leafId] || 'agent';
-        await invoke('register_teammate_agent', { workspaceId, paneId: leafId, agentId });
-      }
+      if (member) await removeCommuneMember(workspaceId, member);
+      else await registerCommuneMember(workspaceId, leafId);
     } catch (e) {
       await alertDialog({
         title: tr('workspace.opFailed'),
         message: e instanceof Error ? e.message : String(e),
         danger: true,
       });
-    }
+    } finally { membershipBusy = false; }
   }
 
   // §4a workspace keep-alive: count from THIS workspace's tree, not the
@@ -645,41 +643,19 @@ import {
               <PaneGitPill paneId={node.id} />
               <PaneDiffPill paneId={node.id} />
               {#if $settingsStore.teammateEnabled}
-                {@const aState = node.agent_state}
-                {@const isAgent = aState === 'busy'}
+                {@const member = $agentTopologyStore[workspaceId]?.roster.find(profile => profile.paneId === node.id)}
+                {@const isAgent = Boolean(member)}
                 {@const attention = $agentPaneAttentionStore[`${workspaceId}:${node.id}`]}
-                {@const grp = node.agent_id
-                  ? groupOfAgent(teammateGroups.groups, node.agent_id)
+                {@const grp = member
+                  ? groupOfAgent(teammateGroups.groups, member.id)
                   : undefined}
                 <!-- 图标颜色表达状态；完整语义留在 title/aria-label，免挤占 pane 标题栏。 -->
                 <button
                   type="button"
-                  aria-label={attention === 'waiting'
-                    ? '智能体等待审批（点击取消标记）'
-                    : attention === 'stopped'
-                      ? '智能体已下线（点击重新标记）'
-                      : attention === 'idle'
-                        ? '智能体已空闲（点击取消标记）'
-                      : grp
-                        ? `编组「${grp.name}」${isAgent ? ' · 运行中' : ''}（点击取消标记智能体）`
-                        : isAgent
-                      ? '智能体运行中（点击取消标记）'
-                      : aState === 'starting'
-                        ? '智能体启动中'
-                        : '把此分屏标记为智能体（纳入指挥部花名册）'}
-                  title={attention === 'waiting'
-                    ? '智能体等待审批'
-                    : attention === 'stopped'
-                      ? '智能体已下线'
-                      : attention === 'idle'
-                        ? '智能体已空闲'
-                      : grp
-                        ? `编组「${grp.name}」${isAgent ? ' · 运行中' : ''}（点击取消标记智能体）`
-                        : isAgent
-                      ? '智能体运行中（点击取消标记）'
-                      : aState === 'starting'
-                        ? '智能体启动中'
-                        : '把此分屏标记为智能体（纳入指挥部花名册）'}
+                  aria-label={member ? '将此会话移出 Commune' : '连接本分屏既有 Agent 会话'}
+                  title={!canManageMembership ? '请在会话所在主机登记或移出成员' : membershipBusy ? '正在处理会话登记'
+                    : member ? `${member.online ? '已连接' : '已失联'}${grp ? ` · ${grp.name}` : ''} · 移出 Commune` : '连接本分屏既有 Agent 会话'}
+                  disabled={!canManageMembership || membershipBusy}
                   style={!attention && grp
                     ? `color:${grp.color};border-color:${grp.color};background:color-mix(in srgb, ${grp.color} 16%, transparent)`
                     : ''}
@@ -691,12 +667,10 @@ import {
                         ? 'border-sky-400/70 bg-sky-500/15 text-sky-300'
                       : grp
                         ? ''
-                        : isAgent
+                        : member?.online
                       ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300'
-                      : aState === 'starting'
-                        ? 'border-amber-400/40 bg-amber-500/15 text-amber-300'
                         : 'border-transparent text-[var(--rg-fg-muted)] hover:border-[var(--rg-border)] hover:text-[var(--rg-fg)]'}"
-                  onclick={() => toggleTeammateAgent(node.id, isAgent)}
+                  onclick={() => manageCommuneMember(node.id, member)}
                 >
                   <Bot class="h-4 w-4 shrink-0" />
                   {#if isAgent || attention}

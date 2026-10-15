@@ -17,6 +17,58 @@ fn existing_protocol_endpoint_fixture() { commune_fixture::run(); }
 
 #[path = "common/commune_fixture.rs"]
 mod commune_fixture;
+#[path = "common/runtime_fixture.rs"]
+mod runtime_fixture;
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn membership_retirement_fences_turns_preserves_process_history_and_survives_restart(){
+    let root=std::env::temp_dir().join(format!("ridge-membership-{}",Uuid::new_v4()));
+    let owned=runtime_fixture::start(&root).await;
+    let workspace=client::request_json(&owned.endpoint,"POST","/v1/domain/workspaces",Some(&json!({"name":"membership"}))).unwrap()["workspace_id"].clone();
+    let pane=Uuid::new_v4();let descriptor_path=root.join("endpoint.json");
+    let created=client::request_json(&owned.endpoint,"POST","/v1/domain/ptys",Some(&json!({"pty_id":pane,"workspace_id":workspace,"program":std::env::current_exe().unwrap(),"args":["--exact","existing_protocol_endpoint_fixture","--ignored"],"cwd":root,"env":{"RIDGE_COMMUNE_FIXTURE":descriptor_path},"role":"shell","cols":80,"rows":24}))).unwrap();
+    assert_eq!(created["ok"],true,"{created}");
+    let deadline=Instant::now()+Duration::from_secs(10);
+    while !descriptor_path.exists(){assert!(Instant::now()<deadline);tokio::time::sleep(Duration::from_millis(20)).await;}
+    let descriptor:Value=serde_json::from_slice(&fs::read(&descriptor_path).unwrap()).unwrap();
+    let registration=json!({"workspaceId":workspace,"paneId":pane,"process":descriptor["process"],"endpointOwner":descriptor["process"],"endpoint":descriptor["endpoint"],"sessionId":descriptor["sessionId"],"cwd":root});
+    let mut socket=runtime_fixture::attach(&owned.endpoint).await;
+    let first=runtime_fixture::rpc(&mut socket,1,"register_commune_member",registration.clone()).await;
+    assert!(first["error"].is_null(),"{first}");
+    let identity=first["result"].clone();
+    let target=json!({"workspaceId":workspace,"paneId":pane,"agentId":identity["agentId"],"generation":identity["generation"],"lease":identity["lease"]});
+    let hub_target=json!({"workspace_id":workspace,"agent_id":identity["agentId"],"generation":identity["generation"],"lease":identity["lease"]});
+    let before=client::list_domain_ptys(&owned.endpoint).unwrap().into_iter().find(|pty|pty.pty_id==pane).unwrap();
+    assert_eq!(command_reply(&owned.endpoint,"release_teammate_agent",target.clone(),false)["ok"],false);
+    let mut prompt=target.clone();prompt["message"]=json!("wait-for-cancel");prompt["idempotency_key"]=json!(Uuid::new_v4());
+    let receipt=command(&owned.endpoint,"send_agent_message",prompt,true);
+    wait_execution(&owned.endpoint,&hub_target,&receipt["deliveryId"],"running");
+    assert_eq!(command_reply(&owned.endpoint,"release_teammate_agent",target.clone(),true)["ok"],false,"active turn must not be detached");
+    let mut cancel=target.clone();cancel["deliveryId"]=receipt["deliveryId"].clone();command(&owned.endpoint,"cancel_agent_message",cancel,true);
+    wait_execution(&owned.endpoint,&hub_target,&receipt["deliveryId"],"cancelled");
+    let roster_path=root.join("agent-roster.json");let preserved=root.join("agent-roster-preserved.json");
+    fs::rename(&roster_path,&preserved).unwrap();fs::create_dir(&roster_path).unwrap();
+    assert_eq!(command_reply(&owned.endpoint,"release_teammate_agent",target.clone(),true)["ok"],false,"failed persistence must not detach the live conversation");
+    assert!(command(&owned.endpoint,"get_teammate_topology",json!({"workspaceId":workspace}),true)["roster"].as_array().unwrap().iter().any(|member|member["agentId"]==identity["agentId"]&&member["online"]==true));
+    fs::remove_dir(&roster_path).unwrap();fs::rename(&preserved,&roster_path).unwrap();
+    assert_eq!(command(&owned.endpoint,"release_teammate_agent",target.clone(),true)["removed"],true);
+    assert_eq!(command(&owned.endpoint,"release_teammate_agent",target.clone(),true)["removed"],true,"duplicate removal is idempotent");
+    assert!(command(&owned.endpoint,"get_teammate_topology",json!({"workspaceId":workspace}),true)["roster"].as_array().unwrap().is_empty());
+    let after=client::list_domain_ptys(&owned.endpoint).unwrap().into_iter().find(|pty|pty.pty_id==pane).unwrap();
+    assert_eq!(after.child_pid,before.child_pid);assert_eq!(after.child_start_instance,before.child_start_instance);
+    assert!(ridge_core::process_identity::validate(&serde_json::from_value(descriptor["process"].clone()).unwrap()).is_ok());
+    let history=command(&owned.endpoint,"read_agent_recent_replies",json!({"workspaceId":workspace,"limit":100}),true);
+    assert!(history.to_string().contains("existing history"),"removed membership must retain readable protocol history");
+    let second=command(&owned.endpoint,"register_commune_member",registration,true);
+    assert_eq!(second["agentId"],identity["agentId"]);assert!(second["generation"].as_u64()>identity["generation"].as_u64());
+    assert_eq!(command_reply(&owned.endpoint,"release_teammate_agent",target.clone(),true)["ok"],false,"stale removal must not affect a reconnected member");
+    let mut next=target;next["generation"]=second["generation"].clone();next["lease"]=second["lease"].clone();
+    assert_eq!(command(&owned.endpoint,"release_teammate_agent",next,true)["removed"],true);
+    drop(socket);drop(owned);
+    let restarted=runtime_fixture::start(&root).await;
+    assert!(command(&restarted.endpoint,"get_teammate_topology",json!({"workspaceId":workspace}),true)["roster"].as_array().unwrap().is_empty());
+    assert!(command(&restarted.endpoint,"read_agent_recent_replies",json!({"workspaceId":workspace,"limit":100}),true).to_string().contains("existing history"));
+}
 
 fn command_reply(endpoint: &KernelEndpoint, method: &str, args: Value, native: bool) -> Value {
     client::request_json(endpoint,"POST","/v1/domain/commands",Some(&json!({"method":method,"args":args,"native":native,"roots":[],"connectionId":Uuid::new_v4()}))).unwrap()
@@ -137,7 +189,8 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
     let workspace = client::request_json(&endpoint, "POST", "/v1/domain/workspaces", None).unwrap()
         ["workspace_id"]
         .clone();
-    let pane = Uuid::new_v4();
+    let detail = client::request_json(&endpoint, "GET", &format!("/v1/domain/workspaces/{}", workspace.as_str().unwrap()), None).unwrap();
+    let pane = Uuid::parse_str(detail["panes"][0].as_str().unwrap()).unwrap();
     let descriptor = root.join("existing-endpoint.json");
     let created=client::request_json(&endpoint,"POST","/v1/domain/ptys",Some(&json!({"pty_id":pane,"workspace_id":workspace,"program":std::env::current_exe().unwrap(),"args":["--exact","existing_protocol_endpoint_fixture","--ignored"],"cwd":root,"env":{"RIDGE_COMMUNE_FIXTURE":descriptor},"role":"shell","cols":80,"rows":24}))).unwrap();
     assert_eq!(created["ok"], true);
@@ -159,6 +212,7 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
     );
     assert!(original.child_start_instance.is_some());
     let body = json!({"workspaceId":workspace,"paneId":pane,"process":described["process"],"endpointOwner":described["process"],"endpoint":described["endpoint"],"sessionId":described["sessionId"],"cwd":root});
+    client::write_domain_agent_pty(&endpoint,pane,b"\r").unwrap();
     let mut unauthorized = endpoint.clone();
     unauthorized.token = "client-not-kernel".into();
     assert!(client::request_json(
@@ -188,6 +242,12 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
     )
     .unwrap();
     assert_eq!(accepted["ok"], true, "{}", accepted["error"]);
+    let other = client::request_json(&endpoint, "POST", "/v1/domain/workspaces", None).unwrap()["workspace_id"].clone();
+    let other_detail = client::request_json(&endpoint, "GET", &format!("/v1/domain/workspaces/{}", other.as_str().unwrap()), None).unwrap();
+    let dock = command_reply(&endpoint, "dock_pane", json!({"sourcePaneId":pane,"targetPaneId":other_detail["panes"][0],"region":"right"}), true);
+    assert_eq!(dock["ok"], false, "registered protocol workspace cannot silently change: {dock}");
+    assert!(dock["error"]["message"].as_str().unwrap().contains("registered workspace"), "{dock}");
+    assert_eq!(client::list_domain_ptys(&endpoint).unwrap().iter().find(|pty| pty.pty_id == pane).unwrap().workspace_id.unwrap().to_string(), workspace.as_str().unwrap());
     let duplicate = client::request_json(
         &endpoint,
         "POST",
@@ -204,6 +264,11 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
         .unwrap();
     assert_eq!(identity.session_id, "fixture-existing");
     assert_eq!(identity.pane_id, pane.to_string());
+    let runtime_identity=command(&endpoint,"get_pty_runtime_identity",json!({"workspaceId":workspace,"paneId":pane}),true);
+    assert_eq!(runtime_identity["agentId"],identity.agent_id);
+    assert_eq!(runtime_identity["generation"],identity.generation);
+    assert_eq!(runtime_identity["lease"],identity.lease);
+    assert_eq!(command_reply(&endpoint,"get_pty_runtime_identity",json!({"workspaceId":workspace,"paneId":pane}),false)["ok"],false);
     assert_eq!(
         identity.protocol_binding.as_ref().unwrap().process.pid,
         original.child_pid.unwrap()
@@ -250,11 +315,18 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
         )["ok"],
         false
     );
+    let refused=client::write_domain_agent_pty(&endpoint,pane,b"must-not-inject\r").unwrap_err();
+    assert!(refused.contains("existing protocol"),"{refused}");
+    let retained=client::scrollback_domain_pty(&endpoint,pane,64*1024).unwrap();
+    assert!(!String::from_utf8_lossy(&retained).contains("must-not-inject"),"rejected automation must not enter PTY replay");
+    client::write_domain_pty(&endpoint,pane,b"\r").unwrap();
     let mut prompt = native_target.clone();
     prompt["message"] = json!("permission-needed");
     prompt["idempotency_key"] = json!("permission-prompt");
     let permission_delivery = command(&endpoint, "send_agent_message", prompt, true);
     let pending = wait_permission(&endpoint);
+    assert_eq!(command(&endpoint,"get_pending_hitl_count",json!({}),true),json!(1));
+    assert_eq!(command_reply(&endpoint,"get_pending_hitl_count",json!({}),false)["ok"],false);
     let remote = command(&endpoint, "list_hitl_pending", json!({}), false);
     for private in [
         "private-operation",
@@ -394,6 +466,7 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
             .unwrap()
             .is_empty()
     );
+    assert_eq!(command(&endpoint,"get_pending_hitl_count",json!({}),true),json!(0));
     assert_eq!(
         command(
             &endpoint,
@@ -408,12 +481,33 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .collect::<Vec<_>>();
+    let decisions=records.iter().filter(|row|row["kind"]=="permission_decided").collect::<Vec<_>>();
+    assert!(!decisions.is_empty());
+    assert!(decisions.iter().all(|row| row["workspaceId"]==json!(workspace)
+        && matches!(row["source"].as_str(),Some("local"|"remote"))
+        && matches!(row["optionKind"].as_str(),Some("allow_once"|"allow_always"|"reject_once"|"reject_always"))));
     assert!(records
         .iter()
         .any(|row| row["kind"] == "permission_decided"));
     assert!(records
         .iter()
         .any(|row| row["kind"] == "permission_cancelled"));
+    let audit=command(&endpoint,"list_hitl_audit_remote",json!({"workspaceId":workspace,"limit":50}),false);
+    let audited=audit["items"].as_array().unwrap();
+    assert!(!audited.is_empty());
+    assert!(audited.len()<=50);
+    assert!(audited.iter().any(|row|row["outcome"]=="decided" && matches!(row["verdict"].as_str(),Some("approve"|"reject"))));
+    assert!(audited.iter().any(|row|row["outcome"]=="cancelled"));
+    assert!(audited.iter().all(|row|row["riskLevel"]=="unknown"));
+    assert!(!audit.to_string().contains("private-operation"));
+    assert!(!audit.to_string().contains("private-argument"));
+    let local_decisions=command(&endpoint,"list_hitl_decisions",json!({"workspaceId":workspace}),true);
+    assert_eq!(local_decisions.as_array().unwrap(),&audited.iter().rev().cloned().collect::<Vec<_>>());
+    assert_eq!(command_reply(&endpoint,"list_hitl_decisions",json!({"workspaceId":workspace}),false)["ok"],false);
+    let one=command(&endpoint,"list_hitl_audit_remote",json!({"workspaceId":workspace,"limit":1}),true);
+    assert_eq!(one["items"].as_array().unwrap().len(),1);
+    assert_eq!(command_reply(&endpoint,"list_hitl_audit_remote",json!({"workspaceId":Uuid::new_v4()}),true)["ok"],false);
+
     assert!(records
         .windows(2)
         .all(|pair| pair[0]["sequence"].as_u64().unwrap() < pair[1]["sequence"].as_u64().unwrap()));
@@ -668,4 +762,16 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
         .unwrap()
         .contains("existing history"));
     assert_eq!(command(&endpoint,"get_teammate_topology",json!({"workspaceId":workspace}),true)["groups"],remote_edit["groups"],"process exit must retain exact group membership");
+    client::shutdown_endpoint(&endpoint,Duration::from_secs(3)).unwrap();
+    let stopped=Instant::now()+Duration::from_secs(5);
+    while kernel.try_wait().unwrap().is_none() {
+        assert!(Instant::now()<stopped,"owned Kernel shutdown deadline");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let restarted=runtime.block_on(runtime_fixture::start(&root));
+    let durable_audit=command(&restarted.endpoint,"list_hitl_audit_remote",json!({"workspaceId":workspace,"limit":50}),false);
+    assert!(audit["items"].as_array().unwrap().iter().all(|before|
+        durable_audit["items"].as_array().unwrap().iter().any(|after|before==after)),"audit facts must survive service restart");
+    assert!(client::list_domain_ptys(&restarted.endpoint).unwrap().is_empty(),"audit reads must not launch replacement processes");
+
 }

@@ -1782,7 +1782,9 @@ pub struct StashEntry {
 
 /// 列出所有 stash（最新在前）。
 pub async fn git_stash_list(repo_root: String) -> Result<Vec<StashEntry>, String> {
-    spawn_git_blocking(move || {
+    spawn_git_blocking(move || git_stash_list_sync(repo_root)).await.map_err(|e|format!("Task join error: {e}"))?
+}
+pub fn git_stash_list_sync(repo_root:String)->Result<Vec<StashEntry>,String> {
         let fmt = format!("--format=%gd{0}%s", FIELD_SEP);
         let out = run_git_simple(&repo_root, &["stash", "list", &fmt])?;
         Ok(out
@@ -1796,9 +1798,6 @@ pub async fn git_stash_list(repo_root: String) -> Result<Vec<StashEntry>, String
                 })
             })
             .collect())
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 /// 贮藏当前工作区改动。`include_untracked` → `-u`；`message` 非空 → `-m`。

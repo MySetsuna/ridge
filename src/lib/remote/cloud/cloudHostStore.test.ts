@@ -1,220 +1,49 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { get } from 'svelte/store';
-
-const mocks = vi.hoisted(() => {
-  const host = {
-    goOnline: vi.fn(),
-    goOffline: vi.fn(),
-    kick: vi.fn(),
-    blacklist: vi.fn(),
-  };
-  const construct = vi.fn();
-  const bridgeConstruct = vi.fn();
-  let lastCallbacks: unknown;
-  class FakeRidgeCloudHost {
-    constructor(...args: unknown[]) {
-      construct(...args);
-      lastCallbacks = args[1];
-      return host;
-    }
-  }
-  return {
-    host,
-    invoke: vi.fn(),
-    listen: vi.fn(),
-    snapshot: vi.fn(),
-    construct,
-    bridgeConstruct,
-    getLastCallbacks: () => lastCallbacks,
-    RidgeCloudHost: FakeRidgeCloudHost,
-  };
-});
-
-vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
-vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
-vi.mock('$lib/i18n', () => ({ tr: (key: string) => key }));
-vi.mock('@ridge/remote/shared/cloud/auth', () => ({ snapshot: mocks.snapshot }));
-vi.mock('@ridge/remote/shared/cloud/ridgeCloudProvider', () => ({
-  RidgeCloudHost: mocks.RidgeCloudHost,
-}));
-vi.mock('@ridge/remote/shared/cloud/cloudHostBridge', () => ({
-  CloudHostBridge: class FakeCloudHostBridge {
-    constructor(config: unknown) {
-      mocks.bridgeConstruct(config);
-    }
-  },
-}));
-vi.mock('@ridge/remote/shared/cloud/cloudHostPaneSource', () => ({
-  makeCloudHostPaneSource: vi.fn(),
-}));
-vi.mock('@ridge/remote/shared/cloud/apiClient', () => ({
-  verifyWorkspaceShareAccess: vi.fn(),
-}));
-
-import {
-  cloudSessions,
-  goOffline,
-  goOnline,
-  hostError,
-  hostState,
-  isHostOnline,
-} from './cloudHostStore';
-import { makeCloudHostPaneSource } from '@ridge/remote/shared/cloud/cloudHostPaneSource';
-
-describe('cloudHostStore lifecycle', () => {
-  beforeEach(() => {
-    mocks.invoke.mockReset();
-    mocks.snapshot.mockReset();
-    mocks.construct.mockClear();
-    mocks.bridgeConstruct.mockClear();
-    for (const method of Object.values(mocks.host)) method.mockReset();
-    mocks.snapshot.mockReturnValue({});
-    hostState.set('offline');
-    hostError.set('');
-    cloudSessions.set([]);
+import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
+import {get} from 'svelte/store';
+const mocks=vi.hoisted(()=>({invoke:vi.fn(),snapshot:vi.fn()}));
+vi.mock('@tauri-apps/api/core',()=>({invoke:mocks.invoke}));
+vi.mock('$lib/i18n',()=>({tr:(key:string)=>key}));
+vi.mock('@ridge/remote/shared/cloud/auth',()=>({snapshot:mocks.snapshot}));
+vi.mock('@ridge/remote/shared/cloud/apiClient',()=>({BASE_DOMAIN:'owned.example',cloudHttpScheme:()=> 'https'}));
+import {hostState,hostError,cloudSessions,goOnline,goOffline,refreshCloudHost,startCloudHostProjection,kickController,blacklistController} from './cloudHostStore';
+let stop:(()=>void)|undefined;
+let runtime:{state:string,error:string,sessions:{cid:string,state:string,connectedAt:number}[]};
+describe('Runtime Cloud projection',()=>{
+  beforeEach(()=>{
+    runtime={state:'offline',error:'',sessions:[]};
+    mocks.invoke.mockReset();mocks.snapshot.mockReset();mocks.snapshot.mockReturnValue({});
+    mocks.invoke.mockImplementation(async(command:string)=>command==='get_cloud_host_state'?runtime:undefined);
+    hostState.set('offline');hostError.set('');cloudSessions.set([]);
   });
-
-  it('fails closed when device credentials are absent', async () => {
-    await goOnline();
-    expect(get(hostError)).toBe('cloud.errDeviceNotActivated');
-    expect(mocks.invoke).not.toHaveBeenCalled();
+  afterEach(()=>{stop?.();stop=undefined;vi.useRealTimers();});
+  it('rejects missing activation credentials without requesting a host',async()=>{
+    await goOnline();expect(mocks.invoke).not.toHaveBeenCalled();expect(get(hostError)).toBe('cloud.errDeviceNotActivated');
   });
-
-  it('uses Ridge-owned WebRTC host on desktop and browser paths', async () => {
-    mocks.snapshot.mockReturnValue({
-      deviceToken: 'token',
-      deviceName: 'desktop',
-      user: { username: 'alice' },
-    });
-    mocks.invoke.mockImplementation(async (command: string) =>
-      command === 'get_device_identity_pub' ? [1, 2, 3] : undefined,
-    );
-    mocks.host.goOnline.mockImplementation(async () => {
-      const callbacks = mocks.construct.mock.calls[0]?.[1] as { onHostState?: (state: string) => void };
-      callbacks?.onHostState?.('online');
-    });
-    mocks.host.goOffline.mockResolvedValue(undefined);
-
+  it('passes credentials only to Runtime and displays its confirmed state',async()=>{
+    mocks.snapshot.mockReturnValue({deviceToken:'owned-device',deviceName:'desktop',user:{username:'owner'}});
+    runtime={state:'connecting',error:'',sessions:[]};
     await goOnline();
-    expect(mocks.construct).toHaveBeenCalledOnce();
-    expect(mocks.host.goOnline).toHaveBeenCalledWith('desktop');
-    expect(get(hostState)).toBe('online');
-    expect(mocks.invoke).toHaveBeenCalledWith('set_cloud_remote_active', { active: true });
-    const commands = mocks.invoke.mock.calls.map(([command]) => command);
-    expect(commands).not.toEqual(expect.arrayContaining([
-      'sync_cloud_remote_credentials',
-      'ensure_cloud_remote_host',
-      'disable_cloud_remote_host',
-    ]));
-
-    await goOffline();
-    expect(mocks.host.goOffline).toHaveBeenCalledOnce();
-    expect(get(hostState)).toBe('offline');
-    expect(mocks.invoke).toHaveBeenLastCalledWith('set_cloud_remote_active', { active: false });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1,'cloud_host_online',{deviceToken:'owned-device',deviceName:'desktop',username:'owner',baseDomain:'owned.example',plaintext:false});
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2,'get_cloud_host_state');expect(get(hostState)).toBe('connecting');
   });
-
-  it('routes Cloud RPC through the runtime-agnostic remote dispatcher', async () => {
-    const paneSource = vi.fn(() => () => {});
-    vi.mocked(makeCloudHostPaneSource).mockReturnValue(paneSource);
-    mocks.snapshot.mockReturnValue({
-      deviceToken: 'token',
-      deviceName: 'desktop',
-      user: { username: 'alice' },
-    });
-    mocks.invoke.mockImplementation(async (command: string) =>
-      command === 'get_device_identity_pub' ? [1, 2, 3] : undefined,
-    );
-    mocks.host.goOnline.mockResolvedValue(undefined);
-
-    await goOnline();
-    const callbacks = mocks.getLastCallbacks() as {
-      createBridge?: (...args: unknown[]) => unknown;
-    };
-    callbacks.createBridge?.('controller', vi.fn(), new Uint8Array(), null);
-    const bridge = mocks.bridgeConstruct.mock.calls[0]?.[0] as {
-      invoke: (method: string, params?: unknown) => Promise<unknown>;
-    };
-    mocks.invoke.mockClear();
-
-    const params = {
-      workspaceId: 'workspace-1',
-      paneId: 'pane-1',
-      rows: 32,
-      cols: 96,
-      owner: 'remote',
-    };
-    await bridge.invoke('resize_pane', params);
-
-    expect(mocks.invoke).toHaveBeenCalledOnce();
-    expect(mocks.invoke).toHaveBeenCalledWith('dispatch_remote_invoke', {
-      method: 'resize_pane',
-      args: params,
-    });
-
-    callbacks.createBridge?.('controller-scoped', vi.fn(), new Uint8Array(), {
-      grantId: 'grant-1',
-      granteeUserId: 'bob',
-      ownerUserId: 'alice',
-      deviceName: 'desktop',
-      workspaceId: 'workspace-1',
-      role: 'operator',
-      delegable: false,
-    });
-    const scopedBridge = mocks.bridgeConstruct.mock.calls[1]?.[0] as {
-      invoke: (method: string, params?: unknown) => Promise<unknown>;
-      paneOutputSource: (paneId: string, workspaceId: string, output: () => void, options: { activationId: number }) => () => void;
-    };
-    mocks.invoke.mockReset();
-    mocks.invoke.mockImplementation(async (command: string) => {
-      if (command === 'get_pane_layout_for') return { type: 'leaf', paneId: 'pane-1' };
-      return undefined;
-    });
-
-    await scopedBridge.invoke('resize_pane', params);
-    expect(mocks.invoke).toHaveBeenLastCalledWith('dispatch_remote_invoke', {
-      method: 'resize_pane',
-      args: params,
-    });
-    const output = vi.fn();
-    scopedBridge.paneOutputSource('pane-1', 'workspace-1', output, { activationId: 17 });
-    expect(paneSource).toHaveBeenCalledWith('pane-1', 'workspace-1', output, { activationId: 17 });
-    expect(() => scopedBridge.paneOutputSource('pane-1', 'foreign-workspace', output, { activationId: 17 })).toThrow('terminal outside workspace grant');
-    expect(() => scopedBridge.paneOutputSource('foreign-pane', 'workspace-1', output, { activationId: 17 })).toThrow('terminal outside workspace grant');
-    expect(paneSource).toHaveBeenCalledOnce();
-    await goOffline();
+  it('reattaches an existing service projection and never stops it on window detach',async()=>{
+    vi.useFakeTimers();runtime={state:'online',error:'',sessions:[{cid:'existing',state:'connected',connectedAt:100}]};
+    stop=startCloudHostProjection();await refreshCloudHost();
+    expect(get(cloudSessions)[0].cid).toBe('existing');expect(get(hostState)).toBe('online');
+    await vi.advanceTimersByTimeAsync(2000);stop();stop=undefined;
+    const calls=mocks.invoke.mock.calls.length;await vi.advanceTimersByTimeAsync(4000);expect(mocks.invoke.mock.calls).toHaveLength(calls);
+    expect(mocks.invoke.mock.calls.every(([method])=>method==='get_cloud_host_state')).toBe(true);
   });
-
-  it('surfaces host startup and shutdown failures', async () => {
-    mocks.snapshot.mockReturnValue({
-      deviceToken: 'token',
-      deviceName: 'desktop',
-      user: { username: 'alice' },
-    });
-    mocks.invoke.mockResolvedValue([1, 2, 3]);
-    mocks.host.goOnline.mockRejectedValue(new Error('host down'));
-    mocks.host.goOffline.mockRejectedValue(new Error('offline'));
-
-    await goOnline();
-    expect(get(hostState)).toBe('error');
-    expect(get(hostError)).toBe('host down');
-    await goOffline();
-    expect(get(hostError)).toBe('offline');
+  it('keeps the last confirmed state and reports a failed control action',async()=>{
+    hostState.set('online');mocks.invoke.mockRejectedValueOnce(new Error('Runtime unavailable'));
+    await goOffline();expect(get(hostState)).toBe('online');expect(get(hostError)).toBe('Runtime unavailable');
   });
-
-  it('keeps controller actions on the shared host instance', async () => {
-    mocks.snapshot.mockReturnValue({
-      deviceToken: 'token',
-      deviceName: 'desktop',
-      user: { username: 'alice' },
-    });
-    mocks.invoke.mockResolvedValue([1, 2, 3]);
-    mocks.host.goOnline.mockResolvedValue(undefined);
-
-    await goOnline();
-    const { kickController, blacklistController } = await import('./cloudHostStore');
-    kickController('controller-1');
-    blacklistController('controller-2');
-    expect(mocks.host.kick).toHaveBeenCalledWith('controller-1');
-    expect(mocks.host.blacklist).toHaveBeenCalledWith('controller-2');
+  it('reports query failure without replacing existing sessions with an empty snapshot',async()=>{
+    cloudSessions.set([{cid:'existing',state:'connected',connectedAt:100}]);mocks.invoke.mockRejectedValueOnce(new Error('query failed'));
+    await refreshCloudHost();expect(get(cloudSessions)).toHaveLength(1);expect(get(hostError)).toBe('query failed');
+  });
+  it('sends kick and blacklist actions to the same service',async()=>{
+    kickController('one');await vi.waitFor(()=>expect(mocks.invoke).toHaveBeenCalledWith('cloud_host_kick',{cid:'one'}));
+    await refreshCloudHost();blacklistController('two');await vi.waitFor(()=>expect(mocks.invoke).toHaveBeenCalledWith('cloud_host_blacklist',{cid:'two'}));await refreshCloudHost();
   });
 });

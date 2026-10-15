@@ -174,6 +174,17 @@ impl TerminalProducer {
         self.last_cwd = Some(cwd);
     }
 
+    /// Runtime OS observations share the existing metadata/sequence path; no PTY reparse.
+    pub fn observe_cwd(&mut self, cwd: String) -> Option<crate::semantic::SemanticUpdate> {
+        if self.last_cwd.as_deref()==Some(cwd.as_str()) {return None;}
+        self.last_cwd=Some(cwd.clone());
+        let mut update=self.feed_semantic(&[]);
+        if let crate::terminal_protocol::TerminalBody::Delta(frame)=&mut update.body {
+            frame.deltas.push(crate::terminal_protocol::TerminalDelta::Cwd(cwd));
+        }
+        Some(update)
+    }
+
     pub fn feed_semantic(&mut self, bytes: &[u8]) -> crate::semantic::SemanticUpdate {
         *self.feed_and_diff(bytes).semantic_update.expect("producer captures each update")
     }
@@ -258,6 +269,11 @@ impl TerminalProducer {
     /// 窗口，否则那 80ms 窗口会吞掉 SIGWINCH 重绘（实测 ~25ms 落在窗口内）。
     pub fn has_shell_integration(&self) -> bool {
         self.terminal.has_shell_integration()
+    }
+
+    /// Drain the existing parser's transient prompt signal; no second VT parser.
+    pub fn take_prompt_marker(&mut self) -> bool {
+        self.terminal.take_prompt_marker()
     }
 
     /// Feed PTY bytes and return the resulting delta frame.
@@ -786,6 +802,44 @@ fn kernel_shape_to_delta(s: KernelCursorShape) -> DeltaCursorShape {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prompt_signal_uses_streaming_parser_and_drains_without_reset_false_positives() {
+        let mut producer = super::TerminalProducer::new(24, 80, 100);
+        for bytes in [b"ordinary A".as_slice(), b"\x1b]133;AX\x07", b"\x1b]633;B\x07", b"\x1b]133;"] {
+            producer.feed_semantic(bytes);
+            assert!(!producer.take_prompt_marker());
+        }
+        producer.feed_semantic(b"A");
+        assert!(!producer.take_prompt_marker(), "an unterminated OSC is not a prompt");
+        producer.feed_semantic(b"\x07");
+        assert!(producer.take_prompt_marker());
+        assert!(!producer.take_prompt_marker());
+        producer.feed_semantic(b"\x1b]633;A;optional");
+        assert!(!producer.take_prompt_marker());
+        producer.feed_semantic(b"\x1b");
+        let before_st_tail = producer.take_prompt_marker();
+        producer.feed_semantic(b"\\");
+        assert!(before_st_tail ^ producer.take_prompt_marker(), "split ST must emit exactly one prompt signal");
+        producer.feed_semantic(b"\x1bc");
+        assert!(!producer.take_prompt_marker(), "RIS must not manufacture a prompt");
+    }
+
+    #[test]
+    fn os_cwd_observation_preserves_screen_epoch_and_emits_existing_metadata_delta_once() {
+        use crate::terminal_protocol::{TerminalBody,TerminalDelta};
+        let mut producer=super::TerminalProducer::new(24,80,100);
+        producer.feed_semantic(b"screen stays intact");
+        let before=producer.semantic_snapshot();
+        let update=producer.observe_cwd("C:/observed".into()).unwrap();
+        assert_eq!(update.terminal_epoch,before.terminal_epoch);
+        let TerminalBody::Delta(delta)=update.body else {panic!("expected ordinary metadata delta")};
+        assert!(delta.deltas.iter().any(|item|matches!(item,TerminalDelta::Cwd(cwd) if cwd=="C:/observed")));
+        let TerminalBody::Snapshot(after)=producer.semantic_snapshot().body else {unreachable!()};
+        let TerminalBody::Snapshot(before)=before.body else {unreachable!()};
+        assert_eq!(after.primary.lines,before.primary.lines);
+        assert_eq!(after.cwd,"C:/observed");
+        assert!(producer.observe_cwd("C:/observed".into()).is_none());
+    }
     use super::*;
 
     #[test]

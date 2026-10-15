@@ -66,7 +66,11 @@ pub fn validate(payload: &RidgeFile) -> Result<super::pane_tree::PaneTree, Strin
         }
         Ok(())
     }
-    walk(&tree.root, &tree, &mut std::collections::HashSet::new())?;
+    let mut leaves=std::collections::HashSet::new();
+    walk(&tree.root, &tree, &mut leaves)?;
+    for (pane,binding) in &payload.foreign_panes {
+        if !leaves.contains(pane)||binding.workspace_id.is_nil()||binding.session_id.is_nil()||binding.host_id.trim().is_empty()||binding.host_id.len()>4096||binding.host_label.len()>4096||binding.title.len()>65536||binding.cwd.as_ref().is_some_and(|cwd|cwd.len()>65536){return Err("invalid foreign workspace reference".into());}
+    }
     Ok(tree)
 }
 
@@ -112,6 +116,8 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RidgeFile {
+    #[serde(default,skip_serializing_if="HashMap::is_empty")]
+    pub foreign_panes:HashMap<uuid::Uuid,super::graph::ForeignPaneBinding>,
     pub version: u32,
     pub name: String,
     pub saved_at: String,
@@ -131,9 +137,19 @@ pub struct RidgeFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn foreign_reference_must_name_a_live_layout_leaf(){
+        let (_,mut file)=fixture();
+        let binding=super::super::graph::ForeignPaneBinding{host_id:"peer".into(),host_label:"Peer".into(),kind:crate::remote::HostKind::Remote,workspace_id:uuid::Uuid::new_v4(),session_id:uuid::Uuid::new_v4(),title:"terminal".into(),cwd:None};
+        let pane=validate(&file).unwrap().get_all_leaves()[0];
+        file.foreign_panes.insert(pane,binding.clone());assert!(validate(&file).is_ok());
+        file.foreign_panes.insert(uuid::Uuid::new_v4(),binding);
+        assert_eq!(validate(&file).unwrap_err(),"invalid foreign workspace reference");
+    }
     fn fixture() -> (std::path::PathBuf, RidgeFile) {
         let root = std::env::temp_dir().join(format!("ridge-file-codec-{}", uuid::Uuid::new_v4()));
         let value = RidgeFile {
+            foreign_panes:HashMap::new(),
             version: 1,
             name: "保存的工作区".into(),
             saved_at: "2026-10-11T00:00:00Z".into(),
@@ -174,4 +190,24 @@ mod tests {
         assert!(write(&path, &payload).is_err());
         assert_eq!(std::fs::read(path).unwrap(), original);
     }
+}
+
+/// Stable, non-recursive discovery; actual files remain under caller/operator roots.
+pub fn first_in_directory(root:&Path,scopes:&[&crate::sandbox::RootScope])->crate::CoreResult<serde_json::Value> {
+    if scopes.iter().any(|scope|!scope.is_allowed(&root.to_string_lossy())) {return Err(crate::CoreError::OutsideSandbox);}
+    let entries=match std::fs::read_dir(root) {
+        Ok(entries)=>entries,
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(serde_json::Value::Null),
+        Err(error)=>return Err(crate::CoreError::internal(error)),
+    };
+    let mut files=Vec::new();
+    for entry in entries {
+        let entry=entry.map_err(crate::CoreError::internal)?;
+        let path=entry.path();
+        if path.extension().and_then(|value|value.to_str())!=Some("ridge") {continue;}
+        if scopes.iter().any(|scope|!scope.is_allowed(&path.to_string_lossy())) {return Err(crate::CoreError::OutsideSandbox);}
+        if entry.file_type().map_err(crate::CoreError::internal)?.is_file() {files.push(path);}
+    }
+    files.sort();
+    Ok(serde_json::json!(files.into_iter().next().map(|path|path.to_string_lossy().into_owned())))
 }

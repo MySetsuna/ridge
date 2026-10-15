@@ -22,7 +22,8 @@ import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '@ridge/r
 import { t, tr } from '$lib/i18n';
 import { activePaneId, activeWorkspaceId, clearAgentPaneAttention, focusPane, setPaneCwd, paneOscTitleStore, paneForegroundProcessStore, terminalTitles, splitPane, closePane, waitForDesktopKernelReattach } from '$lib/stores/paneTree';
 import type { KernelEvent } from '@ridge/remote/shared/terminal/manager';
-import { enableDeltaModeThenFit, ensurePtyBridge } from '@ridge/remote/shared/terminal/ptyBridge';
+import { enableDeltaModeThenFit, ensurePtyBridge, observePtyView } from '@ridge/remote/shared/terminal/ptyBridge';
+import { terminalLifecycleMessage } from '@ridge/remote/shared/terminal/lifecycle';
 import { pushTerminalThemeNow } from '@ridge/remote/shared/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
 import { remoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
@@ -47,7 +48,6 @@ import type { ContextMenuItem } from '$lib/stores/contextMenu';
 import { reportRepeatedError } from '$lib/utils/repeatedError';
 import { synchronizePaneSize } from '$lib/terminal/paneSizeSync';
 import { scheduleForcedPaneResize } from '$lib/terminal/desktopPaneResize';
-import { buildPtyRuntimeSnapshot } from '$lib/terminal/ptyRuntimeSnapshot';
 import { PaneRpcScheduler, type TerminalInputContext } from '@ridge/remote/shared/transport/paneRpcScheduler';
 import { RpcCancelledError, RpcTimeoutError, type RpcRequestOptions } from '@ridge/remote/shared/transport/types';
 import { pinImeCaretToAnchor } from '@ridge/remote/shared/terminal/imeAnchor';
@@ -71,6 +71,9 @@ let attached = $state(false);
 let webgpuInitError = $state<string | null>(null);
 let terminalStreamError = $state(false);
 let terminalStreamRetrying = $state(false);
+let terminalExitMessage = $state<string | null>(null);
+let terminalLifecycleFailed = $state(false);
+let stopPtyView: (() => void) | null = null;
 
 function formatWebgpuInitError(error: unknown): string {
 	const detail = error instanceof Error ? error.message : String(error);
@@ -105,7 +108,14 @@ async function registerPtyStream(): Promise<void> {
   terminalStreamRetrying = true;
   try {
     await ensurePtyBridge(paneId, workspaceId);
-    if (alive) terminalStreamError = false;
+    stopPtyView?.();
+    stopPtyView = observePtyView(paneId, workspaceId, state => {
+      if (!alive) return;
+      terminalStreamError = Boolean(state.error);
+      terminalStreamRetrying = state.retrying;
+      terminalExitMessage = terminalLifecycleMessage(state.lifecycle);
+      terminalLifecycleFailed = Boolean(state.lifecycle?.error);
+    });
   } catch (error) {
     if (alive) terminalStreamError = true;
     console.warn('[ridge-pane] terminal stream registration failed', error);
@@ -155,7 +165,7 @@ function createDesktopResizeScheduler(): PaneRpcScheduler {
 			bucket?.add(cancel);
 			timer = setTimeout(() => finishReject(new RpcTimeoutError(method, timeoutMs)), timeoutMs);
 				void Promise.resolve()
-					.then(() => invoke<T>(method, method === 'resize_pane' ? { request: params as Record<string, unknown> } : params as Record<string, unknown>))
+					.then(() => invoke<T>(method, params as Record<string, unknown>))
 				.then(finishResolve, (error: unknown) => finishReject(error instanceof Error ? error : new Error(String(error))));
 		});
 	};
@@ -282,177 +292,6 @@ function stopForegroundPoll(): void {
 let commandRunning = false;
 let hasShellIntegration = false;
 let promptUnlisten: UnlistenFn | null = null;
-
-type PtyRuntimeIdentity = {
-	agentId: string;
-	generation: number;
-	lease: string;
-};
-
-const PTY_RUNTIME_SAMPLE_INTERVAL_MS = 1000;
-const PTY_RUNTIME_INPUT_SAMPLE_DEBOUNCE_MS = 120;
-// The queue already batches while an IPC write is in flight. A timer here
-// adds avoidable keystroke latency, especially inside Codex's inline TUI.
-const PTY_RUNTIME_PENDING_REFRESH_MS = 1000;
-const PTY_RUNTIME_INPUT_GUARD_MS = 750;
-let ptyRuntimeSampler: ReturnType<typeof setInterval> | null = null;
-let ptyRuntimeInputSampleTimer: ReturnType<typeof setTimeout> | null = null;
-let ptyRuntimeSampleInFlight = false;
-let ptyRuntimePendingInFlight = false;
-let ptyRuntimePendingApproval = true;
-let ptyRuntimePendingKnown = false;
-let ptyRuntimePendingRefreshedAt = 0;
-let ptyRuntimeIdentity: PtyRuntimeIdentity | null = null;
-let ptyRuntimeSafetyKey = '';
-let ptyRuntimeStateRevision = 1;
-let ptyRuntimeInputEpoch = 1;
-let ptyRuntimeLastInputAt = 0;
-
-function schedulePtyRuntimeInputSample(): void {
-	if (ptyRuntimeInputSampleTimer !== null) return;
-	const waitMs = Math.max(
-		0,
-		PTY_RUNTIME_INPUT_SAMPLE_DEBOUNCE_MS - (performance.now() - ptyRuntimeLastInputAt),
-	);
-	ptyRuntimeInputSampleTimer = setTimeout(() => {
-		ptyRuntimeInputSampleTimer = null;
-		if (performance.now() - ptyRuntimeLastInputAt < PTY_RUNTIME_INPUT_SAMPLE_DEBOUNCE_MS) {
-			schedulePtyRuntimeInputSample();
-			return;
-		}
-		void samplePtyRuntimeState();
-	}, waitMs);
-}
-
-function notePtyRuntimeInput(): void {
-	if (!isTauri()) return;
-	ptyRuntimeInputEpoch = ptyRuntimeInputEpoch >= Number.MAX_SAFE_INTEGER
-		? 1
-		: ptyRuntimeInputEpoch + 1;
-	ptyRuntimeLastInputAt = performance.now();
-	schedulePtyRuntimeInputSample();
-}
-
-async function refreshPtyRuntimePending(identity: PtyRuntimeIdentity): Promise<void> {
-	if (ptyRuntimePendingInFlight) return;
-	ptyRuntimePendingInFlight = true;
-	try {
-		const pending = await invoke<Array<{ initiator?: unknown }>>('list_hitl_pending');
-		ptyRuntimePendingApproval = pending.some((entry) =>
-			entry?.initiator === identity.agentId || entry?.initiator === paneId
-		);
-		ptyRuntimePendingKnown = true;
-		ptyRuntimePendingRefreshedAt = performance.now();
-	} catch {
-		// An unreadable approval registry is unsafe. Keep the proof closed until
-		// a later bounded refresh succeeds.
-		ptyRuntimePendingApproval = true;
-		ptyRuntimePendingKnown = false;
-	} finally {
-		ptyRuntimePendingInFlight = false;
-	}
-}
-
-async function samplePtyRuntimeState(): Promise<void> {
-	if (
-		ptyRuntimeSampleInFlight ||
-		!alive ||
-		!attached ||
-		!isTauri() ||
-		remotePaneBinding(paneId)
-	) return;
-	ptyRuntimeSampleInFlight = true;
-	try {
-		const identity = await invoke<PtyRuntimeIdentity | null>('get_pty_runtime_identity', {
-			workspaceId,
-			paneId,
-		});
-		if (!identity) {
-			ptyRuntimeIdentity = null;
-			ptyRuntimePendingApproval = true;
-			ptyRuntimePendingKnown = false;
-			return;
-		}
-		if (
-			!ptyRuntimeIdentity ||
-			ptyRuntimeIdentity.agentId !== identity.agentId ||
-			ptyRuntimeIdentity.generation !== identity.generation ||
-			ptyRuntimeIdentity.lease !== identity.lease
-		) {
-			ptyRuntimeIdentity = identity;
-			ptyRuntimeSafetyKey = '';
-			ptyRuntimeStateRevision = 1;
-			ptyRuntimeInputEpoch = 1;
-			ptyRuntimePendingKnown = false;
-		}
-		if (
-			!ptyRuntimePendingKnown ||
-			performance.now() - ptyRuntimePendingRefreshedAt >= PTY_RUNTIME_PENDING_REFRESH_MS
-		) {
-			await refreshPtyRuntimePending(identity);
-		}
-		const snapshot = buildPtyRuntimeSnapshot({
-			hasShellIntegration,
-			commandRunning,
-			foregroundProcessRunning,
-			isAltScreen: manager.isAltScreen(paneId),
-			isInlineTuiActive: manager.isInlineTuiActive(paneId),
-			pendingApproval: ptyRuntimePendingApproval,
-			foregroundIsTargetAgent:
-				get(activePaneId) === paneId && get(activeWorkspaceId) === workspaceId,
-			userInputCompeting:
-				isComposing ||
-				currentInputBuffer.text.length > 0 ||
-				performance.now() - ptyRuntimeLastInputAt < PTY_RUNTIME_INPUT_GUARD_MS,
-			stateRevision: ptyRuntimeStateRevision,
-			inputEpoch: ptyRuntimeInputEpoch,
-		});
-		const safetyKey = JSON.stringify([
-			snapshot.agentIdle,
-			snapshot.terminalModeAgentPrompt,
-			snapshot.pendingApproval,
-			snapshot.foregroundIsTargetAgent,
-			snapshot.userInputCompeting,
-		]);
-		if (safetyKey !== ptyRuntimeSafetyKey) {
-			ptyRuntimeSafetyKey = safetyKey;
-			ptyRuntimeStateRevision = Math.min(Number.MAX_SAFE_INTEGER, ptyRuntimeStateRevision + 1);
-		}
-		await invoke('publish_pty_runtime_snapshot', {
-			workspaceId,
-			paneId,
-			...identity,
-			...snapshot,
-		});
-	} catch {
-		// No local error path can keep an old proof alive: the Hub freshness
-		// fence expires it, and the next sample retries from the current state.
-		ptyRuntimePendingApproval = true;
-		ptyRuntimePendingKnown = false;
-	} finally {
-		ptyRuntimeSampleInFlight = false;
-	}
-}
-
-function startPtyRuntimeSampler(): void {
-	if (ptyRuntimeSampler !== null || !isTauri()) return;
-	void samplePtyRuntimeState();
-	ptyRuntimeSampler = setInterval(() => void samplePtyRuntimeState(), PTY_RUNTIME_SAMPLE_INTERVAL_MS);
-}
-
-function stopPtyRuntimeSampler(): void {
-	if (ptyRuntimeSampler !== null) {
-		clearInterval(ptyRuntimeSampler);
-		ptyRuntimeSampler = null;
-	}
-	if (ptyRuntimeInputSampleTimer !== null) {
-		clearTimeout(ptyRuntimeInputSampleTimer);
-		ptyRuntimeInputSampleTimer = null;
-	}
-	ptyRuntimeSampleInFlight = false;
-	ptyRuntimeIdentity = null;
-	ptyRuntimePendingKnown = false;
-}
 
 /** Mark a command as submitted at the shell prompt (plain Enter, or executing a
  *  history pick). No-op until shell integration is confirmed. */
@@ -653,7 +492,6 @@ function enqueuePasteTextTask(read: () => Promise<string | null>): void {
 	void enqueuePaneInput(key, async () => {
 		const text = await read();
 		if (!text) return;
-		notePtyRuntimeInput();
 		notePaste(text);
 		const data = encodePasteForPty(text);
 		if (!data) return;
@@ -1028,7 +866,6 @@ function diagLogIme(event: string, extra?: Record<string, unknown>) {
 
 function onCompositionStart() {
 	isComposing = true;
-	notePtyRuntimeInput();
 	preeditSentToPty = '';
 	manager.beginImeComposition?.(paneId);
 	// §P5.IME: single-source anchor. Same `(row, col)` powers the
@@ -1159,7 +996,6 @@ function onCompositionStart() {
 		manager.clearPreedit?.(paneId);
 		preeditSentToPty = '';
 		if (data.length > 0) {
-			notePtyRuntimeInput();
 			manager.write(paneId, data);
 			imeCommitExpect = data;
 			imeCommitExpectAt = Date.now();
@@ -1283,7 +1119,6 @@ function isValidPaneId(id: string): boolean {
 // (TASKS §1.17.)
 function onPtyData(bytes: Uint8Array) {
 	if (!alive) return;
-	notePtyRuntimeInput();
 	const context = manager.getKernel(paneId)?.terminalInputContext() as TerminalInputContext | null;
 	if (!context) { reportRepeatedError('write_terminal_input', new Error('terminal snapshot required')); return; }
 	const remote = remotePaneBinding(paneId);
@@ -1439,7 +1274,6 @@ onMount(() => {
 			}
 			if (!alive) return;
 			attached = true;
-			startPtyRuntimeSampler();
 			window.dispatchEvent(new CustomEvent('ridge:pane-attached'));
 			manager.setFocused(
 				paneId,
@@ -1473,7 +1307,6 @@ onMount(() => {
 		}
 		if (!alive) return;
 		attached = true;
-		startPtyRuntimeSampler();
 		// Force-push the current CSS-derived theme onto the fresh kernel.
 		// `setupTerminalThemeBridge` runs once at app boot and only
 		// re-pushes when the settings store changes, so the very first
@@ -1654,7 +1487,7 @@ $effect(() => {
 
 onDestroy(() => {
 	alive = false;
-	stopPtyRuntimeSampler();
+	stopPtyView?.(); stopPtyView = null;
 	localResizeScheduler.retire({ workspaceId, paneId });
 	// §process-gate — tear down the foreground-process poll + prompt listener.
 	stopForegroundPoll();
@@ -2344,6 +2177,9 @@ function captureBackspace(node: HTMLElement) {
 >
 	{#if terminalStreamError}
   <button style="position:absolute;top:8px;left:8px;z-index:20" disabled={terminalStreamRetrying} onpointerdown={(event) => event.stopPropagation()} onclick={() => void registerPtyStream()}>Terminal connection failed · Retry</button>
+	{/if}
+	{#if terminalExitMessage}
+  <div role={terminalLifecycleFailed ? 'alert' : 'status'} aria-live={terminalLifecycleFailed ? 'assertive' : 'polite'} data-testid="terminal-exit-status" style="position:absolute;bottom:8px;left:8px;z-index:20;max-width:calc(100% - 16px);background:var(--rg-bg,#111827);color:var(--rg-fg,#f9fafb);border:1px solid var(--rg-border,#475569)" class="rounded px-3 py-2 text-xs">{terminalExitMessage}</div>
 	{/if}
 	{#if scrollbackFetchError}
   <button class="rg-history-retry" style="position:absolute;top:8px;right:8px;z-index:20" onpointerdown={(event) => event.stopPropagation()} onclick={() => void fetchOlderScrollback()}>Older output unavailable · Retry</button>

@@ -12,7 +12,7 @@ const MAX_FAMILIES: usize = 32;
 const MAX_FONT_FILES: usize = 32;
 const MAX_FONT_BYTES: usize = 96 * 1024 * 1024;
 const MAX_SINGLE_FONT_BYTES: usize = 32 * 1024 * 1024;
-const MAX_FONT_CHUNK_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_FONT_CHUNK_BYTES: usize = 2 * 1024 * 1024;
 const MAX_FONT_CACHE_BYTES: usize = MAX_FONT_BYTES * 2;
 
 #[derive(Default)]

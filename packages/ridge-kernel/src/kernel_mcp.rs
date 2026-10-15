@@ -22,6 +22,15 @@ pub struct KernelMcpHost {
 }
 
 impl KernelMcpHost {
+    fn write_automation(&self,pane_id:Uuid,bytes:&[u8])->HostResult<()> {
+        let roster=self.state.roster.lock().map_err(|_|HostError::Internal("roster unavailable".into()))?;
+        if roster.agent_identities().iter().any(|member|member.pane_id==pane_id.to_string()&&member.protocol_binding.is_some()) {
+            return Err(HostError::InvalidParams("registered Agent messages require the existing protocol; use send_agent_message".into()));
+        }
+        let workspace=self.state.ptys.list().into_iter().find(|terminal|terminal.id==pane_id).and_then(|terminal|terminal.workspace_id).ok_or_else(||HostError::InvalidParams("automation terminal workspace binding missing".into()))?;
+        crate::workspace_memory::with_agent_input(workspace,pane_id,||self.state.ptys.write(pane_id,bytes).map_err(|error|error.to_string())).map_err(HostError::Internal)
+    }
+
     pub fn new(state: AppState) -> Self {
         Self { state }
     }
@@ -116,6 +125,7 @@ impl KernelMcpHost {
             roster
                 .agent_identities()
                 .into_iter()
+                .filter(|identity|!roster.protocol_member_retired(&identity.agent_id))
                 .cloned()
                 .collect::<Vec<_>>()
         };
@@ -340,18 +350,13 @@ impl KernelMcpHost {
         let Some(initial_cmd) = request.initial_cmd.as_deref() else {
             return Ok(());
         };
-        self.state
-            .ptys
-            .write(
-                pane_id,
-                ridge_mcp::server::enter_terminated(initial_cmd).as_bytes(),
-            )
+        self.write_automation(pane_id,ridge_mcp::server::enter_terminated(initial_cmd).as_bytes())
             .map_err(|error| {
                 let _ = self.state.ptys.destroy(pane_id);
                 if let Some(old_id) = replace_id {
                     self.state.ptys.cancel_destroy(old_id);
                 }
-                HostError::Internal(error.to_string())
+                error
             })
     }
 
@@ -496,6 +501,15 @@ impl KernelMcpHost {
 }
 
 impl McpHost for KernelMcpHost {
+    fn report_execution_rejection(&self, report: ridge_mcp::server::ExternalExecutionRejection) -> HostResult<String> {
+        let id = self.state.execution_rejections.report(&json!({
+            "initiator":report.initiator,"action":report.action,"executor":report.executor,
+            "policySource":report.policy_source,"requestId":report.request_id,"reason":report.reason,"nextStep":report.next_step
+        })).map_err(HostError::Internal)?;
+        ridge_core::EventSink::broadcast(&self.state.business_events,"teammate://execution-rejections-changed",Value::Null);
+        Ok(id)
+    }
+
     fn group_task_snapshot(&self, id: &str, revision: u64, target: &Value, args: &Value) -> HostResult<Value> {
         if args.get("group_task_id").is_some() {
             return crate::commune_tasks::frozen_context(&self.state,id,revision,target,args).map_err(HostError::InvalidParams);
@@ -598,10 +612,7 @@ impl McpHost for KernelMcpHost {
         } else {
             text.to_string()
         };
-        self.state
-            .ptys
-            .write(pane_id, payload.as_bytes())
-            .map_err(|error| HostError::Internal(error.to_string()))?;
+        self.write_automation(pane_id,payload.as_bytes())?;
         if mark_busy {
             self.state
                 .ptys
@@ -746,10 +757,21 @@ mod tests {
         let ptys = Arc::new(crate::pty::PtyRegistry::default());
         ptys.set_runtime_epoch(epoch.clone());
         AppState {
+            cloud:Default::default(),
+            remote_invokes: Default::default(),
+            foreign_terminals: Default::default(),
+            lan: Arc::new(crate::remote_control::Lan::default()),
+            remote_auth: Arc::new(ridge_remote::auth::RemoteAuth::ephemeral()),
+            device_identity: Arc::new(ridge_core::DeviceIdentity::from_seed(&[7;32])),
+            controller_identity: Default::default(),
+            projects: Arc::new(crate::projects::Projects::open(std::env::temp_dir().join(format!("ridge-projects-{}",Uuid::new_v4())).join("projects.db")).unwrap()),
             permissions: Default::default(),
+            gateway_permissions: Default::default(),
+            execution_rejections: Default::default(),
             commune: Default::default(),
             retired_workspaces: Default::default(),
             business_events: Default::default(),
+            fs_watches: Default::default(),
             local_host: Arc::new(std::sync::OnceLock::new()),
             token: "test-token".into(),
             pid: 1,
@@ -773,6 +795,7 @@ mod tests {
                 ridge_core::remote::RemoteHostTopology::default(),
             )),
             remote_hosts_path: std::env::temp_dir().join("ridge-kernel-kernel-mcp-remote.json"),
+            outbound_hosts: Arc::new(crate::outbound_hosts::Manager::default()),
             ptys,
             output_leases: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             fs_scope: ridge_core::sandbox::RootScope::unrestricted(),

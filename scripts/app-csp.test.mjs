@@ -40,6 +40,7 @@ describe('desktop app CSP', () => {
       'wss://*.localhost:5050',
       'https://*.9527127.xyz',
       'wss://*.9527127.xyz',
+      'ws://127.0.0.1:*',
     ]);
     expect(csp).toContain('http://*.localhost:5001');
     expect(csp).toContain('ws://*.localhost:5050');

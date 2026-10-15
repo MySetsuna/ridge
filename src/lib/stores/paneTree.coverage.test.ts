@@ -44,8 +44,8 @@ beforeEach(() => {
 function mockRefreshCommands(active = 'ws-a') {
   core.invoke.mockImplementation(async (command: string) => {
     if (command === 'list_workspaces') return [{ id: 'ws-a', index: 0, displaySeq: 0 }];
-    if (command === 'acquire_window_workspace' || command === 'get_active_workspace_id') return active;
-    if (command === 'get_pane_layout_for' || command === 'get_window_pane_layout') return layout;
+    if (command === 'get_active_workspace_id') return active;
+    if (command === 'get_pane_layout_for' || command === 'get_pane_layout') return layout;
     if (command === 'list_workspace_save_info') return [];
     return undefined;
   });
@@ -54,7 +54,7 @@ function mockRefreshCommands(active = 'ws-a') {
 describe('paneTree workspace mutation branches', () => {
   it('refreshes an explicitly selected workspace and keeps cwd/listener projections aligned', async () => {
     mockRefreshCommands();
-    await paneTree.refreshWorkspaces({ workspaceId: 'ws-a', acquireWindow: false });
+    await paneTree.refreshWorkspaces({ workspaceId: 'ws-a' });
     expect(get(paneTree.activeWorkspaceId)).toBe('ws-a');
     expect(get(paneTree.paneTreeStore)).toEqual(layout);
     expect(get(paneTree.workspacesList)).toEqual([{ id: 'ws-a', index: 0, displaySeq: 0 }]);
@@ -62,28 +62,26 @@ describe('paneTree workspace mutation branches', () => {
     expect(event.listen).toHaveBeenCalledWith('pane-cwd-changed-ws-a-pane-a', expect.any(Function));
   });
 
-  it('handles empty acquisition and desktop acquisition that creates a missing workspace', async () => {
+  it('reads selection without creating workspaces and handles an empty selection', async () => {
     let listCalls = 0;
     core.invoke.mockImplementation(async (command: string) => {
       if (command === 'list_workspaces') {
         listCalls += 1;
-        return listCalls === 1
-          ? [{ id: 'old', index: 0, displaySeq: 0 }]
-          : [{ id: 'new', index: 0, displaySeq: 0 }];
+        return [{ id: 'new', index: 0, displaySeq: 0 }];
       }
-      if (command === 'acquire_window_workspace') return 'new';
+      if (command === 'get_active_workspace_id') return 'new';
       if (command === 'get_pane_layout_for') return layout;
       if (command === 'list_workspace_save_info') return [];
       return undefined;
     });
     await paneTree.refreshWorkspaces();
-    expect(listCalls).toBe(2);
+    expect(listCalls).toBe(1);
     expect(get(paneTree.activeWorkspaceId)).toBe('new');
 
     paneTree.activeWorkspaceId.set('');
     core.invoke.mockImplementation(async (command: string) => {
       if (command === 'list_workspaces') return [{ id: 'waiting', index: 0, displaySeq: 0 }];
-      if (command === 'acquire_window_workspace') return '';
+      if (command === 'get_active_workspace_id') return '';
       if (command === 'list_workspace_save_info') return [];
       return undefined;
     });
@@ -103,15 +101,15 @@ describe('paneTree workspace mutation branches', () => {
     mockRefreshCommands();
     core.invoke.mockImplementation(async (command: string) => {
       commands.push(command);
-      if (command === 'create_workspace_for_window') return 'ws-created';
+      if (command === 'create_workspace') return 'ws-created';
       if (command === 'list_workspaces') return [{ id: 'ws-a', index: 0, displaySeq: 0 }];
-      if (command === 'acquire_window_workspace') return 'ws-a';
+      if (command === 'get_active_workspace_id') return 'ws-a';
       if (command === 'get_pane_layout_for') return layout;
       if (command === 'list_workspace_save_info') return [];
       return undefined;
     });
     await paneTree.createWorkspace();
-    expect(commands).toEqual(expect.arrayContaining(['create_workspace_for_window', 'list_workspaces']));
+    expect(commands).toEqual(expect.arrayContaining(['create_workspace', 'list_workspaces']));
   });
 
   it('rolls back an optimistic workspace switch when the backend rejects it', async () => {
@@ -121,9 +119,7 @@ describe('paneTree workspace mutation branches', () => {
       ['ws-old', { type: 'leaf', id: 'old-pane' }],
       ['ws-new', { type: 'leaf', id: 'new-pane' }],
     ]));
-    core.invoke.mockImplementation(async (command: string) => {
-      if (command === 'claim_workspace_window') return { claimed: true, ownerWindowLabel: 'main' };
-      if (command === 'switch_window_workspace') throw new Error('switch failed');
+    core.invoke.mockImplementation(async (command: string) => {      if (command === 'switch_workspace') throw new Error('switch failed');
       return undefined;
     });
     await expect(paneTree.switchWorkspace('ws-new')).rejects.toThrow('switch failed');
@@ -131,14 +127,15 @@ describe('paneTree workspace mutation branches', () => {
     expect(get(paneTree.paneTreeStore)).toEqual({ type: 'leaf', id: 'old-pane' });
   });
 
-  it('rejects a workspace claim without issuing a switch command', async () => {
+  it('preserves the current view when Runtime rejects the selected workspace', async () => {
+    paneTree.activeWorkspaceId.set('ws-existing');
     core.invoke.mockImplementation(async (command: string) => {
-      if (command === 'claim_workspace_window') return { claimed: false, ownerWindowLabel: 'other' };
+      if (command === 'switch_workspace') throw new Error('workspace not found');
       return undefined;
     });
-    await expect(paneTree.switchWorkspace('ws-new')).resolves.toBe(false);
-    expect(core.invoke).toHaveBeenCalledWith('claim_workspace_window', expect.anything());
-    expect(core.invoke).not.toHaveBeenCalledWith('switch_window_workspace', expect.anything());
+    await expect(paneTree.switchWorkspace('ws-new')).rejects.toThrow('workspace not found');
+    expect(get(paneTree.activeWorkspaceId)).toBe('ws-existing');
+    expect(core.invoke).not.toHaveBeenCalledWith('claim_workspace_window', expect.anything());
   });
 
   it('rolls back workspace ordering and names after mutation failures', async () => {
@@ -167,7 +164,7 @@ describe('paneTree workspace mutation branches', () => {
       if (command === 'list_workspace_save_info') return [];
       if (command === 'list_workspaces') return [{ id: 'ws-opened', index: 0, displaySeq: 0 }];
       if (command === 'get_pane_layout_for') return layout;
-      if (command === 'get_active_workspace_id' || command === 'acquire_window_workspace') return 'ws-opened';
+      if (command === 'get_active_workspace_id' || command === 'get_active_workspace_id') return 'ws-opened';
       return undefined;
     });
     await expect(paneTree.saveWorkspaceToFile('ws-a', 'Name')).resolves.toBe('ws-saved');
@@ -354,9 +351,10 @@ describe('paneTree workspace mutation branches', () => {
     const saved = {
       id: 'saved',
       name: 'Saved',
-      paneTree: layout,
-      paneCwds: {},
-      savedAt: '2026-08-10T00:00:00.000Z',
+      pane_tree_json: JSON.stringify({ root: { Leaf: 'pane-a' }, panes: { 'pane-a': { id: 'pane-a', mode: 'Terminal', cwd: '/repo' } } }),
+      pane_count: 1,
+      is_pinned: false,
+      saved_at: '2026-08-10T00:00:00.000Z',
     };
     core.invoke.mockImplementation(async (command: string) => {
       if (command === 'list_workspace_save_info') {
@@ -421,8 +419,8 @@ describe('paneTree workspace mutation branches', () => {
       'ws-other:keep': '/untouched',
     });
     core.invoke.mockImplementation(async (command: string) => {
-      if (command === 'get_window_pane_layout') return layoutFromHost;
-      if (command === 'get_window_active_workspace_id') return 'ws-host';
+      if (command === 'get_pane_layout') return layoutFromHost;
+      if (command === 'get_active_workspace_id') return 'ws-host';
       return undefined;
     });
 
@@ -441,8 +439,8 @@ describe('paneTree workspace mutation branches', () => {
     expect(event.listen).toHaveBeenCalledWith('pane-cwd-changed-ws-host-new', expect.any(Function));
 
     core.invoke.mockImplementation(async (command: string) => {
-      if (command === 'get_window_pane_layout') return layoutFromHost;
-      if (command === 'get_window_active_workspace_id') throw new Error('host id unavailable');
+      if (command === 'get_pane_layout') return layoutFromHost;
+      if (command === 'get_active_workspace_id') throw new Error('host id unavailable');
       return undefined;
     });
     await paneTree.syncPaneLayoutFromBackend();

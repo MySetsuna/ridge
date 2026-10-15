@@ -552,12 +552,14 @@ impl Terminal {
     /// Explicit terminal clear used by the native command path. Unlike ED 2,
     /// this is deliberate user intent, so it bypasses Ctrl+C suppression.
     pub fn clear_terminal(&mut self) {
+        self.history_generation = self.history_generation.saturating_add(1);
         self.grid.clear_terminal();
         self.scroll_offset = 0;
         self.user_scroll_locked = false;
     }
 
     pub fn clear_terminal_preserving_prompt(&mut self) {
+        self.history_generation = self.history_generation.saturating_add(1);
         self.grid.clear_terminal_preserving_prompt();
         self.scroll_offset = 0;
         self.user_scroll_locked = false;
@@ -806,6 +808,9 @@ impl Terminal {
     /// （133/633;A）。false ⇒ 无早释放 resize-silence 的手段（WSL/cmd/explicit-launch）。
     pub fn has_shell_integration(&self) -> bool {
         self.grid.has_seen_prompt_osc()
+    }
+    pub fn take_prompt_marker(&mut self) -> bool {
+        self.grid.take_prompt_marker()
     }
     /// §1.35 — force-leave alt screen without going through CSI dispatch.
     /// Used when the PTY process exits while the kernel is still in alt

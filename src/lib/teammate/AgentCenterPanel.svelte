@@ -1,9 +1,7 @@
 <script lang="ts">
   // AgentCenterPanel —— 智能体状态面板（左侧图标栏独立 Tab）。
   //
-  // 底座化瘦身后只保留「给人看的」两块：成员（Roster）+ 异常（熔断告警）。
-  // 「目标 / 活动（TML 协作审计）」等 AI 自治协同的可视化已退场
-  // 数据来源：全局 AgentPaneHighlightSync 的共享 topology + circuit 事件。
+  // 成员、审批与健康状态取自 Runtime；共享 topology 由 AgentPaneHighlightSync 更新。
   // 后端未接线时优雅显示空态（不报错）。顶部带一个「审批」快捷开关（HITL），
   // 完整开关在设置面板「智能体」分区。
 
@@ -11,10 +9,13 @@
   import { listen } from '@tauri-apps/api/event';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
-  import { Bot, ZapOff, ShieldCheck, BookOpen, Users } from 'lucide-svelte';
+  import { Bot, ShieldCheck, BookOpen, Users } from 'lucide-svelte';
   import CommuneHistory from './CommuneHistory.svelte';
   import type { AgentHistoryReply } from '../../../packages/remote/src/shared/transport/wsRemote';
   import AgentMemberRow from './AgentMemberRow.svelte';
+  import TerminalAgentRow from './TerminalAgentRow.svelte';
+  import { collectTerminalAgents, matchesTerminalAgent, terminalAgentKey } from './terminalAgent';
+  import { registerCommuneMember } from './communeMembership';
   import { settingsStore } from '$lib/stores/settings';
   import { fileEditorStore } from '$lib/stores/fileEditor';
   import {
@@ -32,14 +33,12 @@
   } from '$lib/stores/hosts';
   import { alertDialog } from '$lib/components/RidgeDialog.svelte';
   import { showToast } from '$lib/stores/toast';
-  import { setTeammateHitlEnabled } from './teammateSettings';
+  import { hitlSync, setTeammateHitlEnabled } from './teammateSettings';
   import TeammateGroups from './TeammateGroupsSection.svelte';
   import { teammateGroupStore, groupOfAgent } from './teammateGroups.svelte';
   import {
-    parseCircuitTripped,
     EMPTY_TOPOLOGY,
     type TeammateProfile,
-    type CircuitTrip,
   } from './teammateModel';
   import {
     refreshGitGuardStats,
@@ -69,11 +68,6 @@
     refreshAgentPaneHighlight,
   } from './agentPaneHighlightSync';
 
-  const CIRCUIT_EVENT = 'teammate://circuit-tripped';
-  // 后端 MCP `ridge_join_group` → 前端编组「加成员」事件桥（见 teammate/layout_event.rs）。
-
-  const TRIP_CAP = 20;
-
   interface Props {
     /** 当前工作区 id；用于拉取该工作区的拓扑。 */
     workspaceId?: string;
@@ -83,19 +77,23 @@
   const topology = $derived(
     workspaceId ? ($agentTopologyStore[workspaceId] ?? EMPTY_TOPOLOGY) : EMPTY_TOPOLOGY
   );
-  /** Commune only renders the selected workspace. Cross-workspace aggregation
-   * made identical agent sessions and groups bleed into the active tab. */
+  const terminalAgents = $derived(collectTerminalAgents($workspacesList, $agentTopologyStore));
+  let expandedTerminal = $state('');
+
+  async function connectDiscovered(ownerWorkspaceId: string, paneId: string) {
+    try { await registerCommuneMember(ownerWorkspaceId, paneId); await refreshSharedState(); }
+    catch (error) { void alertDialog({ title: '连接既有 Agent 会话', message: String(error) }); }
+  }
+  /** Aggregate display only; every action retains its original workspace binding. */
   const allMembers = $derived(
     sortMembersBySessionId(
-      (topology.roster ?? []).map((profile) => ({
-        workspaceId: workspaceId ?? '',
-        workspaceName: $workspacesList.find((workspace) => workspace.id === workspaceId)?.name?.trim()
-          || '当前工作区',
-        profile,
-      })),
+      $workspacesList.flatMap(workspace => ($agentTopologyStore[workspace.id]?.roster ?? []).map(profile => ({
+        workspaceId: workspace.id, workspaceName: workspace.name?.trim() || workspace.id, profile,
+      }))),
     )
   );
-  let trips = $state<CircuitTrip[]>([]);
+  const protocolOnlyMembers = $derived(allMembers.filter(member => !terminalAgents.some(({agent}) =>
+    matchesTerminalAgent(agent, member.workspaceId, member.profile))));
   /** R17-HITL-BADGE / TEAM-HEALTH */
   let pendingHitl = $state(0);
   let suspendedAgents = $state(0);
@@ -104,6 +102,8 @@
   let foreignAttached = $state(0);
   let outboundHostsConnected = $state(0);
   let healthGeneration = $state(0);
+  let healthError = $state('');
+  let healthLoaded = $state(false);
   let gitGuard = $state<GitGuardStats | null>(null);
   let hitlAuditItems = $state<HitlAuditItem[]>([]);
   type AgentRecentReply = AgentHistoryReply;
@@ -196,10 +196,6 @@
   const groupStore = teammateGroupStore();
   $effect(() => { groupStore.setWorkspace(workspaceId, filePath); });
 
-  function nameOf(paneId: string): string {
-    return allMembers.find((member) => member.profile.paneId === paneId)?.profile.name ?? paneId;
-  }
-
   // M1 切片二：裁决审计历史（环形 ≤50；条目无命令全文）。
   interface HitlDecisionEntry {
     ts: number;
@@ -218,6 +214,11 @@
     reason: string;
     createdAt: number;
     resolutionNonce?: string;
+    workspaceId?: string;
+    agentId?: string;
+    sessionId?: string;
+    generation?: number;
+    lease?: string;
   }
   function parseHitlPending(raw: unknown): HitlPendingItem[] {
     if (!Array.isArray(raw)) return [];
@@ -230,15 +231,22 @@
         reason: typeof r.reason === 'string' ? r.reason : '',
         resolutionNonce: typeof r.resolutionNonce === 'string' ? r.resolutionNonce : undefined,
         createdAt: typeof r.createdAt === 'number' ? r.createdAt : 0,
+        workspaceId: typeof r.workspaceId === 'string' ? r.workspaceId : undefined,
+        agentId: typeof r.agentId === 'string' ? r.agentId : undefined,
+        sessionId: typeof r.sessionId === 'string' ? r.sessionId : undefined,
+        generation: typeof r.generation === 'number' ? r.generation : undefined,
+        lease: typeof r.lease === 'string' ? r.lease : undefined,
       }];
     });
   }
   const hitlPending = $derived(parseHitlPending($agentHitlPendingStore));
 
-  /** 某成员的待审批项（initiator 可能是 paneId / agent 名 / agent id）。 */
+  /** Global display still requires the exact current protocol binding. */
   function pendingFor(m: TeammateProfile): HitlPendingItem[] {
     return hitlPending.filter(
-      (p) => p.initiator === m.paneId || p.initiator === m.name || p.initiator === m.id
+      (p) => p.workspaceId === m.workspaceId && p.initiator === m.paneId
+        && p.agentId === m.id && p.sessionId === m.sessionId
+        && p.generation === m.generation && p.lease === m.lease
     );
   }
 
@@ -285,16 +293,14 @@
       foreignAttached = Number(h?.foreignAttached ?? 0);
       outboundHostsConnected = Number(h?.outboundHostsConnected ?? 0);
       healthGeneration = Number(h?.generation ?? 0);
+      healthLoaded = true;
+      healthError = '';
     } catch {
-      suspendedAgents = 0;
-      orchDegraded = false;
-      orchLevel = 'ok';
-      foreignAttached = 0;
-      outboundHostsConnected = 0;
+      healthError = healthLoaded ? '控制面查询失败；数值为末次快照' : '控制面状态暂不可用';
       try {
         pendingHitl = await invoke<number>('get_pending_hitl_count');
       } catch {
-        pendingHitl = 0;
+        // Retain the last confirmed count while Runtime is unavailable.
       }
     }
     // Heavy: decisions / memory / git / audit — only on initial/layout refresh.
@@ -352,14 +358,6 @@
     }, 0);
   }
 
-  function eventPaneIsAgent(payload: unknown): boolean {
-    const event = payload as { workspaceId?: unknown; paneId?: unknown } | null;
-    if (!event || typeof event.workspaceId !== 'string' || typeof event.paneId !== 'string') return false;
-    return allMembers.some(({ workspaceId: id, profile }) =>
-      id === event.workspaceId && profile.paneId === event.paneId
-    );
-  }
-
   const MCP_DOC_RESOURCE = 'static/docs/mcp-integration.md';
 
   // 「MCP 接入引导」：取打包文档的磁盘绝对路径 → 内置编辑器打开（markdown 默认 preview 即只读查看，D5）。
@@ -383,18 +381,6 @@
     void refresh({ heavy: true });
     // 拉取工作区保存信息，让编组的稳定持久化键（.ridge 路径）可解析。
     void refreshWorkspaceSaveInfo();
-    const unTrip = listen(CIRCUIT_EVENT, (e) => {
-      const trip = parseCircuitTripped(e.payload);
-      if (trip) trips = [trip, ...trips].slice(0, TRIP_CAP);
-    });
-    // iter-61：标记/释放 agent（register/release_teammate_agent）后端会 emit
-    // teammate-layout-changed——立即刷新花名册，标记秒级入列（不再等 3s 轮询）。
-    const unLayout = listen('teammate-layout-changed', () => {
-      scheduleRefresh({ heavy: true });
-    });
-    const unOutput = listen('pane-output-activity', (e) => {
-      if (eventPaneIsAgent(e.payload)) scheduleHistoryRefresh();
-    });
     const unCommune = ['commune-members-changed', 'commune-task-changed', 'teammate://hitl-pending-changed']
       .map(name => listen(name, () => scheduleRefresh({ heavy: true })));
     const unConversation = listen('commune-session-update', () => scheduleHistoryRefresh());
@@ -404,10 +390,7 @@
     return () => {
       if (refreshTimer) clearTimeout(refreshTimer);
       if (historyRefreshTimer) clearTimeout(historyRefreshTimer);
-      unTrip.then((f) => f()).catch(() => {});
       unGroups.then((f) => f()).catch(() => {});
-      unLayout.then((f) => f()).catch(() => {});
-      unOutput.then((f) => f()).catch(() => {});
       for (const un of [...unCommune, unConversation]) un.then((f) => f()).catch(() => {});
     };
   });
@@ -427,6 +410,12 @@
 
   <div class="rg-scroll flex flex-1 flex-col gap-5 overflow-y-auto px-4 py-4">
     {#snippet bottomControls()}
+    {#if healthError}
+      <p role="alert" data-testid="orchestration-health-error" class="text-[11px] text-amber-400">{healthError}</p>
+    {/if}
+    {#if $hitlSync.error}
+      <p role="alert" class="text-[11px] text-red-400">{$hitlSync.error}</p>
+    {/if}
     <section class="flex flex-wrap items-center gap-1 rounded-md border border-[var(--rg-border)] p-2">
       <!-- MCP 接入引导：内置编辑器只读打开打包文档 -->
       <button
@@ -443,6 +432,7 @@
         role="switch"
         aria-checked={hitlOn}
         title={hitlOn ? '安全审批已开：危险命令需你批准' : '安全审批已关：命令直接执行'}
+        disabled={$hitlSync.pending}
         onclick={() => setTeammateHitlEnabled(!hitlOn)}
         class="flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors {hitlOn
           ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300'
@@ -503,32 +493,6 @@
         {/if}
       </section>
     {/if}
-    <!-- 异常（熔断告警）：worker 死循环被熔断时置顶；无事件则零渲染 -->
-    {#if trips.length > 0}
-      <section class="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5">
-        <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-red-400">
-          <ZapOff class="h-3 w-3" /> 异常
-          <button
-            onclick={() => (trips = [])}
-            class="ml-auto text-[10px] font-normal text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
-          >
-            清除
-          </button>
-        </h3>
-        <ul class="mt-1 space-y-1">
-          {#each trips as trip, i (i + trip.paneId + trip.reason)}
-            <li class="flex items-start gap-1.5 text-[11px] leading-snug">
-              <span class="mt-1 h-1.5 w-1.5 rounded-full bg-red-400 animate-pulse shrink-0"></span>
-              <span class="min-w-0">
-                <span class="font-medium text-red-300">{nameOf(trip.paneId)} 已熔断</span>
-                <span class="text-[var(--rg-fg-muted)]"> · {trip.reason}</span>
-              </span>
-            </li>
-          {/each}
-        </ul>
-      </section>
-    {/if}
-
     <!-- M1 切片二：审批历史（最近在上，最多显示 10；来源=workspace-memory decisions 节） -->
     {#if decisions.length > 0}
       <section>
@@ -572,7 +536,7 @@
             : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
         >
           <Bot class="h-3.5 w-3.5" /> 成员
-          <span class="font-mono text-[11px] opacity-70">{allMembers.length}</span>
+          <span class="font-mono text-[11px] opacity-70">{terminalAgents.length + protocolOnlyMembers.length}</span>
         </button>
         <button
           type="button"
@@ -602,7 +566,25 @@
       {#if teamTab === 'members'}
         <!-- 跨工作区聚合；成员行仍复用完整监控/干预组件。 -->
         <ul class="space-y-3">
-          {#each allMembers as member (member.workspaceId + ':' + member.profile.id)}
+          {#each terminalAgents as entry (terminalAgentKey(entry.agent))}
+            {@const candidate = entry.agent}
+            {@const key = terminalAgentKey(candidate)}
+            {@const member = allMembers.find(member => matchesTerminalAgent(candidate, member.workspaceId, member.profile))}
+            <TerminalAgentRow agent={candidate} workspaceName={entry.workspaceName} expanded={expandedTerminal === key}
+              onToggle={() => expandedTerminal = expandedTerminal === key ? '' : key}>
+              {#if member}
+                <AgentMemberRow profile={member.profile} agentId={member.profile.id} name={member.profile.name}
+                  workspaceId={member.workspaceId} sourceLabel={member.workspaceName} pending={pendingFor(member.profile)}
+                  recentReply={recentReplyFor(member.profile, member.workspaceId)} onRefresh={() => void refreshSharedState()} />
+              {:else}
+                <li class="text-[11px] text-[var(--rg-fg-muted)]">
+                  <p>{candidate.reason}</p>
+                  <button class="mt-2 text-[var(--rg-accent)]" onclick={() => connectDiscovered(candidate.workspaceId, candidate.paneId)}>连接已有协议端点</button>
+                </li>
+              {/if}
+            </TerminalAgentRow>
+          {/each}
+          {#each protocolOnlyMembers as member (member.workspaceId + ':' + member.profile.id)}
             {@const m = member.profile}
             {@const grp = member.workspaceId === workspaceId
               ? groupOfAgent(groupStore.groups, m.id)
@@ -620,9 +602,9 @@
               onRefresh={() => void refreshSharedState()}
             />
           {/each}
-          {#if allMembers.length === 0}
+          {#if allMembers.length === 0 && terminalAgents.length === 0}
             <li class="rounded-lg border border-dashed border-[var(--rg-border)] px-3 py-8 text-center text-[12px] leading-5 text-[var(--rg-fg-muted)]">
-              暂无成员——在任一分屏里启动 claude / codex 等 agent CLI，会自动入册。
+              所有工作区暂无 Agent。请在终端中启动，侧栏将自动显示。
             </li>
           {/if}
         </ul>

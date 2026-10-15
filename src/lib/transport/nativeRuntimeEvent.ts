@@ -4,7 +4,8 @@ export type { Event, EventCallback, EventName, EventTarget, Options, UnlistenFn 
 export { TauriEvent } from '@ridge/native-os-event';
 
 function osEvent(event: string) {
-  return event.startsWith('tauri://') || ['ridge://memory-reclaim', 'ridge://view-resume', 'auth-focus'].includes(event);
+  return event.startsWith('tauri://') || ['ridge://memory-reclaim', 'ridge://memory-restore', 'ridge://auth-focus',
+    'editor-window-open-file', 'editor-window-closed'].includes(event);
 }
 export async function listen<T>(event: string, handler: native.EventCallback<T>, options?: native.Options): Promise<native.UnlistenFn> {
   return osEvent(event) ? native.listen(event, handler, options) : bridge.listen(event, handler);

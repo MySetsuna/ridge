@@ -224,8 +224,6 @@ function isWorkspaceScopedMethod(method: string): boolean {
       'read_agent_recent_replies',
       'set_teammate_groups',
       'resume_agent_session',
-      'register_teammate_agent',
-      'release_teammate_agent',
     ].includes(method)
   );
 }

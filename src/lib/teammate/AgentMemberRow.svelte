@@ -96,8 +96,8 @@
     ['running', 'dispatching'].includes(profile?.currentDelivery?.execution?.state ?? '')
       ? profile?.currentDelivery : deliveryReceipt ?? profile?.currentDelivery,
   );
-  const canSend = $derived(profile?.canSend === true && profile.online === true && profile.capabilities?.includes('acp.prompt') === true);
-  const canCancel = $derived(profile?.canCancel === true && profile.online === true && profile.capabilities?.includes('acp.cancel') === true
+  const canSend = $derived(profile?.canSend === true && profile.online === true && profile.capabilities?.some(capability => capability === 'conversation.prompt' || capability === 'acp.prompt') === true);
+  const canCancel = $derived(profile?.canCancel === true && profile.online === true && profile.capabilities?.some(capability => capability === 'conversation.cancel' || capability === 'acp.cancel') === true
     && ['running', 'dispatching'].includes(activeDelivery?.execution?.state ?? ''));
   const attention = $derived(
     workspaceId && paneId ? $agentPaneAttentionStore[`${workspaceId}:${paneId}`] : undefined

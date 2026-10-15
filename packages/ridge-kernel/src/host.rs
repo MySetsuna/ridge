@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::client::{
     create_domain_pty, create_domain_pty_with_command, destroy_domain_pty, list_domain_ptys,
-    read_domain_workspaces, request_json, resize_domain_pty, running_endpoint, write_domain_pty,
+    read_domain_workspaces, request_json, running_endpoint,
     DomainPtyLaunch, KernelPtyInfo,
 };
 use crate::registry::{read_endpoint, KernelEndpoint};
@@ -32,11 +32,13 @@ use ridge_remote::serve::UaServeConfig;
 use crate::host_core as core_host;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TerminalSubscription { pub(crate) activation: u64, pub(crate) lease: Uuid }
+pub(crate) type TerminalSubscriptions = Arc<Mutex<HashMap<(Uuid, Uuid), TerminalSubscription>>>;
+
 const WORKSPACE_URI_PREFIX: &str = "ridge://kernel-workspace/";
-/// Direct kernel hosts do not expose the desktop-only teammate controller.
-/// The LAN client reads this hint from the workspace snapshot before mounting
-/// background roster polling.
-const KERNEL_HOST_CAPABILITIES: &[&str] = &["pane", "fs", "search", "workspace", "theme"];
+/// Every Host advertises the same migrated domain services.
+const KERNEL_HOST_CAPABILITIES: &[&str] = &["pane", "invoke", "fs", "git", "search", "workspace", "theme", "teammate"];
 
 pub fn implemented_capabilities() -> &'static [&'static str] {
     KERNEL_HOST_CAPABILITIES
@@ -96,7 +98,8 @@ pub struct KernelHost {
     /// （`pre_verify_gate` / `post_verify_record` / `is_blacklisted` /
     /// `totp_trust_check` / `totp_trust_record`）。
     pub totp_throttle: Arc<VerifyThrottle>,
-    pub sessions: SessionStore,
+    pub sessions: Arc<SessionStore>,
+    pub access: Arc<crate::remote_control::Access>,
     pub port: u16,
     pub lan_ip: String,
     pub machine_name: String,
@@ -149,7 +152,7 @@ impl KernelHost {
             None,
             Some(workspace_id),
             "shell",
-            Some("remote-lan"),
+            Some("ridge-interactive"),
         )?;
         Ok(pane_id)
     }
@@ -389,8 +392,12 @@ impl KernelHost {
             None,
         )
         .ok()
-        .and_then(|value| value.get("layout").cloned());
-        raw.map(|value| kernel_layout_to_ui(value, snapshot))
+        ;
+        raw.map(|value| {
+            let mut layout=kernel_layout_to_ui(value["layout"].clone(),snapshot);
+            project_foreign_panes(&mut layout,&value["foreignPanes"]);
+            layout
+        })
             .unwrap_or_else(|| {
             let panes = self.panes(workspace_id, snapshot);
             match panes.as_slice() {
@@ -420,7 +427,14 @@ impl KernelHost {
     }
 
     fn pane_id(&self, args: &Value, snapshot: &KernelSnapshot) -> Result<Uuid, String> {
-        Self::resolve_pane_id_with_refresh(args, snapshot, || self.snapshot())
+        Self::resolve_pane_id_with_refresh(args, snapshot, || self.snapshot()).or_else(|error|{
+            let pane=args["paneId"].as_str().and_then(|id|Uuid::parse_str(id).ok());
+            let workspace=args["workspaceId"].as_str().and_then(|id|Uuid::parse_str(id).ok());
+            if let (Some(pane),Some(workspace))=(pane,workspace){
+                let metadata=request_json(&self.current_endpoint(),"GET",&format!("/v1/domain/workspaces/{workspace}"),None)?;
+                if metadata["foreignPanes"].get(pane.to_string()).is_some(){return Ok(pane);}
+            }Err(error)
+        })
     }
 
     /// Resolve pane_id from the dispatcher-captured snapshot. On failure, if a
@@ -521,6 +535,7 @@ impl KernelHost {
                     "pane {pane_id} does not belong to workspace {workspace_id}"
                 ));
             }
+            if detail["foreignPanes"].get(pane_id.to_string()).is_some(){return Err("foreign view cannot own a local PTY".into());}
             let shell = args.get("shell").and_then(Value::as_str);
             let cwd = args.get("cwd").and_then(Value::as_str);
             create_domain_pty(
@@ -530,7 +545,7 @@ impl KernelHost {
                 cwd,
                 Some(workspace_id),
                 "shell",
-                Some("remote-lan"),
+                Some("ridge-interactive"),
             )?;
             return Ok(pane_id);
         }
@@ -574,7 +589,7 @@ impl KernelHost {
             cwd,
             Some(workspace_id),
             "shell",
-            Some("remote-lan"),
+            Some("ridge-interactive"),
         )?;
         Ok(pane_id)
     }
@@ -716,11 +731,11 @@ impl HostAuth for KernelHost {
     fn is_blacklisted(&self, device_id: &str, ip: &str) -> bool {
         // 当前实现：throttle 的临时 ban 已经在 pre_verify_gate 拦截，持久黑名单
         // 留待桌面共享服务侧补齐；本处只把 throttle 命中一并视为「黑名单态」。
-        let _ = (device_id, ip);
-        false
+        self.access.blacklist.is_blocked(device_id,ip)
     }
 
     fn pre_verify_gate(&self, ip: &str, device_id: &str) -> Result<(), ()> {
+        if self.is_blacklisted(device_id,ip) {return Err(());}
         match self.totp_throttle.check(ip, device_id) {
             ridge_remote::auth::ThrottleDecision::Allow => Ok(()),
             _ => Err(()),
@@ -731,19 +746,23 @@ impl HostAuth for KernelHost {
         if valid {
             self.totp_throttle.record_success(ip, device_id);
         } else {
-            self.totp_throttle.record_failure(ip, device_id);
+            if self.totp_throttle.record_failure(ip, device_id) {
+                self.access.blacklist.add(ridge_remote::access::BlacklistEntry {
+                    id:Uuid::new_v4().to_string(),device_id:(!device_id.is_empty()).then(||device_id.into()),ip:Some(ip.into()),
+                    label:if device_id.is_empty(){format!("auto:{ip}")}else{format!("auto:{}",device_id.chars().take(8).collect::<String>())},
+                    added_at:std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                });
+            }
         }
     }
 
     fn totp_trust_check(&self, ctrl_pub: &[u8]) -> bool {
         // §7.4 trust-grant：复用 CLI 共享 grant_store（与 cloud 腿 session_control 同源）。
-        let identity = self.totp.current_identity();
-        ridge_core::grant_store::check(&identity, ctrl_pub)
+        self.totp.trust_check(ctrl_pub)
     }
 
     fn totp_trust_record(&self, ctrl_pub: &[u8]) {
-        let identity = self.totp.current_identity();
-        ridge_core::grant_store::record(&identity, ctrl_pub);
+        self.totp.trust_record(ctrl_pub);
     }
 }
 
@@ -796,9 +815,9 @@ impl RemoteHost for KernelHost {
     fn serve_websocket(
         self: Arc<Self>,
         socket: WebSocket,
-        _conn: WsConn,
+        conn: WsConn,
     ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        Box::pin(async move { run_ws(socket, self, None).await })
+        Box::pin(async move { run_ws(socket, self, None,Some(conn)).await })
     }
 }
 
@@ -809,7 +828,7 @@ impl KernelHost {
         connection: WsConn,
         origin: String,
     ) {
-        run_ws(socket, self, Some((connection, origin))).await;
+        run_ws(socket, self, Some((connection, origin)),None).await;
     }
 }
 
@@ -835,6 +854,9 @@ fn kernel_layout_to_ui(value: Value, snapshot: &KernelSnapshot) -> Value {
             .find(|pty| pty.pty_id.to_string() == id)
         {
             result["cwd"] = pty.cwd.clone().map(Value::String).unwrap_or(Value::Null);
+            if let Some((socket,global))=ridge_tmux::attachment_origin(pty.pty_id) {
+                result["origin"]=json!({"kind":"headless","host_id":"headless","host_label":socket,"session_id":format!("{socket}:{global}")});
+            }
             result["shell_kind"] = pty
                 .program
                 .clone()
@@ -865,6 +887,15 @@ fn kernel_layout_to_ui(value: Value, snapshot: &KernelSnapshot) -> Value {
         });
     }
     json!({ "type": "leaf", "id": Uuid::nil().to_string() })
+}
+
+fn project_foreign_panes(node:&mut Value,bindings:&Value){
+    if node["type"]=="leaf" {
+        if let Some(binding)=node["id"].as_str().and_then(|id|bindings.get(id)) {
+            node["title"]=binding["title"].clone();node["cwd"]=binding["cwd"].clone();
+            node["origin"]=json!({"kind":binding["kind"],"host_id":binding["host_id"],"host_label":binding["host_label"],"session_id":binding["session_id"],"workspace_id":binding["workspace_id"]});
+        }
+    }else if let Some(children)=node["children"].as_array_mut(){for child in children{project_foreign_panes(child,bindings);}}
 }
 
 struct DispatchCounters {
@@ -919,19 +950,34 @@ impl DispatchTrace {
     }
 }
 
-async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsConn, String)>) {
+struct RemoteConnection {host:Arc<KernelHost>,connection:WsConn,id:u64,killed:Arc<AtomicBool>}
+impl Drop for RemoteConnection {fn drop(&mut self){self.host.access.clients.unregister(self.id);}}
+impl RemoteConnection {
+    fn authorized(&self)->bool {
+        !self.killed.load(Ordering::Relaxed)&&self.host.remote_enabled.load(Ordering::Acquire)
+            && !self.host.is_blacklisted(&self.connection.device_id,&self.connection.remote_addr)
+            && self.connection.token.as_deref().is_none_or(|token|self.host.sessions.validate_token_bound(token,&self.connection.device_id,&self.connection.remote_addr))
+    }
+}
+async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsConn, String)>,remote:Option<WsConn>) {
+    let remote=remote.map(|connection| {
+        let (id,killed)=host.access.clients.register(connection.remote_addr.clone(),String::new(),connection.device_id.clone(),connection.token.clone());
+        Arc::new(RemoteConnection {host:host.clone(),connection,id,killed})
+    });
     // P2-B8: surface the active kernel transport once per WS upgrade.
     log_kernel_transport_mode();
     let (mut tx, mut rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::channel::<Message>(64);
-    let connection_id = Uuid::new_v4().to_string();
+    let connection_id = binding.as_ref().and_then(|(connection,_)|connection.token.as_deref())
+        .and_then(|token|host.sessions.origin_bound_connection_id(token))
+        .unwrap_or_else(||Uuid::new_v4().to_string());
     let endpoint = host.current_endpoint();
     let Ok(mut events_request) = format!("ws://127.0.0.1:{}/v1/domain/events?connectionId={connection_id}&native={}", endpoint.port, binding.is_some()).into_client_request() else { return; };
     let Ok(token) = endpoint.token.parse() else { return; };
     events_request.headers_mut().insert("x-ridge-kernel-token", token);
     let Ok(Ok((mut events, _))) = tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(events_request)).await else { return; };
 
-    let subscriptions = Arc::new(Mutex::new(HashMap::<(Uuid, Uuid), u64>::new()));
+    let subscriptions: TerminalSubscriptions = Arc::new(Mutex::new(HashMap::new()));
     let runtime = tokio::runtime::Handle::current();
     let Ok(initial) = tokio::task::spawn_blocking({
         let host = host.clone();
@@ -962,9 +1008,10 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsCon
     let dispatch_binding = binding.clone();
     let dispatch_connection = connection_id.clone();
     let dispatch_view = view.clone();
+    let dispatch_remote=remote.clone();
     let _dispatch_worker = tokio::task::spawn_blocking(move || {
         while let Some((value, trace)) = dispatch_rx.blocking_recv() {
-            if !presentation_authorized(&dispatch_host, dispatch_binding.as_ref()) {
+            if !presentation_authorized(&dispatch_host, dispatch_binding.as_ref()) || dispatch_remote.as_ref().is_some_and(|remote|!remote.authorized()) {
                 break;
             }
             if let Some(trace) = trace {
@@ -995,9 +1042,10 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsCon
     let input_binding = binding.clone();
     let input_connection = connection_id.clone();
     let input_view = view.clone();
+    let input_remote=remote.clone();
     let _input_worker = tokio::task::spawn_blocking(move || {
         while let Some((value, trace)) = input_rx.blocking_recv() {
-            if !presentation_authorized(&input_host, input_binding.as_ref()) {
+            if !presentation_authorized(&input_host, input_binding.as_ref()) || input_remote.as_ref().is_some_and(|remote|!remote.authorized()) {
                 break;
             }
             if let Some(trace) = trace {
@@ -1060,7 +1108,7 @@ async fn run_ws(socket: WebSocket, host: Arc<KernelHost>, binding: Option<(WsCon
     }
     let _ = tx.send(Message::Text(last_panes_frame.to_string())).await;
     loop {
-        if !presentation_authorized(&host, binding.as_ref()) {
+        if !presentation_authorized(&host, binding.as_ref()) || remote.as_ref().is_some_and(|remote|!remote.authorized()) {
             break;
         }
         tokio::select! {
@@ -1146,26 +1194,53 @@ fn dispatch_shared_core(host: &KernelHost, method: &str, args: &Value, native: b
     let response = request_json(&host.current_endpoint(), "POST", "/v1/domain/commands",
         Some(&json!({"method":method,"args":args,"native":native,"roots":roots,"connectionId":connection_id}))).map_err(internal)?;
     if response["ok"] == true { return Ok(response["value"].clone()); }
-    if response["error"]["code"] == -32601 && matches!(method,"git_stage"|"git_unstage"|"git_commit") {
-        let mut request = json!({"operation":method.trim_start_matches("git_"),"repo_root":args["repoRoot"]});
-        if method=="git_commit" {request["message"]=args["message"].clone();request["amend"]=args["amend"].clone();}
-        else {request["paths"]=args["paths"].clone();}
-        serde_json::from_value::<crate::domain::GitMutationRequest>(request.clone()).map_err(|error|internal(format!("invalid Git mutation: {error}")))?;
-        return crate::client::mutate_domain_git(&host.current_endpoint(),&request).map(|_|Value::Null).map_err(internal);
-    }
     Err(serde_json::from_value(response["error"].clone()).unwrap_or_else(|_|internal("invalid shared Runtime command error".into())))
 }
 
+pub(crate) fn invoke_remote_command(host:&Arc<KernelHost>,runtime:&tokio::runtime::Handle,view:&Arc<Mutex<Option<Uuid>>>,subscriptions:&TerminalSubscriptions,connection:&str,method:&str,args:&Value)->Result<Value,Value> {
+    let invalid=|message:String|ridge_core::CoreError::InvalidArgs(message).to_json_rpc();
+    let method=ridge_core::protocol_guard::admit_remote_method(method).map_err(invalid)?;
+    ridge_core::dispatch::validate_request(&method,args,&core_host::runtime_ctx(&[],false)).map_err(|error|error.to_json_rpc())?;
+    let snapshot=host.snapshot();
+    {
+        let mut selected=view.lock().map_err(|_|invalid("remote client selection unavailable".into()))?;
+        if selected.is_none() {*selected=snapshot.active.or_else(||snapshot.ids.first().copied());}
+    }
+    let roots=host.roots(&snapshot);
+    ridge_core::dispatch::validate_request(&method,args,&core_host::runtime_ctx(&roots,false)).map_err(|error|error.to_json_rpc())?;
+    // Byte subscriptions require the actual transport's output lane, never an HTTP sink.
+    if matches!(method.as_str(),"subscribe_pane_raw"|"subscribe-pane"|"register_pane_delta_channel") {
+        return Err(invalid("terminal stream operations require the authenticated terminal transport".into()));
+    }
+    let (out,_receiver)=mpsc::channel(1);
+    let wire=handle_client_text(&json!({"jsonrpc":"2.0","id":1,"method":method,"params":args}),host,runtime,&out,subscriptions,view,None,connection)
+        .ok_or_else(||invalid("remote method produced no reply".into()))?;
+    let reply:Value=serde_json::from_str(&wire).map_err(|error|invalid(error.to_string()))?;
+    if reply["error"].is_object() {Err(reply["error"].clone())} else {Ok(reply["result"].clone())}
+}
+
+pub(crate) fn invoke_remote_frame(host:&Arc<KernelHost>,runtime:&tokio::runtime::Handle,view:&Arc<Mutex<Option<Uuid>>>,subscriptions:&TerminalSubscriptions,connection:&str,frame:&Value)->Result<Option<Value>,Value>{
+    let method=frame.get("method").or_else(||frame.get("cmd")).or_else(||frame.get("type")).and_then(Value::as_str).unwrap_or("");
+    ridge_core::protocol_guard::admit_remote_method(method).map_err(|error|ridge_core::CoreError::InvalidArgs(error).to_json_rpc())?;
+    if matches!(method,"subscribe-pane"|"subscribe_pane_raw"|"register_pane_delta_channel"){return Err(ridge_core::CoreError::InvalidArgs("terminal stream requires authenticated transport".into()).to_json_rpc());}
+    let (output,_receiver)=mpsc::channel(1);
+    handle_client_text(frame,host,runtime,&output,subscriptions,view,None,connection).map(|wire|serde_json::from_str(&wire).map_err(|error|ridge_core::CoreError::InvalidArgs(error.to_string()).to_json_rpc())).transpose()
+}
 fn handle_client_text(
     value: &Value,
     host: &Arc<KernelHost>,
     runtime: &tokio::runtime::Handle,
     out: &mpsc::Sender<Message>,
-    subscriptions: &Arc<Mutex<HashMap<(Uuid, Uuid), u64>>>,
+    subscriptions: &TerminalSubscriptions,
     view: &Arc<Mutex<Option<Uuid>>>,
     binding: Option<&(WsConn, String)>,
     connection_id: &str,
 ) -> Option<String> {
+    if value["type"]=="data-request" {
+        let request=json!({"type":"invoke-request","cmd":value["method"],"args":value,"_reqId":value["_reqId"]});
+        let wire=handle_client_text(&request,host,runtime,out,subscriptions,view,binding,connection_id)?;
+        let mut reply:Value=serde_json::from_str(&wire).ok()?;reply["type"]=json!("data-result");return Some(reply.to_string());
+    }
     let jsonrpc = value["jsonrpc"] == "2.0";
     let invoke = value["type"] == "invoke-request";
     let method = value
@@ -1205,6 +1280,38 @@ fn handle_client_text(
             )
         }
     };
+    if (jsonrpc||invoke)&&matches!(method,"clear_pane_terminal"|"toggle_mode"|"attach_host_session"|"detach_host_session"|"list_native_sessions"|"new_headless_session"|"terminate_native_session"|"summon_native_session") {
+        let mut args=args.clone();
+        if matches!(method,"clear_pane_terminal"|"toggle_mode"|"attach_host_session"|"detach_host_session"|"summon_native_session")&&args["workspaceId"].is_null() {args["workspaceId"]=view.lock().ok().and_then(|view|*view).map(|id|json!(id)).unwrap_or(Value::Null);}
+        let native=binding.is_some();let roots=if native {Vec::new()} else {host.roots(&host.snapshot())};
+        let result=dispatch_shared_core(host,method,&args,native,&roots,connection_id);
+        if jsonrpc {return value.get("id").map(|id|match result {Ok(value)=>ridge_remote::rpc::result_response(id,value),Err(error)=>ridge_remote::rpc::error_response(id,&error)}.to_string());}
+        return reply(result.map_err(|error|error.message));
+    }
+    if (jsonrpc || invoke) && matches!(method,"save_workspace"|"list_saved_workspaces"|"list_workspace_history"|"restore_workspace"|"delete_saved_workspace"|"delete_workspace_history"|"rename_saved_workspace"|"rename_workspace_history"|"toggle_pin_workspace_history") {
+        let native=binding.is_some();
+        let roots=if native {Vec::new()} else {host.roots(&host.snapshot())};
+        let mut args=args.clone();
+        if method=="save_workspace" && args.get("workspaceId").is_none() {
+            args["workspaceId"]=view.lock().ok().and_then(|view|*view).map(|id|json!(id)).unwrap_or(Value::Null);
+        }
+        let result=dispatch_shared_core(host,method,&args,native,&roots,connection_id);
+        if method=="restore_workspace" {
+            if let Ok(value)=&result {
+                if let Some(id)=value.as_str().and_then(|id|Uuid::parse_str(id).ok()) {
+                    if let Ok(mut view)=view.lock() {*view=Some(id);}
+                    if let Some(token)=binding.and_then(|(connection,_)|connection.token.as_deref()) {host.sessions.set_origin_bound_workspace(token,&id.to_string());}
+                }
+            }
+        }
+        if jsonrpc {
+            return value.get("id").map(|id|match result {
+                Ok(value)=>ridge_remote::rpc::result_response(id,value),
+                Err(error)=>ridge_remote::rpc::error_response(id,&error),
+            }.to_string());
+        }
+        return reply(result.map_err(|error|error.message));
+    }
     if (jsonrpc || invoke)
         && matches!(
             method,
@@ -1235,7 +1342,7 @@ fn handle_client_text(
                 "get_workspace_save_info" => "info",
                 "list_workspace_save_info" => "associations",
                 "get_default_workspace_save_dir" => "default-directory",
-                _ => "list",
+                _ => "saved-list",
             };
             let selected = *view.lock().map_err(|_| "client selection unavailable")?;
             let response = request_json(
@@ -1251,7 +1358,13 @@ fn handle_client_text(
                     .unwrap_or("workspace file operation failed")
                     .into());
             }
-            let value = response["value"].clone();
+            let mut value = response["value"].clone();
+            if method == "list_saved_workspace_files" {
+                let ctx = core_host::runtime_ctx(&roots, native);
+                value = json!(value.as_array().into_iter().flatten().filter(|entry|
+                    entry["path"].as_str().is_some_and(|path|
+                        ctx.capabilities().root_scope().is_allowed(path))).collect::<Vec<_>>());
+            }
             if method == "open_workspace_from_file" {
                 let id = value["workspaceId"]
                     .as_str()
@@ -1274,10 +1387,11 @@ fn handle_client_text(
         return reply(result);
     }
     if (jsonrpc || invoke)
+        && method != "$/hello"
         && (!is_kernel_host_method(method)
             || matches!(
                     method,
-                    "get_theme_data" | "set_active_theme" | "detect_available_shells" | "get_file_tree"
+                    "set_user_default_cwd" | "get_theme_data" | "set_active_theme" | "detect_available_shells" | "get_file_tree"
                         | "read_file"
                         | "text_search"
                         | "load_terminal_font_faces"
@@ -1342,7 +1456,8 @@ fn handle_client_text(
             });
         return reply(result);
     }
-    if matches!(method, "list-panes" | "list-workspace-panes") {
+    if method=="list-workspaces" {return Some(client_workspaces_frame(host,view).to_string());}
+    if method=="list-panes" {
         return Some(client_panes_frame(host, view).to_string());
     }
     let mut scoped = value.clone();
@@ -1359,6 +1474,7 @@ fn handle_client_text(
     if let (Some(id), Some(args)) = (selected, params.as_object_mut()) {
         args.entry("workspaceId").or_insert_with(|| json!(id));
     }
+    if matches!(method,"subscribe-pane"|"subscribe_pane_raw"|"register_pane_delta_channel"|"write_terminal_input"|"get_terminal_snapshot"|"get_terminal_history"){params["_kernelConnection"]=json!(connection_id);}
     let answer = handle_text(&scoped, host, runtime, out, subscriptions)?;
     // Creating a workspace selects it only for the creating presentation.
     if matches!(method, "create_workspace" | "create-workspace") {
@@ -1408,7 +1524,7 @@ fn handle_text(
     host: &Arc<KernelHost>,
     runtime: &tokio::runtime::Handle,
     out_tx: &mpsc::Sender<Message>,
-    subscriptions: &Arc<Mutex<HashMap<(Uuid, Uuid), u64>>>,
+    subscriptions: &TerminalSubscriptions,
 ) -> Option<String> {
     if value.get("jsonrpc").and_then(Value::as_str) == Some("2.0") {
         let method = value.get("method").and_then(Value::as_str).unwrap_or("");
@@ -1454,7 +1570,14 @@ fn handle_text(
     }
     match value.get("type").and_then(Value::as_str).unwrap_or("") {
         "ping" => Some(json!({"type":"pong"}).to_string()),
-        "list-panes" | "list-workspace-panes" => Some(panes_frame(host).to_string()),
+        "list-panes" => Some(panes_frame(host).to_string()),
+        "list-workspace-panes" => {
+            let snapshot=host.snapshot();
+            match KernelHost::workspace_id_from_snapshot(&snapshot,value["workspaceId"].as_str()) {
+                Ok(workspace)=>Some(json!({"type":"workspace-panes","workspaceId":workspace,"panes":host.panes(workspace,&snapshot),"_reqId":value["_reqId"]}).to_string()),
+                Err(error)=>Some(json!({"type":"workspace-panes","_reqId":value["_reqId"],"error":error.to_string(),"panes":[]}).to_string()),
+            }
+        },
         "subscribe-pane" => {
             let snapshot = host.snapshot();
             start_subscription(value, host, &snapshot, runtime, out_tx, subscriptions);
@@ -1584,7 +1707,7 @@ fn dispatch(
     host: &Arc<KernelHost>,
     runtime: &tokio::runtime::Handle,
     out_tx: &mpsc::Sender<Message>,
-    subscriptions: &Arc<Mutex<HashMap<(Uuid, Uuid), u64>>>,
+    subscriptions: &TerminalSubscriptions,
 ) -> Result<Value, String> {
     // Unsupported SPA probes must fail before the snapshot projection. The
     // projection performs multiple kernel HTTP calls; keeping it ahead of the
@@ -1621,7 +1744,7 @@ fn dispatch(
             .lock()
             .map_err(|_| "subscription lock")?
             .get(&(workspace, id))
-            != Some(&activation)
+            .map(|subscription| subscription.activation) != Some(activation)
         {
             return Err("terminal activation changed".into());
         }
@@ -1629,7 +1752,7 @@ fn dispatch(
             &host.current_endpoint(),
             "POST",
             &format!("/v1/domain/ptys/{id}/terminal"),
-            Some(&json!({"method":method,"params":args})),
+            Some(&json!({"method":method,"params":args,"connectionId":args["_kernelConnection"]})),
         )?;
         if reply["ok"] != true {
             return Err(reply["error"]
@@ -1665,7 +1788,8 @@ fn dispatch(
                 input_sequence = args.get("inputSequence").or_else(|| args.get("input_sequence")).and_then(serde_json::Value::as_u64).unwrap_or(0),
                 bytes = data.len()
             );
-            let result = write_domain_pty(&endpoint, pane_id, data.as_bytes());
+            let workspace = args["workspaceId"].as_str().and_then(|value| Uuid::parse_str(value).ok()).ok_or("terminal workspace required")?;
+            let result = crate::client::write_domain_pty_in_workspace(&endpoint, pane_id, workspace, data.as_bytes());
             crate::host_trace!(
                 ev = "after_write",
                 pane_id = %pane_id,
@@ -1696,13 +1820,7 @@ fn dispatch(
             | "get_shell_history"
             | "list_saved_workspaces"
             | "list_workspace_save_info"
-            | "list_native_sessions"
-            | "set_user_default_cwd"
-            | "start_watching_paths"
-            | "get_pane_foreground_process"
-            | "get_pty_runtime_identity"
-            | "get_workspace_memory"
-            | "get_orchestration_health"
+
     ) {
         return match method {
             "detect_available_shells" => {
@@ -1761,7 +1879,8 @@ fn dispatch(
                 input_sequence = args.get("inputSequence").or_else(|| args.get("input_sequence")).and_then(serde_json::Value::as_u64).unwrap_or(0),
                 bytes = data.len()
             );
-            let result = write_domain_pty(&endpoint, id, data.as_bytes());
+            let workspace = KernelHost::workspace_id_from_snapshot(&snapshot, args["workspaceId"].as_str())?;
+            let result = crate::client::write_domain_pty_in_workspace(&endpoint, id, workspace, data.as_bytes());
             crate::host_trace!(
                 ev = "after_write",
                 pane_id = %id,
@@ -1779,7 +1898,8 @@ fn dispatch(
             let rows = args.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
             let cols = args.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
             let owner = pane_resize_owner(args);
-            resize_domain_pty(&host.current_endpoint(), id, cols, rows)?;
+            let resized=request_json(&host.current_endpoint(),"POST",&format!("/v1/domain/ptys/{id}/resize"),Some(&json!({"cols":cols,"rows":rows,"owner":owner,"workspace_id":workspace_id})))?;
+            if resized["ok"]!=true{return Err(resized["error"].as_str().unwrap_or("terminal resize rejected").into());}
             let _ = out_tx.try_send(Message::Text(
                 json!({
                     "type": "pty-resized",
@@ -1814,8 +1934,10 @@ fn dispatch(
             Ok(json!({"success":true,"workspaceId":workspace_id,"paneId":pane_id}))
         }
         "close_pane" | "close-pane" => {
-            let pane_id = host.pane_id(args, &snapshot)?;
-            destroy_domain_pty(&host.current_endpoint(), pane_id)?;
+            let workspace=host.workspace_id(args["workspaceId"].as_str())?;
+            let pane_id=match args["paneId"].as_str(){Some(id)=>Uuid::parse_str(id).map_err(|_|"invalid pane id")?,None=>host.pane_id(args,&snapshot)?};
+            let reply=request_json(&host.current_endpoint(),"POST",&format!("/v1/domain/workspaces/{workspace}/panes/{pane_id}/close"),None)?;
+            if reply["ok"]!=true{return Err(reply["error"].as_str().unwrap_or("pane close rejected").into());}
             Ok(json!({"success":true,"paneId":pane_id}))
         }
         "switch_workspace" => {
@@ -1870,7 +1992,7 @@ fn dispatch(
                     cwd,
                     workspace_id: Some(workspace_id),
                     role: "shell",
-                    launch_profile: Some("remote-lan"),
+                    launch_profile: Some(if shell_args.is_empty() { "ridge-interactive" } else { "remote-lan" }),
                     env: Some(&HashMap::new()),
                     cols: None,
                     rows: None,
@@ -1893,7 +2015,8 @@ fn dispatch(
             json!([{"name":"kernel workspace","path":format!("{WORKSPACE_URI_PREFIX}{}",host.workspace_id(None)?) }]),
         ),
         "open_workspace_from_file" => Ok(Value::String(host.workspace_id(None)?.to_string())),
-        "use_global_workspace" | "activate_pane_pty" | "set_pane_delta_mode" => Ok(Value::Null),
+        "activate_pane_pty" => { host.pane_id(args, &snapshot)?; Ok(Value::Null) },
+        "use_global_workspace" | "set_pane_delta_mode" => Ok(Value::Null),
         other => Err(format!("method not supported by kernel host: {other}")),
     }
 }
@@ -1942,13 +2065,7 @@ fn is_kernel_host_method(method: &str) -> bool {
             | "list_saved_workspace_files"
             | "list_saved_workspaces"
             | "list_workspace_save_info"
-            | "list_native_sessions"
-            | "set_user_default_cwd"
-            | "start_watching_paths"
-            | "get_pane_foreground_process"
-            | "get_pty_runtime_identity"
-            | "get_workspace_memory"
-            | "get_orchestration_health"
+
             | "open_workspace_from_file"
             | "use_global_workspace"
             | "activate_pane_pty"
@@ -2112,7 +2229,7 @@ fn start_subscription(
     snapshot: &KernelSnapshot,
     runtime: &tokio::runtime::Handle,
     out_tx: &mpsc::Sender<Message>,
-    subscriptions: &Arc<Mutex<HashMap<(Uuid, Uuid), u64>>>,
+    subscriptions: &TerminalSubscriptions,
 ) {
     let Some((workspace_id, pane_id)) = subscription_target(args, snapshot) else {
         return;
@@ -2124,31 +2241,45 @@ fn start_subscription(
     else {
         return;
     };
+    let subscription = TerminalSubscription { activation, lease: Uuid::new_v4() };
     if let Ok(mut active) = subscriptions.lock() {
-        if active.get(&(workspace_id, pane_id)) == Some(&activation) {
+        if active.get(&(workspace_id, pane_id)).is_some_and(|current| current.activation > activation) {
             return;
         }
-        active.insert((workspace_id, pane_id), activation);
+        active.insert((workspace_id, pane_id), subscription);
     } else {
         return;
     }
     let endpoint = host.current_endpoint();
     let tx = out_tx.clone();
+    let connection=args["_kernelConnection"].as_str().unwrap_or("legacy").to_owned();
     let subscriptions = subscriptions.clone();
     runtime.spawn(async move {
         let run = async {
-            let mut request = format!("ws://127.0.0.1:{}/v1/domain/ptys/{}/terminal/stream?activation={}", endpoint.port, pane_id, activation).into_client_request().map_err(|error| error.to_string())?;
+            let mut url=url::Url::parse(&format!("ws://127.0.0.1:{}/v1/domain/ptys/{}/terminal/stream",endpoint.port,pane_id)).map_err(|error|error.to_string())?;
+            url.query_pairs_mut().append_pair("activation",&activation.to_string()).append_pair("connection",&connection).append_pair("workspace",&workspace_id.to_string());
+            let mut request=url.as_str().into_client_request().map_err(|error|error.to_string())?;
             request.headers_mut().insert("x-ridge-kernel-token", endpoint.token.parse().map_err(|_| "invalid kernel token")?);
-            let (mut socket, _) = tokio_tungstenite::connect_async(request).await.map_err(|error| error.to_string())?;
+            let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(request)).await
+                .map_err(|_| "Runtime terminal subscription timed out".to_string())?.map_err(|error| error.to_string())?;
             loop {
-                if tx.is_closed() || subscriptions.lock().map(|active| active.get(&(workspace_id, pane_id)) != Some(&activation)).unwrap_or(true) { break; }
+                if tx.is_closed() || subscriptions.lock().map(|active| active.get(&(workspace_id, pane_id)) != Some(&subscription)).unwrap_or(true) { break; }
                 tokio::select! {
                     frame = socket.next() => match frame {
                         Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(bytes))) if bytes.first() == Some(&0x13) && bytes.len() <= ridge_term::terminal_protocol::MAX_FRAME_BYTES => {
                             if tx.send(Message::Binary(bytes)).await.is_err() { break; }
                         }
+                        Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(_))) => return Err("invalid Runtime terminal frame".to_string()),
+                        Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                            if serde_json::from_str::<Value>(&text).is_ok_and(|event|event["type"]=="event"&&event["name"]=="pane-meta-changed"
+                                &&event["payload"]["workspaceId"]==workspace_id.to_string()&&event["payload"]["paneId"]==pane_id.to_string()
+                                &&event["payload"]["activationId"]==activation)
+                                && subscriptions.lock().map(|active|active.get(&(workspace_id,pane_id))==Some(&subscription)).unwrap_or(false) {
+                                if tx.send(Message::Text(text)).await.is_err() { break; }
+                            }
+                        },
                         Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(bytes))) => { socket.send(tokio_tungstenite::tungstenite::Message::Pong(bytes)).await.map_err(|error| error.to_string())?; }
-                        Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => break,
+                        Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => return Err("Runtime terminal stream closed".to_string()),
                         Some(Err(error)) => return Err(error.to_string()),
                         _ => {}
                     },
@@ -2158,8 +2289,24 @@ fn start_subscription(
             let _ = socket.close(None).await;
             Ok::<(), String>(())
         }.await;
-        if let Ok(mut active) = subscriptions.lock() { if active.get(&(workspace_id, pane_id)) == Some(&activation) { active.remove(&(workspace_id, pane_id)); } }
-        if let Err(error) = run { tracing::warn!(%pane_id, %error, "canonical terminal subscription failed"); }
+        // A dock/close or newer activation ends the old stream intentionally.
+        // Only a still-current view receives its own terminal failure event.
+        let current_binding = if run.is_err() {
+            tokio::task::spawn_blocking(move || request_json(&endpoint, "GET", &format!("/v1/domain/workspaces/{workspace_id}"), None)
+                .map(|detail| workspace_detail_contains_pane(&detail, pane_id)).unwrap_or(true)).await.unwrap_or(true)
+        } else { false };
+        let current_activation = {
+            let mut active = subscriptions.lock().ok();
+            if active.as_ref().is_some_and(|active| active.get(&(workspace_id, pane_id)) == Some(&subscription)) {
+                active.as_mut().unwrap().remove(&(workspace_id, pane_id)); true
+            } else { false }
+        };
+        if let Err(error) = run {
+            if current_binding && current_activation && !tx.is_closed() {
+                tracing::warn!(%pane_id, %error, "canonical terminal subscription failed");
+                let _ = tx.send(Message::Text(json!({"type":"event","name":"pane-terminal-error","payload":{"workspaceId":workspace_id,"paneId":pane_id,"activationId":activation}}).to_string())).await;
+            }
+        }
     });
 }
 
@@ -2175,17 +2322,15 @@ fn subscription_target(args: &Value, snapshot: &KernelSnapshot) -> Option<(Uuid,
     else {
         return None;
     };
-    let Some(pane) = snapshot.ptys.iter().find(|pty| pty.pty_id == pane_id) else {
-        return None;
-    };
+    let pane = snapshot.ptys.iter().find(|pty| pty.pty_id == pane_id);
     let workspace_id = target
         .get("workspaceId")
         .and_then(Value::as_str)
         .and_then(|id| Uuid::parse_str(id).ok())
-        .or(pane.workspace_id)
+        .or(pane.and_then(|pane|pane.workspace_id))
         .or(snapshot.active);
     workspace_id
-        .filter(|workspace_id| pane.workspace_id == Some(*workspace_id))
+        .filter(|workspace_id| pane.map(|pane|pane.workspace_id == Some(*workspace_id)).unwrap_or_else(||snapshot.ids.contains(workspace_id)))
         .map(|workspace_id| (workspace_id, pane_id))
 }
 
@@ -2365,8 +2510,10 @@ mod tests {
     fn unsupported_kernel_host_method_is_classified_before_snapshot() {
         assert!(is_kernel_host_method("subscribe_pane_raw"));
         assert!(is_kernel_host_method("write_to_pty"));
-        assert!(is_kernel_host_method("get_pane_foreground_process"));
-        assert!(is_kernel_host_method("start_watching_paths"));
+        // Process ownership is resolved by the shared business boundary, before broad snapshots.
+        assert!(!is_kernel_host_method("get_pane_foreground_process"));
+        assert!(!is_kernel_host_method("get_pty_runtime_identity"));
+        assert!(!is_kernel_host_method("start_watching_paths"));
         assert!(is_kernel_host_method("get_shell_history"));
     }
 
@@ -2840,9 +2987,10 @@ mod tests {
                 token: "t".into(),
                 started_at_unix: 0,
             },
-            totp: Arc::new(ridge_remote::auth::RemoteAuth::new()),
+            totp: Arc::new(ridge_remote::auth::RemoteAuth::ephemeral()),
             totp_throttle: Arc::new(VerifyThrottle::new()),
-            sessions: SessionStore::new(),
+            sessions: Arc::new(SessionStore::new()),
+            access: Default::default(),
             port: 9527,
             lan_ip: "127.0.0.1".into(),
             machine_name: "t".into(),

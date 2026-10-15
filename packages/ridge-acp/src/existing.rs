@@ -266,6 +266,12 @@ impl ExistingConversation {
         self.inner.transport.shutdown();
     }
 
+    /// Fence new prompt admission while committing explicit, idle membership retirement.
+    pub fn retire_idle(&self,commit:impl FnOnce()->Result<(),String>)->Result<(),String>{
+        if self.inner.transport.has_peer_requests()||self.inner.busy.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return Err("Agent turn is active; wait for completion or cancel it before removal".into());}
+        match commit(){Ok(())=>{self.disconnect();Ok(())},Err(error)=>{self.inner.busy.store(false,Ordering::Release);Err(error)}}
+    }
+
     /// Caller cancellation drops only its receiver; the owned request continues
     /// tracking the actual Agent response. No automatic prompt retry.
     pub fn prompt(

@@ -454,13 +454,17 @@ impl Drop for PtyOutputLease {
 pub struct PtyBridge {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
-    child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+    child: Mutex<Option<Box<dyn portable_pty::Child + Send + Sync>>>,
+    child_instance: Option<ridge_core::process_identity::ProcessInstance>,
+    detach:Option<Box<dyn Fn()+Send+Sync>>,
 }
 
 /// Kernel-side PTY lifecycle authority. Shells may retain an output receiver,
 /// but every write, resize, and destroy resolves through this registry.
 pub struct PtyRegistry {
     ptys: Mutex<HashMap<Uuid, ManagedPty>>,
+    prompt_hook: Mutex<Option<Arc<dyn Fn(Uuid, &str) + Send + Sync>>>,
+    exit_observer: Mutex<Option<mpsc::Sender<RuntimeExit>>>,
     next_index: AtomicUsize,
     /// `runtime_epoch` minted once per kernel boot (SPEC-L2-PROTO-001 §3.4.3).
     /// `None` for the legacy default-constructed registry used by older tests;
@@ -482,6 +486,31 @@ struct LifecycleEntry {
     exit_code: Option<i32>,
 }
 
+#[derive(Clone)]
+struct ExitReporter {
+    id: Uuid, epoch: String, sender: broadcast::Sender<PtyExitNotification>,
+    lifecycle: Arc<Mutex<HashMap<Uuid, LifecycleEntry>>>,
+    senders: Arc<Mutex<HashMap<Uuid, broadcast::Sender<PtyExitNotification>>>>,
+    observer: Option<mpsc::Sender<RuntimeExit>>,
+    reported: Arc<std::sync::atomic::AtomicBool>,
+}
+impl ExitReporter {
+    async fn report(&self, code: Option<i32>) {
+        {
+            let senders = self.senders.lock();
+            if !senders.get(&self.id).is_some_and(|sender| sender.same_channel(&self.sender))
+                || self.reported.load(Ordering::Acquire) { return; }
+            if code.is_some() { self.reported.store(true, Ordering::Release); }
+            let mut lifecycle = self.lifecycle.lock();
+            if let Some(entry) = lifecycle.get_mut(&self.id).filter(|entry| entry.state != TerminalLifecycleState::Reaped) {
+                entry.state = TerminalLifecycleState::Exited; entry.exit_code = code;
+            } else { return; }
+        }
+        let _ = self.sender.send(PtyExitNotification { pty_id: self.id, code });
+        if let Some(observer) = &self.observer { let _ = observer.send(RuntimeExit { pane: self.id, terminal_epoch: self.epoch.clone(), code }).await; }
+    }
+}
+
 struct ManagedPty {
     bridge: Arc<PtyBridge>,
     scrollback: Arc<Mutex<Vec<u8>>>,
@@ -492,12 +521,19 @@ struct ManagedPty {
     closing: std::sync::atomic::AtomicBool,
     info: PtyInfo,
     last_successful_resize: Option<(u16, u16)>,
+    restart_program: Option<String>,
+    restart_armed: Arc<std::sync::atomic::AtomicBool>,
+    exit_error: Option<String>,
 }
+
+pub(crate) struct RuntimeExit { pub pane: Uuid, pub terminal_epoch: String, pub code: Option<i32> }
 
 impl Default for PtyRegistry {
     fn default() -> Self {
         Self {
             ptys: Mutex::new(HashMap::new()),
+            prompt_hook: Mutex::new(None),
+            exit_observer: Mutex::new(None),
             next_index: AtomicUsize::new(0),
             runtime_epoch: parking_lot::Mutex::new(None),
             lifecycle: Arc::new(parking_lot::Mutex::new(HashMap::new())),
@@ -537,6 +573,56 @@ pub struct PtyLaunch<'a> {
 }
 
 impl PtyRegistry {
+    pub(crate) fn terminal_metadata(&self, id: Uuid, expected: Option<&str>) -> Option<serde_json::Value> {
+        let ptys = self.ptys.lock();
+        let entry = ptys.get(&id).filter(|entry| !entry.closing.load(Ordering::Acquire))?;
+        let renderer = entry.renderer.lock();
+        let epoch = renderer.terminal_epoch();
+        if expected.is_some_and(|expected| expected != epoch) { return None; }
+        Some(serde_json::json!({"workspaceId":entry.info.workspace_id?,"paneId":id,"terminalEpoch":epoch,
+            "runtimeEpoch":self.runtime_epoch(),"ptyGeneration":entry.info.pane_index,"status":entry.info.status,"error":entry.exit_error}))
+    }
+    pub(crate) fn set_exit_error(&self, id: Uuid, epoch: &str, error: Option<String>) {
+        if let Some(entry) = self.ptys.lock().get_mut(&id).filter(|entry| entry.renderer.lock().terminal_epoch() == epoch) { entry.exit_error = error; }
+    }
+    pub(crate) fn observe_exits(&self, sender: mpsc::Sender<RuntimeExit>) { *self.exit_observer.lock() = Some(sender); }
+
+    pub(crate) fn exited_view(&self, id: Uuid, epoch: &str) -> Option<(PtyInfo, Option<String>)> {
+        let mut ptys = self.ptys.lock();
+        let entry = ptys.get_mut(&id).filter(|entry| !entry.closing.load(Ordering::Acquire))?;
+        if entry.renderer.lock().terminal_epoch() != epoch { return None; }
+        entry.info.status = "Exited".into();
+        let program = entry.restart_program.clone().filter(|_| entry.bridge.try_exit_code().is_some()
+            && entry.restart_armed.swap(false, Ordering::AcqRel));
+        Some((entry.info.clone(), program))
+    }
+
+    /// The Runtime lifecycle owner holds its workspace fence through replacement.
+    pub(crate) fn replace_exited_shell(&self, exit: &RuntimeExit, info: &PtyInfo, program: &str, cwd: Option<&str>) -> Result<String> {
+        let (bridge, output) = PtyBridge::spawn_command_with_env_at_size(Some(program), &[], cwd,
+            info.launch_profile.as_deref(), &HashMap::new(), info.cols, info.rows)?;
+        self.install_bridge(PtyLaunch { id: exit.pane, program: Some(program), args: &[], cwd,
+            workspace_id: info.workspace_id, role: "shell", launch_profile: info.launch_profile.as_deref(),
+            env: None, initial_size: Some((info.cols, info.rows)) }, bridge, output, info.cols, info.rows, Some(&exit.terminal_epoch))?;
+        let ptys = self.ptys.lock();
+        let entry = ptys.get(&exit.pane).unwrap();
+        let epoch = entry.renderer.lock().terminal_epoch().to_owned();
+        Ok(epoch)
+    }
+
+    pub(crate) fn set_business_events(self: &Arc<Self>, events: crate::business::BusinessEvents) {
+        use ridge_core::EventSink;
+        let registry = Arc::downgrade(self);
+        *self.prompt_hook.lock() = Some(Arc::new(move |pane, epoch| {
+            let Some(registry) = registry.upgrade() else { return; };
+            let ptys = registry.ptys.lock();
+            let Some(entry) = ptys.get(&pane).filter(|entry| !entry.closing.load(Ordering::Acquire)) else { return; };
+            if entry.renderer.lock().terminal_epoch() != epoch { return; }
+            let Some(workspace) = entry.info.workspace_id else { return; };
+            events.broadcast(&format!("pane-prompt-{workspace}-{pane}"), serde_json::json!({"workspaceId":workspace,"paneId":pane,"terminalEpoch":epoch}));
+        }));
+    }
+
     pub fn spawn(&self, shell: Option<&str>, cwd: Option<&str>) -> Result<Uuid> {
         let id = Uuid::new_v4();
         self.spawn_command_for(PtyLaunch {
@@ -576,17 +662,45 @@ impl PtyRegistry {
             cols,
             rows,
         )?;
+        self.install_bridge(launch,bridge,output,cols,rows,None)
+    }
+
+    pub(crate) fn adopt_native(&self,id:Uuid,workspace:Uuid,socket:String,pane:ridge_tmux::SummonPane)->Result<()> {
+        if self.contains(id){anyhow::bail!("PTY already exists: {id}");}
+        let cancel=Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (tx,rx)=mpsc::channel(READER_MPSC_CAP);
+        spawn_reader_thread(Box::new(ridge_tmux::BroadcastReader::new(pane.rx,pane.replay,cancel.clone())),tx);
+        let global=pane.global_id;let cwd=pane.cwd;
+        let bridge=PtyBridge {writer:pane.writer,master:pane.master,child:Mutex::new(None),child_instance:pane.child_instance,
+            detach:Some(Box::new(move||{cancel.store(true,Ordering::Release);ridge_tmux::clear_attachment_if_owner(&socket,global,(workspace,id));}))};
+        self.install_bridge(PtyLaunch {id,program:None,args:&[],cwd:cwd.as_deref(),workspace_id:Some(workspace),role:"shell",launch_profile:None,env:None,initial_size:Some((pane.width,pane.height))},bridge,rx,pane.width,pane.height,None)?;
+        Ok(())
+    }
+
+    fn install_bridge(&self,launch:PtyLaunch<'_>,bridge:PtyBridge,output:mpsc::Receiver<Vec<u8>>,cols:u16,rows:u16,replacement:Option<&str>)->Result<Uuid> {
         let bridge = Arc::new(bridge);
         let scrollback = Arc::new(Mutex::new(Vec::new()));
         let mut producer = TerminalProducer::with_epoch(rows, cols, RENDER_SCROLLBACK_ROWS, Uuid::new_v4().to_string());
         producer.set_initial_cwd(launch.cwd.unwrap_or_default().to_owned());
         let renderer = Arc::new(Mutex::new(producer));
+        let terminal_epoch = renderer.lock().terminal_epoch().to_owned();
+        let prompt_hook = self.prompt_hook.lock().clone();
+        let exit_observer = self.exit_observer.lock().clone();
         let (semantic_tx, _) = broadcast::channel(256);
         let semantic_output = semantic_tx.clone();
         let output_hub = Arc::new(PtyOutputHub::new().with_owner_pty_id(launch.id));
         // Lifecycle: Starting → Running → Exited. The exit broadcast is wired
         // to both the reader-task end (PTY EOF) and explicit `destroy`.
         let (exit_tx, _exit_rx_initial) = broadcast::channel::<PtyExitNotification>(64);
+        let mut ptys = self.ptys.lock();
+        let allowed = match replacement {
+            Some(epoch) => ptys.get(&launch.id).is_some_and(|entry| !entry.closing.load(Ordering::Acquire)
+                && entry.info.workspace_id == launch.workspace_id && entry.renderer.lock().terminal_epoch() == epoch),
+            None => !ptys.contains_key(&launch.id),
+        };
+        if !allowed { drop(ptys); let _ = bridge.destroy(); anyhow::bail!("terminal binding changed during installation"); }
+        if replacement.is_some() { self.attached_controllers.lock().remove(&launch.id); }
+        let mut exit_subs = self.exit_subs.lock();
         self.lifecycle.lock().insert(
             launch.id,
             LifecycleEntry {
@@ -594,15 +708,22 @@ impl PtyRegistry {
                 exit_code: None,
             },
         );
-        self.exit_subs.lock().insert(launch.id, exit_tx.clone());
+        exit_subs.insert(launch.id, exit_tx.clone());
+        drop(exit_subs);
         let sink = scrollback.clone();
         let screen = renderer.clone();
         let hub = output_hub.clone();
         let lifecycle_for_reader = self.lifecycle.clone();
         let exit_subs_for_reader = self.exit_subs.clone();
         let id_for_reader = launch.id;
-        let bridge_for_reader = bridge.clone();
-        tokio::spawn(async move {
+        let bridge_for_reader = Arc::downgrade(&bridge);
+        let reader_exit = exit_tx.clone();
+        let reporter = ExitReporter { id: launch.id, epoch: terminal_epoch.clone(), sender: reader_exit.clone(),
+            lifecycle: lifecycle_for_reader.clone(), senders: exit_subs_for_reader.clone(), observer: exit_observer,
+            reported: Arc::new(std::sync::atomic::AtomicBool::new(false)) };
+        let monitor = reporter.clone();
+        let monitor_bridge = bridge.clone();
+        let reader = async move {
             let mut output = output;
             let mut first_byte_seen = false;
             while let Some(bytes) = output.recv().await {
@@ -613,21 +734,26 @@ impl PtyRegistry {
                 if !first_byte_seen {
                     first_byte_seen = true;
                     {
+                        let senders = exit_subs_for_reader.lock();
+                        let current = senders.get(&id_for_reader).is_some_and(|sender| sender.same_channel(&reader_exit));
                         let mut guard = lifecycle_for_reader.lock();
-                        if let Some(entry) = guard.get_mut(&id_for_reader) {
+                        if let Some(entry) = guard.get_mut(&id_for_reader).filter(|_| current) {
                             if entry.state == TerminalLifecycleState::Starting {
                                 entry.state = TerminalLifecycleState::Running;
                             }
                         }
                     }
                 }
-                let response = {
+                let (response,parse_feed_us,prompt) = {
                     let mut producer = screen.lock();
+                    let started=kernel_trace_enabled().then(Instant::now);
                     let update = producer.feed_semantic(&bytes);
+                    let elapsed=started.map(|started|started.elapsed().as_micros() as u64);
                     let _ = semantic_output.send(update);
-                    producer.take_pending_response()
+                    (producer.take_pending_response(),elapsed,producer.take_prompt_marker())
                 };
-                if !response.is_empty() { let _ = bridge_for_reader.write_input(&response); }
+                if prompt { if let Some(hook) = &prompt_hook { hook(id_for_reader, &terminal_epoch); } }
+                if !response.is_empty() { if let Some(bridge) = bridge_for_reader.upgrade() { let _ = bridge.write_input(&response); } }
                 let mut retained = sink.lock();
                 retained.extend_from_slice(&bytes);
                 if retained.len() > SCROLLBACK_CAP {
@@ -641,30 +767,16 @@ impl PtyRegistry {
                         pty_id = %id_for_reader,
                         seq,
                         bytes = bytes.len(),
+                        parse_feed_us = parse_feed_us.unwrap_or_default(),
                         dt_from_recv_us = t_recv.elapsed().as_micros() as u64
                     );
                 }
             }
             hub.close();
             // PTY closed: derive exit code best-effort and broadcast.
-            let code = bridge_for_reader.try_exit_code();
-            {
-                let mut guard = lifecycle_for_reader.lock();
-                if let Some(entry) = guard.get_mut(&id_for_reader) {
-                    if entry.state != TerminalLifecycleState::Reaped {
-                        entry.state = TerminalLifecycleState::Exited;
-                        entry.exit_code = code;
-                    }
-                }
-            }
-            let sender_opt = exit_subs_for_reader.lock().get(&id_for_reader).cloned();
-            if let Some(sender) = sender_opt {
-                let _ = sender.send(PtyExitNotification {
-                    pty_id: id_for_reader,
-                    code,
-                });
-            }
-        });
+            let code = bridge_for_reader.upgrade().and_then(|bridge| bridge.try_exit_code());
+            reporter.report(code).await;
+        };
         let info = PtyInfo {
             id: launch.id,
             pane_index: self.next_index.fetch_add(1, Ordering::Relaxed),
@@ -675,12 +787,12 @@ impl PtyRegistry {
             cwd: launch.cwd.map(str::to_string),
             status: "Idle".to_string(),
             child_pid: bridge.process_id(),
-            child_start_instance: bridge.process_id().and_then(|pid|ridge_core::process_identity::instance(pid).ok()).map(|instance|instance.start_instance),
+            child_start_instance: bridge.child_instance.as_ref().map(|instance|instance.start_instance.clone()),
             cols,
             rows,
         };
         let info_program_for_timeout = info.program.clone();
-        self.ptys.lock().insert(
+        let retired_entry = ptys.insert(
             launch.id,
             ManagedPty {
                 bridge,
@@ -692,8 +804,25 @@ impl PtyRegistry {
                 closing: std::sync::atomic::AtomicBool::new(false),
                 info,
                 last_successful_resize: None,
+                restart_program: shell_restart_program(&launch),
+                restart_armed: Arc::new(std::sync::atomic::AtomicBool::new(replacement.is_none())),
+                exit_error: None,
             },
         );
+        drop(ptys);
+        drop(retired_entry);
+        tokio::spawn(reader);
+        if monitor_bridge.child.lock().is_some() {
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    if monitor.reported.load(Ordering::Acquire)
+                        || !monitor.senders.lock().get(&monitor.id).is_some_and(|sender| sender.same_channel(&monitor.sender)) { break; }
+                    // Uses the owned child handle; no process enumeration or PID lookup.
+                    if let Some(code) = monitor_bridge.try_exit_code() { monitor.report(Some(code)).await; break; }
+                }
+            });
+        }
 
         // P1-6 (audit C19 fix): `start_timeout` watcher. SPEC §3.1
         // requires `Starting → Running ≤ 5s; 超时按 Exited 处理`.
@@ -710,8 +839,10 @@ impl PtyRegistry {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(5)).await;
             let should_fire = {
+                let senders = timeout_exit_subs.lock();
+                let current = senders.get(&timeout_id).is_some_and(|sender| sender.same_channel(&timeout_tx));
                 let mut guard = timeout_lifecycle.lock();
-                if let Some(entry) = guard.get_mut(&timeout_id) {
+                if let Some(entry) = guard.get_mut(&timeout_id).filter(|_| current) {
                     if entry.state == TerminalLifecycleState::Starting {
                         entry.state = TerminalLifecycleState::Exited;
                         entry.exit_code = None;
@@ -762,6 +893,7 @@ impl PtyRegistry {
     ) -> Result<(Uuid, mpsc::Receiver<Vec<u8>>)> {
         let (bridge, output) = PtyBridge::spawn(shell, cwd)?;
         let child_pid = bridge.process_id();
+        let child_start_instance = bridge.child_instance.as_ref().map(|instance|instance.start_instance.clone());
         let id = Uuid::new_v4();
         self.ptys.lock().insert(
             id,
@@ -783,11 +915,14 @@ impl PtyRegistry {
                     cwd: cwd.map(str::to_string),
                     status: "Idle".to_string(),
                     child_pid,
-                    child_start_instance: child_pid.and_then(|pid|ridge_core::process_identity::instance(pid).ok()).map(|instance|instance.start_instance),
+                    child_start_instance,
                     cols: DEFAULT_COLS,
                     rows: DEFAULT_ROWS,
                 },
                 last_successful_resize: None,
+                restart_program: None,
+                restart_armed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                exit_error: None,
             },
         );
         Ok((id, output))
@@ -809,13 +944,44 @@ impl PtyRegistry {
     }
 
     pub fn write(&self, id: Uuid, data: &[u8]) -> Result<()> {
+        let (bridge, armed) = {
+            let ptys = self.ptys.lock();
+            let entry = ptys.get(&id).filter(|entry| !entry.closing.load(Ordering::Acquire)).ok_or_else(|| anyhow::anyhow!("terminal unavailable"))?;
+            (entry.bridge.clone(), entry.restart_armed.clone())
+        };
+        let result = Self::write_observed(id, &bridge, data);
+        if result.is_ok() && !data.is_empty() { armed.store(true, Ordering::Release); }
+        result
+    }
+
+    pub(crate) fn write_in_workspace(&self, id: Uuid, workspace: Uuid, data: &[u8], arm_restart: bool) -> Result<()> {
+        let (ledger, bridge, armed) = {
+            let ptys = self.ptys.lock();
+            let entry = ptys.get(&id).ok_or_else(|| anyhow::anyhow!("terminal unavailable"))?;
+            (entry.input.clone(), entry.bridge.clone(), entry.restart_armed.clone())
+        };
+        let _input = ledger.lock();
+        {
+            let ptys = self.ptys.lock();
+            if !ptys.get(&id).is_some_and(|entry| !entry.closing.load(Ordering::Acquire)
+                && entry.info.workspace_id == Some(workspace) && Arc::ptr_eq(&entry.input, &ledger)
+                && Arc::ptr_eq(&entry.bridge, &bridge)) { anyhow::bail!("terminal workspace binding changed"); }
+        }
+        self.attach_controller(id, format!("legacy-http:{id}"));
+        let result = Self::write_observed(id, &bridge, data);
+        if arm_restart && result.is_ok() && !data.is_empty() { armed.store(true, Ordering::Release); }
+        result
+    }
+
+    fn write_observed(id: Uuid, bridge: &Arc<PtyBridge>, data: &[u8]) -> Result<()> {
+        if bridge.try_exit_code().is_some() { anyhow::bail!("terminal process exited"); }
         // CHG-050 §2.1: kernel write_in trace. Records the byte count the
         // caller is asking the master PTY to accept; downstream
         // `kernel_ev=pty_byte_in` records the same write reaching the
         // kernel-side read thread (only when the shell echoes).
         let bytes = data.len();
         let t0 = kernel_trace_enabled().then(Instant::now);
-        let out = self.get(id)?.write_input_observed(data, Some(id));
+        let out = bridge.write_input_observed(data, Some(id));
         crate::kernel_trace!(
             ev = "write_in",
             pty_id = %id,
@@ -868,6 +1034,12 @@ impl PtyRegistry {
     }
 
     pub fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<()> {
+        self.resize_for_workspace(id, None, cols, rows)
+    }
+    pub(crate) fn resize_in_workspace(&self, id: Uuid, workspace: Uuid, cols: u16, rows: u16) -> Result<()> {
+        self.resize_for_workspace(id, Some(workspace), cols, rows)
+    }
+    fn resize_for_workspace(&self, id: Uuid, workspace: Option<Uuid>, cols: u16, rows: u16) -> Result<()> {
         if cols == 0 || rows == 0 {
             anyhow::bail!("PTY dimensions must be greater than zero");
         }
@@ -876,6 +1048,7 @@ impl PtyRegistry {
             .get_mut(&id)
             .filter(|managed| !managed.closing.load(Ordering::Acquire))
             .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
+        if workspace.is_some_and(|workspace| managed.info.workspace_id != Some(workspace)) { anyhow::bail!("terminal workspace binding changed"); }
         // Refuse resize if the child shell has already exited; the ConPTY HPCON
         // may still be alive but writes will land in a dead pipe.
         if let Some(status) = managed.bridge.try_exit_code() {
@@ -1062,6 +1235,19 @@ impl PtyRegistry {
             .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))
     }
 
+    pub(crate) fn record_cwd(&self, id: Uuid, instance: &ridge_core::process_identity::ProcessInstance, cwd: &str) -> Result<()> {
+        let mut ptys=self.ptys.lock();
+        let managed=ptys.get_mut(&id).ok_or_else(||anyhow::anyhow!("PTY no longer exists"))?;
+        if managed.info.child_pid!=Some(instance.pid) || managed.info.child_start_instance.as_deref()!=Some(instance.start_instance.as_str()) {
+            anyhow::bail!("PTY instance changed");
+        }
+        managed.info.cwd=Some(cwd.into());
+        if let Some(update)=managed.renderer.lock().observe_cwd(cwd.into()) {
+            let _=managed.semantic_tx.send(update);
+        }
+        Ok(())
+    }
+
     pub fn list(&self) -> Vec<PtyInfo> {
         let mut entries = self
             .ptys
@@ -1116,6 +1302,12 @@ impl PtyRegistry {
     /// Release retained output for a live pane. This is the backend half of a
     /// terminal clear; callers still clear their renderer separately.
     pub fn clear_scrollback(&self, id: Uuid) -> Result<()> {
+        self.clear_terminal(id,false)
+    }
+    pub fn clear_terminal_preserving_prompt(&self,id:Uuid)->Result<()> {
+        self.clear_terminal(id,true)
+    }
+    fn clear_terminal(&self,id:Uuid,preserve_prompt:bool)->Result<()> {
         let managed = self
             .ptys
             .lock()
@@ -1124,7 +1316,7 @@ impl PtyRegistry {
             .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
         managed.0.lock().clear();
         let mut producer = managed.1.lock();
-        producer.clear_terminal();
+        if preserve_prompt {producer.clear_terminal_preserving_prompt();}else{producer.clear_terminal();}
         let _ = managed.2.send(producer.semantic_snapshot());
         Ok(())
     }
@@ -1134,6 +1326,36 @@ impl PtyRegistry {
         let managed = ptys.get(&id).ok_or_else(|| anyhow::anyhow!("terminal unavailable"))?;
         let producer = managed.renderer.lock();
         Ok((producer.semantic_snapshot(), managed.semantic_tx.subscribe()))
+    }
+
+    pub(crate) fn subscribe_semantic_in_workspace(&self, id: Uuid, expected: Option<Uuid>) -> Result<(Uuid, SemanticUpdate, broadcast::Receiver<SemanticUpdate>)> {
+        let ptys = self.ptys.lock();
+        let managed = ptys.get(&id).filter(|entry| !entry.closing.load(Ordering::Acquire)).ok_or_else(|| anyhow::anyhow!("terminal unavailable"))?;
+        let workspace = managed.info.workspace_id.ok_or_else(|| anyhow::anyhow!("workspace unavailable"))?;
+        if expected.is_some_and(|expected| expected != workspace) { anyhow::bail!("terminal workspace changed"); }
+        let producer = managed.renderer.lock();
+        Ok((workspace, producer.semantic_snapshot(), managed.semantic_tx.subscribe()))
+    }
+
+    pub(crate) fn workspace_matches(&self, id: Uuid, workspace: Uuid) -> bool {
+        self.ptys.lock().get(&id).is_some_and(|entry| !entry.closing.load(Ordering::Acquire) && entry.info.workspace_id == Some(workspace))
+    }
+
+    /// Commit graph publication and PTY ownership under the same input fence.
+    pub(crate) fn retarget_workspace(&self, id: Uuid, from: Uuid, to: Uuid, commit: impl FnOnce() -> ridge_core::CoreResult<()>) -> ridge_core::CoreResult<()> {
+        let ledger = self.ptys.lock().get(&id).map(|entry| entry.input.clone());
+        let _input = ledger.as_ref().map(|ledger| ledger.lock());
+        let mut ptys = self.ptys.lock();
+        match (ptys.get_mut(&id), ledger.as_ref()) {
+            (Some(entry), Some(ledger)) if Arc::ptr_eq(&entry.input, ledger)
+                && !entry.closing.load(Ordering::Acquire) && entry.info.workspace_id == Some(from) => {
+                commit()?;
+                entry.info.workspace_id = Some(to);
+                Ok(())
+            }
+            (None, None) => commit(), // Editor and foreign leaves have no local PTY.
+            _ => Err(ridge_core::CoreError::InvalidArgs("terminal binding changed while docking".into())),
+        }
     }
 
     pub fn terminal_snapshot(&self, id: Uuid) -> Result<SemanticUpdate> {
@@ -1152,17 +1374,32 @@ impl PtyRegistry {
     }
 
     pub fn terminal_input(&self, input: &TerminalInput) -> Result<TerminalInputAck> {
+        self.terminal_input_checked(input,||Ok(()))
+    }
+
+    pub(crate) fn terminal_input_checked(&self,input:&TerminalInput,check:impl FnOnce()->Result<()>)->Result<TerminalInputAck>{
         let id = Uuid::parse_str(&input.pane.pane_id)?;
-        let (pane, epoch, ledger, bridge) = {
+        let (ledger, bridge, armed) = {
             let ptys = self.ptys.lock();
-            let managed = ptys.get(&id).filter(|entry| !entry.closing.load(Ordering::Acquire))
+            let managed = ptys.get(&id).ok_or_else(|| anyhow::anyhow!("terminal unavailable"))?;
+            (managed.input.clone(), managed.bridge.clone(), managed.restart_armed.clone())
+        };
+        // Dock and input acquire the per-terminal ledger before re-reading the
+        // owner. No global PTY lock spans a pipe write.
+        let mut input_ledger = ledger.lock();
+        let (pane, epoch) = {
+            let ptys = self.ptys.lock();
+            let managed = ptys.get(&id).filter(|entry| !entry.closing.load(Ordering::Acquire)
+                && Arc::ptr_eq(&entry.input, &ledger) && Arc::ptr_eq(&entry.bridge, &bridge))
                 .ok_or_else(|| anyhow::anyhow!("terminal unavailable"))?;
             let workspace = managed.info.workspace_id.ok_or_else(|| anyhow::anyhow!("workspace unavailable"))?;
             let epoch = managed.renderer.lock().terminal_epoch().to_owned();
-            (PaneRef::new(workspace.to_string(), id.to_string()), epoch, managed.input.clone(), managed.bridge.clone())
+            (PaneRef::new(workspace.to_string(), id.to_string()), epoch)
         };
-        let result = ledger.lock().apply(input, &pane, &epoch, None,
-            |bytes| bridge.write_input(bytes).map_err(|error| error.to_string())).map_err(anyhow::Error::msg);
+        if bridge.try_exit_code().is_some() { anyhow::bail!("terminal process exited"); }
+        let result = input_ledger.apply(input, &pane, &epoch, None,
+            |bytes| {check().map_err(|error|error.to_string())?;bridge.write_input(bytes).map_err(|error| error.to_string())}).map_err(anyhow::Error::msg);
+        if result.as_ref().is_ok_and(|ack| !ack.already_applied) { armed.store(true, Ordering::Release); }
         result
     }
 
@@ -1181,6 +1418,30 @@ impl PtyRegistry {
         Ok(rows[start..].join("\n"))
     }
 
+    /// A bounded view of the existing parser; never subscribes, resizes or writes.
+    pub(crate) fn agent_terminal_view(&self,id:Uuid,workspace:Uuid,lines:usize)->Result<serde_json::Value>{
+        let (renderer,info)={let ptys=self.ptys.lock();let entry=ptys.get(&id).filter(|entry|!entry.closing.load(Ordering::Acquire)).ok_or_else(||anyhow::anyhow!("terminal unavailable"))?;(entry.renderer.clone(),entry.info.clone())};
+        if info.workspace_id!=Some(workspace){anyhow::bail!("terminal workspace changed");}
+        let renderer=renderer.lock();let terminal=renderer.terminal();
+        let mut rows=terminal.dump_visible_text();while rows.last().is_some_and(|row|row.trim().is_empty()){rows.pop();}
+        let start=rows.len().saturating_sub(lines.clamp(1,80));
+        let text=rows[start..].join("\n");let text=text.chars().take(32768).collect::<String>();
+        let mut keys=serde_json::Map::new();
+        for key in ["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Enter","Escape","Tab","Backspace","Ctrl+C"]{
+            let event=ridge_term::input::KeyEvent{key:if key=="Ctrl+C"{"c"}else{key}.into(),ctrl:key=="Ctrl+C",alt:false,shift:false,meta:false};
+            keys.insert(key.into(),serde_json::json!(ridge_term::input::encode(&event,terminal.modes()).bytes));
+        }
+        Ok(serde_json::json!({"workspaceId":workspace,"paneId":id,"terminalEpoch":renderer.terminal_epoch(),"revision":renderer.revision(),"text":text,
+            "bracketedPaste":terminal.modes().bracketed_paste,"keyBytes":keys,"cols":info.cols,"rows":info.rows}))
+    }
+
+    pub(crate) fn capture_input_binding(&self,id:Uuid)->Result<Arc<PtyBridge>> {self.get(id)}
+    pub(crate) fn write_bound_input(&self,id:Uuid,binding:&Arc<PtyBridge>,data:&[u8])->Result<()> {
+        let managed=self.ptys.lock();
+        managed.get(&id).filter(|terminal|!terminal.closing.load(Ordering::Acquire)&&Arc::ptr_eq(&terminal.bridge,binding)).ok_or_else(||anyhow::anyhow!("terminal input binding changed"))?;
+        drop(managed);
+        Self::write_observed(id,binding,data)
+    }
     fn get(&self, id: Uuid) -> Result<Arc<PtyBridge>> {
         self.ptys
             .lock()
@@ -1282,6 +1543,7 @@ impl PtyBridge {
             .slave
             .spawn_command(command)
             .with_context(|| format!("failed to spawn shell '{program}'"))?;
+        let child_instance = child.process_id().and_then(|pid| ridge_core::process_identity::instance(pid).ok());
         drop(pair.slave);
         let reader = pair
             .master
@@ -1297,7 +1559,9 @@ impl PtyBridge {
             Self {
                 writer: Arc::new(Mutex::new(writer)),
                 master: Arc::new(Mutex::new(pair.master)),
-                child: Mutex::new(child),
+                child: Mutex::new(Some(child)),
+                child_instance,
+                detach:None,
             },
             rx,
         ))
@@ -1326,7 +1590,7 @@ impl PtyBridge {
     }
 
     pub fn process_id(&self) -> Option<u32> {
-        self.child.lock().process_id()
+        self.child.lock().as_ref().and_then(|child|child.process_id()).or_else(||self.child_instance.as_ref().map(|instance|instance.pid))
     }
 
     /// Best-effort exit code (None if child has not exited or status was
@@ -1334,10 +1598,8 @@ impl PtyBridge {
     /// code when available; signal-terminated children report 0 here.
     pub fn try_exit_code(&self) -> Option<i32> {
         let mut child = self.child.lock();
-        child
-            .try_wait()
-            .ok()
-            .flatten()
+        child.as_mut()?
+            .try_wait().ok().flatten()
             .map(|status| status.exit_code() as i32)
     }
 
@@ -1345,9 +1607,7 @@ impl PtyBridge {
         let child_alive = self
             .child
             .lock()
-            .try_wait()
-            .ok()
-            .flatten()
+            .as_mut().and_then(|child|child.try_wait().ok().flatten())
             .map(|status| format!("exited={:?}", status))
             .unwrap_or_else(|| "running".to_string());
         self.master
@@ -1369,15 +1629,15 @@ impl PtyBridge {
     /// Explicitly stop the child before releasing the PTY handles. Dropping a
     /// handle alone is not a lifecycle guarantee on every platform.
     pub fn destroy(&self) -> Result<()> {
+        if let Some(detach)=&self.detach {detach();return Ok(());}
         let mut child = self.child.lock();
+        let child=child.as_mut().ok_or_else(||anyhow::anyhow!("PTY child unavailable"))?;
         if child.try_wait().context("PTY status failed")?.is_some() {
             return Ok(());
         }
-        let pid = child.process_id();
+        self.reclaim_owned_tree();
+        if child.try_wait().context("PTY tree reap status failed")?.is_some() { return Ok(()); }
         child.kill().context("PTY kill failed")?;
-        if let Some(pid) = pid {
-            ridge_core::process_guard::kill_process_tree(pid);
-        }
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             if child
@@ -1391,6 +1651,14 @@ impl PtyBridge {
                 anyhow::bail!("PTY process did not exit within 2s");
             }
             std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn reclaim_owned_tree(&self) {
+        if let Some(process) = &self.child_instance {
+            if ridge_core::process_identity::validate(process).is_ok() {
+                ridge_core::process_guard::kill_process_tree(process.pid);
+            }
         }
     }
 }
@@ -1500,8 +1768,17 @@ impl Drop for PtyBridge {
     fn drop(&mut self) {
         // Best effort only: explicit `destroy` surfaces an operational error,
         // while drop must never panic during registry or kernel shutdown.
-        let _ = self.child.get_mut().kill();
+        if let Some(detach)=&self.detach {detach();}
+        else {self.reclaim_owned_tree();if let Some(child)=self.child.get_mut(){let _=child.kill();}}
     }
+}
+
+fn shell_restart_program(launch: &PtyLaunch<'_>) -> Option<String> {
+    if launch.role != "shell" || !matches!(launch.launch_profile, Some("remote-lan" | "ridge-interactive"))
+        || !launch.args.is_empty() || launch.env.is_some_and(|env| !env.is_empty()) { return None; }
+    let program = resolve_shell(launch.program);
+    let name = std::path::Path::new(&program).file_stem()?.to_str()?.to_ascii_lowercase();
+    matches!(name.as_str(), "cmd" | "powershell" | "pwsh" | "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "wsl").then_some(program)
 }
 
 fn resolve_shell(shell: Option<&str>) -> String {
@@ -1809,4 +2086,16 @@ mod tests {
             }]))
         );
     }
+    #[tokio::test]
+    async fn captured_input_binding_cannot_write_a_recreated_pane_id() {
+        let registry=PtyRegistry::default();let id=Uuid::new_v4();let workspace=Uuid::new_v4();
+        #[cfg(windows)]let (program,args)=("cmd.exe",vec!["/d".into(),"/q".into(),"/k".into()]);
+        #[cfg(not(windows))]let (program,args)=("/bin/sh",Vec::new());
+        let spawn=||registry.spawn_command_for(PtyLaunch{id,program:Some(program),args:&args,cwd:None,workspace_id:Some(workspace),role:"shell",launch_profile:None,env:None,initial_size:Some((80,24))}).unwrap();
+        spawn();let old=registry.capture_input_binding(id).unwrap();registry.destroy(id).unwrap();spawn();
+        let rejected=registry.write_bound_input(id,&old,b"echo OLD_BINDING_MUST_NOT_ENTER\r").unwrap_err();assert!(rejected.to_string().contains("binding changed"));
+        assert!(!String::from_utf8_lossy(&registry.scrollback(id,65536).unwrap()).contains("OLD_BINDING_MUST_NOT_ENTER"));
+        let current=registry.capture_input_binding(id).unwrap();registry.write_bound_input(id,&current,b"echo CURRENT_BINDING_ACCEPTED\r").unwrap();registry.destroy(id).unwrap();
+    }
+
 }

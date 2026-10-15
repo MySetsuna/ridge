@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use crate::client::{running_endpoint, wait_for_running, KERNEL_PROTOCOL_VERSION};
 use crate::registry::{
-    clear_registry, load_remote_hosts, load_roster, load_workspace_graph, remote_hosts_path,
+    clear_registry, load_roster, load_workspace_graph, remote_hosts_path,
     roster_path, workspace_graph_path, write_registry, KernelEndpoint, KernelInstanceGuard,
 };
 use crate::rtp1_ws::{drive as rtp1_drive, WsContext};
@@ -46,11 +46,22 @@ pub(crate) struct OutputLeaseSlot {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub(crate) cloud:Arc<crate::cloud::manager::Manager>,
+    pub(crate) remote_invokes: Arc<crate::remote_invoke::Clients>,
+    pub(crate) foreign_terminals: Arc<crate::foreign_terminal::Manager>,
+    pub(crate) lan: Arc<crate::remote_control::Lan>,
+    pub(crate) remote_auth: Arc<ridge_remote::auth::RemoteAuth>,
+    pub(crate) device_identity: Arc<ridge_core::DeviceIdentity>,
+    pub(crate) controller_identity: Arc<crate::controller_identity::ControllerIdentity>,
+    pub(crate) projects: Arc<crate::projects::Projects>,
+    pub(crate) execution_rejections: Arc<crate::execution_rejections::Rejections>,
+    pub(crate) gateway_permissions: Arc<crate::gateway_permissions::Gateway>,
     pub(crate) permissions: Arc<crate::commune_permissions::Permissions>,
-    pub(crate) commune: Arc<tokio::sync::Mutex<std::collections::HashMap<String,Arc<ridge_acp::existing::ExistingConversation>>>>,
+    pub(crate) commune: Arc<tokio::sync::Mutex<std::collections::HashMap<String,Arc<crate::commune_connection::Conversation>>>>,
     /// Serializes workspace retirement with legacy topology/PTY registration.
     pub(crate) retired_workspaces: Arc<std::sync::Mutex<std::collections::HashSet<Uuid>>>,
     pub(crate) business_events: crate::business::BusinessEvents,
+    pub(crate) fs_watches: Arc<crate::fs_watch::FsWatches>,
     pub(crate) local_host: Arc<std::sync::OnceLock<Arc<crate::host::KernelHost>>>,
     pub token: String,
     pub pid: u32,
@@ -74,6 +85,7 @@ pub struct AppState {
     /// Kernel-owned remote host topology; shells only project or transport it.
     pub remote_hosts: Arc<std::sync::Mutex<ridge_core::remote::RemoteHostTopology>>,
     pub remote_hosts_path: std::path::PathBuf,
+    pub(crate) outbound_hosts: Arc<crate::outbound_hosts::Manager>,
     /// PTY process lifetime belongs to the kernel, not an API shell.
     pub ptys: Arc<PtyRegistry>,
     /// HTTP output leases are short-lived handles into the bounded PTY replay
@@ -242,6 +254,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
             anyhow::bail!("another ridge-kernel owns the instance lock but did not become healthy");
         }
     };
+    crate::clipboard_assets::cleanup_old_images();
     let token = Uuid::new_v4().to_string();
     let pid = std::process::id();
     let started_at_unix = now_unix();
@@ -273,10 +286,21 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
     let port = local.port();
 
     let state = AppState {
+        cloud:Default::default(),
+        remote_invokes: Default::default(),
+        foreign_terminals: Default::default(),
+        lan: Arc::new(crate::remote_control::Lan::open().map_err(anyhow::Error::msg)?),
+        remote_auth: crate::remote_auth::initialize().map_err(anyhow::Error::msg)?,
+        device_identity: crate::identity::initialize().map_err(anyhow::Error::msg)?,
+        controller_identity: Default::default(),
+        projects: Arc::new(crate::projects::Projects::open(crate::registry::ridge_data_dir().join("projects.db")).map_err(anyhow::Error::msg)?),
         permissions: Default::default(),
+        gateway_permissions: Default::default(),
+        execution_rejections: Default::default(),
         commune: Default::default(),
         retired_workspaces: Default::default(),
         business_events: Default::default(),
+        fs_watches: Default::default(),
         local_host: Arc::new(std::sync::OnceLock::new()),
         token: token.clone(),
         pid,
@@ -300,14 +324,10 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
                 .map_err(|error| anyhow::anyhow!("open persistent Agent Hub: {error}"))?,
         ),
         remote_hosts: Arc::new(std::sync::Mutex::new(
-            ridge_core::remote::RemoteHostTopology::from_records(
-                load_remote_hosts().unwrap_or_else(|error| {
-                    tracing::warn!(%error, "remote host topology restore failed; starting empty");
-                    HashMap::new()
-                }),
-            ),
+            crate::remote_hosts::restore_runtime_topology().context("restore remote host topology; original preserved")?,
         )),
         remote_hosts_path: remote_hosts_path(),
+        outbound_hosts: Arc::new(crate::outbound_hosts::Manager::default()),
         ptys: {
             let registry = Arc::new(PtyRegistry::default());
             registry.set_runtime_epoch(runtime_epoch.clone());
@@ -331,16 +351,22 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         }
     }
     let mcp = KernelMcpHost::router(state.clone(), Arc::new(token.clone()));
+    let headless=crate::headless::router(&state);
+    state.ptys.set_business_events(state.business_events.clone());
+    let terminal_lifecycle = crate::terminal_lifecycle::start(&state);
+    crate::agent_discovery::supervise(state.clone());
+    crate::lsp::set_events(state.business_events.clone());
     let app = Router::new()
         .route("/v1/local/clients", post(crate::local_client::issue))
         .route("/v1/domain/workspace-files", post(crate::workspace_files::endpoint))
         .route("/v1/local/ws", get(crate::local_client::websocket))
+        .route("/v1/local/host-link/:host_id",get(crate::outbound_hosts::websocket))
         .route("/v1/health", get(health))
         .route("/v1/status", get(status))
         .route("/v1/metrics", get(crate::metrics::metrics_handler))
         .route("/v1/shutdown", post(shutdown))
         .route("/v1/domain", get(domain::domain_meta))
-        .route("/v1/domain/commands", post(crate::business::command))
+        .route("/v1/domain/commands", post(crate::business::command).layer(axum::extract::DefaultBodyLimit::max(ridge_term::terminal_protocol::MAX_FRAME_BYTES)))
         .route("/v1/domain/commune/register", post(crate::commune::register))
         .route("/v1/domain/events", get(crate::business::stream))
         .route("/v1/domain/agents", get(domain::domain_agents))
@@ -394,6 +420,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         )
         .route("/v1/domain/ptys/:pty_id/terminal", post(domain::domain_terminal_request))
         .route("/v1/domain/ptys/:pty_id/terminal/stream", get(domain::domain_terminal_stream))
+        .route("/v1/domain/ptys/:pty_id/agent-write", post(domain::domain_agent_pty_write))
         .route(
             "/v1/domain/ptys/:pty_id/write",
             post(domain::domain_pty_write),
@@ -451,7 +478,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
             post(domain::domain_workspace_pane_locked_size),
         )
         .route("/v1/rtp1", get(rtp1_ws_handler))
-        .with_state(state)
+        .with_state(state.clone()).merge(headless)
         .merge(mcp);
 
     write_registry(&KernelEndpoint {
@@ -476,6 +503,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
     tokio::select! {
         r = server => {
             clear_registry(pid);
+            crate::lsp::shutdown().await;
             r.context("serve")?;
         }
         _ = shutdown_rx => {
@@ -487,5 +515,13 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
             clear_registry(pid);
         }
     }
+    state.shutting_down.store(true, Ordering::Release);
+    terminal_lifecycle.abort();
+    state.cloud.stop().await;
+    state.outbound_hosts.stop().await;
+    state.foreign_terminals.stop().await;
+    state.lan.stop().await;
+    ridge_tmux::shutdown_all();
+    crate::lsp::shutdown().await;
     Ok(())
 }

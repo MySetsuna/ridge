@@ -979,6 +979,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 	});
 
 	it('feeds inline-TUI fragments immediately and drains replies/events', () => {
+		const clock = vi.spyOn(performance, 'now').mockReturnValue(10);
 		const { manager, fixture } = makeManager();
 		const sent: Uint8Array[] = [];
 		const events: unknown[] = [];
@@ -1004,6 +1005,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		manager.flushPaneFeed(PANE, MAX_PANE_FEED_FLUSH_BUDGET_MS);
 		expect(fixture.pane.feedDeferredBytes).toBe(0);
 		manager.clearPendingFeed(PANE);
+		clock.mockRestore();
 	});
 
 	it('does not delay shell escape markers when inline TUI is inactive', () => {

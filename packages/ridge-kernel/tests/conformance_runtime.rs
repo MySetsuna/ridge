@@ -11,12 +11,32 @@ use std::{
 };
 
 fn launch(root: &std::path::Path, label: &str, create: bool) -> Child {
-    Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "bootstrap_helper", "--ignored"])
-        .env("RIDGE_KERNEL_DATA_DIR", root)
-        .env(
+    let packaged_shell = root.join(if cfg!(windows) {
+        "presentation-shell.exe"
+    } else {
+        "presentation-shell"
+    });
+    let packaged = packaged_shell.is_file();
+    let mut command = Command::new(if packaged {
+        packaged_shell
+    } else {
+        std::env::current_exe().unwrap()
+    });
+    if packaged {
+        command.env_remove("RIDGE_KERNEL_HOST_BINARY");
+    } else {
+        command.env(
             "RIDGE_KERNEL_HOST_BINARY",
             env!("CARGO_BIN_EXE_ridge-kernel"),
+        );
+    }
+    command
+        .args(["--exact", "bootstrap_helper", "--ignored"])
+        .env("RIDGE_KERNEL_DATA_DIR", root)
+        .env("RIDGE_AUTH_FILE", root.join("auth.json"))
+        .env(
+            "RIDGE_BOOTSTRAP_HOLD",
+            if packaged && create { "1" } else { "0" },
         )
         .env("RIDGE_BOOTSTRAP_RESULT", root.join(label))
         .env("RIDGE_BOOTSTRAP_CREATE_PTY", if create { "1" } else { "0" })
@@ -96,6 +116,11 @@ fn bootstrap_helper() {
         result.to_string(),
     )
     .unwrap();
+    if std::env::var("RIDGE_BOOTSTRAP_HOLD").as_deref() == Ok("1") {
+        loop {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
 }
 struct OwnedKernel;
 impl Drop for OwnedKernel {
@@ -195,4 +220,106 @@ fn concurrent_shells_share_one_kernel_and_pty_outlives_its_creating_shell() {
     let status = client::request_json(&restarted, "GET", "/v1/status", None).unwrap();
     assert_ne!(status["runtime_epoch"], epoch);
     assert_ne!(restarted.pid, ep.pid);
+    client::shutdown_endpoint(&restarted, Duration::from_secs(2)).unwrap();
+
+    // Actual installed layout: the shell discovers its sibling Runtime without
+    // CLI or an explicit binary override. A force-killed presentation cannot own PTYs.
+    let installed = root.join("installed");
+    fs::create_dir_all(&installed).unwrap();
+    let shell_path = installed.join(if cfg!(windows) {
+        "presentation-shell.exe"
+    } else {
+        "presentation-shell"
+    });
+    fs::copy(std::env::current_exe().unwrap(), &shell_path).unwrap();
+    let binary = std::env::var_os("RIDGE_TEST_KERNEL_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_ridge-kernel").into());
+    fs::copy(
+        binary,
+        installed.join(if cfg!(windows) {
+            "ridge-kernel.exe"
+        } else {
+            "ridge-kernel"
+        }),
+    )
+    .unwrap();
+    std::env::set_var("RIDGE_KERNEL_DATA_DIR", &installed);
+    let mut presentation = launch(&installed, "packaged-first.json", true);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !installed.join("packaged-first.json").is_file() {
+        assert!(
+            presentation.try_wait().unwrap().is_none(),
+            "packaged shell exited before readiness"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "packaged shell readiness deadline"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let before: Value =
+        serde_json::from_slice(&fs::read(installed.join("packaged-first.json")).unwrap()).unwrap();
+    let packaged_endpoint = registry::read_endpoint().unwrap();
+    let packaged_epoch = client::request_json(&packaged_endpoint, "GET", "/v1/status", None)
+        .unwrap()["runtime_epoch"]
+        .clone();
+    presentation.kill().unwrap();
+    assert!(!presentation.wait().unwrap().success());
+    assert!(client::health_ok(&packaged_endpoint));
+    let mut reopened = launch(&installed, "packaged-reopened.json", false);
+    wait(&mut reopened);
+    let after: Value =
+        serde_json::from_slice(&fs::read(installed.join("packaged-reopened.json")).unwrap())
+            .unwrap();
+    assert_eq!(before["pid"], after["pid"]);
+    assert_eq!(
+        client::request_json(&packaged_endpoint, "GET", "/v1/status", None).unwrap()
+            ["runtime_epoch"],
+        packaged_epoch
+    );
+    let pane = uuid::Uuid::parse_str(before["pane"].as_str().unwrap()).unwrap();
+    let pty = client::list_domain_ptys(&packaged_endpoint)
+        .unwrap()
+        .into_iter()
+        .find(|pty| pty.id == pane)
+        .unwrap();
+    assert_eq!(
+        u64::from(pty.child_pid.unwrap()),
+        before["ptyPid"].as_u64().unwrap()
+    );
+    let marker = format!("PACKAGED_SURVIVED_{}", uuid::Uuid::new_v4());
+    client::write_domain_pty(
+        &packaged_endpoint,
+        pane,
+        format!("echo {marker}\r").as_bytes(),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let response=client::request_json(&packaged_endpoint,"POST",&format!("/v1/domain/ptys/{pane}/terminal"),
+            Some(&json!({"method":"get_terminal_snapshot","params":{"workspaceId":before["workspace"],"paneId":pane,"activationId":9}}))).unwrap();
+        assert_eq!(response["ok"], true);
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(response["value"].as_str().unwrap())
+            .unwrap();
+        let frame = terminal_protocol::decode_frame(&bytes).unwrap();
+        if let TerminalBody::Snapshot(snapshot) = frame.body {
+            if snapshot.primary.lines.iter().any(|line| {
+                line.cells
+                    .iter()
+                    .map(|cell| cell.ch)
+                    .collect::<String>()
+                    .trim()
+                    == marker
+            }) {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "packaged PTY did not execute after presentation kill"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

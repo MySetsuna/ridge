@@ -6,6 +6,14 @@ export { convertFileSrc, isTauri, transformCallback } from '@ridge/native-os-cor
 
 const OS_COMMANDS = new Set([
   'bootstrap_runtime_client',
+  'get_startup_context',
+  'enter_deep_root_mode',
+  'restore_from_deep_root',
+  'reveal_in_file_manager',
+  'read_clipboard_image_to_temp',
+  'read_clipboard_file_paths',
+  'write_clipboard_file_paths',
+  'read_clipboard_sequence',
 ]);
 const OS_PLUGINS = ['plugin:window|', 'plugin:webview|', 'plugin:event|',
   'plugin:dialog|', 'plugin:clipboard-manager|', 'plugin:notification|', 'plugin:opener|'];

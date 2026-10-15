@@ -1,208 +1,164 @@
-//! 多会话 Tab 式 TUI（Pager）。在 Decorative Scroll Region (DECSTBM) 保护下，
-//! 顶部 2 行用 crossterm 状态栏显示会话列表，主区域用 passthrough 输出活动会话。
-//!
-//! 控制快捷键：
-//!   Ctrl+Shift+←→↑↓ → 切换 pane（会话）
-//!   Ctrl+F1..F12    → 切换工作区
-//!   Ctrl+]           → 退出
-
-use std::io::Write;
-
-use anyhow::{Context, Result};
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::terminal::ClearType;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
-use crossterm::{execute, terminal};
+//! Pager presentation over the shared Runtime Host. No local PTY/parser/business graph.
+use std::{io::Write,sync::{Arc,atomic::{AtomicBool,Ordering}}};
+use anyhow::{anyhow,Context,Result};
+use crossterm::{execute,terminal,event::{Event,EventStream,KeyCode,KeyEventKind,KeyModifiers}};
 use futures_util::StreamExt;
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use ridge_term::terminal_protocol::PaneRef;
+use tokio::sync::Notify;
+use super::{keymap,lan_session,Session};
 
-use super::keymap;
-use super::workspace::WorkspaceManager;
-use ridge_core::workspace::pane_tree::Direction;
+const STATUS_LINES:u16=2;
 
-/// 顶部占用行数（状态栏 + 分隔线）。
-const STATUS_LINES: u16 = 2;
-/// 输出 mpsc channel 缓冲数。
-const OUT_CHAN_BUF: usize = 64;
-
-/// 进入多会话 Pager TUI。
-pub async fn run_pager(manager: &mut WorkspaceManager) -> Result<()> {
-    enable_raw_mode().context("进入 raw mode 失败")?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen).context("进入 alt screen 失败")?;
-
-    let (cols, rows) = terminal::size()?;
-
-    // 把所有 session 对齐到内容区尺寸。
-    let content_rows = rows.saturating_sub(STATUS_LINES);
-    manager.resize_all(cols, content_rows);
-
-    // DECSTBM：设 scroll region 从第 STATUS_LINES+1 行到屏幕底部。
-    write!(stdout, "\x1b[{};{}r", STATUS_LINES + 1, rows)?;
-    // DECOM (Origin Mode)：让所有光标定位序列相对于 scroll region。
-    write!(stdout, "\x1b[?6h")?;
-
-    draw_chrome(&mut stdout, manager, cols)?;
-
-    // 输出路由：output_task 从当前活动 session 读 broadcast → 写 out_tx，
-    // 事件循环从 out_rx 读 → 写 stdout。
-    let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(OUT_CHAN_BUF);
-    let mut output_task: Option<JoinHandle<()>> = None;
-    spawn_output_task(&mut output_task, manager, out_tx.clone());
-
-    let mut events = EventStream::new();
-
-    let result: Result<()> = loop {
-        tokio::select! {
-            maybe_ev = events.next() => {
-                match maybe_ev {
-                    Some(Ok(Event::Key(k))) => {
-                        if matches!(k.kind, KeyEventKind::Release) {
-                            continue;
-                        }
-
-                        // Ctrl+] = 退出
-                        if is_quit(&k) {
-                            break Ok(());
-                        }
-
-                        // 控制快捷键（pane/ws 切换）
-                        if handle_shortcut(&k, manager, &mut stdout, cols)? {
-                            spawn_output_task(&mut output_task, manager, out_tx.clone());
-                            continue;
-                        }
-
-                        // 普通按键：编码发给活动 session
-                        if let Some(bytes) = keymap::encode_key(&k) {
-                            if let Some(sess) = manager.active_session_handle() {
-                                sess.send_input(&bytes)?;
-                            }
-                        }
-                    }
-                    Some(Ok(Event::Resize(cols, rows))) => {
-                        let content_rows = rows.saturating_sub(STATUS_LINES);
-                        manager.resize_all(cols, content_rows);
-                        write!(stdout, "\x1b[{};{}r", STATUS_LINES + 1, rows)?;
-                        draw_chrome(&mut stdout, manager, cols)?;
-                    }
-                    Some(Ok(_)) => {}
-                    Some(Err(e)) => break Err(e).context("读终端事件失败"),
-                    None => break Ok(()),
-                }
-            }
-            chunk = out_rx.recv() => {
-                match chunk {
-                    Some(bytes) => {
-                        stdout.write_all(&bytes)?;
-                        stdout.flush()?;
-                    }
-                    // 输出流关闭 = 会话结束。
-                    None => break Ok(()),
-                }
-            }
-        }
-    };
-
-    // 清理：停止输出任务、复位 scroll region/DECOM、离开 alt screen。
-    if let Some(h) = output_task.take() {
-        h.abort();
+fn leaves(layout:&serde_json::Value,workspace:&str,panes:&mut Vec<PaneRef>)->Result<()>{
+    if layout["type"]=="leaf"{
+        let id=layout["id"].as_str().ok_or_else(||anyhow!("Runtime layout omitted pane identity"))?;
+        panes.push(PaneRef::new(workspace,id));
+    }else{
+        let children=layout["children"].as_array().ok_or_else(||anyhow!("Runtime layout omitted children"))?;
+        for child in children{leaves(child,workspace,panes)?;}
     }
-    write!(stdout, "\x1b[r\x1b[?6l")?;
-    execute!(stdout, LeaveAlternateScreen)?;
-    disable_raw_mode()?;
-    result
-}
-
-/// 退出热键：Ctrl+]。
-fn is_quit(ev: &KeyEvent) -> bool {
-    ev.modifiers.contains(KeyModifiers::CONTROL) && matches!(ev.code, KeyCode::Char(']'))
-}
-
-/// 解析并执行控制快捷键。返回 true 表示按键已被消费（不应再转发给 PTY）。
-fn handle_shortcut(
-    ev: &KeyEvent,
-    manager: &mut WorkspaceManager,
-    stdout: &mut impl Write,
-    cols: u16,
-) -> Result<bool> {
-    if !keymap::is_control_shortcut(ev) {
-        return Ok(false);
-    }
-
-    let switched = match ev.code {
-        KeyCode::Right => manager.navigate(Direction::Right),
-        KeyCode::Left => manager.navigate(Direction::Left),
-        KeyCode::Up => manager.navigate(Direction::Up),
-        KeyCode::Down => manager.navigate(Direction::Down),
-        KeyCode::F(n) => manager.switch_workspace(n),
-        _ => false,
-    };
-
-    if switched {
-        draw_chrome(stdout, manager, cols)?;
-    }
-    Ok(true)
-}
-
-/// 用 crossterm 直接写出顶部状态栏（临时关闭 DECOM 以操作绝对坐标）。
-fn draw_chrome(stdout: &mut impl Write, manager: &WorkspaceManager, cols: u16) -> Result<()> {
-    use crossterm::cursor::MoveTo;
-    use crossterm::terminal::Clear;
-
-    // 临时关闭 DECOM 以便用绝对坐标写 1-2 行。
-    write!(stdout, "\x1b[?6l")?;
-
-    // 第 1 行：状态栏
-    execute!(stdout, MoveTo(0, 0), Clear(ClearType::CurrentLine))?;
-    let bar = manager.status_bar_text(cols);
-    write!(stdout, "{}", bar)?;
-
-    // 第 2 行：分隔线
-    execute!(stdout, MoveTo(0, 1), Clear(ClearType::CurrentLine))?;
-    let sep: String = std::iter::repeat('─')
-        .take(cols.min(120) as usize)
-        .collect();
-    write!(stdout, "{}", sep)?;
-
-    // 重新启用 DECOM
-    write!(stdout, "\x1b[?6h")?;
-
-    // 将光标移到内容区起点（相对于 region 的第 1 行第 1 列）。
-    write!(stdout, "\x1b[1;1H")?;
-    stdout.flush()?;
     Ok(())
 }
 
-/// 为当前活动 session spawn 一个输出转发任务（broadcast → mpsc）。
-/// 先 abort 已有任务（如果有）。
-fn spawn_output_task(
-    task: &mut Option<JoinHandle<()>>,
-    manager: &WorkspaceManager,
-    out_tx: mpsc::Sender<Vec<u8>>,
-) {
-    if let Some(h) = task.take() {
-        h.abort();
+fn workspace_label(entry:&serde_json::Value,index:usize)->String{
+    entry["name"].as_str().filter(|name|!name.trim().is_empty()).map(str::to_owned).unwrap_or_else(||format!("WS:{}",index+1))
+}
+
+async fn select_workspace(session:&lan_session::LanControllerSession,number:u8)->Result<Option<(Vec<PaneRef>,String)>>{
+    let catalog=session.call("list_workspaces",serde_json::json!({})).await?;
+    let Some(entry)=catalog.as_array().and_then(|items|items.get(usize::from(number).saturating_sub(1)))else{return Ok(None);};
+    let workspace=entry["id"].as_str().ok_or_else(||anyhow!("Runtime workspace identity missing"))?;
+    let layout=session.call("get_pane_layout_for",serde_json::json!({"workspaceId":workspace})).await?;
+    let mut panes=Vec::new();leaves(&layout,workspace,&mut panes)?;
+    if panes.is_empty(){return Err(anyhow!("Runtime workspace has no panes"));}
+    Ok(Some((panes,workspace_label(entry,usize::from(number).saturating_sub(1)))))
+}
+
+fn chrome(stdout:&mut impl Write,panes:&[PaneRef],active:usize,cols:u16,workspace:&str)->Result<()>{
+    write!(stdout,"\x1b[?6l\x1b[1;1H\x1b[2K")?;
+    let bar=format!("{workspace} ")+&panes.iter().enumerate().map(|(index,_)|if index==active{format!(" [{}]*shell* ",index+1)}else{format!(" [{}]shell ",index+1)}).collect::<String>();
+    let hint="Ctrl+Shift+方向 切换 pane | Ctrl+F 工作区 | Ctrl+Shift+PgUp/PgDn 历史";
+    write!(stdout,"{}\x1b[2;1H\x1b[2K{}\x1b[?6h",bar.chars().filter(|character|!character.is_control()).take(cols as usize).collect::<String>(),hint.chars().take(cols as usize).collect::<String>())?;
+    Ok(())
+}
+
+pub async fn run_pager(shell:Option<String>,cwd:Option<String>,count:usize)->Result<()>{
+    let cwd=Some(lan_session::local_cwd(cwd.as_deref())?);
+    let (session,mut output)=lan_session::connect_local(shell.clone(),cwd.clone()).await?;
+    let first=session.pane_ref().ok_or_else(||anyhow!("Runtime terminal identity missing"))?;
+    let notify=Arc::new(Notify::new());let closed=Arc::new(AtomicBool::new(false));
+    let (signal,ended)=(notify.clone(),closed.clone());
+    let pump=tokio::spawn(async move{
+        while output.recv().await.is_some(){signal.notify_one();}
+        ended.store(true,Ordering::Release);signal.notify_one();
+    });
+    for _ in 1..count{
+        session.call("split_pane",serde_json::json!({"workspaceId":first.workspace_id,"paneId":first.pane_id,"direction":"horizontal","shell":shell,"cwd":cwd})).await?;
     }
-
-    let Some(sess) = manager.active_session_handle() else {
-        return;
-    };
-
-    *task = Some(tokio::spawn(async move {
-        let mut rx = sess.subscribe();
-        loop {
-            match rx.recv().await {
-                Ok(bytes) => {
-                    if out_tx.send(bytes).await.is_err() {
-                        break;
+    let layout=session.call("get_pane_layout_for",serde_json::json!({"workspaceId":first.workspace_id})).await?;
+    let mut panes=Vec::new();leaves(&layout,&first.workspace_id,&mut panes)?;
+    if panes.is_empty(){return Err(anyhow!("Runtime workspace has no panes"));}
+    let mut active=panes.iter().position(|pane|pane==&first).unwrap_or(0);
+    let catalog=session.call("list_workspaces",serde_json::json!({})).await?;
+    let (index,entry)=catalog.as_array().and_then(|entries|entries.iter().enumerate().find(|(_,entry)|entry["id"]==first.workspace_id)).ok_or_else(||anyhow!("Runtime workspace disappeared"))?;
+    let mut workspace=workspace_label(entry,index);
+    let mut stdout=std::io::stdout();let (mut cols,rows)=terminal::size()?;
+    session.resize(cols,rows.saturating_sub(STATUS_LINES).max(1))?;
+    terminal::enable_raw_mode().context("进入 raw mode 失败")?;
+    execute!(stdout,terminal::EnterAlternateScreen)?;
+    let result=async {
+        write!(stdout,"\x1b[{};{}r\x1b[?6h",STATUS_LINES+1,rows)?;
+        chrome(&mut stdout,&panes,active,cols,&workspace)?;
+        if let Some(bytes)=session.presentation(){super::write_presentation(&mut stdout,&bytes)?;}stdout.flush()?;
+        let mut events=EventStream::new();
+        'ui: loop{tokio::select!{
+            event=events.next()=>match event{
+                Some(Ok(Event::Key(key)))=>{
+                    if matches!(key.kind,KeyEventKind::Release){continue;}
+                    if key.modifiers.contains(KeyModifiers::CONTROL)&&key.code==KeyCode::Char(']'){break Ok(());}
+                    if let Some(back)=super::history_direction(&key){
+                        let result=super::wait_control(session.scroll_history(back),&mut events,"正在加载历史",|width,height|{
+                            cols=width;session.resize(width,height.saturating_sub(STATUS_LINES).max(1))?;
+                            write!(stdout,"\x1b[{};{}r",STATUS_LINES+1,height)?;chrome(&mut stdout,&panes,active,cols,&workspace)?;stdout.flush()?;Ok(())
+                        }).await;
+                        match result{
+                            Ok(Some(Some(bytes)))=>super::write_presentation(&mut stdout,&bytes)?,
+                            Ok(None)=>break Ok(()),
+                            Ok(Some(None))=>{},
+                            Err(error)=>{write!(stdout,"\r\n历史不可用：{error}\r\n")?;stdout.flush()?;},
+                        }
+                        continue;
+                    }
+                    if keymap::is_control_shortcut(&key){
+                        if let KeyCode::F(number @ 1..=12)=key.code{
+                            let selected=super::wait_control(select_workspace(&session,number),&mut events,"正在切换工作区",|width,height|{
+                                cols=width;session.resize(width,height.saturating_sub(STATUS_LINES).max(1))?;
+                                write!(stdout,"\x1b[{};{}r",STATUS_LINES+1,height)?;chrome(&mut stdout,&panes,active,cols,&workspace)?;stdout.flush()?;Ok(())
+                            }).await;
+                            match selected{
+                                Ok(Some(Some((next,label))))=>{
+                                    session.activate(next[0].clone())?;panes=next;active=0;workspace=label;
+                                    write!(stdout,"\x1b[1;1H\x1b[J")?;
+                                    chrome(&mut stdout,&panes,active,cols,&workspace)?;stdout.flush()?;
+                                }
+                                Ok(None)=>break 'ui Ok(()),
+                                Ok(Some(None))=>{},
+                                Err(error)=>{write!(stdout,"\r\n工作区不可用：{error}\r\n")?;stdout.flush()?;},
+                            }
+                            continue;
+                        }
+                        let next=match key.code{
+                            KeyCode::Right=>(active+1).min(panes.len()-1),
+                            KeyCode::Left=>active.saturating_sub(1),
+                            _=>active,
+                        };
+                        if next!=active{
+                            session.activate(panes[next].clone())?;active=next;
+                            write!(stdout,"\x1b[1;1H\x1b[J")?;
+                            chrome(&mut stdout,&panes,active,cols,&workspace)?;stdout.flush()?;
+                        }
+                        continue;
+                    }
+                    if let Some(bytes)=keymap::encode_key(&key){
+                        if session.input_ready(){if let Some(bytes)=session.follow_tail(){super::write_presentation(&mut stdout,&bytes)?;}session.send_input(&bytes)?;}
+                        else{write!(stdout,"\r\n会话尚未接通，按键未发送。\r\n")?;stdout.flush()?;}
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Some(Ok(Event::Resize(width,height)))=>{
+                    cols=width;session.resize(width,height.saturating_sub(STATUS_LINES).max(1))?;
+                    write!(stdout,"\x1b[{};{}r",STATUS_LINES+1,height)?;
+                    chrome(&mut stdout,&panes,active,cols,&workspace)?;stdout.flush()?;
+                }
+                Some(Err(error))=>break Err(error.into()),
+                None=>break Ok(()),
+                _=>{},
+            },
+            _=notify.notified()=>{
+                if let Some(error)=session.failure(){break Err(anyhow!(error));}
+                if closed.load(Ordering::Acquire){break Ok(());}
+                // Always repaint the current canonical view, never a queued frame from the old activation.
+                if let Some(bytes)=session.presentation(){super::write_presentation(&mut stdout,&bytes)?;}
             }
-        }
-    }));
+        }}
+    }.await;
+    pump.abort();
+    let _=write!(stdout,"\x1b[r\x1b[?6l");
+    let _=execute!(stdout,terminal::LeaveAlternateScreen);
+    let _=terminal::disable_raw_mode();
+    result
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    #[test]
+    fn workspace_chrome_uses_runtime_names_without_interpreting_control_sequences(){
+        assert_eq!(workspace_label(&serde_json::json!({"name":null}),1),"WS:2");
+        let label=workspace_label(&serde_json::json!({"name":"\u{1b}]52;c;untrusted\u{7}\nWorkspace"}),0);
+        let mut output=Vec::new();
+        chrome(&mut output,&[PaneRef::new("workspace","pane")],0,120,&label).unwrap();
+        let output=String::from_utf8(output).unwrap();
+        assert!(!output.contains("\u{1b}]52"));assert!(!output.contains('\u{7}'));assert!(!output.contains('\n'));
+        assert!(output.contains("Workspace"));
+    }
 }

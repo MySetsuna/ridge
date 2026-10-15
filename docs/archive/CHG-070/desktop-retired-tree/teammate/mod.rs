@@ -1,0 +1,23 @@
+pub(crate) mod agent_catalog;
+pub(crate) mod autodiscover;
+pub(crate) mod circuit;
+pub(crate) mod context_files;
+pub(crate) mod discover;
+pub(crate) mod endpoint;
+pub(crate) mod hitl;
+pub(crate) mod hitl_audit;
+pub(crate) mod job_object;
+pub(crate) mod layout_event;
+pub(crate) mod locks;
+pub(crate) mod mcp;
+pub(crate) mod memory;
+pub(crate) mod native;
+pub(crate) mod orch_health;
+pub(crate) mod os_freeze;
+pub(crate) mod profiles;
+#[cfg(test)]
+pub(crate) mod rollback;
+pub(crate) mod server;
+pub(crate) mod suspend;
+
+pub use server::ensure_teammate_started;

@@ -27,25 +27,27 @@ export function hostTriple() {
   return match[1];
 }
 
-export function sidecarPaths(forTarget) {
+export function sidecarPaths(forTarget, binary = 'ridge-mcp', profile = 'release', sourceTarget = forTarget, stagingDir = 'src-tauri/binaries') {
   const windows = forTarget.includes('windows');
   const extension = windows ? '.exe' : '';
   return {
     windows,
-    source: join(root, 'target', forTarget, 'release', `ridge-mcp${extension}`),
-    destination: join(root, 'src-tauri', 'binaries', `ridge-mcp-${forTarget}${extension}`),
+    source: join(resolve(root, process.env.CARGO_TARGET_DIR || 'target'), sourceTarget, profile, `${binary}${extension}`),
+    destination: join(root, stagingDir, `${binary}-${forTarget}${extension}`),
   };
 }
 
-function buildSidecar(target, detectedHost, version) {
+export function buildSidecar(target, detectedHost, version, options = {}) {
+  const { binary = 'ridge-mcp', packageName = 'ridge-mcp-bridge', versionEnv = 'RIDGE_MCP_BUNDLE_VERSION', profile = 'release', implicitHost = false, stagingDir = 'src-tauri/binaries' } = options;
   for (const buildTarget of new Set([target, detectedHost])) {
-    const paths = sidecarPaths(buildTarget);
+    const sourceTarget = implicitHost && buildTarget === detectedHost && !process.env.CARGO_BUILD_TARGET ? '' : buildTarget;
+    const paths = sidecarPaths(buildTarget, binary, profile, sourceTarget, stagingDir);
     execFileSync(
       cargoTool('cargo'),
-      ['build', '--release', '--package', 'ridge-mcp-bridge', '--bin', 'ridge-mcp', '--target', buildTarget],
+      ['build', ...(profile === 'release' ? ['--release'] : []), '--package', packageName, '--bin', binary, ...(sourceTarget ? ['--target', buildTarget] : [])],
       {
         cwd: root,
-        env: { ...process.env, RIDGE_MCP_BUNDLE_VERSION: version },
+        env: { ...process.env, [versionEnv]: version },
         stdio: 'inherit',
         timeout: 15 * 60_000,
       },
@@ -56,7 +58,7 @@ function buildSidecar(target, detectedHost, version) {
   }
 }
 
-function verifySidecar(destination, windows, target, detectedHost, version) {
+export function verifySidecar(destination, windows, target, detectedHost, version, binary = 'ridge-mcp') {
   const stat = statSync(destination);
   if (!stat.isFile() || stat.size === 0) throw new Error(`invalid sidecar: ${destination}`);
   if (!windows && (stat.mode & 0o111) === 0) throw new Error(`sidecar is not executable: ${destination}`);
@@ -68,7 +70,7 @@ function verifySidecar(destination, windows, target, detectedHost, version) {
     encoding: 'utf8',
     timeout: 10_000,
   }).trim();
-  if (!reported.endsWith(` ${version}`)) {
+  if (reported !== `${binary} ${version}`) {
     throw new Error(`sidecar version mismatch: expected ${version}, got ${reported}`);
   }
 }

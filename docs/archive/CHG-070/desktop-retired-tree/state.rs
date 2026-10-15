@@ -1,0 +1,1940 @@
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use parking_lot::{Mutex, RwLock};
+use portable_pty::{CommandBuilder, MasterPty, SlavePty};
+use tokio::sync::mpsc;
+use uuid::Uuid;
+
+use crate::commands::fs_watch::FsWatcher;
+use crate::commands::watch::GitWatcher;
+use crate::engine::pane_tree::PaneTree;
+use crate::engine::pty::PtyHandle;
+use crate::types::{GlobalEvent, RemotePtyEvent};
+use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
+use ridge_term::term::delta::DeltaFrame;
+use ridge_term::term::modes::Modes;
+
+/// Two-stage PTY spawn record.
+///
+/// Phase 1 (`ensure_pane_pty_workspace`) opens a PTY pair, clones the reader,
+/// captures the writer, and builds the `CommandBuilder` — but does **not**
+/// spawn a child process. The pre-built record lands here so the front-end
+/// can call `activate_pane_pty` once the xterm container has stable
+/// dimensions. This eliminates the "spawn before mount" race that produced
+/// black panes when the shell wrote its initial banner before xterm was
+/// ready to receive it.
+///
+/// Phase 2 (`activate_pane_pty`) consumes the record: optionally resizes the
+/// master to the front-end-reported size, calls `slave.spawn_command(cmd)`,
+/// installs the resulting `PtyHandle` into `Workspace.terminals`, and signals
+/// the optional `ready_tx` so callers (e.g. teammate `split-window`) can
+/// observe success/failure.
+/// The bundle of one-shot, !Sync handles that activation consumes.
+/// Kept inside one `Option` so a single `take()` flips `PendingSpawn` to
+/// "drained" atomically.
+pub struct PendingSpawnInner {
+    pub command: CommandBuilder,
+    pub slave: Box<dyn SlavePty + Send>,
+    pub reader: Box<dyn std::io::Read + Send>,
+}
+
+pub struct PendingSpawn {
+    /// `Mutex<Option<...>>`: the `Mutex` keeps `PendingSpawn` `Sync`
+    /// (the inner contents are only `Send`), and the `Option` lets
+    /// `activate_pane_pty` `take()` everything atomically on consumption.
+    pub inner: Mutex<Option<PendingSpawnInner>>,
+    pub master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    pub ready_tx: Mutex<Option<tokio::sync::oneshot::Sender<Result<(), String>>>>,
+    pub trace_id: String,
+}
+
+/// Aggregate counters surfaced to the SettingsPanel "Agent 统计" section so
+/// users can see how many teammate-initiated splits succeeded vs. failed and
+/// why. Counts are per-workspace and serialised straight to the front-end.
+#[derive(Default, Clone, serde::Serialize)]
+pub struct TeammateMetrics {
+    pub split_attempts: u64,
+    pub split_success: u64,
+    pub failures: HashMap<String, u64>,
+}
+
+/// Claude Code tmux shim 连接本地控制面所需（注入到子 shell）。
+#[derive(Clone, Debug)]
+pub struct TeammateBinding {
+    pub base_url: String,
+    pub token: String,
+}
+
+/// 终端 pane 状态：跟踪 agent 是否在运行
+#[derive(Clone, Debug, PartialEq)]
+pub enum PaneState {
+    /// 空闲 pane，可复用
+    Idle,
+    /// 有 agent 运行中
+    Busy,
+    /// Pane 正在启动中（agent register 已发但 PTY 还没收到首条 prompt 输出时使用）
+    #[allow(dead_code)]
+    // half-built: enum + serialization (commands/pane.rs:60-64) + TS union + UI badge (SplitContainer.svelte:592-599) all in place, but teammate/server.rs:register_agent_to_pane goes Idle→Busy directly. See TASKS §1.14.
+    Starting,
+}
+
+impl Default for PaneState {
+    fn default() -> Self {
+        PaneState::Idle
+    }
+}
+
+/// 单个根会话：独立分屏树 + 终端句柄（多工作区互不共享 pane id 命名空间下的 PTY 表）。
+pub struct Workspace {
+    pub pane_tree: PaneTree,
+    pub terminals: HashMap<Uuid, PtyHandle>,
+    /// Claude `send-keys -t ""` / 无 `-t` 时 tmux「当前窗格」：在 Ridge 里对应 `split-window` / `select-pane` 最后指向的 pane 索引。
+    pub teammate_tmux_pane_cursor: usize,
+    /// `new-window -n` / `split-window -n` 等经 teammate 写入的窗格展示名（按 pane id）。
+    pub teammate_pane_titles: HashMap<Uuid, String>,
+    /// Per-pane dimensions (rows, cols) for split target selection algorithm.
+    pub pane_sizes: HashMap<Uuid, (u16, u16)>,
+    /// Previous pane index for tmux `last-pane` swap functionality.
+    pub last_pane_index: Option<usize>,
+    /// 工作区创建时间（`list-sessions` 等 tmux 兼容输出用）。
+    pub created_at: SystemTime,
+    /// Pane 状态跟踪：空闲/忙碌，用于 agent 记忆和复用
+    pub teammate_pane_states: HashMap<Uuid, PaneState>,
+    /// Agent 到 pane 的映射：记录哪个 agent（通过唯一 ID）在哪个 pane
+    pub teammate_agent_pane_map: HashMap<String, Uuid>,
+    /// Ridge 亲手为 teammate 创建的 pane 集合（经 `teammate_split_pane`）。
+    /// 宿主原始 pane 与任意用户手开 pane **永不**进此集合，因此 idle-reuse
+    /// (`find_idle_pane_index`) 与 teammate `kill-pane` / `spawn-process` 只能
+    /// 命中 Ridge 自己起的 pane，绝不会碰到 parent agent 自己的 pane。
+    /// 见 2026-06-11 宿主 pane 保护修复。
+    pub teammate_owned_panes: HashSet<Uuid>,
+    /// 关联的 .ridge 文件绝对路径。`Some` 表示该工作区已保存到磁盘；
+    /// 后续任何 cwd/布局/git 变化都会触发防抖自动回写。
+    pub associated_file_path: Option<PathBuf>,
+    /// Phase-1 PTY records waiting for `activate_pane_pty` to spawn the child.
+    /// Keyed by pane id. See `PendingSpawn` for the rationale behind splitting
+    /// `openpty` from `spawn_command` into two stages.
+    pub pending_spawns: HashMap<Uuid, PendingSpawn>,
+    /// Monotonic per-pane PTY generation. Bumped on every teardown/replace
+    /// (`teardown_pane_pty_if_present`) BEFORE the old child is killed, so a
+    /// reader that captured an older generation at spawn knows, on EOF, that it
+    /// is no longer the pane's current PTY — and must NOT run the child-exit→Idle
+    /// demotion (which would clobber a freshly-spawned agent's Busy during the
+    /// [teardown, new-PTY-live) window). See `engine::pty` reader cleanup.
+    pub pty_generation: HashMap<Uuid, u64>,
+    /// Per-workspace counters for teammate-initiated splits (success / failure
+    /// reasons). Surfaced read-only via `get_teammate_metrics`.
+    pub teammate_metrics: TeammateMetrics,
+    /// 监控递增的展示序号：未命名工作区在 UI 上显示为「工作区 N」，N 在创建时分配
+    /// 后不再变化（关闭其他工作区或拖拽重排序都不影响）。关闭后不复用，避免歧义。
+    pub display_seq: u64,
+}
+
+/// Block-based PTY scrollback store. See `docs/TERMINAL_SCROLLBACK.md` for the
+/// design context. Byte content is stored as immutable blocks + a mutable
+/// `current` partial block; each block records its starting `seq` so callers
+/// can paginate with "give me bytes before seq X".
+///
+/// Eviction drops from the front (oldest block) when `total_bytes` exceeds
+/// `MAX_BYTES`. Blocks are raw PTY bytes — we never re-parse; we guarantee
+/// every slice we return starts and ends at a UTF-8 char boundary so the
+/// frontend can blindly `decode_utf8` without worrying about mid-codepoint cuts.
+#[derive(Clone, Debug)]
+pub struct PaneScrollback {
+    /// Completed blocks, oldest at front.
+    pub blocks: std::collections::VecDeque<Arc<Vec<u8>>>,
+    /// Starting seq (monotonic byte counter) of each block in `blocks`, same order.
+    pub block_start_seqs: std::collections::VecDeque<u64>,
+    /// Active partial block; flushes to `blocks` on reaching `BLOCK_SIZE`.
+    pub current: Vec<u8>,
+    /// Starting seq of the `current` block.
+    pub current_start_seq: u64,
+    /// Sum of bytes in `blocks` + `current.len()`. Used for cap eviction.
+    pub total_bytes: usize,
+}
+
+#[derive(Default)]
+pub struct PtyInputSequenceState {
+    pub last_sequence: u64,
+    pub last_digest: Option<[u8; 32]>,
+    pub last_error: Option<String>,
+}
+
+/// One page of scrollback bytes returned by `get_pane_scrollback_tail` /
+/// `_before`. Always UTF-8-safe at both ends.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScrollbackChunk {
+    /// UTF-8 string. Clone of the underlying bytes; block data is cached
+    /// behind `Arc` so the clone is cheap per block.
+    pub bytes: String,
+    /// Starting seq of `bytes`. For `get_pane_scrollback_before` callers use
+    /// this as the next `before_seq` to page further up.
+    pub start_seq: u64,
+    /// Seq immediately after `bytes`; paging commits only when this equals the
+    /// controller's previously committed oldest seq.
+    pub end_seq: u64,
+    /// True when this response includes the very first retained byte — no
+    /// older data is available from the store (may still exist in xterm's
+    /// own buffer if it's still mounted).
+    pub at_oldest: bool,
+    /// Seq one past the newest retained byte at query time (the live/history
+    /// boundary). A remote controller seeds its grid from a tail read and then
+    /// streams live bytes; anything the store already has (`seq < head_seq`) is
+    /// pulled as history, so the seam is exact. Serialized as `head_seq`.
+    pub head_seq: u64,
+}
+
+/// Block size for completed scrollback pages (bytes). Chosen so a single
+/// tail read pulls ~128 KiB (2 blocks) without getting too chunky on the
+/// wire to the renderer.
+pub const SCROLLBACK_BLOCK_SIZE: usize = 64 * 1024;
+/// Hard retention cap per pane. 8 MiB covers ~60k lines of 120-char output,
+/// enough to retain a full long build log or vim session. Doubled from the
+/// original 4 MiB to match the raised cloud replay cap (256 KiB) — no point
+/// replaying more than what we've retained. Memory cost: at most 8 MiB *
+/// number of active panes (typically ≤ 10), so ≤ ~80 MiB worst case.
+pub const SCROLLBACK_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+impl PaneScrollback {
+    pub fn new() -> Self {
+        Self {
+            blocks: std::collections::VecDeque::new(),
+            block_start_seqs: std::collections::VecDeque::new(),
+            current: Vec::with_capacity(SCROLLBACK_BLOCK_SIZE),
+            current_start_seq: 0,
+            total_bytes: 0,
+        }
+    }
+
+    /// Seq of the first byte still available to callers.
+    pub fn oldest_seq(&self) -> u64 {
+        if let Some(&s) = self.block_start_seqs.front() {
+            s
+        } else {
+            self.current_start_seq
+        }
+    }
+
+    /// Seq of the NEXT byte that will be written (one past the newest retained
+    /// byte). A remote controller uses this as the live/history boundary: bytes
+    /// with `seq < head_seq` are history (fetch via `_before`), bytes streamed
+    /// after subscribe are live — so the two never overlap or leave a gap.
+    pub fn head_seq(&self) -> u64 {
+        self.current_start_seq + self.current.len() as u64
+    }
+
+    /// Return the seq-sorted flat view of every retained byte. Used by the
+    /// paging helpers. `total` matches `self.total_bytes` at the top of the
+    /// call; we snapshot into a Vec<Arc<Vec<u8>>> so the caller can read
+    /// without holding the outer RwLock longer than needed.
+    pub fn snapshot_blocks(&self) -> Vec<(u64, Arc<Vec<u8>>)> {
+        let mut out: Vec<(u64, Arc<Vec<u8>>)> = Vec::with_capacity(self.blocks.len() + 1);
+        for (i, b) in self.blocks.iter().enumerate() {
+            out.push((self.block_start_seqs[i], Arc::clone(b)));
+        }
+        if !self.current.is_empty() {
+            out.push((self.current_start_seq, Arc::new(self.current.clone())));
+        }
+        out
+    }
+}
+
+/// P4.1 (2026-05-21) — per-pane delta-byte sender. Wraps a Tauri
+/// `Channel<Vec<u8>>::send` (or any other sink — e.g. a postMessage shim
+/// to a render worker in P4.9) so the `pty-delta-*` emit sites in `lib.rs`
+/// and `commands/terminal.rs` can stay agnostic of *how* bytes reach the
+/// frontend. `Arc` so the main loop can clone out of the RwLock and call
+/// `send` without holding any state lock.
+///
+/// Returning `()` is intentional: send failures are best-effort (the
+/// frontend has gone away if they fail, and the next pane-close cleanup
+/// will drop the sender). Callers log errors inside the closure.
+pub type PaneDeltaSender = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
+
+/// A pane's native-parser frames live here until the browser compositor asks
+/// for them.  The Channel carries only one zero-byte wake per animation frame;
+/// this keeps a Ctrl+C flood out of WebView's task queue without inserting a
+/// timer between terminal bytes and their next paint.
+const MAX_DELTA_MAILBOX_DELTAS: usize = 8_192;
+const MAX_TERMINAL_MAILBOX_FRAMES: usize = 64;
+const MAX_TERMINAL_MAILBOX_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Default)]
+struct PaneDeltaMailboxState {
+    pending: VecDeque<Vec<u8>>,
+    pending_bytes: usize,
+    wake_armed: bool,
+    last_sequence: Option<u64>,
+}
+struct PaneDeltaMailbox {
+    state: Mutex<PaneDeltaMailboxState>,
+    pane: ridge_term::terminal_protocol::PaneRef,
+    activation_id: u64,
+}
+enum PaneDeltaMailboxPush { Queued { wake: bool }, NeedsResync }
+impl PaneDeltaMailbox {
+    fn encode(&self, frame: DeltaFrame) -> Result<Vec<u8>, String> {
+        let update = frame.semantic_update.ok_or("uncaptured terminal update")?;
+        let frame = update.into_frame(self.pane.clone(), self.activation_id);
+        ridge_term::terminal_protocol::encode_frame(&frame).map_err(|error| error.to_string())
+    }
+    fn push(&self, frame: DeltaFrame) -> PaneDeltaMailboxPush {
+        let sequence = frame.pane_seq;
+        let count = frame.deltas.len();
+        let mut state = self.state.lock();
+        if state.last_sequence.is_some_and(|last| sequence <= last) { return PaneDeltaMailboxPush::Queued { wake: false }; }
+        if count > MAX_DELTA_MAILBOX_DELTAS || state.pending.len() >= MAX_TERMINAL_MAILBOX_FRAMES { return PaneDeltaMailboxPush::NeedsResync; }
+        let Ok(bytes) = self.encode(frame) else { return PaneDeltaMailboxPush::NeedsResync; };
+        if state.pending_bytes.saturating_add(bytes.len()) > MAX_TERMINAL_MAILBOX_BYTES { return PaneDeltaMailboxPush::NeedsResync; }
+        state.pending_bytes += bytes.len(); state.pending.push_back(bytes); state.last_sequence = Some(sequence);
+        let wake = !state.wake_armed; state.wake_armed = true;
+        PaneDeltaMailboxPush::Queued { wake }
+    }
+    fn replace(&self, frame: DeltaFrame) -> Result<bool, String> {
+        let sequence = frame.pane_seq;
+        let bytes = self.encode(frame)?;
+        if bytes.len() > MAX_TERMINAL_MAILBOX_BYTES { return Err("terminal snapshot exceeds mailbox budget".into()); }
+        let mut state = self.state.lock(); state.pending.clear(); state.pending_bytes = bytes.len();
+        state.pending.push_back(bytes); state.last_sequence = Some(sequence);
+        let wake = !state.wake_armed; state.wake_armed = true; Ok(wake)
+    }
+    fn take_encoded(&self) -> Vec<Vec<u8>> {
+        let mut state = self.state.lock();
+        let frames = state.pending.drain(..).collect(); state.pending_bytes = 0; state.wake_armed = false; frames
+    }
+}
+
+/// The caller holds the canonical parser lock while queuing a frame.  A
+/// bounded mailbox requests one fresh full reframe instead of retaining an
+/// unbounded hidden-tab transcript.
+#[derive(Debug)]
+pub enum PaneDeltaEnqueue {
+    Queued,
+    NeedsResync,
+    NoChannel(DeltaFrame),
+}
+
+pub struct RemotePaneSub {
+    pub id: u64,
+    pub raw_tx: mpsc::Sender<RemotePtyEvent>,
+    pub semantic: bool,
+    /// Metadata/control events use a separate lane so title/cwd/resize cannot
+    /// be dropped behind a saturated raw PTY byte queue.
+    pub metadata_tx: mpsc::Sender<RemotePtyEvent>,
+    /// Set by the PTY fan-out (lib.rs) when a `raw_tx.try_send` is dropped
+    /// because this sub's channel is full. The WS task observes it on the
+    /// next forwarded frame and emits a terminal hard-reset (RIS) + fresh
+    /// scrollback so the client's vte parser re-synchronises instead of
+    /// staying corrupted by the hole in the byte stream.
+    pub desync: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+pub struct PaneRegistry {
+    pub delta_cb: Option<PaneDeltaSender>,
+    delta_mailbox: Option<Arc<PaneDeltaMailbox>>,
+    pub remote_subs: Vec<RemotePaneSub>,
+}
+
+/// Monotonic remote subscriber ID counter. Each `handle_ws` invocation
+/// grabs a unique id for registration/deregistration.
+pub struct RemoteSubId;
+
+impl RemoteSubId {
+    pub fn next() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+pub use ridge_remote::access::BlacklistEntry;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceWindowClaim {
+    Acquired,
+    AlreadyOwned,
+    OwnedBy(String),
+}
+
+#[derive(Debug, Default)]
+pub struct WorkspaceWindowClaims {
+    owners: Mutex<HashMap<Uuid, String>>,
+    selected_by_window: Mutex<HashMap<String, Uuid>>,
+}
+
+impl WorkspaceWindowClaims {
+    /// Check-and-insert under one lock so simultaneous windows cannot both win.
+    pub fn claim(&self, workspace_id: Uuid, window_label: &str) -> WorkspaceWindowClaim {
+        let mut owners = self.owners.lock();
+        match owners.get(&workspace_id) {
+            Some(owner) if owner == window_label => WorkspaceWindowClaim::AlreadyOwned,
+            Some(owner) => WorkspaceWindowClaim::OwnedBy(owner.clone()),
+            None => {
+                owners.insert(workspace_id, window_label.to_owned());
+                WorkspaceWindowClaim::Acquired
+            }
+        }
+    }
+
+    pub fn release_workspace(&self, workspace_id: Uuid, window_label: Option<&str>) -> bool {
+        let mut owners = self.owners.lock();
+        let can_release = owners
+            .get(&workspace_id)
+            .is_some_and(|owner| window_label.map_or(true, |label| owner == label));
+        if can_release {
+            owners.remove(&workspace_id);
+            self.selected_by_window
+                .lock()
+                .retain(|_, selected| *selected != workspace_id);
+        }
+        can_release
+    }
+
+    pub fn release_window(&self, window_label: &str) -> usize {
+        let mut owners = self.owners.lock();
+        let before = owners.len();
+        owners.retain(|_, owner| owner != window_label);
+        self.selected_by_window.lock().remove(window_label);
+        before - owners.len()
+    }
+
+    pub fn select_owned(&self, workspace_id: Uuid, window_label: &str) -> bool {
+        let owners = self.owners.lock();
+        if owners.get(&workspace_id).map(String::as_str) != Some(window_label) {
+            return false;
+        }
+        self.selected_by_window
+            .lock()
+            .insert(window_label.to_owned(), workspace_id);
+        true
+    }
+
+    pub fn selected_workspace(&self, window_label: &str) -> Option<Uuid> {
+        self.selected_by_window.lock().get(window_label).copied()
+    }
+
+    /// Return this window's live selection, or atomically claim the preferred/
+    /// first available workspace. Unlike the interactive claim command this has
+    /// no focus side effect, so window boot never walks other windows' tabs.
+    pub fn acquire_available(
+        &self,
+        window_label: &str,
+        preferred: Uuid,
+        candidates: &[Uuid],
+    ) -> Option<Uuid> {
+        let mut owners = self.owners.lock();
+        let mut selected = self.selected_by_window.lock();
+
+        if let Some(current) = selected.get(window_label).copied() {
+            if candidates.contains(&current)
+                && owners.get(&current).map(String::as_str) == Some(window_label)
+            {
+                return Some(current);
+            }
+            selected.remove(window_label);
+        }
+
+        let available = |id: &Uuid| match owners.get(id) {
+            None => true,
+            Some(owner) => owner == window_label,
+        };
+        let chosen = candidates
+            .iter()
+            .copied()
+            .find(|id| *id == preferred && available(id))
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .copied()
+                    .find(|id| *id != preferred && available(id))
+            })?;
+        owners.insert(chosen, window_label.to_owned());
+        selected.insert(window_label.to_owned(), chosen);
+        Some(chosen)
+    }
+}
+
+#[derive(Clone)]
+pub struct AppState {
+    pub workspaces: Arc<RwLock<HashMap<Uuid, Workspace>>>,
+    pub workspace_order: Arc<RwLock<Vec<Uuid>>>,
+    pub workspace_names: Arc<RwLock<HashMap<Uuid, String>>>,
+    pub active_workspace: Arc<RwLock<Uuid>>,
+    /// Process-local ownership of desktop workspaces. Multiple WebViews may coexist,
+    /// but one workspace is rendered by at most one window at a time.
+    pub workspace_window_claims: Arc<WorkspaceWindowClaims>,
+    /// 下一个未命名工作区的展示序号；每次新建（包括从 .ridge 还原）`fetch_add 1`。
+    /// 关闭工作区不会回收已发出的序号 —— 用户期望「工作区 2」一旦创建就不会被另一个
+    /// 重新顶替，避免标签语义漂移。
+    pub next_workspace_seq: Arc<RwLock<u64>>,
+    pub event_tx: mpsc::Sender<GlobalEvent>,
+    /// 供 `capture-pane` 读取的最近输出（与 UI 展示同源 PTY 流）。
+    /// Block-based store — see `PaneScrollback` and
+    /// `docs/TERMINAL_SCROLLBACK.md`.
+    pub pty_scrollback: Arc<RwLock<HashMap<(Uuid, Uuid), PaneScrollback>>>,
+    /// 本进程 teammate HTTP 绑定信息；存在时新 PTY 会注入 Ridge_TEAMMATE_*。
+    pub teammate_binding: Arc<RwLock<Option<TeammateBinding>>>,
+    /// 进程级 AppHandle，setup 时 stash。teammate HTTP server 改为「按需启动」后，
+    /// `ensure_teammate_started` 用它在首个 PTY 创建时惰性拉起 server（避免压在冷启动路径上）。
+    pub app_handle: Arc<std::sync::OnceLock<tauri::AppHandle>>,
+    /// Transitional read projection for legacy consumers; Runtime owns project history.
+    pub current_project: Arc<RwLock<Option<PathBuf>>>,
+    /// Git filesystem watcher — keeps notify debouncers alive for each watched repo.
+    /// Wrapped in Arc so that cloning AppState shares the same watcher instance.
+    pub git_watcher: Arc<GitWatcher>,
+    /// 通用文件系统 watcher：覆盖 Explorer 列出的 cwd 和编辑器打开的外部文件，
+    /// emit `fs-changed` 事件供前端文件树/编辑器订阅。
+    pub fs_watcher: Arc<FsWatcher>,
+    /// 启动方式：cli（终端调用 `ridge`）/ menu（资源管理器、开始菜单双击 ridge.exe）。
+    /// 关键差异：menu 模式下进程的 `current_dir()` 等于 ridge.exe 所在目录，**不**应作为
+    /// 默认工作目录；cli 模式下它是用户期望的工作目录。
+    /// §4 启动恢复读它：cli 模式下跳过 restore set，让 cwd 接管首个工作区。
+    pub startup_cwd_kind: StartupCwdKind,
+    /// cli 模式下捕获的启动 cwd；menu 模式为 None。后续 §2 用户配置 defaultCwd
+    /// 时按 cli > user > home 的优先级合并（utils::cwd::resolve_default_cwd）。
+    pub startup_cli_cwd: Option<PathBuf>,
+    /// 用户在设置面板配置的默认工作目录（front-end localStorage `defaultCwd` 字段
+    /// 在启动时通过 `set_user_default_cwd` 命令同步到这里）。menu 启动模式下，
+    /// 这是首个 pane 的 cwd 来源（cli 启动时被 startup_cli_cwd 覆盖，仍然优先）。
+    pub user_default_cwd: Arc<RwLock<Option<PathBuf>>>,
+    /// Unified per-pane registry for desktop callbacks and remote WS subscribers.
+    /// Keyed by (workspace_id, pane_id). Each entry can hold:
+    ///   - delta_cb:  desktop Tauri Channel for delta frames (replaces pty_delta_channels)
+    ///   - remote_subs: mobile WS client subscribers with per-client mpsc channels
+    pub pty_pane_registry: Arc<RwLock<HashMap<(Uuid, Uuid), PaneRegistry>>>,
+    /// Idempotent remote input lanes, keyed by `(workspace, pane, controller source)`.
+    /// Each lane serializes writes and stores the last applied sequence so a response
+    /// timeout/reconnect can retry without duplicating terminal input.
+    pub pty_input_lanes:
+        Arc<RwLock<HashMap<(Uuid, Uuid, String), Arc<tokio::sync::Mutex<PtyInputSequenceState>>>>>,
+    /// Remote Control (主线一): the port the WebSocket server is listening on.
+    /// 0 means the server is not running (failed to bind or disabled).
+    /// Global remote control toggle. When `false`, the remote server handlers
+    /// return 503 and the WebSocket upgrade is refused. Set via the settings
+    /// panel's "Remote Control" switch.
+    pub remote_enabled: Arc<AtomicBool>,
+    /// 「主机 / Hosts」外部主机注册表（远端 ridge / rdg）。P3/P4 基础层：登记 +
+    /// 状态管理；live PTY 流传输为下一里程（见 crate::hosts）。
+    pub hosts: Arc<crate::hosts::HostRegistry>,
+    /// Broadcast channel for structural changes (pane/workspace add/close/rename)
+    /// that remote WS clients subscribe to. Late joiners skip stale events —
+    /// they pull current state on connect or on demand.
+    pub remote_structural_tx: tokio::sync::broadcast::Sender<crate::types::RemoteStructuralEvent>,
+    /// Broadcast bus for generic Tauri events forwarded to desktop-browser remote
+    /// clients (the "desktop UI in a browser" mode). Any host event source that
+    /// the desktop UI subscribes to via `listen()` (fs-changed, teammate-*, …)
+    /// publishes here; the WS handler relays each as a `{type:'event'}` frame.
+    pub remote_ui_event_tx: tokio::sync::broadcast::Sender<crate::types::RemoteUiEvent>,
+    /// Deep Root Mode（§8）—— 「是否存在活跃云端远控会话」标志。云端 WebRTC/E2EE
+    /// provider 活在 WebView（v1），Rust 侧无法直接观测连接状态，故由前端在
+    /// DataChannel open/close 时通过 `set_cloud_remote_active` 命令上报到此处。
+    /// `enter_deep_root_mode` 据此做前置校验：无活跃远控时拒绝进入深根。
+    pub cloud_remote_active: Arc<AtomicBool>,
+    /// Deep Root Mode（§8）—— 「正在真正退出」标志。默认 `false`：窗口 close-requested
+    /// 时拦截关闭并隐藏到托盘（避免误退出）。仅托盘「彻底退出 Ridge」会先置 `true`
+    /// 再 `app.exit(0)`，让 close-requested 处理放行真正的退出（保存恢复集 + 停远控）。
+    pub quitting: Arc<AtomicBool>,
+    /// B2（D-GM-11）：cloud pane 裸字节订阅表 `pane_id → (workspace_id, sub_id)`。
+    /// `subscribe_pane_raw` 登记一条 `RemotePaneSub`（把该 pane 的 RawBytes 经 Tauri
+    /// event `pane-raw-{pane}` 转给本 WebView），`unsubscribe_pane_raw` 据此注销。
+    /// value = `(ws, sub_id, refcount)`：同一 WebView 内多个 controller 桥订阅同一 pane 时
+    /// 共用一条 live fan-out（广播到所有订阅了该 pane 的桥），refcount 记订阅者数——
+    /// 只有降到 0 才真正注销，避免一个 controller 退订就把仍在看的其它 controller 断流。
+    pub cloud_pane_raw_subs: Arc<Mutex<HashMap<(Uuid, Uuid), (u64, u32)>>>,
+    /// Semantic subscriptions are activation-scoped; two cloud controllers
+    /// viewing one pane must never share an activation envelope.
+    pub cloud_pane_terminal_subs: Arc<Mutex<HashMap<(Uuid, Uuid, u64), crate::commands::cloud_pane::TerminalRelay>>>,
+}
+
+fn collect_tail_pieces(
+    snapshot: &[(u64, std::sync::Arc<Vec<u8>>)],
+    max_bytes: usize,
+) -> (Vec<&[u8]>, u64, usize, bool) {
+    let mut pieces = Vec::new();
+    let mut start_seq = 0;
+    let mut need = max_bytes;
+    let mut at_oldest = true;
+    for (sequence, block) in snapshot.iter().rev() {
+        if need == 0 {
+            at_oldest = false;
+            break;
+        }
+        if block.len() <= need {
+            pieces.push(&block[..]);
+            need -= block.len();
+            start_seq = *sequence;
+            continue;
+        }
+        let mut aligned = block.len() - need;
+        while aligned < block.len() && !is_utf8_char_boundary(block, aligned) {
+            aligned += 1;
+        }
+        if aligned < block.len() {
+            pieces.push(&block[aligned..]);
+            start_seq = *sequence + aligned as u64;
+            need = 0;
+        }
+        at_oldest = false;
+        break;
+    }
+    (pieces, start_seq, need, at_oldest)
+}
+
+fn collect_before_pieces(
+    snapshot: &[(u64, std::sync::Arc<Vec<u8>>)],
+    before_seq: u64,
+    max_bytes: usize,
+) -> (Vec<Vec<u8>>, u64, usize) {
+    let mut pieces = Vec::new();
+    let mut start_seq = before_seq;
+    let mut need = max_bytes;
+    for (sequence, block) in snapshot.iter().rev() {
+        if need == 0 || *sequence >= before_seq {
+            continue;
+        }
+        let end = (before_seq - *sequence).min(block.len() as u64) as usize;
+        let mut start = end.saturating_sub(need);
+        while start < end && !is_utf8_char_boundary(block, start) {
+            start += 1;
+        }
+        if start < end {
+            pieces.push(block[start..end].to_vec());
+            need -= end - start;
+            start_seq = *sequence + start as u64;
+        }
+    }
+    (pieces, start_seq, need)
+}
+
+fn collect_since_bytes(
+    snapshot: &[(u64, std::sync::Arc<Vec<u8>>)],
+    effective_start: u64,
+) -> (Vec<u8>, Option<u64>) {
+    let mut output = Vec::new();
+    let mut real_start = None;
+    for (sequence, block) in snapshot {
+        if *sequence + block.len() as u64 <= effective_start {
+            continue;
+        }
+        let mut offset = effective_start.saturating_sub(*sequence) as usize;
+        while offset < block.len() && !is_utf8_char_boundary(block, offset) {
+            offset += 1;
+        }
+        if offset >= block.len() {
+            continue;
+        }
+        real_start.get_or_insert(*sequence + offset as u64);
+        output.extend_from_slice(&block[offset..]);
+    }
+    (output, real_start)
+}
+
+impl AppState {
+    pub fn new(event_tx: mpsc::Sender<GlobalEvent>) -> Self {
+        let id = Uuid::new_v4();
+        let mut map = HashMap::new();
+        let mut pane_tree = PaneTree::new();
+        let (startup_cwd_kind, startup_cli_cwd) = detect_startup_cwd_kind();
+        // 仅 cli 启动时把 cwd 种入默认 pane；menu 启动时让 create_pane_inner 走
+        // HOME / 用户配置的 fallback，避免默认终端落到 ridge.exe 安装目录。
+        if let Some(cwd) = startup_cli_cwd.clone() {
+            if let Some(&root_id) = pane_tree.panes.keys().next() {
+                if let Some(pane) = pane_tree.panes.get_mut(&root_id) {
+                    pane.cwd = Some(cwd);
+                }
+            }
+        }
+        map.insert(
+            id,
+            Workspace {
+                pane_tree,
+                terminals: HashMap::new(),
+                teammate_tmux_pane_cursor: 0,
+                teammate_pane_titles: HashMap::new(),
+                pane_sizes: HashMap::new(),
+                last_pane_index: None,
+                created_at: SystemTime::now(),
+                teammate_pane_states: HashMap::new(),
+                teammate_agent_pane_map: HashMap::new(),
+                teammate_owned_panes: HashSet::new(),
+                associated_file_path: None,
+                pending_spawns: HashMap::new(),
+                pty_generation: HashMap::new(),
+                teammate_metrics: TeammateMetrics::default(),
+                display_seq: 1,
+            },
+        );
+        Self {
+            workspaces: Arc::new(RwLock::new(map)),
+            workspace_order: Arc::new(RwLock::new(vec![id])),
+            workspace_names: Arc::new(RwLock::new(HashMap::new())),
+            active_workspace: Arc::new(RwLock::new(id)),
+            workspace_window_claims: Arc::new(WorkspaceWindowClaims::default()),
+            next_workspace_seq: Arc::new(RwLock::new(2)),
+            event_tx,
+            pty_scrollback: Arc::new(RwLock::new(HashMap::new())),
+            teammate_binding: Arc::new(RwLock::new(None)),
+            app_handle: Arc::new(std::sync::OnceLock::new()),
+            current_project: Arc::new(RwLock::new(None)),
+            git_watcher: Arc::new(GitWatcher::new()),
+            fs_watcher: Arc::new(FsWatcher::new()),
+            startup_cwd_kind,
+            startup_cli_cwd,
+            user_default_cwd: Arc::new(RwLock::new(None)),
+            pty_pane_registry: Arc::new(RwLock::new(HashMap::new())),
+            pty_input_lanes: Arc::new(RwLock::new(HashMap::new())),
+            remote_enabled: Arc::new(AtomicBool::new(false)),
+            hosts: Arc::new(crate::hosts::HostRegistry::default()),
+            remote_structural_tx: {
+                let (tx, _) = tokio::sync::broadcast::channel(64);
+                tx
+            },
+            remote_ui_event_tx: {
+                let (tx, _) = tokio::sync::broadcast::channel(256);
+                tx
+            },
+            cloud_remote_active: Arc::new(AtomicBool::new(false)),
+            quitting: Arc::new(AtomicBool::new(false)),
+            cloud_pane_raw_subs: Arc::new(Mutex::new(HashMap::new())),
+            cloud_pane_terminal_subs: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn active_workspace_id(&self) -> Uuid {
+        *self.active_workspace.read()
+    }
+
+    pub fn active_workspace_for_window(&self, window_label: &str) -> Uuid {
+        self.workspace_window_claims
+            .selected_workspace(window_label)
+            .unwrap_or_else(|| self.active_workspace_id())
+    }
+
+    /// 取下一个未命名工作区的展示序号并自增。仅在创建/还原工作区时调用一次。
+    pub fn allocate_workspace_seq(&self) -> u64 {
+        let mut seq = self.next_workspace_seq.write();
+        let n = *seq;
+        *seq = seq.saturating_add(1);
+        n
+    }
+
+    pub fn append_pty_scrollback(&self, ws: Uuid, pane: Uuid, chunk: &str) {
+        if chunk.is_empty() {
+            return;
+        }
+        let chunk_bytes = chunk.as_bytes();
+        let mut map = self.pty_scrollback.write();
+        let entry = map.entry((ws, pane)).or_insert_with(PaneScrollback::new);
+
+        // Fast path: append into `current`; when it crosses BLOCK_SIZE, freeze.
+        entry.current.extend_from_slice(chunk_bytes);
+        entry.total_bytes += chunk_bytes.len();
+
+        while entry.current.len() >= SCROLLBACK_BLOCK_SIZE {
+            // Freeze one block. We walk back from BLOCK_SIZE to the nearest
+            // UTF-8 char boundary so the frozen slice never ends mid-codepoint.
+            // Max 3 bytes of rewind since UTF-8 sequences are ≤ 4 bytes.
+            let mut boundary = SCROLLBACK_BLOCK_SIZE;
+            while boundary > 0 && !is_utf8_char_boundary(&entry.current, boundary) {
+                boundary -= 1;
+            }
+            if boundary == 0 {
+                // `current` starts with a continuation byte — shouldn't happen
+                // because the previous freeze stopped at a boundary, but guard
+                // anyway by punting: let it grow to the next boundary match.
+                break;
+            }
+            let frozen = entry.current.drain(..boundary).collect::<Vec<u8>>();
+            let frozen_start_seq = entry.current_start_seq;
+            entry.blocks.push_back(Arc::new(frozen));
+            entry.block_start_seqs.push_back(frozen_start_seq);
+            entry.current_start_seq = frozen_start_seq + boundary as u64;
+
+            // Cap eviction: drop oldest blocks until we're back under MAX_BYTES.
+            while entry.total_bytes > SCROLLBACK_MAX_BYTES && entry.blocks.len() > 1 {
+                if let Some(evicted) = entry.blocks.pop_front() {
+                    entry.block_start_seqs.pop_front();
+                    entry.total_bytes -= evicted.len();
+                }
+            }
+        }
+    }
+
+    pub fn clear_pty_scrollback(&self, ws: Uuid, pane: Uuid) {
+        self.pty_scrollback.write().remove(&(ws, pane));
+    }
+
+    pub fn clear_pty_input_lanes(&self, ws: Uuid, pane: Uuid) {
+        self.pty_input_lanes
+            .write()
+            .retain(|(lane_ws, lane_pane, _), _| *lane_ws != ws || *lane_pane != pane);
+    }
+
+    /// Return the tail of up-to `max_bytes` bytes, starting on a UTF-8 char
+    /// boundary and ending at the latest byte. Walks blocks newest-first so
+    /// we allocate only what the caller asked for.
+    pub fn get_pty_scrollback_tail(
+        &self,
+        ws: Uuid,
+        pane: Uuid,
+        max_bytes: usize,
+    ) -> ScrollbackChunk {
+        let map = self.pty_scrollback.read();
+        let Some(entry) = map.get(&(ws, pane)) else {
+            return ScrollbackChunk {
+                bytes: String::new(),
+                start_seq: 0,
+                end_seq: 0,
+                at_oldest: true,
+                head_seq: 0,
+            };
+        };
+        let snapshot = entry.snapshot_blocks();
+        let oldest_seq = entry.oldest_seq();
+        let head_seq = entry.head_seq();
+        drop(map);
+
+        if snapshot.is_empty() || max_bytes == 0 {
+            return ScrollbackChunk {
+                bytes: String::new(),
+                start_seq: oldest_seq,
+                end_seq: oldest_seq,
+                at_oldest: true,
+                head_seq,
+            };
+        }
+
+        let (rev_pieces, mut start_seq, need, at_oldest) =
+            collect_tail_pieces(&snapshot, max_bytes);
+
+        let mut out: Vec<u8> = Vec::with_capacity(max_bytes - need);
+        for piece in rev_pieces.iter().rev() {
+            out.extend_from_slice(piece);
+        }
+        let at_oldest = at_oldest && start_seq == oldest_seq;
+        align_page_start_to_line(&mut out, &mut start_seq, at_oldest);
+        let bytes = String::from_utf8_lossy(&out).into_owned();
+        ScrollbackChunk {
+            bytes,
+            start_seq,
+            end_seq: head_seq,
+            at_oldest,
+            head_seq,
+        }
+    }
+
+    /// §incremental-replay — forward read from `since_seq` (inclusive) to the
+    /// newest retained byte, capped to `max_bytes` (newest-biased if the gap
+    /// exceeds the cap). Mirrors rdg `ScrollbackRing::since`, and is the SSOT
+    /// for the resync-vs-incremental decision: a controller that kept its mirror
+    /// kernel alive (mobile keep-alive) resubscribes with its last cursor; the
+    /// host replays ONLY the gap **without RIS** so the kernel is not wiped.
+    ///
+    /// `chunk.start_seq == since_seq` ⇒ no gap (contiguous incremental replay is
+    /// safe → send `pane_frame`, no RIS). `chunk.start_seq > since_seq` ⇒ a gap
+    /// (bytes evicted, or the gap exceeded `max_bytes`) → caller must fall back
+    /// to a full `pane_resync_frame` (RIS + scrollback) instead. When
+    /// `since_seq >= head_seq` the controller is already current (empty bytes,
+    /// `start_seq == since_seq`).
+    pub fn get_pty_scrollback_since(
+        &self,
+        ws: Uuid,
+        pane: Uuid,
+        since_seq: u64,
+        max_bytes: usize,
+    ) -> ScrollbackChunk {
+        let map = self.pty_scrollback.read();
+        let Some(entry) = map.get(&(ws, pane)) else {
+            return ScrollbackChunk {
+                bytes: String::new(),
+                start_seq: since_seq,
+                end_seq: since_seq,
+                at_oldest: true,
+                head_seq: 0,
+            };
+        };
+        let snapshot = entry.snapshot_blocks();
+        let oldest_seq = entry.oldest_seq();
+        let head_seq = entry.head_seq();
+        drop(map);
+
+        // Caught up (or a stale-future cursor): nothing to replay, no gap.
+        // start_seq == since_seq signals the caller "no gap" (empty incremental).
+        if since_seq >= head_seq {
+            return ScrollbackChunk {
+                bytes: String::new(),
+                start_seq: since_seq,
+                end_seq: since_seq,
+                at_oldest: oldest_seq == 0,
+                head_seq,
+            };
+        }
+        // Effective start: never older than what we still retain (that's the gap).
+        // Also honor the cap: if the requested span exceeds max_bytes, bias to the
+        // newest max_bytes → start_seq advances past since_seq → caller sees a gap
+        // and does a full resync (correct: a huge gap deserves a clean reset).
+        let span = head_seq - since_seq;
+        let mut effective_start = since_seq.max(oldest_seq);
+        if (head_seq - effective_start) as usize > max_bytes {
+            effective_start = head_seq - max_bytes as u64;
+        }
+        let _ = span;
+
+        let (out, real_start) = collect_since_bytes(&snapshot, effective_start);
+        let start_seq = real_start.unwrap_or(effective_start);
+        ScrollbackChunk {
+            bytes: String::from_utf8_lossy(&out).into_owned(),
+            start_seq,
+            end_seq: head_seq,
+            at_oldest: start_seq == oldest_seq,
+            head_seq,
+        }
+    }
+
+    /// Return up-to `max_bytes` ending at (exclusive) `before_seq`. Use for
+    /// paginating backwards: pass `chunk.start_seq` as the next `before_seq`.
+    pub fn get_pty_scrollback_before(
+        &self,
+        ws: Uuid,
+        pane: Uuid,
+        before_seq: u64,
+        max_bytes: usize,
+    ) -> ScrollbackChunk {
+        let map = self.pty_scrollback.read();
+        let Some(entry) = map.get(&(ws, pane)) else {
+            return ScrollbackChunk {
+                bytes: String::new(),
+                start_seq: 0,
+                end_seq: 0,
+                at_oldest: true,
+                head_seq: 0,
+            };
+        };
+        let snapshot = entry.snapshot_blocks();
+        let oldest_seq = entry.oldest_seq();
+        let head_seq = entry.head_seq();
+        drop(map);
+
+        if snapshot.is_empty() || max_bytes == 0 {
+            return ScrollbackChunk {
+                bytes: String::new(),
+                start_seq: before_seq,
+                end_seq: before_seq,
+                at_oldest: before_seq <= oldest_seq,
+                head_seq,
+            };
+        }
+
+        let (rev_pieces, mut start_seq, need) =
+            collect_before_pieces(&snapshot, before_seq, max_bytes);
+
+        let mut out: Vec<u8> = Vec::with_capacity(max_bytes - need);
+        for piece in rev_pieces.iter().rev() {
+            out.extend_from_slice(piece);
+        }
+        let end_seq = before_seq.min(head_seq);
+        let at_oldest = start_seq <= oldest_seq;
+        align_page_start_to_line(&mut out, &mut start_seq, at_oldest);
+        let bytes = String::from_utf8_lossy(&out).into_owned();
+        ScrollbackChunk {
+            bytes,
+            start_seq,
+            end_seq,
+            at_oldest,
+            head_seq,
+        }
+    }
+
+    /// Install (or replace) the compositor wake sender for `(ws, pane)`.
+    /// Frames remain in a native mailbox until the browser's rAF lane pulls
+    /// one compact payload; the Channel therefore cannot flood WebView tasks.
+    pub fn register_pane_delta_channel(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        sender: PaneDeltaSender,
+        activation_id: u64,
+    ) {
+        let mut registry = self.pty_pane_registry.write();
+        let entry = registry.entry((workspace_id, pane_id)).or_default();
+        entry.delta_cb = Some(sender);
+        entry.delta_mailbox = Some(Arc::new(PaneDeltaMailbox { state: Mutex::new(PaneDeltaMailboxState::default()), pane: ridge_term::terminal_protocol::PaneRef::new(workspace_id.to_string(), pane_id.to_string()), activation_id }));
+    }
+
+    pub fn retarget_pane_runtime(&self, from_ws: Uuid, to_ws: Uuid, pane: Uuid) {
+        if from_ws == to_ws {
+            return;
+        }
+        {
+            let mut map = self.pty_scrollback.write();
+            if let Some(entry) = map.remove(&(from_ws, pane)) {
+                map.insert((to_ws, pane), entry);
+            }
+        }
+        {
+            let mut registry = self.pty_pane_registry.write();
+            if let Some(entry) = registry.remove(&(from_ws, pane)) {
+                registry.insert((to_ws, pane), entry);
+            }
+        }
+        {
+            let mut lanes = self.pty_input_lanes.write();
+            let keys: Vec<_> = lanes
+                .keys()
+                .filter(|(workspace, pane_id, _)| *workspace == from_ws && *pane_id == pane)
+                .cloned()
+                .collect();
+            for key in keys {
+                if let Some(value) = lanes.remove(&key) {
+                    lanes.insert((to_ws, key.1, key.2), value);
+                }
+            }
+        }
+    }
+
+    pub fn unregister_pane_delta_channel(&self, workspace_id: Uuid, pane_id: Uuid) {
+        let mut reg = self.pty_pane_registry.write();
+        let key = (workspace_id, pane_id);
+        if let Some(entry) = reg.get_mut(&key) {
+            entry.delta_cb = None;
+            entry.delta_mailbox = None;
+            if entry.is_empty() {
+                reg.remove(&key);
+            }
+        }
+    }
+
+    pub fn get_pane_delta_channel(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+    ) -> Option<PaneDeltaSender> {
+        self.pty_pane_registry
+            .read()
+            .get(&(workspace_id, pane_id))
+            .and_then(|e| e.delta_cb.clone())
+    }
+
+    pub fn enqueue_pane_delta_frame(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        frame: DeltaFrame,
+    ) -> PaneDeltaEnqueue {
+        let (mailbox, sender) = {
+            let registry = self.pty_pane_registry.read();
+            let Some(entry) = registry.get(&(workspace_id, pane_id)) else {
+                return PaneDeltaEnqueue::NoChannel(frame);
+            };
+            let (Some(mailbox), Some(sender)) =
+                (entry.delta_mailbox.clone(), entry.delta_cb.clone())
+            else {
+                return PaneDeltaEnqueue::NoChannel(frame);
+            };
+            (mailbox, sender)
+        };
+        match mailbox.push(frame) {
+            PaneDeltaMailboxPush::Queued { wake } => {
+                if wake {
+                    // A marker, not a frame. The JS bridge pulls the merged
+                    // payload on its own animation-frame transaction.
+                    sender(Vec::new());
+                }
+                PaneDeltaEnqueue::Queued
+            }
+            PaneDeltaMailboxPush::NeedsResync => PaneDeltaEnqueue::NeedsResync,
+        }
+    }
+
+    pub fn replace_pane_delta_frame(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        frame: DeltaFrame,
+    ) -> bool {
+        let (mailbox, sender) = {
+            let registry = self.pty_pane_registry.read();
+            let Some(entry) = registry.get(&(workspace_id, pane_id)) else {
+                return false;
+            };
+            let (Some(mailbox), Some(sender)) =
+                (entry.delta_mailbox.clone(), entry.delta_cb.clone())
+            else {
+                return false;
+            };
+            (mailbox, sender)
+        };
+        match mailbox.replace(frame) {
+            Ok(wake) => { if wake { sender(Vec::new()); } true },
+            Err(_) => false,
+        }
+    }
+
+    pub fn take_terminal_frames(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+    ) -> Result<Vec<Vec<u8>>, String> {
+        let mailbox = self
+            .pty_pane_registry
+            .read()
+            .get(&(workspace_id, pane_id))
+            .and_then(|entry| entry.delta_mailbox.clone());
+        let Some(mailbox) = mailbox else {
+            return Ok(Vec::new());
+        };
+        Ok(mailbox.take_encoded())
+    }
+
+    /// Snapshot the pane's current terminal modes + alt-screen flag, for
+    /// building a reattach preamble (`ridge_term::term::modes::build_resync_frame`)
+    /// on (re)subscribe. Returns defaults (plain shell, no alt) when the pane has
+    /// no live parser — then the preamble is empty and the frame is the plain
+    /// `RIS + scrollback` (unchanged behaviour). The parser only carries current
+    /// modes while `delta_mode` is on, which the desktop app keeps on for the
+    /// active pane a cloud controller subscribes to.
+    pub fn get_pane_modes(&self, ws: Uuid, pane: Uuid) -> (Modes, bool) {
+        let workspaces = self.workspaces.read();
+        let Some(w) = workspaces.get(&ws) else {
+            return (Modes::default(), false);
+        };
+        let Some(handle) = w.terminals.get(&pane) else {
+            return (Modes::default(), false);
+        };
+        let parser = handle.parser.lock();
+        (parser.modes(), parser.is_alt_screen())
+    }
+
+    pub fn get_remote_terminal_snapshot(
+        &self,
+        ws: Uuid,
+        pane: Uuid,
+    ) -> Option<ridge_term::semantic::SemanticUpdate> {
+        let workspaces = self.workspaces.read();
+        let handle = workspaces.get(&ws)?.terminals.get(&pane)?;
+        let snapshot = handle.parser.lock().semantic_snapshot();
+        Some(snapshot)
+    }
+
+    /// Retrieve the most recent PTY scrollback bytes for a pane, up to
+    /// `max_bytes`. Used to seed a newly-created mobile `PaneParser` so its
+    /// state mirrors the desktop parser before the first delta frame is sent.
+    pub fn get_recent_scrollback_for(&self, ws: Uuid, pane: Uuid, max_bytes: usize) -> Vec<u8> {
+        let sb = self.pty_scrollback.read();
+        let Some(scrollback) = sb.get(&(ws, pane)) else {
+            return Vec::new();
+        };
+        let blocks = scrollback.snapshot_blocks();
+        let mut total: usize = 0;
+        // Walk most-recent block first.
+        let mut recent: Vec<Vec<u8>> = Vec::new();
+        for (_, bytes) in blocks.into_iter().rev() {
+            if total + bytes.len() <= max_bytes {
+                recent.push((*bytes).clone());
+                total += bytes.len();
+            } else if total < max_bytes {
+                let remaining = max_bytes - total;
+                let start = bytes.len().saturating_sub(remaining);
+                recent.push(bytes[start..].to_vec());
+                total = max_bytes;
+                break;
+            } else {
+                break;
+            }
+        }
+        recent.reverse(); // restore chronological order
+        let mut result = Vec::with_capacity(total);
+        for block in recent {
+            result.extend_from_slice(&block);
+        }
+        result
+    }
+
+    pub fn register_remote_sub(&self, ws: Uuid, pane: Uuid, sub: RemotePaneSub) {
+        self.pty_pane_registry
+            .write()
+            .entry((ws, pane))
+            .or_default()
+            .remote_subs
+            .push(sub);
+    }
+
+    pub fn unregister_remote_sub(&self, ws: Uuid, pane: Uuid, sub_id: u64) {
+        let mut reg = self.pty_pane_registry.write();
+        let key = (ws, pane);
+        if let Some(entry) = reg.get_mut(&key) {
+            entry.remote_subs.retain(|s| s.id != sub_id);
+            if entry.is_empty() {
+                reg.remove(&key);
+            }
+        }
+    }
+
+    /// Fan a non-byte remote event (title/cwd metadata, PTY resize) out to every
+    /// subscriber of `(ws, pane)`. Cheap: the registry read lock is held only for
+    /// the duration of the `try_send` loop and the event is cloned per sub (a few
+    /// strings at most). Drops are ignored — metadata is advisory, and the next
+    /// update supersedes a lost one. Raw PTY bytes use a dedicated hot path in
+    /// `lib.rs` (single `Arc<Vec<u8>>` shared across subs) and do NOT go through
+    /// here.
+    pub fn broadcast_remote_event(&self, ws: Uuid, pane: Uuid, event: RemotePtyEvent) {
+        let reg = self.pty_pane_registry.read();
+        if let Some(entry) = reg.get(&(ws, pane)) {
+            for sub in &entry.remote_subs {
+                let _ = sub.metadata_tx.try_send(event.clone());
+            }
+        }
+    }
+
+    /// Lossless-at-source raw fan-out for remote viewers. This is called from
+    /// the PTY reader after the local delta mailbox accepts a frame, avoiding a
+    /// second desktop event hop for every terminal packet.
+    pub fn forward_remote_pty_bytes(&self, workspace_id: Uuid, pane_id: Uuid, data: &str) {
+        if !self
+            .remote_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && !self
+                .cloud_remote_active
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
+        let registry = self.pty_pane_registry.read();
+        let Some(entry) = registry.get(&(workspace_id, pane_id)) else {
+            return;
+        };
+        if entry.remote_subs.is_empty() {
+            return;
+        }
+        let shared = Arc::new(data.as_bytes().to_vec());
+        for subscriber in &entry.remote_subs {
+            if subscriber.semantic {
+                continue;
+            }
+            if subscriber
+                .raw_tx
+                .try_send(RemotePtyEvent::RawBytes {
+                    workspace_id,
+                    pane_id,
+                    bytes: Arc::clone(&shared),
+                })
+                .is_err()
+            {
+                // A saturated client can drop many PTY chunks before its next
+                // resync. Log only the transition into desync so a burst does
+                // not turn backpressure into a logging hot loop.
+                if !subscriber
+                    .desync
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    tracing::warn!(target: "ridge::remote", sub = subscriber.id, "raw byte channel full; dropping frame, will resync");
+                }
+            }
+        }
+    }
+
+    pub fn forward_remote_terminal_delta(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        frame: DeltaFrame,
+        is_alt: bool,
+    ) {
+        let registry = self.pty_pane_registry.read();
+        let Some(entry) = registry.get(&(workspace_id, pane_id)) else {
+            return;
+        };
+        for subscriber in entry.remote_subs.iter().filter(|sub| sub.semantic) {
+            if subscriber
+                .raw_tx
+                .try_send(RemotePtyEvent::SemanticDelta {
+                    workspace_id,
+                    pane_id,
+                    frame: frame.clone(),
+                    is_alt,
+                })
+                .is_err()
+            {
+                subscriber
+                    .desync
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+    }
+}
+
+impl PaneRegistry {
+    fn is_empty(&self) -> bool {
+        self.delta_cb.is_none() && self.delta_mailbox.is_none() && self.remote_subs.is_empty()
+    }
+}
+
+/// Same semantics as `str::is_char_boundary` but on a raw `&[u8]`. Returns
+/// true at index `0`, `len`, and any position where the next byte is NOT
+/// a UTF-8 continuation byte (`10xxxxxx`).
+fn is_utf8_char_boundary(bytes: &[u8], index: usize) -> bool {
+    if index == 0 || index == bytes.len() {
+        return true;
+    }
+    if index > bytes.len() {
+        return false;
+    }
+    // A boundary is any byte that is NOT a continuation byte.
+    (bytes[index] & 0b1100_0000) != 0b1000_0000
+}
+
+/// Partial pages begin after the first retained newline when one exists. This
+/// keeps independent terminal-parser sandboxes from inventing half-row seams.
+/// The oldest retained page and a genuine long line remain byte-exact.
+fn align_page_start_to_line(bytes: &mut Vec<u8>, start_seq: &mut u64, at_oldest: bool) {
+    if at_oldest {
+        return;
+    }
+    if let Some(cut) = bytes.iter().position(|b| *b == b'\n').map(|i| i + 1) {
+        bytes.drain(..cut);
+        *start_seq += cut as u64;
+    }
+}
+
+#[cfg(test)]
+mod scrollback_tests {
+    use super::*;
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
+
+    /// Build an isolated AppState for tests. `AppState::new` seeds a default
+    /// workspace + PaneTree — fine for scrollback tests since we key by
+    /// `(Uuid, Uuid)` directly.
+    fn make_state() -> (AppState, Uuid, Uuid) {
+        let (tx, _rx) = mpsc::channel::<GlobalEvent>(1);
+        let state = AppState::new(tx);
+        let ws = state.active_workspace_id();
+        let pane = Uuid::new_v4();
+        (state, ws, pane)
+    }
+
+    #[test]
+    fn append_tail_round_trip_small() {
+        let (state, ws, pane) = make_state();
+        state.append_pty_scrollback(ws, pane, "hello\n");
+        state.append_pty_scrollback(ws, pane, "world\n");
+        let chunk = state.get_pty_scrollback_tail(ws, pane, 1024);
+        assert_eq!(chunk.bytes, "hello\nworld\n");
+        assert!(chunk.at_oldest);
+        assert_eq!(chunk.start_seq, 0);
+    }
+
+    #[test]
+    fn tail_respects_max_bytes_from_end() {
+        let (state, ws, pane) = make_state();
+        // Push 4 full blocks worth (256 KiB total).
+        let chunk = "x".repeat(SCROLLBACK_BLOCK_SIZE);
+        for _ in 0..4 {
+            state.append_pty_scrollback(ws, pane, &chunk);
+        }
+        // Ask for just 1024 bytes — must come from the latest block.
+        let got = state.get_pty_scrollback_tail(ws, pane, 1024);
+        assert_eq!(got.bytes.len(), 1024);
+        assert!(!got.at_oldest);
+        // Start seq equals total - 1024.
+        assert_eq!(got.start_seq, (4 * SCROLLBACK_BLOCK_SIZE - 1024) as u64);
+    }
+
+    #[test]
+    fn before_pages_backwards_until_oldest() {
+        let (state, ws, pane) = make_state();
+        // 3 × 64 KiB + a short trailing partial.
+        let full = "A".repeat(SCROLLBACK_BLOCK_SIZE);
+        state.append_pty_scrollback(ws, pane, &full);
+        let full_b = "B".repeat(SCROLLBACK_BLOCK_SIZE);
+        state.append_pty_scrollback(ws, pane, &full_b);
+        let full_c = "C".repeat(SCROLLBACK_BLOCK_SIZE);
+        state.append_pty_scrollback(ws, pane, &full_c);
+        state.append_pty_scrollback(ws, pane, "tail");
+
+        // Start from tail.
+        let tail = state.get_pty_scrollback_tail(ws, pane, 10);
+        assert_eq!(tail.bytes.len(), 10);
+
+        let before = state.get_pty_scrollback_before(ws, pane, tail.start_seq, 1024);
+        assert_eq!(before.bytes.len(), 1024);
+        assert_eq!(before.start_seq, tail.start_seq - 1024);
+
+        // Page all the way back.
+        let mut cursor = tail.start_seq;
+        let mut total_read: u64 = 0;
+        loop {
+            let page = state.get_pty_scrollback_before(ws, pane, cursor, 32 * 1024);
+            total_read += page.bytes.len() as u64;
+            if page.at_oldest || page.bytes.is_empty() {
+                break;
+            }
+            cursor = page.start_seq;
+        }
+        let tail_len = tail.bytes.len() as u64;
+        assert_eq!(total_read + tail_len, 3 * SCROLLBACK_BLOCK_SIZE as u64 + 4);
+    }
+
+    #[test]
+    fn eviction_when_over_cap() {
+        let (state, ws, pane) = make_state();
+        // Push 5 MiB → should evict oldest blocks until ≤ SCROLLBACK_MAX_BYTES.
+        let chunk = "x".repeat(SCROLLBACK_BLOCK_SIZE);
+        for _ in 0..80 {
+            // 80 * 64 KiB = 5 MiB
+            state.append_pty_scrollback(ws, pane, &chunk);
+        }
+        let map = state.pty_scrollback.read();
+        let entry = map.get(&(ws, pane)).expect("entry");
+        assert!(
+            entry.total_bytes <= SCROLLBACK_MAX_BYTES,
+            "post-cap total_bytes = {}",
+            entry.total_bytes
+        );
+    }
+
+    #[test]
+    fn utf8_multibyte_never_split_on_block_boundary() {
+        let (state, ws, pane) = make_state();
+        // Fill up to 1 byte short of a block then push a 3-byte CJK char.
+        let padding = "a".repeat(SCROLLBACK_BLOCK_SIZE - 1);
+        state.append_pty_scrollback(ws, pane, &padding);
+        state.append_pty_scrollback(ws, pane, "中文"); // 2 × 3-byte each
+
+        // The frozen block should end on a UTF-8 boundary, not mid-codepoint.
+        let map = state.pty_scrollback.read();
+        let entry = map.get(&(ws, pane)).expect("entry");
+        assert!(!entry.blocks.is_empty(), "block should have frozen");
+        let front = entry.blocks.front().unwrap();
+        // Decoding must succeed — if we split mid-codepoint it would fail.
+        assert!(std::str::from_utf8(front).is_ok());
+    }
+
+    #[test]
+    fn tail_empty_when_pane_unknown() {
+        let (state, ws, _pane) = make_state();
+        let unknown_pane = Uuid::new_v4();
+        let chunk = state.get_pty_scrollback_tail(ws, unknown_pane, 1024);
+        assert!(chunk.bytes.is_empty());
+        assert!(chunk.at_oldest);
+    }
+
+    #[test]
+    fn clear_removes_pane_entry() {
+        let (state, ws, pane) = make_state();
+        state.append_pty_scrollback(ws, pane, "hi");
+        state.clear_pty_scrollback(ws, pane);
+        let chunk = state.get_pty_scrollback_tail(ws, pane, 1024);
+        assert!(chunk.bytes.is_empty());
+    }
+
+    #[test]
+    fn clear_releases_backend_block_references() {
+        let (state, ws, pane) = make_state();
+        state.append_pty_scrollback(ws, pane, &"x".repeat(SCROLLBACK_BLOCK_SIZE));
+        let weak = {
+            let map = state.pty_scrollback.read();
+            let entry = map.get(&(ws, pane)).expect("entry");
+            Arc::downgrade(entry.blocks.front().expect("frozen block"))
+        };
+
+        state.clear_pty_scrollback(ws, pane);
+
+        assert!(
+            weak.upgrade().is_none(),
+            "physical clear must release the backend's retained block"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pty_delta_channel_tests {
+    //! P4.1 unit tests — verify the `(ws, pane)` keyed delta-sender
+    //! registry: registration/lookup, idempotent replace, key isolation
+    //! across panes and across workspaces, and removal on unregister.
+    //! The senders are plain closures so these tests do NOT need a Tauri
+    //! runtime — that boundary lives in `commands/terminal.rs`.
+
+    use super::*;
+    use parking_lot::Mutex as PMutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::mpsc;
+
+    fn make_state() -> AppState {
+        let (tx, _rx) = mpsc::channel::<GlobalEvent>(1);
+        AppState::new(tx)
+    }
+
+    /// Build a counting sender: each call increments `count` and records the
+    /// payload length. Returns `(sender, count, last_len)` so the test can
+    /// assert how many bytes the channel was asked to send.
+    fn counting_sender() -> (PaneDeltaSender, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let count = Arc::new(AtomicUsize::new(0));
+        let last_len = Arc::new(AtomicUsize::new(0));
+        let count_clone = Arc::clone(&count);
+        let last_len_clone = Arc::clone(&last_len);
+        let sender: PaneDeltaSender = Arc::new(move |bytes: Vec<u8>| {
+            count_clone.fetch_add(1, Ordering::SeqCst);
+            last_len_clone.store(bytes.len(), Ordering::SeqCst);
+        });
+        (sender, count, last_len)
+    }
+
+    #[test]
+    fn get_returns_none_when_unregistered() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        assert!(state.get_pane_delta_channel(ws, pane).is_none());
+    }
+
+    #[test]
+    fn register_then_get_returns_same_sender() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender, count, last_len) = counting_sender();
+
+        state.register_pane_delta_channel(ws, pane, sender, 1);
+        let fetched = state
+            .get_pane_delta_channel(ws, pane)
+            .expect("registered sender must be retrievable");
+        fetched(vec![1, 2, 3, 4]);
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(last_len.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn mailbox_coalesces_ordered_frames_into_one_wake() {
+        use ridge_term::terminal_protocol::{decode_frame, TerminalBody};
+        let state = make_state(); let ws = Uuid::new_v4(); let pane = Uuid::new_v4();
+        let (sender, count, last_len) = counting_sender();
+        state.register_pane_delta_channel(ws, pane, sender, 1);
+        let mut producer = ridge_term::producer::TerminalProducer::with_epoch(3, 20, 20, "mailbox".into());
+        assert!(matches!(state.enqueue_pane_delta_frame(ws, pane, producer.feed_and_diff(b"first")), PaneDeltaEnqueue::Queued));
+        assert!(matches!(state.enqueue_pane_delta_frame(ws, pane, producer.feed_and_diff(b"!")), PaneDeltaEnqueue::Queued));
+        assert_eq!(count.load(Ordering::SeqCst), 1); assert_eq!(last_len.load(Ordering::SeqCst), 0);
+        let packets = state.take_terminal_frames(ws, pane).unwrap(); assert_eq!(packets.len(), 2);
+        let first = decode_frame(&packets[0]).unwrap(); let second = decode_frame(&packets[1]).unwrap();
+        assert_eq!(first.activation_id, 1); assert_eq!(first.pane.pane_id, pane.to_string());
+        let TerminalBody::Snapshot(first) = first.body else { panic!("initial snapshot") };
+        let TerminalBody::Delta(second) = second.body else { panic!("ordered delta") };
+        assert_eq!((first.revision, second.base_revision, second.revision), (1, 1, 2));
+        assert!(state.take_terminal_frames(ws, pane).unwrap().is_empty());
+        state.enqueue_pane_delta_frame(ws, pane, producer.feed_and_diff(b"next"));
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn mailbox_requests_reframe_before_hidden_output_grows_unbounded() {
+        let state = make_state(); let ws = Uuid::new_v4(); let pane = Uuid::new_v4();
+        let (sender, _, _) = counting_sender(); state.register_pane_delta_channel(ws, pane, sender, 1);
+        let mut producer = ridge_term::producer::TerminalProducer::with_epoch(3, 20, 20, "mailbox".into());
+        for _ in 0..MAX_TERMINAL_MAILBOX_FRAMES {
+            assert!(matches!(state.enqueue_pane_delta_frame(ws, pane, producer.feed_and_diff(b"\x07")), PaneDeltaEnqueue::Queued));
+        }
+        assert!(matches!(state.enqueue_pane_delta_frame(ws, pane, producer.feed_and_diff(b"\x07")), PaneDeltaEnqueue::NeedsResync));
+    }
+
+    #[test]
+    fn mailbox_rejects_one_oversized_frame_before_it_reaches_the_frontend() {
+        use ridge_term::term::delta::{DeltaFrame, GridDelta};
+
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender, count, _) = counting_sender();
+        state.register_pane_delta_channel(ws, pane, sender, 1);
+        let burst = std::iter::repeat(GridDelta::Bell)
+            .take(MAX_DELTA_MAILBOX_DELTAS + 1)
+            .collect();
+
+        assert!(matches!(
+            state.enqueue_pane_delta_frame(ws, pane, DeltaFrame::new(1, burst)),
+            PaneDeltaEnqueue::NeedsResync
+        ));
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "oversized frame emits no stale wake"
+        );
+    }
+
+    #[test]
+    fn register_is_idempotent_replace() {
+        // Second register on the same key replaces the first sender; the
+        // old Arc is dropped (which we verify via a sentinel flag).
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let drop_flag = Arc::clone(&dropped);
+        struct DropFlag(Arc<AtomicUsize>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let first_flag = PMutex::new(Some(DropFlag(drop_flag)));
+        let first: PaneDeltaSender = Arc::new(move |_| {
+            // Touch the flag so the closure owns it.
+            let _ = first_flag.lock().is_some();
+        });
+        state.register_pane_delta_channel(ws, pane, first, 1);
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+        let (second, count, _) = counting_sender();
+        state.register_pane_delta_channel(ws, pane, second, 1);
+
+        // After replacement, the first sender's Arc count reached zero and
+        // the embedded DropFlag fired exactly once.
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        // The new sender is the one we retrieve.
+        let fetched = state.get_pane_delta_channel(ws, pane).expect("present");
+        fetched(vec![0]);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn different_panes_in_same_workspace_are_isolated() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane_a = Uuid::new_v4();
+        let pane_b = Uuid::new_v4();
+        let (sender_a, count_a, _) = counting_sender();
+        let (sender_b, count_b, _) = counting_sender();
+
+        state.register_pane_delta_channel(ws, pane_a, sender_a, 1);
+        state.register_pane_delta_channel(ws, pane_b, sender_b, 1);
+
+        state.get_pane_delta_channel(ws, pane_a).expect("pane_a")(vec![0]);
+        state.get_pane_delta_channel(ws, pane_a).expect("pane_a")(vec![0, 0]);
+        state.get_pane_delta_channel(ws, pane_b).expect("pane_b")(vec![0]);
+
+        assert_eq!(count_a.load(Ordering::SeqCst), 2);
+        assert_eq!(count_b.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn same_pane_id_in_different_workspaces_is_isolated() {
+        // Tauri pane UUIDs are globally unique in practice, but the map key
+        // is (workspace, pane) so even a colliding pane uuid across two
+        // workspaces must dispatch to the correct sender.
+        let state = make_state();
+        let ws_a = Uuid::new_v4();
+        let ws_b = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender_a, count_a, _) = counting_sender();
+        let (sender_b, count_b, _) = counting_sender();
+
+        state.register_pane_delta_channel(ws_a, pane, sender_a, 1);
+        state.register_pane_delta_channel(ws_b, pane, sender_b, 1);
+
+        state.get_pane_delta_channel(ws_a, pane).expect("a")(vec![1]);
+        state.get_pane_delta_channel(ws_b, pane).expect("b")(vec![2]);
+        state.get_pane_delta_channel(ws_b, pane).expect("b")(vec![3]);
+
+        assert_eq!(count_a.load(Ordering::SeqCst), 1);
+        assert_eq!(count_b.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn unregister_drops_the_sender() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender, count, _) = counting_sender();
+
+        state.register_pane_delta_channel(ws, pane, sender, 1);
+        assert!(state.get_pane_delta_channel(ws, pane).is_some());
+
+        state.unregister_pane_delta_channel(ws, pane);
+        assert!(state.get_pane_delta_channel(ws, pane).is_none());
+
+        // Cleanup must NOT increment the counter — nothing was sent.
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn unregister_unknown_pane_is_silent() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        // No panic / no observable side effect on an unknown key.
+        state.unregister_pane_delta_channel(ws, pane);
+        assert!(state.get_pane_delta_channel(ws, pane).is_none());
+    }
+
+    #[test]
+    fn unregister_only_affects_matching_key() {
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane_keep = Uuid::new_v4();
+        let pane_drop = Uuid::new_v4();
+        let (keep, _, _) = counting_sender();
+        let (drop_it, _, _) = counting_sender();
+
+        state.register_pane_delta_channel(ws, pane_keep, keep, 1);
+        state.register_pane_delta_channel(ws, pane_drop, drop_it, 1);
+        state.unregister_pane_delta_channel(ws, pane_drop);
+
+        assert!(state.get_pane_delta_channel(ws, pane_keep).is_some());
+        assert!(state.get_pane_delta_channel(ws, pane_drop).is_none());
+    }
+
+    #[test]
+    fn cloned_appstate_shares_channel_registry() {
+        // AppState is `#[derive(Clone)]` and the registry is wrapped in
+        // `Arc<RwLock<...>>`. Cloning the state must NOT fork the registry
+        // — both clones see the same registrations. Otherwise the emit-site
+        // clone in `lib.rs` would see an empty registry and silently fall
+        // back to app.emit for every pane.
+        let state_a = make_state();
+        let state_b = state_a.clone();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender, count, _) = counting_sender();
+
+        state_a.register_pane_delta_channel(ws, pane, sender, 1);
+        let from_b = state_b
+            .get_pane_delta_channel(ws, pane)
+            .expect("clone must see registrations made on the original");
+        from_b(vec![9]);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        // Unregister via clone B; clone A should see the empty slot too.
+        state_b.unregister_pane_delta_channel(ws, pane);
+        assert!(state_a.get_pane_delta_channel(ws, pane).is_none());
+    }
+
+    #[test]
+    fn workspace_claim_is_exclusive_and_release_is_owner_checked() {
+        let claims = WorkspaceWindowClaims::default();
+        let workspace = Uuid::new_v4();
+
+        assert_eq!(
+            claims.claim(workspace, "main"),
+            WorkspaceWindowClaim::Acquired
+        );
+        assert_eq!(
+            claims.claim(workspace, "main"),
+            WorkspaceWindowClaim::AlreadyOwned
+        );
+        assert_eq!(
+            claims.claim(workspace, "ridge-window-1"),
+            WorkspaceWindowClaim::OwnedBy("main".into())
+        );
+        assert!(!claims.release_workspace(workspace, Some("ridge-window-1")));
+        assert!(claims.release_workspace(workspace, Some("main")));
+        assert_eq!(
+            claims.claim(workspace, "ridge-window-1"),
+            WorkspaceWindowClaim::Acquired
+        );
+    }
+
+    #[test]
+    fn releasing_a_window_frees_all_its_workspaces() {
+        let claims = WorkspaceWindowClaims::default();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        claims.claim(first, "secondary");
+        claims.claim(second, "secondary");
+
+        assert_eq!(claims.release_window("secondary"), 2);
+        assert_eq!(claims.claim(first, "other"), WorkspaceWindowClaim::Acquired);
+        assert_eq!(
+            claims.claim(second, "other"),
+            WorkspaceWindowClaim::Acquired
+        );
+    }
+
+    #[test]
+    fn two_windows_keep_independent_selected_workspaces() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<GlobalEvent>(1);
+        let state = AppState::new(tx);
+        let first = state.active_workspace_id();
+        let second = Uuid::parse_str(&crate::commands::workspace::insert_new_workspace(
+            &state,
+            PaneTree::new(),
+            None,
+        ))
+        .unwrap();
+        state.workspace_window_claims.claim(first, "main");
+        state.workspace_window_claims.claim(second, "secondary");
+        assert!(state.workspace_window_claims.select_owned(first, "main"));
+        assert!(state
+            .workspace_window_claims
+            .select_owned(second, "secondary"));
+
+        *state.active_workspace.write() = second;
+        assert_eq!(state.active_workspace_for_window("main"), first);
+        assert_eq!(state.active_workspace_for_window("secondary"), second);
+        assert!(!state
+            .workspace_window_claims
+            .select_owned(first, "secondary"));
+    }
+
+    #[test]
+    fn simultaneous_claim_has_exactly_one_owner() {
+        let claims = Arc::new(WorkspaceWindowClaims::default());
+        let workspace = Uuid::new_v4();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let handles: Vec<_> = ["left", "right"]
+            .into_iter()
+            .map(|label| {
+                let claims = Arc::clone(&claims);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    claims.claim(workspace, label)
+                })
+            })
+            .collect();
+        barrier.wait();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, WorkspaceWindowClaim::Acquired))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, WorkspaceWindowClaim::OwnedBy(_)))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn acquire_available_keeps_a_windows_existing_selection() {
+        let claims = WorkspaceWindowClaims::default();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        assert_eq!(
+            claims.acquire_available("main", first, &[first, second]),
+            Some(first)
+        );
+
+        // A later global-active change must not move an already-running window.
+        assert_eq!(
+            claims.acquire_available("main", second, &[first, second]),
+            Some(first)
+        );
+        assert_eq!(claims.selected_workspace("main"), Some(first));
+    }
+
+    #[test]
+    fn acquire_available_skips_owned_preferred_without_side_effects() {
+        let claims = WorkspaceWindowClaims::default();
+        let occupied = Uuid::new_v4();
+        let available = Uuid::new_v4();
+        claims.claim(occupied, "main");
+        claims.select_owned(occupied, "main");
+
+        assert_eq!(
+            claims.acquire_available("secondary", occupied, &[occupied, available]),
+            Some(available)
+        );
+        assert_eq!(claims.selected_workspace("main"), Some(occupied));
+        assert_eq!(claims.selected_workspace("secondary"), Some(available));
+    }
+
+    #[test]
+    fn acquire_available_reports_exhaustion_without_stealing() {
+        let claims = WorkspaceWindowClaims::default();
+        let only = Uuid::new_v4();
+        claims.claim(only, "main");
+
+        assert_eq!(claims.acquire_available("secondary", only, &[only]), None);
+        assert_eq!(claims.selected_workspace("secondary"), None);
+        assert_eq!(
+            claims.claim(only, "secondary"),
+            WorkspaceWindowClaim::OwnedBy("main".into())
+        );
+    }
+
+    #[test]
+    fn simultaneous_initial_acquisition_assigns_distinct_workspaces() {
+        let claims = Arc::new(WorkspaceWindowClaims::default());
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let handles: Vec<_> = ["left", "right"]
+            .into_iter()
+            .map(|label| {
+                let claims = Arc::clone(&claims);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    claims.acquire_available(label, first, &[first, second])
+                })
+            })
+            .collect();
+        barrier.wait();
+        let mut results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap().unwrap())
+            .collect();
+        results.sort();
+        let mut expected = vec![first, second];
+        expected.sort();
+        assert_eq!(results, expected);
+    }
+
+    #[test]
+    fn metadata_broadcast_survives_a_full_raw_lane() {
+        let (tx, _rx) = mpsc::channel::<GlobalEvent>(1);
+        let state = AppState::new(tx);
+        let workspace_id = Uuid::new_v4();
+        let pane_id = Uuid::new_v4();
+        let (raw_tx, mut raw_rx) = mpsc::channel::<RemotePtyEvent>(1);
+        let (metadata_tx, mut metadata_rx) = mpsc::channel::<RemotePtyEvent>(1);
+
+        raw_tx
+            .try_send(RemotePtyEvent::RawBytes {
+                workspace_id,
+                pane_id,
+                bytes: Arc::new(vec![1]),
+            })
+            .expect("raw lane fixture should fill");
+        state.register_remote_sub(
+            workspace_id,
+            pane_id,
+            RemotePaneSub {
+                id: RemoteSubId::next(),
+                raw_tx,
+                metadata_tx,
+                semantic: false,
+                desync: Arc::new(AtomicBool::new(false)),
+            },
+        );
+
+        state.broadcast_remote_event(
+            workspace_id,
+            pane_id,
+            RemotePtyEvent::Metadata {
+                workspace_id,
+                pane_id,
+                title: Some("OSC2 title".into()),
+                cwd: None,
+            },
+        );
+
+        assert!(matches!(
+            metadata_rx.try_recv().expect("metadata lane must receive title"),
+            RemotePtyEvent::Metadata { title: Some(title), .. } if title == "OSC2 title"
+        ));
+        assert!(raw_rx.try_recv().is_ok(), "raw fixture remains isolated");
+    }
+}

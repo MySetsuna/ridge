@@ -365,6 +365,7 @@ async fn session_handler(
 /// [`RemoteHost::serve_websocket`]。
 async fn ws_handler(
     ws: WebSocketUpgrade,
+    headers: axum::http::HeaderMap,
     Query(query): Query<ConnectQuery>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(ctx): State<AppCtx>,
@@ -378,7 +379,8 @@ async fn ws_handler(
     if ctx.host.is_blacklisted(&device_id, &remote_addr) {
         return (StatusCode::FORBIDDEN, "device is blacklisted").into_response();
     }
-    let valid = if let Some(ref t) = query.token {
+    let token=headers.get(axum::http::header::AUTHORIZATION).and_then(|value|value.to_str().ok()).and_then(|value|value.strip_prefix("Bearer ")).map(str::to_owned).or(query.token.clone());
+    let valid = if let Some(ref t) = token {
         // 令牌路径不可暴力破解（256-bit CSPRNG），绕过 TOTP 节流；强制设备+IP 绑定。
         ctx.host
             .validate_token_device_strict(t, &device_id, &remote_addr)
@@ -399,7 +401,7 @@ async fn ws_handler(
     let conn = WsConn {
         remote_addr,
         device_id,
-        token: query.token.clone(),
+        token,
     };
     let host = ctx.host.clone();
     ws.on_upgrade(move |socket| host.serve_websocket(socket, conn))

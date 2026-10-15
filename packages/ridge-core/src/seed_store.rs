@@ -34,7 +34,7 @@ pub fn save(identity: &str, secret: &[u8]) {
 }
 
 /// 种子目录（不保证已创建；`save_in` 会 `create_dir_all`）。
-fn seed_dir() -> Option<std::path::PathBuf> {
+pub fn seed_dir() -> Option<std::path::PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "ridge")?;
     Some(dirs.config_dir().join("totp"))
 }
@@ -58,7 +58,8 @@ fn load_in(dir: &Path, identity: &str) -> Option<Vec<u8>> {
 }
 
 /// 可注入目录的原子写入。
-fn save_in(dir: &Path, identity: &str, secret: &[u8]) -> std::io::Result<()> {
+pub fn save_in(dir: &Path, identity: &str, secret: &[u8]) -> std::io::Result<()> {
+    if secret.len() != SECRET_LEN { return Err(std::io::Error::other("invalid TOTP seed length")); }
     std::fs::create_dir_all(dir)?;
     let blob = encrypt(secret).ok_or_else(|| std::io::Error::other("encrypt failed"))?;
     let path = dir.join(seed_filename(identity));
@@ -67,6 +68,18 @@ fn save_in(dir: &Path, identity: &str, secret: &[u8]) -> std::io::Result<()> {
     set_owner_only_perms(&tmp);
     std::fs::rename(&tmp, &path)?;
     Ok(())
+}
+
+/// Missing seeds may be created; damaged or unreadable seeds must never be replaced.
+pub fn load_checked_in(dir: &Path, identity: &str) -> std::io::Result<Option<Vec<u8>>> {
+    let raw = match std::fs::read(dir.join(seed_filename(identity))) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let secret = decrypt(&raw).ok_or_else(|| std::io::Error::other("TOTP seed decryption failed"))?;
+    if secret.len() != SECRET_LEN { return Err(std::io::Error::other("invalid TOTP seed length")); }
+    Ok(Some(secret))
 }
 
 // ── 平台加密分层 ────────────────────────────────────────────────────────────

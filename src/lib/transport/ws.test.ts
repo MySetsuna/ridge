@@ -22,6 +22,31 @@ function fakeConnection() {
 }
 
 describe('WsDataProvider lifecycle', () => {
+  it('loads shared SCM status and sends exact reset and cleanup targets', async () => {
+    const connection = fakeConnection();
+    let untracked = [{ path: 'new.txt', status: '?' }];
+    connection.send.mockImplementation((payload: { type?: string; _reqId?: number; method?: string }) => {
+      if (payload.type !== 'data-request') return;
+      queueMicrotask(() => connection.emitMessage({ type: 'data-result', _reqId: payload._reqId,
+        _result: payload.method === 'get_scm_status'
+          ? { current_branch: 'main', has_upstream: true, staged: [{ path: 'staged.txt', status: 'A' }], changes: [], untracked }
+          : null }));
+    });
+    const provider = new WsDataProvider(connection as unknown as RemoteConnection);
+    await expect(provider.gitStatus('/repo')).resolves.toMatchObject({
+      is_git_repo: true, current_branch: 'main', staged: [{ name: 'staged.txt', status: 'A' }],
+      unstaged: [], untracked: ['new.txt'], commits: [], branches: [],
+    });
+    await provider.gitReset('/repo', 'mixed', 'head');
+    await provider.gitCleanUntracked('/repo');
+    expect(connection.send).toHaveBeenCalledWith(expect.objectContaining({ method: 'git_reset', hash: 'head', mode: 'mixed' }));
+    expect(connection.send).toHaveBeenCalledWith(expect.objectContaining({ method: 'git_clean_untracked', paths: ['new.txt'] }));
+    connection.send.mockClear(); untracked = [];
+    await provider.gitCleanUntracked('/repo');
+    expect(connection.send).toHaveBeenCalledTimes(1);
+    expect(connection.send).toHaveBeenCalledWith(expect.objectContaining({ method: 'get_scm_status' }));
+    provider.dispose();
+  });
   it('rejects all in-flight data queries as soon as transport disconnects', async () => {
     const connection = fakeConnection();
     const provider = new WsDataProvider(connection as unknown as RemoteConnection);

@@ -20,72 +20,19 @@
     Save,
     Terminal,
   } from 'lucide-svelte';
-  import {
-    hostsStore,
-    hostsLoading,
-    hostsError,
-    hostConnectProgress,
-    refreshHosts,
-    retryHostTopology,
-    cancelHostTopologyRetry,
-    newHeadlessSession,
-    terminateSession,
-    attachHostSession,
-    closeHostPane,
-    hasHostTopologyLink,
-    createHostWorkspace,
-    openHostWorkspace,
-    renameHostWorkspace,
-    saveHostWorkspace,
-    createHostPane,
-    closeHostWorkspace,
-    markHostPaneAgent,
-    changeHostPaneShell,
-    hostShellChoices,
-    hostShareDeviceName,
-    acceptSharedWorkspace,
-    openSharedWorkspace,
-    revokeSharedWorkspace,
-    forgetHost,
-    pumpAllConnectedOutbound,
-    fetchOutboundStats,
-    fetchForeignHistoryTail,
-    pumpBadgeForHost,
-    hostOperatorAlert,
-    historyBadgeForSession,
-    type Host,
-    type HostSession,
-  } from '$lib/stores/hosts';
+  import { hostsStore, hostsLoading, hostsError, hostConnectProgress, refreshHosts, retryHostTopology, cancelHostTopologyRetry, newHeadlessSession, terminateSession, attachHostSession, closeHostPane, hasHostTopologyLink, createHostWorkspace, openHostWorkspace, renameHostWorkspace, saveHostWorkspace, createHostPane, closeHostWorkspace, changeHostPaneShell, hostShellChoices, hostShareDeviceName, acceptSharedWorkspace, openSharedWorkspace, revokeSharedWorkspace, forgetHost, disconnectHost, type Host, type HostSession } from '$lib/stores/hosts';
   import { hostTopologyErrorKind } from '$lib/hosts/hostForest';
-  import {
-    buildHostRowAlerts,
-    hostsHeaderSummary,
-    hostsPollIntervalMs,
-    hostStatusToLink,
-    showReconnectControls,
-    summarizeOutbound,
-    type HostRowModel,
-  } from '$lib/hosts/hostControlSurface';
-  import {
-    cancelHostReconnect,
-    hostReconnectById,
-    isolationBadge,
-    scheduleIsolationTask,
-    stepHostReconnect,
-  } from '$lib/stores/hostReconnect';
+  import { buildHostRowAlerts, hostsHeaderSummary, hostsPollIntervalMs, hostStatusToLink, showReconnectControls, type HostRowModel } from '$lib/hosts/hostControlSurface';
   import { confirmDialog, promptDialog, alertDialog } from '../RidgeDialog.svelte';
   import { hostSessionDrag } from '$lib/actions/hostSessionDrag';
   import HostConnectDialog from './HostConnectDialog.svelte';
   import { shareWorkspaceWithAccount } from '$lib/workspace/shareWorkspace';
 
   let connectOpen = $state(false);
+  const remotePresentation = Boolean(import.meta.env.RIDGE_WEB_REMOTE);
 
   const POLL_INTERVAL_MS = 5000;
-  /** History tail is expensive (base64 IPC) — only refresh on this interval when expanded. */
-  const HISTORY_REFRESH_MS = 30_000;
   let poll: ReturnType<typeof setInterval> | undefined;
-  let outboundStats = $state<Record<string, Awaited<ReturnType<typeof fetchOutboundStats>>>>({});
-  let lastHistoryFetchAt = 0;
 
   // 展开状态：默认展开「本机（无头）」。
   let expanded = $state<Record<string, boolean>>({ headless: true });
@@ -141,119 +88,14 @@
   }
 
   function toRow(host: Host): HostRowModel {
-    const recon = $hostReconnectById[host.id];
-    const st = outboundStats[host.id];
-    return {
-      id: host.id,
-      kind: host.kind,
-      label: host.label,
-      status: hostStatusToLink(host.status),
-      detail: host.detail,
-      sessionCount: host.sessions.length,
-      attachedCount: host.sessions.filter((s) => s.attached).length,
-      reconnectAttempt: recon?.attempt ?? 0,
-      reconnectPhase: recon?.phase,
-      outbound: st
-        ? {
-            state: st.state,
-            fanoutBytes: st.fanoutBytes,
-            writeOk: st.writeOk,
-            liveBufferCap: st.liveBufferCap,
-            liveBufferBytes: st.liveBufferBytes,
-            liveDroppedBytes: st.liveDroppedBytes,
-          }
-        : undefined,
-    };
-  }
-
-  async function refreshOutboundStats(opts?: { withHistory?: boolean }) {
-    const remotes = $hostsStore.filter((h) =>
-      (h.kind === 'remote' || h.kind === 'rdg') && !hasHostTopologyLink(h.id));
-    // Parallel stats IPC (iter 50 perf).
-    const pairs = await Promise.all(
-      remotes.map(async (h) => [h.id, await fetchOutboundStats(h.id)] as const),
-    );
-    const next: typeof outboundStats = {};
-    for (const [id, st] of pairs) next[id] = st;
-    outboundStats = next;
-
-    // History tails: only when expanded + throttled — was full scan every poll
-    // (base64 history IPC) and competed with terminal I/O for main-thread + backend.
-    if (!opts?.withHistory) return;
-    const now = Date.now();
-    if (now - lastHistoryFetchAt < HISTORY_REFRESH_MS) return;
-    lastHistoryFetchAt = now;
-    const histJobs: Promise<unknown>[] = [];
-    for (const h of remotes) {
-      if (!expanded[h.id]) continue;
-      for (const s of h.sessions) {
-        if (s.remoteSessionId && !s.attached) {
-          histJobs.push(fetchForeignHistoryTail(h.id, s.remoteSessionId));
-        }
-      }
-    }
-    if (histJobs.length) await Promise.all(histJobs);
+    return { id: host.id, kind: host.kind, label: host.label, status: hostStatusToLink(host.status),
+      detail: host.detail, sessionCount: host.sessions.length, attachedCount: host.sessions.filter(s => s.attached).length };
   }
 
   async function tick() {
-    // Overlap guard: never stack polls if previous tick still running (IPC storm).
     if (tickInFlight) return;
     tickInFlight = true;
-    try {
-      await refreshHosts();
-      await pumpAllConnectedOutbound();
-      await refreshOutboundStats({ withHistory: true });
-      // Auto-step reconnect only when actually reconnecting / down — not every
-      // poll for healthy Connected hosts (that burned step_host_reconnect IPC).
-      const reconJobs: Promise<unknown>[] = [];
-      for (const h of $hostsStore) {
-        if (h.kind === 'headless' || h.kind === 'shared' || h.kind === 'sharing') continue;
-        if (hasHostTopologyLink(h.id)) continue;
-        const row = toRow(h);
-        if (!showReconnectControls(row)) continue;
-        const recon = $hostReconnectById[h.id];
-        const phase = recon?.phase;
-        if (phase === 'Idle' || phase === 'Succeeded') {
-          // Healthy path after mark_idle — skip
-          if (h.status === 'connected') continue;
-        }
-        const attachedIds = h.sessions
-          .filter((s) => s.attached)
-          .map((s) => s.remoteSessionId || s.name)
-          .filter(Boolean);
-        if (h.status === 'disconnected' || h.status === 'error') {
-          scheduleIsolationTask(h.id, attachedIds);
-          reconJobs.push(stepHostReconnect(h.id, false));
-        } else if (
-          h.status === 'connected' &&
-          (phase === 'Waiting' || phase === 'Resubscribing' || (recon?.attempt ?? 0) > 0)
-        ) {
-          // Finish / collapse reconnect after link is back.
-          reconJobs.push(stepHostReconnect(h.id, true));
-        }
-      }
-      if (reconJobs.length) await Promise.all(reconJobs);
-    } finally {
-      tickInFlight = false;
-    }
-  }
-
-  function hostExtraBadges(host: Host): string[] {
-    const badges: string[] = [];
-    const pump = pumpBadgeForHost(host.id);
-    if (pump) badges.push(pump);
-    const recon = $hostReconnectById[host.id];
-    const alert = hostOperatorAlert(host.id, recon?.attempt ?? 0);
-    if (alert) badges.push(alert);
-    const iso = isolationBadge(host.id);
-    if (iso) badges.push(iso);
-    for (const s of host.sessions) {
-      if (s.remoteSessionId) {
-        const hb = historyBadgeForSession(host.id, s.remoteSessionId);
-        if (hb) badges.push(hb);
-      }
-    }
-    return badges;
+    try { await refreshHosts(); } finally { tickInFlight = false; }
   }
 
   function reschedulePoll() {
@@ -482,15 +324,6 @@
     });
   }
 
-  async function onToggleAgent(host: Host, s: HostSession) {
-    if (!s.workspaceId || !s.remoteSessionId) return;
-    const workspaceId = s.workspaceId;
-    const remotePaneId = s.remoteSessionId;
-    await runHostOperation(host, '正在更新 Agent 标记…', '标记失败', async () => {
-      await markHostPaneAgent(host.id, workspaceId, remotePaneId, !s.isAgent);
-    });
-  }
-
   async function onChangeShell(host: Host, s: HostSession) {
     if (!s.workspaceId || !s.remoteSessionId) return;
     const workspaceId = s.workspaceId;
@@ -569,7 +402,8 @@
     <div class="flex items-center gap-1">
       <button
         type="button"
-        title="接入远端主机 / rdg"
+        title={remotePresentation ? '请在主机桌面管理远端接入' : '接入远端主机 / rdg'}
+        disabled={remotePresentation}
         class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] transition-colors hover:bg-white/[0.06] hover:text-[var(--rg-fg)]"
         onclick={onConnectHost}
       >
@@ -594,6 +428,9 @@
       </button>
     </div>
   </header>
+  {#if remotePresentation}
+    <p class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">远端主机接入请在主机桌面管理。</p>
+  {/if}
 
   {#if $hostsError}
     <div class="px-3 py-1.5 text-[11px] text-rose-300 bg-rose-500/10 border-b border-rose-500/20 truncate" title={$hostsError}>
@@ -637,15 +474,6 @@
             <span class="flex-1 min-w-0 truncate text-[12px] font-medium">{host.label}</span>
             <span class="inline-block h-1.5 w-1.5 rounded-full {statusDotClass(host.status)}" title={host.status}></span>
             <span class="text-[10px] text-[var(--rg-fg-muted)] tabular-nums">{host.sessions.length}</span>
-            {#if host.kind !== 'headless'}
-              {#each hostExtraBadges(host).slice(0, 2) as b}
-                <span
-                  class="max-w-[4.5rem] truncate rounded border border-[var(--rg-border)] px-0.5 text-[9px] text-[var(--rg-fg-muted)]"
-                  title={b}
-                  data-testid="host-extra-badge"
-                >{b}</span>
-              {/each}
-            {/if}
           </button>
           {#if host.kind === 'remote' || host.kind === 'rdg'}
             {#if hasHostTopologyLink(host.id) && (host.status === 'error' || host.status === 'disconnected')}
@@ -675,10 +503,12 @@
             {#if !hasHostTopologyLink(host.id) && showReconnectControls(toRow(host))}
               <button
                 type="button"
-                title="步进重连"
+                title="重新认证连接"
                 disabled={busy}
                 class="opacity-0 group-hover:opacity-100 mr-0.5 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-white/[0.08] hover:text-[var(--rg-accent)] transition-all disabled:opacity-40"
-                onclick={() => void stepHostReconnect(host.id, host.status === 'connected')}
+                onclick={() => {
+                  connectOpen = true;
+                }}
               >
                 <RefreshCw class="h-3.5 w-3.5" />
               </button>
@@ -687,7 +517,9 @@
                 title="取消重连"
                 disabled={busy}
                 class="opacity-0 group-hover:opacity-100 mr-0.5 flex h-6 px-1 items-center justify-center rounded text-[10px] text-[var(--rg-fg-muted)] hover:bg-white/[0.08] transition-all disabled:opacity-40"
-                onclick={() => void cancelHostReconnect(host.id)}
+                onclick={() => {
+                  void runHostOperation(host, '取消重连', '取消失败', () => disconnectHost(host.id));
+                }}
               >
                 取消
               </button>
@@ -717,7 +549,7 @@
           {@const alerts = buildHostRowAlerts(row)}
           {#if alerts.length > 0 || row.outbound}
             <p class="pl-9 pr-3 py-0.5 text-[10px] text-amber-200/90 truncate" title={alerts.join(' · ')}>
-              {#if alerts.length}{alerts.join(' · ')}{:else}{summarizeOutbound(row)}{/if}
+              {#if alerts.length}{alerts.join(' · ')}{/if}
             </p>
           {/if}
           {#if hasHostTopologyLink(host.id) && (host.status === 'error' || host.status === 'disconnected')}
@@ -894,15 +726,10 @@
                     >
                       <Terminal class="h-3.5 w-3.5" />
                     </button>
-                    <button
-                      type="button"
-                      title={s.isAgent ? '取消 Agent 标记' : '标记为 Agent'}
-                      disabled={busy}
-                      class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-white/[0.08] hover:text-[var(--rg-accent)]"
-                      onclick={() => void onToggleAgent(host, s)}
-                    >
-                      <Bot class="h-3.5 w-3.5" />
-                    </button>
+                    <span title="连接既有 Agent 会话及移出登记，请在会话所属主机操作"
+                      class="flex items-center gap-1 text-[9px] text-[var(--rg-fg-muted)] whitespace-nowrap">
+                      <Bot class="h-3.5 w-3.5" />主机登记
+                    </span>
                   {/if}
                   {#if host.kind === 'headless'}
                     <button

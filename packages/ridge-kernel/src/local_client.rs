@@ -8,7 +8,7 @@ use axum::{
     Json,
 };
 use ridge_remote::{
-    auth::{RemoteAuth, SessionStore, VerifyThrottle, SESSION_TTL},
+    auth::{SessionStore, VerifyThrottle, SESSION_TTL},
     host::WsConn,
     serve::UaServeConfig,
 };
@@ -64,7 +64,7 @@ fn trusted_origin(origin: &str) -> bool {
         && port.is_none_or(|p| p.parse::<u16>().is_ok_and(|p| p > 0))
 }
 
-fn host(state: &AppState) -> Arc<KernelHost> {
+pub(crate) fn host(state: &AppState) -> Arc<KernelHost> {
     state
         .local_host
         .get_or_init(|| {
@@ -75,9 +75,10 @@ fn host(state: &AppState) -> Arc<KernelHost> {
                     token: state.token.clone(),
                     started_at_unix: state.started_at_unix,
                 },
-                totp: Arc::new(RemoteAuth::new()),
+                totp: state.remote_auth.clone(),
                 totp_throttle: Arc::new(VerifyThrottle::new()),
-                sessions: SessionStore::new(),
+                sessions: Arc::new(SessionStore::new()),
+            access: Default::default(),
                 port: state.port,
                 lan_ip: "127.0.0.1".into(),
                 machine_name: state.host_id.clone(),
@@ -136,7 +137,19 @@ pub async fn issue(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClientQuery {
-    device_id: String,
+    pub(crate) device_id: String,
+}
+
+pub(crate) fn authorize(state:&AppState,peer:SocketAddr,headers:&HeaderMap,device_id:&str)->Result<(Arc<KernelHost>,WsConn,String),StatusCode>{
+    if !peer.ip().is_loopback(){return Err(StatusCode::FORBIDDEN);}
+    let origin=headers.get("origin").and_then(|value|value.to_str().ok()).filter(|origin|trusted_origin(origin)).ok_or(StatusCode::UNAUTHORIZED)?;
+    let protocols=headers.get("sec-websocket-protocol").and_then(|value|value.to_str().ok()).ok_or(StatusCode::UNAUTHORIZED)?;
+    let entries:Vec<_>=protocols.split(',').map(str::trim).collect();
+    if entries.len()!=2||!entries.contains(&"ridge-client"){return Err(StatusCode::UNAUTHORIZED);}
+    let token=entries.iter().find_map(|entry|entry.strip_prefix("auth-")).filter(|token|token.len()==64&&token.bytes().all(|byte|byte.is_ascii_hexdigit())).ok_or(StatusCode::UNAUTHORIZED)?;
+    let host=host(state);
+    if !host.sessions.validate_origin_bound_token(token,device_id,&peer.ip().to_string(),origin){return Err(StatusCode::UNAUTHORIZED);}
+    Ok((host,WsConn{remote_addr:peer.ip().to_string(),device_id:device_id.into(),token:Some(token.into())},origin.into()))
 }
 
 pub async fn websocket(
@@ -146,44 +159,7 @@ pub async fn websocket(
     headers: HeaderMap,
     Query(query): Query<ClientQuery>,
 ) -> Result<Response, StatusCode> {
-    if !peer.ip().is_loopback() {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    let origin = headers
-        .get("origin")
-        .and_then(|v| v.to_str().ok())
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-    if !trusted_origin(origin) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    let protocols = headers
-        .get("sec-websocket-protocol")
-        .and_then(|v| v.to_str().ok())
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-    let entries: Vec<_> = protocols.split(',').map(str::trim).collect();
-    if entries.len() != 2 || !entries.contains(&"ridge-client") {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    let token = entries
-        .iter()
-        .find_map(|p| p.strip_prefix("auth-"))
-        .filter(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-    let host = host(&state);
-    if !host.sessions.validate_origin_bound_token(
-        token,
-        &query.device_id,
-        &peer.ip().to_string(),
-        origin,
-    ) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    let connection = WsConn {
-        remote_addr: peer.ip().to_string(),
-        device_id: query.device_id,
-        token: Some(token.into()),
-    };
-    let origin = origin.to_owned();
+    let (host,connection,origin)=authorize(&state,peer,&headers,&query.device_id)?;
     Ok(ws
         .protocols(["ridge-client"])
         .on_upgrade(move |socket| host.serve_local_websocket(socket, connection, origin)))

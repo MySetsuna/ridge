@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { syncGeneratedCsp } from './sync-generated-csp.mjs';
 
 describe('generated CSP synchronizer', () => {
@@ -43,5 +43,31 @@ describe('generated CSP synchronizer', () => {
     expect(csp).toContain('https://*.9527127.xyz');
     expect(csp).toContain('wss://*.9527127.xyz');
     expect(csp).not.toContain("connect-src *");
+  });
+});
+
+describe('native Runtime endpoint CSP', () => {
+  it('permits only the fixed loopback host with dynamic ports in native mode', () => {
+    const html = '<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' https://example.test; script-src \'self\'">';
+    const native = syncGeneratedCsp(html, { nativeRuntime: true });
+    expect(native).toContain('ws://127.0.0.1:*');
+    expect(syncGeneratedCsp(html,{nativeRuntime:false})).not.toContain('ws://127.0.0.1:*');
+    expect(native).not.toContain('connect-src *');
+    expect(native).not.toContain('ws://localhost:*');
+    expect(native).not.toContain('http://127.0.0.1:*');
+  });
+});
+
+describe('server-side native CSP selection', () => {
+  it('uses native build environment while remote and explicit false stay restricted', () => {
+    const html='<meta http-equiv="Content-Security-Policy" content="connect-src \'self\'">';
+    vi.stubEnv('RIDGE_NATIVE_RUNTIME',undefined);
+    vi.stubEnv('RIDGE_WEB_REMOTE','');
+    try {
+      expect(syncGeneratedCsp(html)).toContain('ws://127.0.0.1:*');
+      expect(syncGeneratedCsp(html,{nativeRuntime:false})).not.toContain('ws://127.0.0.1:*');
+      vi.stubEnv('RIDGE_WEB_REMOTE','1');
+      expect(syncGeneratedCsp(html)).not.toContain('ws://127.0.0.1:*');
+    } finally {vi.unstubAllEnvs();}
   });
 });

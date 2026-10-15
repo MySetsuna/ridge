@@ -161,7 +161,18 @@ fn lexically_normalize(path: &Path) -> PathBuf {
                     out.push("..");
                 }
             }
-            Component::RootDir | Component::Prefix(_) | Component::Normal(_) => {
+            #[cfg(windows)]
+            Component::Prefix(prefix) => {
+                use std::path::Prefix;
+                match prefix.kind() {
+                    Prefix::VerbatimDisk(drive)=>out.push(format!("{}:",drive as char)),
+                    Prefix::VerbatimUNC(server,share)=>{out.push(r"\\");out.push(server);out.push(share);},
+                    _=>out.push(comp.as_os_str()),
+                }
+            }
+            #[cfg(not(windows))]
+            Component::Prefix(_) => out.push(comp.as_os_str()),
+            Component::RootDir | Component::Normal(_) => {
                 out.push(comp.as_os_str());
             }
         }
@@ -217,6 +228,21 @@ fn best_effort_canonical(path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn canonical_windows_prefixes_share_root_checks_without_authorizing_outside_paths() {
+        let root=std::env::temp_dir().join(format!("ridge-verbatim-sandbox-{}",uuid::Uuid::new_v4()));
+        let inside=root.join("inside");let outside=root.join("outside");
+        std::fs::create_dir_all(&inside).unwrap();std::fs::create_dir_all(&outside).unwrap();
+        let file=inside.join("saved.ridge");std::fs::write(&file,b"owned").unwrap();
+        let forbidden=outside.join("secret");std::fs::write(&forbidden,b"outside").unwrap();
+        let scope=super::RootScope::from_roots([&inside]);
+        assert!(scope.is_allowed(&file.to_string_lossy()));
+        assert!(scope.is_allowed(&std::fs::canonicalize(&file).unwrap().to_string_lossy()));
+        assert!(!scope.is_allowed(&std::fs::canonicalize(&forbidden).unwrap().to_string_lossy()));
+        let canonical_scope=super::RootScope::from_roots([std::fs::canonicalize(&inside).unwrap()]);
+        assert!(canonical_scope.is_allowed(&file.to_string_lossy()));
+    }
     use super::*;
 
     #[test]

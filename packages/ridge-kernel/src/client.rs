@@ -17,6 +17,47 @@ use ridge_core::commands::git::{
     GitFileVersions, GitRepoInfo, ScmRepoStatus, StashEntry,
 };
 
+/// Shared LAN trust policy: system/public roots plus this installation's trusted Ridge CA.
+pub fn lan_tls_config() -> Result<std::sync::Arc<rustls::ClientConfig>, String> {
+    lan_tls_config_from_native(rustls_native_certs::load_native_certs())
+}
+fn lan_tls_config_from_native(native:rustls_native_certs::CertificateResult) -> Result<std::sync::Arc<rustls::ClientConfig>, String> {
+    if !native.errors.is_empty(){return Err("system certificate store could not be read".into());}
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    for cert in native.certs {roots.add(cert).map_err(|_|"invalid system CA certificate")?;}
+    if let Some(ca) = ridge_remote::tls::ca_cert_der() {
+        roots.add(ca.into()).map_err(|_| "invalid local Ridge CA")?;
+    }
+    let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions().map_err(|_| "TLS initialization failed")?
+        .with_root_certificates(roots).with_no_client_auth();
+    Ok(std::sync::Arc::new(config))
+}
+
+/// Private canonical stream with an exact live workspace/pane binding.
+pub async fn connect_terminal_stream(endpoint:KernelEndpoint,workspace:uuid::Uuid,pane:uuid::Uuid,activation:u64)
+    ->Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,String> {
+    connect_terminal_stream_for(endpoint,workspace,pane,activation,"legacy").await
+}
+pub async fn connect_terminal_stream_for(endpoint:KernelEndpoint,workspace:uuid::Uuid,pane:uuid::Uuid,activation:u64,connection:&str)
+    ->Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,String> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    if activation==0||activation>9_007_199_254_740_991 {return Err("invalid terminal activation".into());}
+    let checked=endpoint.clone();
+    let ptys=tokio::task::spawn_blocking(move||list_domain_ptys(&checked)).await.map_err(|error|error.to_string())??;
+    if !ptys.iter().any(|pty|pty.pty_id==pane&&pty.workspace_id==Some(workspace)) {
+        let checked=endpoint.clone();let metadata=tokio::task::spawn_blocking(move||request_json(&checked,"GET",&format!("/v1/domain/workspaces/{workspace}"),None)).await.map_err(|error|error.to_string())??;
+        if metadata["foreignPanes"].get(pane.to_string()).is_none(){return Err("terminal outside workspace".into());}
+    }
+    let mut url=url::Url::parse(&format!("ws://127.0.0.1:{}/v1/domain/ptys/{pane}/terminal/stream",endpoint.port)).map_err(|error|error.to_string())?;
+    url.query_pairs_mut().append_pair("activation",&activation.to_string()).append_pair("connection",connection).append_pair("workspace",&workspace.to_string());
+    let mut request=url.as_str().into_client_request().map_err(|error|error.to_string())?;
+    request.headers_mut().insert("x-ridge-kernel-token",endpoint.token.parse().map_err(|_|"invalid Runtime authorization")?);
+    tokio::time::timeout(Duration::from_secs(5),tokio_tungstenite::connect_async(request)).await
+        .map_err(|_|"terminal stream connection timed out".to_string())?.map(|connected|connected.0).map_err(|error|error.to_string())
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct KernelPtyInfo {
     pub id: uuid::Uuid,
@@ -813,13 +854,26 @@ fn require_ok(value: Value) -> Result<Value, String> {
     }
 }
 
+/// Automation input cannot bypass an existing protocol conversation's message channel.
+pub fn write_domain_agent_pty(endpoint:&KernelEndpoint,pty_id:uuid::Uuid,data:&[u8])->Result<(),String> {
+    require_ok(request_json(endpoint,"POST",&format!("/v1/domain/ptys/{pty_id}/agent-write"),
+        Some(&serde_json::json!({"data_b64":base64::Engine::encode(&base64::engine::general_purpose::STANDARD,data)})))?)?;
+    Ok(())
+}
 pub fn write_domain_pty(
     endpoint: &KernelEndpoint,
     pty_id: uuid::Uuid,
     data: &[u8],
 ) -> Result<(), String> {
+    write_domain_pty_scoped(endpoint, pty_id, None, data)
+}
+pub fn write_domain_pty_in_workspace(endpoint: &KernelEndpoint, pty_id: uuid::Uuid, workspace: uuid::Uuid, data: &[u8]) -> Result<(), String> {
+    write_domain_pty_scoped(endpoint, pty_id, Some(workspace), data)
+}
+fn write_domain_pty_scoped(endpoint: &KernelEndpoint, pty_id: uuid::Uuid, workspace: Option<uuid::Uuid>, data: &[u8]) -> Result<(), String> {
     let body = serde_json::json!({
         "data_b64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, data),
+        "workspace_id": workspace,
     });
     let _ = require_ok(request_json(
         endpoint,
@@ -915,7 +969,7 @@ pub fn poll_domain_pty_output(
         &format!(
             "/v1/domain/ptys/{pty_id}/output/{lease_id}?timeout_ms={}&max_frames={}",
             timeout_ms.min(1000),
-            max_frames.clamp(1, 128)
+            max_frames.clamp(1, crate::domain::MAX_OUTPUT_POLL_FRAMES)
         ),
         None,
     )?)?;
@@ -1262,7 +1316,7 @@ pub fn request_json(
     let mut stream = TcpStream::connect(("127.0.0.1", endpoint.port))
         .map_err(|error| format!("connect kernel: {error}"))?;
     stream
-        .set_read_timeout(Some(Duration::from_millis(KERNEL_REQUEST_TIMEOUT_MS)))
+        .set_read_timeout(Some(Duration::from_millis(if path=="/v1/domain/commands"&&body.is_some_and(|request|matches!(request["method"].as_str(),Some("request_gateway_approval"|"submit_gateway_input"))){135_000}else if path=="/v1/domain/commands"&&body.is_some_and(|request|request["method"].as_str().is_some_and(|method|method.starts_with("lsp_"))){35_000}else{KERNEL_REQUEST_TIMEOUT_MS})))
         .map_err(|e| e.to_string())?;
     stream
         .set_write_timeout(Some(Duration::from_millis(KERNEL_REQUEST_TIMEOUT_MS)))
@@ -1284,7 +1338,11 @@ pub fn request_json(
     stream
         .write_all(request.as_bytes())
         .map_err(|e| format!("write kernel: {e}"))?;
-    let (head, body) = read_http_response(&mut stream)?;
+    let maximum = if path == "/v1/domain/commands"
+        && body.is_some_and(|request|request["method"] == "read_terminal_font_face_chunk") {
+        ((ridge_core::terminal_font::MAX_FONT_CHUNK_BYTES + 2) / 3) * 4 + 8192
+    } else { MAX_KERNEL_RESPONSE_BYTES };
+    let (head, body) = read_http_response_bounded(&mut stream, maximum)?;
     if !head.starts_with("HTTP/1.1 200") {
         return Err(format!(
             "kernel HTTP response: {}",
@@ -1299,6 +1357,9 @@ const MAX_KERNEL_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_KERNEL_HEADER_BYTES: usize = 64 * 1024;
 
 fn read_http_response(stream: &mut TcpStream) -> Result<(String, Vec<u8>), String> {
+    read_http_response_bounded(stream, MAX_KERNEL_RESPONSE_BYTES)
+}
+fn read_http_response_bounded(stream: &mut TcpStream, maximum: usize) -> Result<(String, Vec<u8>), String> {
     let mut raw = Vec::with_capacity(4096);
     let header_end = loop {
         let mut chunk = [0_u8; 4096];
@@ -1329,7 +1390,7 @@ fn read_http_response(stream: &mut TcpStream) -> Result<(String, Vec<u8>), Strin
     let mut body = raw[header_end + 4..].to_vec();
 
     if let Some(content_length) = content_length {
-        if content_length > MAX_KERNEL_RESPONSE_BYTES {
+        if content_length > maximum {
             return Err("kernel response body too large".to_string());
         }
         body.truncate(content_length);
@@ -1345,11 +1406,11 @@ fn read_http_response(stream: &mut TcpStream) -> Result<(String, Vec<u8>), Strin
             body.extend_from_slice(&chunk[..read]);
         }
     } else {
-        if body.len() > MAX_KERNEL_RESPONSE_BYTES {
+        if body.len() > maximum {
             return Err("kernel response body too large".to_string());
         }
         stream
-            .take((MAX_KERNEL_RESPONSE_BYTES - body.len()) as u64)
+            .take((maximum - body.len()) as u64)
             .read_to_end(&mut body)
             .map_err(|e| format!("read kernel: {e}"))?;
     }
@@ -1359,6 +1420,34 @@ fn read_http_response(stream: &mut TcpStream) -> Result<(String, Vec<u8>), Strin
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn output_poll_clamps_requested_batch_to_the_service_admission_limit(){
+        let listener=std::net::TcpListener::bind(("127.0.0.1",0)).unwrap();let port=listener.local_addr().unwrap().port();
+        let server=std::thread::spawn(move||{
+            let (mut socket,_)=listener.accept().unwrap();let mut bytes=[0;4096];let count=socket.read(&mut bytes).unwrap();
+            let request=String::from_utf8_lossy(&bytes[..count]);
+            assert!(request.contains(&format!("max_frames={}",crate::domain::MAX_OUTPUT_POLL_FRAMES)));
+            let body=r#"{"ok":true,"kind":"timeout"}"#;
+            write!(socket,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        });
+        let endpoint=KernelEndpoint{pid:std::process::id(),port,token:"owned-poll-fixture".into(),started_at_unix:1};
+        assert_eq!(poll_domain_pty_output(&endpoint,uuid::Uuid::new_v4(),uuid::Uuid::new_v4(),100,128).unwrap(),KernelPtyOutput::Timeout);
+        server.join().unwrap();
+    }
+    #[test]
+    fn system_ca_loading_errors_and_invalid_certificates_fail_closed(){
+        let missing=std::env::temp_dir().join(format!("ridge-missing-ca-{}",uuid::Uuid::new_v4()));
+        let native=rustls_native_certs::load_certs_from_paths(Some(&missing),None);
+        assert!(!native.errors.is_empty());
+        assert!(super::lan_tls_config_from_native(native).is_err());
+        let mut invalid=rustls_native_certs::CertificateResult::default();
+        invalid.certs.push(vec![0,1,2].into());
+        assert!(super::lan_tls_config_from_native(invalid).is_err());
+    }
+    #[test]
+    fn actual_system_certificate_store_builds_a_verified_client(){
+        super::lan_tls_config().expect("platform certificate store must remain readable");
+    }
     use super::*;
     use serde_json::json;
     use std::fs;
@@ -1953,4 +2042,25 @@ mod tests {
         );
         let _ = fs::remove_file(pid_path);
     }
+    #[test]
+    fn font_chunk_json_uses_its_encoded_bound_without_raising_general_limit() {
+        fn exchange(command:&str,payload_bytes:usize)->Result<Value,String> {
+            let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port=listener.local_addr().unwrap().port();
+            let server=std::thread::spawn(move ||{
+                let (mut stream,_)=listener.accept().unwrap();
+                let mut request=[0u8;4096];let _=stream.read(&mut request);
+                let body=json!({"ok":true,"value":{"dataBase64":"a".repeat(payload_bytes)}}).to_string();
+                let _=write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body);
+            });
+            let endpoint=KernelEndpoint {pid:std::process::id(),port,token:"owned-font-bound".into(),started_at_unix:0};
+            let result=request_json(&endpoint,"POST","/v1/domain/commands",Some(&json!({"method":command})));
+            server.join().unwrap();result
+        }
+        let encoded=((ridge_core::terminal_font::MAX_FONT_CHUNK_BYTES+2)/3)*4;
+        assert!(exchange("read_terminal_font_face_chunk",encoded).is_ok());
+        assert!(exchange("read_file",encoded).unwrap_err().contains("body too large"));
+        assert!(exchange("read_terminal_font_face_chunk",encoded+16384).unwrap_err().contains("body too large"));
+    }
+
 }

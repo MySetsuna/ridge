@@ -10,6 +10,7 @@ use axum::{
     Json,
 };
 use ridge_acp::{existing::ExistingConversation, transport::AcpTransport};
+use crate::commune_connection::Conversation;
 use ridge_core::{
     process_identity::{self, ProcessInstance},
     teammate::communication::{AgentIdentity, AgentLifecycle, ProtocolBinding},
@@ -30,10 +31,39 @@ pub fn owns_method(method: &str) -> bool {
     matches!(
         method,
         "register_commune_member"
+            | "get_agent_terminal_view"
+            | "write_agent_terminal_input"
+            | "release_teammate_agent"
+            | "get_orchestration_health"
+            | "initialize_hitl_settings"
+            | "report_execution_rejection"
+            | "list_execution_rejections_local"
+            | "dismiss_execution_rejection"
+            | "list_agent_profiles"
+            | "read_agent_profile_overrides"
+            | "save_agent_profile_overrides"
+            | "request_gateway_approval"
+            | "submit_gateway_input"
+            | "set_automation_input_paused"
+            | "get_automation_input_paused"
+            | "get_automation_pause_count"
+            | "clear_automation_input_pauses"
+            | "checkpoint_workspace_rollback"
+            | "rollback_workspace"
+            | "get_workspace_memory"
+            | "set_workspace_memory"
+            | "get_workspace_memory_directory"
+            | "read_workspace_memory_document"
+            | "commit_workspace_memory_document"
+            | "retire_workspace_memory_document"
+            | "get_hitl_enabled"
+            | "set_hitl_enabled"
             | "get_teammate_topology"
             | "list_hitl_pending"
             | "list_hitl_pending_local"
             | "get_pending_hitl_count"
+            | "list_hitl_audit_remote"
+            | "list_hitl_decisions"
             | "resolve_hitl_request"
             | "resolve_hitl_remote"
             | "send_agent_message"
@@ -51,11 +81,84 @@ pub async fn dispatch(
     native: bool,
 ) -> Result<Value, String> {
     match method {
+        "get_agent_terminal_view"|"write_agent_terminal_input"=>{
+            let state=state.clone();let args=args.clone();let method=method.to_owned();
+            tokio::task::spawn_blocking(move||crate::agent_terminal::dispatch(&state,&method,&args,native)).await.map_err(|error|error.to_string())?
+        }
+        "get_orchestration_health"=>{
+            let state=state.clone();
+            tokio::task::spawn_blocking(move||crate::orchestration_health::read(&state)).await.map_err(|error|error.to_string())?
+        }
+        "rollback_workspace"=>{if !native{return Err("rollback requires native trust".into());}crate::workspace_rollback::rollback(state,args).await}
+
+        "checkpoint_workspace_rollback"=>{if !native{return Err("checkpoint requires native trust".into());}crate::workspace_rollback::checkpoint(state,args).await}
+
+        "submit_gateway_input" => {
+            if !native{return Err("gateway input requires native trust".into());}
+            let state=state.clone();let args=args.clone();
+            tokio::spawn(async move{state.gateway_permissions.clone().submit(&state,&args).await}).await.map_err(|error|error.to_string())?
+        }
+
+        "set_automation_input_paused"|"get_automation_input_paused"|"get_automation_pause_count"|"clear_automation_input_pauses"|"get_workspace_memory"|"set_workspace_memory"|"get_workspace_memory_directory"|"read_workspace_memory_document"|"commit_workspace_memory_document"|"retire_workspace_memory_document"=>{
+            let method=method.to_owned();let args=args.clone();
+            tokio::task::spawn_blocking(move||crate::workspace_memory::dispatch(&method,&args,native)).await.map_err(|error|error.to_string())?
+        }
+
+        "request_gateway_approval" => {
+            if !native {return Err("gateway request requires native trust".into());}
+            state.gateway_permissions.clone().request(state,args).await
+        }
+
+        "list_agent_profiles" | "read_agent_profile_overrides" | "save_agent_profile_overrides" => {
+            if !native {return Err("Agent catalog requires native trust".into());}
+            let operation=method.to_owned();let args=args.clone();
+            let value=tokio::task::spawn_blocking(move ||crate::agent_profiles::catalog(&operation,&args)).await.map_err(|error|error.to_string())??;
+            if method=="save_agent_profile_overrides" {state.business_events.broadcast("agent-profiles-changed",Value::Null);}
+            Ok(value)
+        }
+
+        "report_execution_rejection" | "list_execution_rejections_local" | "dismiss_execution_rejection" => {
+            if !native { return Err("external rejection cards require native trust".into()); }
+            let value = match method {
+                "report_execution_rejection" => json!(state.execution_rejections.report(args)?),
+                "dismiss_execution_rejection" => json!(state.execution_rejections.dismiss(args["id"].as_str().ok_or("missing rejection ID")?)?),
+                _ => return state.execution_rejections.list(),
+            };
+            state.business_events.broadcast("teammate://execution-rejections-changed", Value::Null);
+            Ok(value)
+        }
+
+        "get_hitl_enabled" | "set_hitl_enabled" | "initialize_hitl_settings" => {
+            if !native { return Err("HITL gateway settings require native trust".into()); }
+            let args = args.clone();
+            let operation = method.to_owned();
+            let enabled = tokio::task::spawn_blocking(move || {
+                if operation == "get_hitl_enabled" { crate::settings::gateway_enabled() }
+                else { crate::settings::update_gateway(&args, operation == "initialize_hitl_settings") }
+            }).await.map_err(|error| error.to_string())??;
+            if method != "get_hitl_enabled" {
+                state.business_events.broadcast("teammate://hitl-settings-changed", Value::Null);
+            }
+            Ok(if method == "set_hitl_enabled" { Value::Null } else { json!(enabled) })
+        }
         "set_teammate_groups" => {
             let state = state.clone();
             let args = args.clone();
             tokio::task::spawn_blocking(move || crate::commune_groups::replace(&state, &args, native))
                 .await.map_err(|e| e.to_string())?
+        }
+        "list_hitl_decisions" => {
+            if !native {return Err("local decision history requires native trust".into());}
+            let workspace=args["workspaceId"].as_str().ok_or("decision history requires workspaceId")?.to_owned();
+            let state=state.clone();
+            tokio::task::spawn_blocking(move || {
+                let audit=crate::commune_history::audit(&state,&json!({"workspaceId":workspace,"limit":50}))?;
+                Ok(json!(audit["items"].as_array().ok_or("invalid decision audit")?.iter().rev().collect::<Vec<_>>()))
+            }).await.map_err(|error|error.to_string())?
+        }
+        "list_hitl_audit_remote" => {
+            let state=state.clone();let args=args.clone();
+            tokio::task::spawn_blocking(move ||crate::commune_history::audit(&state,&args)).await.map_err(|error|error.to_string())?
         }
         "read_agent_recent_replies" => {
             let state = state.clone();
@@ -73,6 +176,10 @@ pub async fn dispatch(
                 serde_json::from_value(args.clone()).map_err(|e| e.to_string())?,
             )
             .await
+        }
+        "release_teammate_agent" => {
+            if !native{return Err("membership removal requires native trust".into());}
+            retire_member(state,args).await
         }
         "get_teammate_topology" => {
             let mut profile = crate::kernel_mcp::KernelMcpHost::new(state.clone())
@@ -130,24 +237,34 @@ pub async fn dispatch(
                         .unwrap_or(Value::Null);
                 }
             }
+            drop(connections);
+            profile["discovered"] = if native {
+                let state=state.clone();let workspace=workspace.to_owned();
+                tokio::task::spawn_blocking(move ||crate::agent_discovery::read(&state,&workspace)).await.map_err(|error|error.to_string())??
+            } else { json!([]) };
             Ok(profile)
         }
-        "list_hitl_pending" => state.permissions.snapshot(false),
+        "list_hitl_pending" => pending_snapshot(state,false),
         "list_hitl_pending_local" => {
             if !native {
                 return Err("local permission details require native trust".into());
             }
-            state.permissions.snapshot(true)
+            pending_snapshot(state,true)
         }
         "get_pending_hitl_count" => Ok(json!(state
             .permissions
             .snapshot(false)?
             .as_array()
             .ok_or("invalid permission snapshot")?
-            .len())),
+            .len()+state.gateway_permissions.snapshot(false)?.len())),
         "resolve_hitl_request" | "resolve_hitl_remote" => {
             if method == "resolve_hitl_request" && !native {
                 return Err("local permission resolution requires native trust".into());
+            }
+            let remote=method=="resolve_hitl_remote";
+            if let Some(outcome)=state.gateway_permissions.resolve(state,args,!remote&&native)? {
+                state.business_events.broadcast("teammate://hitl-pending-changed",Value::Null);
+                return if remote {Ok(json!({"outcome":outcome}))}else if outcome=="bad-verdict" {Err("invalid gateway verdict".into())}else {Ok(json!(outcome=="consumed"))};
             }
             if !args["replacement"].is_null() {
                 return Err("ACP permission requests cannot be rewritten".into());
@@ -203,6 +320,7 @@ pub async fn dispatch(
                 } else {
                     None
                 },
+                native,
             )?;
             drop(roster);
             state
@@ -293,6 +411,12 @@ pub async fn dispatch(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegisterRequest {
+    #[serde(default)]
+    automatic: bool,
+    #[serde(default = "default_protocol")]
+    protocol: String,
+    #[serde(default)]
+    bearer_token_file: Option<std::path::PathBuf>,
     workspace_id: Uuid,
     pane_id: Uuid,
     process: ProcessInstance,
@@ -300,6 +424,32 @@ pub struct RegisterRequest {
     endpoint: SocketAddrV4,
     session_id: String,
     cwd: String,
+}
+fn default_protocol()->String {"acp".into()}
+
+async fn retire_member(state:&AppState,args:&Value)->Result<Value,String>{
+    let text=|key|args[key].as_str().filter(|value|!value.is_empty()).ok_or_else(||format!("missing {key}"));
+    let agent=text("agentId")?;let workspace=text("workspaceId")?;let pane=text("paneId")?;let lease=text("lease")?;
+    let generation=args["generation"].as_u64().filter(|value|*value>0).ok_or("missing generation")?;
+    let mut connections=state.commune.lock().await;
+    let mut roster=state.roster.lock().map_err(|_|"roster unavailable")?;
+    let identity=roster.agent_identity(agent).ok_or("member not found")?.clone();
+    if identity.workspace_id!=workspace||identity.pane_id!=pane||identity.generation!=generation||identity.lease!=lease{return Err("member identity binding changed".into());}
+    if roster.protocol_member_retired(agent){drop(roster);state.mcp_state.purge_identity(workspace,agent,generation,lease)?;connections.remove(agent);return Ok(json!({"removed":true}));}
+    let mut commit=||->Result<(),String>{
+        if state.mcp_state.latest_runtime_receipt(agent,generation,lease)?.is_some_and(|receipt|matches!(receipt["execution"]["state"].as_str(),Some("running"|"dispatching"))){return Err("Agent turn is settling; wait for its actual terminal result".into());}
+        let history=state.permissions.history(agent,&ridge_data_dir().join("commune-history").join(format!("{agent}.jsonl")))?;
+        let mut next=roster.clone();next.retire_protocol_member(agent,generation,lease).map_err(|error|error.to_string())?;
+        history.append(json!({"kind":"member_removal_requested","identity":identity}))?;
+        save_roster_at(&state.roster_path,&next).map_err(|error|error.to_string())?;
+        *roster=next;Ok(())
+    };
+    if let Some(session)=connections.get(agent){session.retire_idle(commit)?;}else{commit()?;}
+    drop(roster);
+    connections.remove(agent);
+    state.mcp_state.purge_identity(workspace,agent,generation,lease)?;
+    state.business_events.broadcast("commune-members-changed",Value::Null);
+    Ok(json!({"removed":true}))
 }
 fn pane_process(state: &AppState, request: &RegisterRequest) -> Result<ProcessInstance, String> {
     let pane = state
@@ -332,6 +482,9 @@ fn pane_process(state: &AppState, request: &RegisterRequest) -> Result<ProcessIn
 }
 
 pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result<Value, String> {
+    if state.shutting_down.load(std::sync::atomic::Ordering::Acquire){return Err("Runtime is shutting down".into());}
+    if !matches!(request.protocol.as_str(),"acp"|"app-server") {return Err("unsupported conversation protocol".into());}
+    if request.protocol=="acp" && request.bearer_token_file.is_some(){return Err("ACP TCP registration does not accept a WebSocket credential".into());}
     if !request.endpoint.ip().is_loopback()
         || request.endpoint.port() == 0
         || request.session_id.trim().is_empty()
@@ -361,11 +514,13 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
         })
         .cloned();
     if let Some(identity) = &existing {
+        if request.automatic && state.roster.lock().map_err(|_|"roster unavailable")?.protocol_member_retired(&identity.agent_id){return Err("protocol member was explicitly removed; automatic reattachment refused".into());}
         if identity.workspace_id != request.workspace_id.to_string()
             || identity.pane_id != request.pane_id.to_string()
             || identity.protocol_binding.as_ref().is_none_or(|binding| {
                 binding.process != request.process
                     || binding.endpoint_owner != request.endpoint_owner
+                    || binding.protocol != request.protocol
             })
         {
             return Err(
@@ -431,14 +586,9 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
     let update_phase = replaying.clone();
     let update_replay = replay_id.clone();
     let connection_history = history.clone();
-    let (read, write) = stream.into_split();
     let events = state.business_events.clone();
     let event_agent = agent_id.clone();
-    let session = ExistingConversation::load(
-        AcpTransport::from_io(write, read),
-        request.session_id.clone(),
-        request.cwd.clone(),
-        Arc::new(move |update| {
+    let updates:ridge_acp::existing::UpdateSink=Arc::new(move |update| {
             let context = observed_turn.lock().map_err(|_|ridge_acp::AcpErrorWrap::Transport("turn context unavailable".into()))?.clone();
             let record = history
                 .append(json!({"kind":"session_update","agentId":event_agent,"params":update,"generation":generation,
@@ -449,8 +599,8 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
                 .map_err(ridge_acp::AcpErrorWrap::Io)?;
             events.broadcast("commune-session-update", record);
             Ok(())
-        }),
-        Arc::new(move |params| {
+        });
+    let permission:ridge_acp::existing::PermissionHandler=Arc::new(move |params| {
             let permissions = permissions.clone();
             let approval = approval.clone();
             let roster = permission_roster.clone();
@@ -474,11 +624,24 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
                 let context = json!({"deliveryId":receipt["deliveryId"],"taskId":receipt["taskId"],"groupTaskId":receipt["payload"]["groupContext"]["groupTaskId"]});
                 permissions.request(approval, params, log, events, context).await
             })
-        }),
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+        });
+    let session=if request.protocol=="app-server" {
+        let token=if let Some(path)=&request.bearer_token_file {
+            if !path.is_absolute(){return Err("protocol credential reference must be absolute".into());}
+            let file=std::fs::File::open(path).map_err(|_|"cannot read protocol credential reference")?;
+            use std::io::Read;
+            let mut token=String::new();file.take(4097).read_to_string(&mut token).map_err(|_|"invalid protocol credential")?;
+            let token=token.trim().to_owned();
+            if token.is_empty()||token.len()>4096||token.contains(['\r','\n']){return Err("invalid protocol credential".into());}Some(token)
+        }else{None};
+        let transport=tokio::time::timeout(Duration::from_secs(5),crate::app_server::transport(stream,&format!("ws://{}/",request.endpoint),token)).await.map_err(|_|"app-server handshake timed out")??;
+        Conversation::AppServer(crate::app_server::Conversation::load(transport,request.session_id.clone(),request.cwd.clone(),updates,permission).await.map_err(|error|error.to_string())?)
+    }else{
+        let (read,write)=stream.into_split();
+        Conversation::Acp(ExistingConversation::load(AcpTransport::from_io(write,read),request.session_id.clone(),request.cwd.clone(),updates,permission).await.map_err(|error|error.to_string())?)
+    };
     let session = Arc::new(session);
+    let lifecycle = state.retired_workspaces.lock().map_err(|_| "workspace lifecycle unavailable")?;
     let rechecked = pane_process(state, &request);
     if rechecked.as_ref() != Ok(&root)
         || process_identity::validate(&request.process).is_err()
@@ -492,6 +655,7 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
         return Err(error);
     }
     replaying.store(false, std::sync::atomic::Ordering::Release);
+    if let Err(error)=session.finish_replay(){session.disconnect();return Err(error);}
     let mut roster = state.roster.lock().map_err(|_| "roster unavailable")?;
     let mut next = roster.clone();
     if next.next_agent_generation(&agent_id) != generation {
@@ -499,7 +663,7 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
         return Err("Agent generation changed during registration".into());
     }
     let binding = ProtocolBinding {
-        protocol: "acp".into(),
+        protocol: request.protocol.clone(),
         host_id: state.host_id.clone(),
         runtime_epoch: state.runtime_epoch.clone(),
         process: request.process,
@@ -528,11 +692,13 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
             let mut capabilities = vec![
                 "messages".into(),
                 "tasks".into(),
-                "acp.prompt".into(),
-                "acp.cancel".into(),
+                "conversation.prompt".into(),
+                "conversation.cancel".into(),
             ];
+            if request.protocol=="acp" {capabilities.extend(["acp.prompt".into(),"acp.cancel".into()]);}
             if session.history_replayed() {
-                capabilities.push("acp.history".into());
+                capabilities.push("conversation.history".into());
+                if request.protocol=="acp" {capabilities.push("acp.history".into());}
             }
             capabilities
         },
@@ -559,6 +725,7 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
     *roster = next;
     connections.insert(agent_id.clone(), session.clone());
     drop(roster);
+    drop(lifecycle);
     tokio::spawn(consume_deliveries(
         state.clone(),
         session.clone(),
@@ -580,6 +747,7 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
             let mut disconnected = false;
             loop {
                 tokio::time::sleep(Duration::from_millis(500)).await;
+                if state.roster.lock().expect("roster lock").protocol_member_retired(&agent_id){break;}
                 if disconnected {
                     let roster = state.roster.lock().expect("roster lock");
                     if !roster.agent_identities().into_iter().any(|member| {
@@ -644,7 +812,7 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
 /// No retry after a transport error: the Agent may already have executed it.
 async fn consume_deliveries(
     state: AppState,
-    session: Arc<ExistingConversation>,
+    session: Arc<Conversation>,
     receiver: std::sync::mpsc::Receiver<Value>,
     agent_id: String,
     generation: u64,
@@ -807,4 +975,11 @@ pub async fn register(
         Ok(value) => json!({"ok":true,"value":value}),
         Err(error) => json!({"ok":false,"error":error}),
     }))
+}
+
+fn pending_snapshot(state:&AppState,local:bool)->Result<Value,String> {
+    let mut rows=state.permissions.snapshot(local)?.as_array().ok_or("invalid pending snapshot")?.clone();
+    rows.extend(state.gateway_permissions.snapshot(local)?);
+    rows.sort_by(|a,b|a["createdAt"].as_u64().cmp(&b["createdAt"].as_u64()).then_with(||a["id"].as_str().cmp(&b["id"].as_str())));
+    Ok(json!(rows))
 }

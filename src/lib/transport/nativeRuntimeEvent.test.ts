@@ -33,4 +33,20 @@ describe('native event boundary', () => {
     const handler = vi.fn(); await listen('tauri://focus', handler);
     expect(os.listen).toHaveBeenCalledWith('tauri://focus', handler, undefined);
   });
+  it.each(['ridge://memory-reclaim', 'ridge://memory-restore', 'ridge://auth-focus', 'editor-window-open-file', 'editor-window-closed'])('routes actual host event %s through OS IPC', async event => {
+    const handler = vi.fn();
+    await listen(event, handler);
+    await once(event, handler);
+    expect(os.listen).toHaveBeenCalledWith(event, handler, undefined);
+    expect(os.once).toHaveBeenCalledWith(event, handler, undefined);
+    expect(listeners.has(event)).toBe(false);
+  });
+  it('hands unsaved editor presentation state between local windows without a domain event', async () => {
+    const payload = { files: [{ path: '/project/file.ts', content: 'unsaved text' }], active: '/project/file.ts' };
+    await emitTo('editor', 'editor-window-open-file', { kind: 'file', path: '/project/file.ts' });
+    await emitTo('main', 'editor-window-closed', payload);
+    expect(os.emitTo).toHaveBeenCalledWith('main', 'editor-window-closed', payload);
+    expect(listeners.size).toBe(0);
+    await expect(emit('commune-members-changed', payload)).rejects.toThrow('Domain events originate in Runtime');
+  });
 });

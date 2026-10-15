@@ -32,7 +32,6 @@ function fakeLink() {
     sendStdin: vi.fn(),
     refreshPane: vi.fn(),
     getPaneOutput: vi.fn(() => []),
-    markPaneAgent: vi.fn(async () => { calls.push('mark-agent'); }),
     listShells: vi.fn(async () => [{ id: 'bash', label: 'Bash', program: 'bash', args: [] }]),
     changePaneShell: vi.fn(async () => { calls.push('change-shell'); }),
   };
@@ -42,14 +41,24 @@ function fakeLink() {
 beforeEach(() => {
   mockInvoke.mockReset();
   hosts.hostsStore.set([]);
-  hosts.outboundPumpByHost.set({});
-  hosts.outboundLifecycleByKey.set({});
-  hosts.foreignHistoryByKey.set({});
   hosts.hostConnectProgress.set(null);
 });
 
 describe('hosts store public helper projections', () => {
-  it('scopes attached panes and models pump, lifecycle, history, and reconnect state', async () => {
+  it('keeps Remote headless sessions visible without attempting native Host topology', async () => {
+    vi.stubEnv('RIDGE_WEB_REMOTE', '1');
+    try {
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === 'list_native_sessions') return [];
+        throw new Error(`unexpected Remote command: ${command}`);
+      });
+      await hosts.refreshHosts();
+      expect(get(hosts.hostsStore).map(host => host.kind)).toEqual(['headless']);
+      expect(get(hosts.hostsError)).toBe('');
+      expect(mockInvoke).not.toHaveBeenCalledWith('host_list_snapshot');
+    } finally { vi.unstubAllEnvs(); }
+  });
+  it('scopes attached panes by workspace', async () => {
     expect(hosts.remotePaneKey('w', 'p')).toBe('w\0p');
     const index = hosts.collectAttachedRemotePanes([
       { workspaceId: 'w', remoteSessionId: 'p', attached: true },
@@ -60,25 +69,6 @@ describe('hosts store public helper projections', () => {
     expect(hosts.isRemotePaneAttached(index, 'other', 'legacy', 1)).toBe(true);
     expect(hosts.isRemotePaneAttached(index, 'other', 'legacy', 2)).toBe(false);
 
-    hosts.notePumpBatch('h', 100);
-    hosts.notePumpBatch('h', 200);
-    expect(get(hosts.outboundPumpByHost).h?.bufferedBytes).toBe(300);
-    expect(hosts.pumpBadgeForHost('h')).toBe('');
-    hosts.noteLifecycleSubscribe('h', 's');
-    hosts.noteLifecycleFanout('h', 12);
-    expect(get(hosts.outboundLifecycleByKey)['h\0s']?.subscribed).toBe(true);
-    hosts.noteLifecycleDetach('h', 's');
-    expect(get(hosts.outboundLifecycleByKey)['h\0s']?.subscribed).toBe(false);
-    expect(hosts.attachSeedPlanForSession('h', 's', false).seedBeforeLive).toBe(false);
-
-    mockInvoke.mockResolvedValueOnce({ hostId: 'h', sessionId: 's', bytes: 64, cap: 128, dataB64: 'YQ==' });
-    expect(await hosts.fetchForeignHistoryTail('h', 's')).toMatchObject({ bytes: 64, cap: 128 });
-    expect(hosts.historyBadgeForSession('h', 's')).not.toBe('');
-    expect(hosts.attachSeedPlanForSession('h', 's', true).seedBeforeLive).toBe(true);
-    expect(hosts.noteOutboundReconnectAttempt('h')).toBe(1);
-    expect(hosts.noteOutboundReconnectAttempt('h')).toBe(2);
-    hosts.resetOutboundReconnectAttempt('h');
-    expect(get(hosts.outboundReconnectAttempts).h).toBeUndefined();
   });
 
   it('refreshes native snapshots and routes headless session commands', async () => {
@@ -102,11 +92,54 @@ describe('hosts store public helper projections', () => {
     expect(mockInvoke).toHaveBeenCalledWith('terminate_native_session', { socket: 'tmux', target: 'shell' });
   });
 
+  it('docks the actual new native view when summon returns a count, not a global ID', async () => {
+    const panes = await import('./paneTree');
+    const dock = vi.spyOn(panes, 'dockPane').mockResolvedValue();
+    const sync = vi.spyOn(panes, 'syncPaneLayoutFromBackend').mockResolvedValue();
+    const target = { type: 'leaf', id: 'target' };
+    const adopted = { type: 'leaf', id: 'actual-view', origin: {
+      kind: 'headless', host_id: 'headless', host_label: 'headless', session_id: 'headless:47',
+    } };
+    let reads = 0;
+    mockInvoke.mockImplementation(async command => {
+      if (command === 'get_pane_layout_for') return ++reads === 1 ? target : {
+        type: 'split', id: 'split', direction: 'horizontal', children: [target, adopted], ratios: [0.5, 0.5],
+      };
+      if (command === 'summon_native_session') return 1;
+      return [];
+    });
+    try {
+      expect(await hosts.attachHostSession({ kind: 'headless', socket: 'headless', target: 'shell',
+        workspaceId: 'workspace', targetPaneId: 'target', region: 'right',
+      })).toBe('actual-view');
+      expect(dock).toHaveBeenCalledWith('actual-view', 'target', 'right');
+      expect(mockInvoke).toHaveBeenCalledWith('get_pane_layout_for', { workspaceId: 'workspace' });
+    } finally { dock.mockRestore(); sync.mockRestore(); }
+  });
+
+  it('refuses to dock an ambiguous native view after concurrent layout changes', async () => {
+    const panes = await import('./paneTree');
+    const dock = vi.spyOn(panes, 'dockPane').mockResolvedValue();
+    let reads = 0;
+    mockInvoke.mockImplementation(async command => {
+      if (command === 'get_pane_layout_for') return ++reads === 1 ? { type: 'leaf', id: 'target' } : {
+        type: 'split', id: 'split', direction: 'horizontal', ratios: [0.5, 0.5], children: ['first', 'concurrent'].map(id => ({
+          type: 'leaf', id, origin: { kind: 'headless', host_id: 'headless', host_label: 'headless', session_id: `headless:${id}` },
+        })),
+      };
+      if (command === 'summon_native_session') return 1;
+      return [];
+    });
+    try {
+      await expect(hosts.attachHostSession({ kind: 'headless', socket: 'headless', target: 'shell',
+        workspaceId: 'workspace', targetPaneId: 'target', region: 'right',
+      })).rejects.toThrow('Native layout changed');
+      expect(dock).not.toHaveBeenCalled();
+    } finally { dock.mockRestore(); }
+  });
+
   it('attaches and detaches a remote session without confusing view lifecycle with PTY termination', async () => {
     mockInvoke.mockImplementation(async (command: string) => {
-      if (command === 'get_foreign_history_tail') {
-        return { hostId: 'remote-attach', sessionId: 'session-1', bytes: 0, cap: 128, dataB64: '' };
-      }
       if (command === 'attach_host_session') return 'local-foreign-pane';
       if (command === 'list_native_sessions' || command === 'host_list_snapshot') return [];
       return undefined;
@@ -116,7 +149,6 @@ describe('hosts store public helper projections', () => {
     expect(mockInvoke).toHaveBeenCalledWith('attach_host_session', {
       hostId: 'remote-attach', sessionId: 'session-1', workspaceId: '',
     });
-    expect(get(hosts.outboundLifecycleByKey)['remote-attach\0session-1']?.subscribed).toBe(true);
 
     hosts.hostsStore.set([{
       id: 'remote-attach', kind: 'remote', label: 'Remote', status: 'connected', sessions: [{
@@ -128,7 +160,6 @@ describe('hosts store public helper projections', () => {
     expect(mockInvoke).toHaveBeenCalledWith('detach_host_session', {
       paneId: 'local-foreign-pane', workspaceId: '',
     });
-    expect(get(hosts.outboundLifecycleByKey)['remote-attach\0session-1']?.subscribed).toBe(false);
   });
 
   it('publishes linked topology and performs remote workspace mutations', async () => {
@@ -149,12 +180,11 @@ describe('hosts store public helper projections', () => {
     await hosts.saveHostWorkspace('remote-1', 'w1', 'saved');
     await hosts.createHostPane('remote-1', 'w1');
     await hosts.closeHostWorkspace('remote-1', 'w1');
-    await hosts.markHostPaneAgent('remote-1', 'w1', 'p1', true);
     await hosts.changeHostPaneShell('remote-1', 'w1', 'p1', 'bash');
     expect(await hosts.hostShellChoices('remote-1')).toEqual([{ id: 'bash', label: 'Bash' }]);
     expect(calls).toEqual(expect.arrayContaining([
       'create-workspace', 'switch', 'rename', 'save', 'create-pane',
-      'close-workspace', 'mark-agent', 'change-shell',
+      'close-workspace', 'change-shell',
     ]));
     hosts.cancelHostTopologyRetry('remote-1');
     await hosts.retryHostTopology('remote-1');
@@ -191,30 +221,6 @@ describe('hosts store public helper projections', () => {
     await hosts.disconnectHost('remote-2');
     expect(hosts.hasHostTopologyLink('remote-2')).toBe(true);
     remove();
-  });
-
-  it('updates outbound stats/backpressure and returns safe defaults on IPC errors', async () => {
-    const stats = {
-      hostId: 'h', state: 'connected', subscribed: ['s'], helloOk: 1, listOk: 1,
-      subscribeOk: 1, writeOk: 2, resizeOk: 1, fanoutBytes: 9, reconnectAttempts: 0,
-      resubscribeOk: 1, errors: 0, liveBufferCap: 128, liveBufferBytes: 32,
-      liveDroppedBytes: 4,
-    };
-    mockInvoke.mockResolvedValueOnce(stats);
-    expect(await hosts.fetchOutboundStats('h')).toEqual(stats);
-    expect(get(hosts.outboundPumpByHost).h?.bufferedBytes).toBe(32);
-    const bp = { hostId: 'h', cap: 128, buffered: 16, dropped: 5, highWater: 64, sessions: 1, sheddingSessions: 0, level: 'normal', totalDroppedGlobal: 5, injects: 0 };
-    mockInvoke.mockResolvedValueOnce(bp);
-    expect(await hosts.fetchLiveBackpressure('h')).toEqual(bp);
-    expect(get(hosts.liveBackpressureByHost).h).toEqual(bp);
-    mockInvoke.mockResolvedValueOnce(17);
-    expect(await hosts.pumpHostOutput('h')).toBe(17);
-    mockInvoke.mockRejectedValue(new Error('offline'));
-    expect(await hosts.fetchOutboundStats('h')).toBeNull();
-    expect(await hosts.fetchLiveBackpressure('h')).toBeNull();
-    expect(await hosts.fetchForeignHistoryTail('h', 's')).toBeNull();
-    expect(await hosts.pumpHostOutput('h')).toBe(0);
-    expect(hosts.hostOperatorAlert('unknown', 0)).toBeNull();
   });
 
   it('fences replaced topology links and honors manual disconnect', async () => {
@@ -286,30 +292,10 @@ describe('hosts store public helper projections', () => {
 
     link.listShells.mockResolvedValue([]);
     await expect(hosts.changeHostPaneShell('mutation-errors', 'w1', 'p1', 'missing')).rejects.toThrow();
-    link.markPaneAgent = undefined as never;
-    await expect(hosts.markHostPaneAgent('mutation-errors', 'w1', 'p1', true)).rejects.toThrow();
     link.listShells = undefined as never;
     link.changePaneShell = undefined as never;
     await expect(hosts.changeHostPaneShell('mutation-errors', 'w1', 'p1', 'bash')).rejects.toThrow();
     await expect(hosts.hostShellChoices('mutation-errors')).resolves.toEqual([]);
     remove();
-  });
-
-  it('pumps only connected unlinked hosts and projects lifecycle alerts', async () => {
-    hosts.hostsStore.set([
-      { id: 'remote-live', kind: 'remote', label: 'Live', status: 'connected', sessions: [], workspaces: [] },
-      { id: 'remote-offline', kind: 'remote', label: 'Offline', status: 'disconnected', sessions: [], workspaces: [] },
-      { id: 'headless', kind: 'headless', label: 'Local', status: 'connected', sessions: [], workspaces: [] },
-    ]);
-    mockInvoke.mockResolvedValueOnce(64);
-    expect(await hosts.pumpAllConnectedOutbound()).toBe(64);
-    expect(mockInvoke).toHaveBeenCalledWith('pump_host_output', { hostId: 'remote-live' });
-    expect(hosts.pumpBadgeForHost('remote-live')).toBe('');
-
-    hosts.noteLifecycleSubscribe('remote-live', 'session-1');
-    hosts.noteLifecycleFanout('remote-live', 128);
-    expect(get(hosts.outboundLifecycleByKey)['remote-live\0session-1']?.fanoutBytes).toBe(128);
-    hosts.noteOutboundReconnectAttempt('remote-live');
-    expect(hosts.hostOperatorAlert('remote-live', 1)).toEqual(expect.any(String));
   });
 });

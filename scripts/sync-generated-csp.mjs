@@ -45,11 +45,13 @@ function addDirectiveToken(csp, directive, token, { removeHashes = false } = {})
   return csp.slice(0, start) + replacement + csp.slice(start + match[0].length);
 }
 
-/** @param {string} html @param {{ allowInlineStyles?: boolean }} [options] @returns {string} */
+/** @param {string} html @param {{ allowInlineStyles?: boolean, nativeRuntime?: boolean }} [options] @returns {string} */
 export function syncGeneratedCsp(html, options = {}) {
   const match = CSP_META.exec(html);
   if (!match) return html;
   let csp = match[2];
+  const nativeRuntime = options.nativeRuntime ?? (typeof process !== 'undefined' && !process.env.RIDGE_WEB_REMOTE);
+  if (nativeRuntime) csp = addDirectiveToken(csp, 'connect-src', 'ws://127.0.0.1:*');
   csp = addDirectiveHashes(csp, 'script-src', inlineHashes(html, 'script'));
   csp = addDirectiveHashes(csp, 'style-src', inlineHashes(html, 'style'));
   // Vite injects component styles as runtime <style> tags during development;

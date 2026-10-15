@@ -32,18 +32,13 @@ function requiredMethods(capabilities: readonly string[]): string[] {
 
 describe('cross-entry Remote capability contract', () => {
   const rustCapability = source('packages/ridge-core/src/capability.rs');
-  const desktopHost = source('src-tauri/src/remote_host_impl.rs');
+  const desktopHost = source('packages/ridge-kernel/src/host.rs');
+  const domainHandlers = `${desktopHost}\n${source('packages/ridge-kernel/src/commune.rs')}\n${source('packages/ridge-kernel/src/workspace_commands.rs')}`;
   const coreDispatch = source('packages/ridge-core/src/dispatch.rs');
-  const cliRpc = source('packages/ridge-remote/src/rpc.rs');
   const mainApp = source('src/remote/MainApp.svelte');
   const remoteSidebar = source('src/remote/lib/RemoteSidebar.svelte');
 
-  const desktopCapabilities = rustStringArray(desktopHost, 'HOST_CAPABILITIES');
-  const cliCapabilities = rustStringArray(cliRpc, 'CLI_CAPABILITIES');
-  const cliRouteTable = cliRpc.slice(
-    cliRpc.indexOf('pub fn route_method'),
-    cliRpc.indexOf('#[cfg(test)]'),
-  );
+  const desktopCapabilities = rustStringArray(desktopHost, 'KERNEL_HOST_CAPABILITIES');
 
   it('keeps LAN desktop, Cloud desktop, and controller capability names aligned', () => {
     expect(desktopCapabilities).toEqual(CLIENT_CAPABILITIES);
@@ -53,23 +48,32 @@ describe('cross-entry Remote capability contract', () => {
   it('admits and handles every method required by an advertised desktop capability', () => {
     for (const method of requiredMethods(desktopCapabilities)) {
       expect(REMOTE_ALLOWLIST, `${method} must be remotely admitted`).toContain(method);
-      expect(`${desktopHost}\n${coreDispatch}`, `${method} must have a desktop remote handler`).toMatch(
-        new RegExp(`"${method}"\\s*=>`),
+      expect(`${domainHandlers}\n${coreDispatch}`, `${method} must have a desktop remote handler`).toMatch(
+        new RegExp(`"${method}"(?:\\s*\\|\\s*"[^"]+")*\\s*=>|method\\s*==\\s*"${method}"|if\\s+matches!\\(\\s*method,\\s*(?:"[^"]+"\\s*\\|\\s*)*"${method}"`),
       );
     }
   });
 
-  it('routes every method required by an advertised rdg capability', () => {
-    for (const method of requiredMethods(cliCapabilities)) {
-      expect(cliRouteTable, `${method} must be routed by ridge-cli`).toContain(`"${method}"`);
+  it('keeps CLI LAN, TUI and Cloud entry points on the shared Runtime owner', () => {
+    expect(source('packages/ridge-cli/src/kernel_host_impl.rs')).toMatch(/pub use ridge_kernel::host::\*;/);
+    expect(source('packages/ridge-cli/src/core_host.rs')).toMatch(/pub use ridge_kernel::host_core::\*;/);
+    for (const path of ['packages/ridge-cli/src/host.rs', 'packages/ridge-cli/src/daemon.rs']) {
+      expect(source(path), path).toContain('ridge_kernel::auth_client::remote_auth(endpoint');
     }
+    expect(source('packages/ridge-cli/src/host.rs')).toContain('runtime.call("set_remote_enabled"');
+    const tui = source('packages/ridge-cli/src/tui/mod.rs');
+    expect(tui).toContain('totp.call("set_remote_enabled"');
+    expect(tui).toContain('crate::host::lan_info(&totp)');
+    expect(tui).not.toMatch(/wait_tcp_ready|lan_host::run/);
+    expect(source('packages/ridge-cli/src/daemon.rs')).toContain('runtime.call("cloud_host_online"');
+    expect(source('packages/ridge-kernel/src/cloud/connection.rs')).toContain('crate::host::implemented_capabilities()');
   });
 
   it('keeps snapshot/diff admitted while host-privileged methods remain excluded', () => {
     expect(REMOTE_ALLOWLIST).toContain('get_workspace_snapshot');
     expect(REMOTE_ALLOWLIST).toContain('git_diff_file');
     expect(REMOTE_ALLOWLIST).toContain('git_stash_list');
-    expect(desktopHost).toMatch(/"git_stash_list"\s*=>/);
+    expect(coreDispatch).toMatch(/"git_stash_list"\s*=>/);
     expect(REMOTE_ALLOWLIST).not.toContain('get_remote_info');
     expect(REMOTE_ALLOWLIST).not.toContain('get_remote_totp');
     expect(rustCapability).toContain('pub const REMOTE_ALLOWLIST');
@@ -97,7 +101,7 @@ describe('cross-entry Remote capability contract', () => {
   });
 
   it('keeps DESKTOP_ONLY_HOST_METHODS rust list aligned with deny list', () => {
-    const hostsDesktop = source('src-tauri/src/hosts/desktop_surface.rs');
+    const hostsDesktop = source('packages/ridge-core/src/protocol_guard.rs');
     expect(rustStringArray(hostsDesktop, 'DESKTOP_ONLY_HOST_METHODS')).toEqual(
       DESKTOP_PRIVILEGED_METHODS,
     );
@@ -153,15 +157,14 @@ describe('cross-entry Remote capability contract', () => {
     expect(MUTATING_METHODS).toContain('set_teammate_groups');
     expect(rustStringArray(rustCapability, 'MUTATING_METHODS')).toContain('set_teammate_groups');
     // P2 阶段 2 之前：HITL 裁决、网关开关与 G1 暂停/恢复（写操作）不得远程可达。
-    for (const method of ['resolve_hitl_request', 'set_hitl_enabled', 'suspend_agent', 'resume_agent']) {
+    for (const method of ['resolve_hitl_request', 'set_hitl_enabled', 'suspend_agent', 'resume_agent', 'register_teammate_agent', 'register_commune_member', 'release_teammate_agent']) {
       expect(REMOTE_ALLOWLIST).not.toContain(method);
       expect(rustStringArray(rustCapability, 'REMOTE_ALLOWLIST')).not.toContain(method);
     }
-    // 三个宣告 teammate 的 host 面 + 不宣告的 rdg 无头 host。
+    // CLI Host delegates to the same Runtime capability declaration.
     expect(desktopCapabilities).toContain('teammate');
     expect(CLOUD_HOST_CAPABILITIES).toContain('teammate');
     expect(CLIENT_CAPABILITIES).toContain('teammate');
-    expect(cliCapabilities).not.toContain('teammate');
   });
 });
 
@@ -177,10 +180,10 @@ describe.skipIf(!capabilityMatrixExists)('docs/capability-matrix.json stays a pr
     capabilities: Record<string, MatrixCapability>;
     guards: string[];
   };
-  const cliCapabilities = rustStringArray(source('packages/ridge-remote/src/rpc.rs'), 'CLI_CAPABILITIES');
+  const cliCapabilities = rustStringArray(source('packages/ridge-kernel/src/host.rs'), 'KERNEL_HOST_CAPABILITIES');
   const lanCapabilities = rustStringArray(
-    source('src-tauri/src/remote_host_impl.rs'),
-    'HOST_CAPABILITIES',
+    source('packages/ridge-kernel/src/host.rs'),
+    'KERNEL_HOST_CAPABILITIES',
   );
 
   it('lists exactly the negotiated capability names', () => {
@@ -205,7 +208,7 @@ describe.skipIf(!capabilityMatrixExists)('docs/capability-matrix.json stays a pr
     }
   });
 
-  it('matches rdgHost cells to CLI_CAPABILITIES (supported iff advertised)', () => {
+  it('matches rdgHost cells to shared Runtime capabilities (supported iff advertised)', () => {
     for (const [capability, entry] of Object.entries(matrix.capabilities)) {
       const expected = cliCapabilities.includes(capability) ? 'supported' : 'denied';
       expect(entry.cells.rdgHost, capability).toBe(expected);

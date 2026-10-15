@@ -100,3 +100,58 @@ mod tests {
         }
     }
 }
+
+static OVERRIDE_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+const OVERRIDE_FILE: &str = "agent-profile-overrides.json";
+fn read_overrides() -> Result<serde_json::Value, String> {
+    match std::fs::read(crate::registry::ridge_data_dir().join(OVERRIDE_FILE)) {
+        Ok(bytes) => {
+            let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| format!("invalid Agent catalog; original preserved: {error}"))?;
+            validate_overrides(&value)?;
+            Ok(value)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!([])),
+        Err(error) => Err(error.to_string()),
+    }
+}
+fn validate_overrides(value: &serde_json::Value) -> Result<(), String> {
+    let profiles: Vec<AgentProfile> = serde_json::from_value(value.clone()).map_err(|error| format!("invalid Agent catalog; original preserved: {error}"))?;
+    if profiles.iter().any(|profile| profile.id.trim().is_empty()) {return Err("Agent profile ID must not be empty".into());}
+    Ok(())
+}
+pub fn merge_profiles(overrides: &[AgentProfile]) -> Vec<AgentProfile> {
+    let mut profiles = builtin_profiles().into_iter().map(|profile| (profile.id.clone(), profile)).collect::<std::collections::BTreeMap<_,_>>();
+    for profile in overrides { if !profile.id.trim().is_empty() {profiles.insert(profile.id.clone(),profile.clone());} }
+    profiles.into_values().collect()
+}
+pub(crate) fn catalog(method: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    use serde_json::{json, Value};
+    let _guard = OVERRIDE_WRITES.lock().map_err(|_| "Agent catalog unavailable")?;
+    if method == "read_agent_profile_overrides" {return read_overrides();}
+    if method == "save_agent_profile_overrides" {
+        let mut next = args["overrides"].clone(); validate_overrides(&next)?;
+        let previous = read_overrides()?;
+        for profile in next.as_array_mut().ok_or("overrides must be an array")? {
+            if let Some(old) = previous.as_array().unwrap().iter().find(|old| old["id"] == profile["id"]) {
+                for (key,value) in old.as_object().ok_or("invalid catalog row")? {
+                    if !["id","processNames","executable","resumeArgv","yoloArgs","yoloPosition"].contains(&key.as_str())
+                        && profile.get(key).is_none() {profile[key]=value.clone();}
+                }
+            }
+        }
+        crate::workspace_history::write_at(&crate::registry::ridge_data_dir().join(OVERRIDE_FILE),
+            &serde_json::to_vec_pretty(&next).map_err(|error|error.to_string())?)?;
+        return Ok(Value::Null);
+    }
+    let overrides = if args["overrides"].is_null() {read_overrides()?} else {validate_overrides(&args["overrides"])?;args["overrides"].clone()};
+    let mut merged = builtin_profiles().into_iter().map(|profile| Ok((profile.id.clone(),serde_json::to_value(profile).map_err(|error|error.to_string())?)))
+        .collect::<Result<std::collections::BTreeMap<_,_>,String>>()?;
+    for profile in overrides.as_array().ok_or("overrides must be an array")? {
+        let typed: AgentProfile=serde_json::from_value(profile.clone()).map_err(|error|error.to_string())?;
+        let id=typed.id.clone();
+        let mut normalized=serde_json::to_value(typed).map_err(|error|error.to_string())?;
+        for (key,value) in profile.as_object().ok_or("invalid catalog row")? {normalized[key]=value.clone();}
+        merged.insert(id,normalized);
+    }
+    Ok(json!(merged.into_values().collect::<Vec<_>>()))
+}

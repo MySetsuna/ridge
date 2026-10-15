@@ -20,6 +20,7 @@ name = "ridge_tmux"
 [dependencies]
 # Real PTY children — same crate + version the desktop host uses.
 portable-pty = "0.8"
+ridge-core = { path = "../ridge-core" }
 # capture-pane renders a session's CURRENT screen by feeding its output ring
 # into a one-shot VT `Terminal`. `default-features = false` strips the wasm/
 # wgpu render path, keeping this headless-friendly.

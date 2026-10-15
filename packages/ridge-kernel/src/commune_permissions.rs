@@ -234,6 +234,7 @@ impl Permissions {
         option: Option<&str>,
         verdict: Option<&str>,
         nonce: Option<&str>,
+        native: bool,
     ) -> Result<&'static str, String> {
         let mut pending = self
             .0
@@ -289,7 +290,11 @@ impl Permissions {
             pending.remove(id);
             return Ok("already-resolved");
         }
-        entry.log.append(json!({"kind":"permission_decided","id":id,"agentId":entry.binding.agent_id,"sessionId":entry.binding.session_id,"optionId":option}))?;
+        let option_kind = options.iter().find(|offered|offered["optionId"].as_str()==Some(&option))
+            .and_then(|offered|offered["kind"].as_str());
+        entry.log.append(json!({"kind":"permission_decided","id":id,"agentId":entry.binding.agent_id,
+            "workspaceId":entry.binding.workspace_id,"sessionId":entry.binding.session_id,"optionId":option,
+            "optionKind":option_kind,"source":if native {"local"} else {"remote"}}))?;
         let entry = pending.remove(id).expect("checked under lock");
         Ok(if entry.sender.send(option).is_ok() {
             "consumed"
@@ -383,13 +388,13 @@ mod tests {
         let id = pending["id"].as_str().unwrap();
         assert_eq!(
             permissions
-                .resolve(id, None, Some("approve"), Some("wrong"))
+                .resolve(id, None, Some("approve"), Some("wrong"), false)
                 .unwrap(),
             "nonce-mismatch"
         );
         assert_eq!(
             permissions
-                .resolve(id, Some("made-up"), None, None)
+                .resolve(id, Some("made-up"), None, None, true)
                 .unwrap(),
             "bad-verdict"
         );
@@ -405,7 +410,7 @@ mod tests {
         let left = {
             let permissions = permissions.clone();
             let id = id.to_owned();
-            std::thread::spawn(move || permissions.resolve(&id, Some("once"), None, None).unwrap())
+            std::thread::spawn(move || permissions.resolve(&id, Some("once"), None, None, true).unwrap())
         };
         let right = {
             let permissions = permissions.clone();
@@ -413,7 +418,7 @@ mod tests {
             let nonce = pending["resolutionNonce"].as_str().unwrap().to_owned();
             std::thread::spawn(move || {
                 permissions
-                    .resolve(&id, None, Some("approve"), Some(&nonce))
+                    .resolve(&id, None, Some("approve"), Some(&nonce), false)
                     .unwrap()
             })
         };
@@ -441,6 +446,8 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0]["kind"], "permission_requested");
         assert_eq!(records[1]["kind"], "permission_decided");
+        assert_eq!(records[1]["optionKind"], "allow_once");
+        assert!(matches!(records[1]["source"].as_str(), Some("local"|"remote")));
         assert_eq!(records[1]["optionId"], "once");
         assert!(!records.iter().any(|record| record
             .to_string()
@@ -472,7 +479,7 @@ mod tests {
             .is_empty());
         assert_eq!(
             permissions
-                .resolve(pending["id"].as_str().unwrap(), Some("once"), None, None)
+                .resolve(pending["id"].as_str().unwrap(), Some("once"), None, None, true)
                 .unwrap(),
             "already-resolved"
         );

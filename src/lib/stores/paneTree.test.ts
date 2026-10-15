@@ -644,25 +644,23 @@ describe('cwd listeners refreshed after pane mutations (Issue #2)', () => {
     expect(store['ws2:pane-ws2-1']).toBe('/ws2/cwd');
   });
 
-  it('does not switch or load a workspace owned by another window', async () => {
+  it('selects a shared workspace without claiming ownership from another window', async () => {
     const { invoke } = await import('@tauri-apps/api/core');
     const invokeMock = invoke as ReturnType<typeof vi.fn>;
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'claim_workspace_window') {
-        return { claimed: false, ownerWindowLabel: 'main' };
-      }
-      throw new Error(`unexpected command: ${cmd}`);
+      if (cmd === 'get_pane_layout_for') return { type: 'leaf', id: 'shared-pane' };
+      return undefined;
     });
 
-    await expect(paneTreeModule.switchWorkspace('owned-ws')).resolves.toBe(false);
-    expect(invokeMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).toHaveBeenCalledWith('claim_workspace_window', {
+    await expect(paneTreeModule.switchWorkspace('owned-ws')).resolves.toBe(true);
+    expect(invokeMock).not.toHaveBeenCalledWith('claim_workspace_window', expect.anything());
+    expect(invokeMock).toHaveBeenCalledWith('switch_workspace', {
       workspaceId: 'owned-ws',
     });
   });
 
-  it('refresh acquires the desktop window workspace with one side-effect-free IPC', async () => {
+  it('refresh reads the caller selection without claiming desktop window ownership', async () => {
     const { invoke } = await import('@tauri-apps/api/core');
     const invokeMock = invoke as ReturnType<typeof vi.fn>;
     invokeMock.mockReset();
@@ -674,7 +672,7 @@ describe('cwd listeners refreshed after pane mutations (Issue #2)', () => {
       if (cmd === 'list_workspaces') {
         return [{ id: 'ws-window', index: 0, displaySeq: 1 }];
       }
-      if (cmd === 'acquire_window_workspace') return 'ws-window';
+      if (cmd === 'get_active_workspace_id') return 'ws-window';
       if (cmd === 'get_pane_layout_for') return layout;
       if (cmd === 'list_workspace_save_info') return [];
       throw new Error(`unexpected command: ${cmd}`);
@@ -682,7 +680,7 @@ describe('cwd listeners refreshed after pane mutations (Issue #2)', () => {
 
     await paneTreeModule.refreshWorkspaces();
 
-    expect(invokeMock).toHaveBeenCalledWith('acquire_window_workspace');
+    expect(invokeMock).toHaveBeenCalledWith('get_active_workspace_id');
     expect(
       invokeMock.mock.calls.filter(([cmd]) => cmd === 'claim_workspace_window')
     ).toHaveLength(0);
@@ -709,7 +707,7 @@ describe('cwd listeners refreshed after pane mutations (Issue #2)', () => {
 
     await expect(paneTreeModule.openWorkspaceFromFile('C:/tmp/restored.ridge')).resolves.toBe('ws-restored');
     expect(get(paneTreeModule.activeWorkspaceId)).toBe('ws-restored');
-    expect(invokeMock.mock.calls.some(([cmd]) => cmd === 'acquire_window_workspace')).toBe(false);
+    expect(invokeMock.mock.calls.some(([cmd]) => cmd === 'get_active_workspace_id')).toBe(false);
   });
 });
 
@@ -851,14 +849,14 @@ describe('pane tree splitter geometry and drag lifecycle', () => {
 // TEST SUITE: SavedWorkspace.paneCwds integration
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('SavedWorkspace.paneCwds integration', () => {
+describe('live layout cwd extraction', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     globalEventListeners.clear();
     paneTreeModule.paneCwdStore.set({});
   });
 
-  it('extractCwdsFromLayout output satisfies SavedWorkspace.paneCwds shape', () => {
+  it('extracts live cwd keys without using historical record identities', () => {
     // Verify all values are strings and keys follow the workspaceId:paneId pattern
     const layout: import('./paneTree').PaneNode = {
       type: 'split',
@@ -884,18 +882,9 @@ describe('SavedWorkspace.paneCwds integration', () => {
     );
     expect(allKeysMatchPattern).toBe(true);
 
-    // Assign to SavedWorkspace shape — compile-time contract
-    const savedWorkspace: import('./paneTree').SavedWorkspace = {
-      id: 'some-id',
-      name: 'My Workspace',
-      paneTree: layout,
-      paneCwds: cwds,
-      savedAt: new Date().toISOString(),
-    };
-
-    expect(savedWorkspace.paneCwds['saved-ws-001:term-1']).toBe('/home/user');
-    expect(savedWorkspace.paneCwds['saved-ws-001:editor-1']).toBe('/project/src');
-    expect(savedWorkspace.paneCwds['saved-ws-001:term-2']).toBeUndefined();
+    expect(cwds['saved-ws-001:term-1']).toBe('/home/user');
+    expect(cwds['saved-ws-001:editor-1']).toBe('/project/src');
+    expect(cwds['saved-ws-001:term-2']).toBeUndefined();
   });
 });
 
@@ -1315,7 +1304,7 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
       if (cmd === 'split_pane') {
         return { pane_id: 'new-pane-uuid', initial_cwd: null };
       }
-      if (cmd === 'get_window_pane_layout') {
+      if (cmd === 'get_pane_layout') {
         return {
           type: 'split',
           id: 'split-1',
@@ -1365,7 +1354,7 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
     mockInvoke.mockReset();
     mockInvoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'dock_pane') return undefined;
-      if (cmd === 'get_window_pane_layout') {
+      if (cmd === 'get_pane_layout') {
         // Post-swap tree: pane-a and pane-b traded slots (center-dock swap).
         return {
           type: 'split',
@@ -1431,7 +1420,7 @@ describe('closeWorkspace runtime cleanup', () => {
         return [{ id: 'ws-keep', index: 0, displaySeq: 0 }];
       }
       if (cmd === 'get_active_workspace_id') return 'ws-keep';
-      if (cmd === 'get_window_pane_layout') return { type: 'leaf', id: 'keep-pane' };
+      if (cmd === 'get_pane_layout') return { type: 'leaf', id: 'keep-pane' };
       if (cmd === 'list_workspace_save_info') return [];
       return null;
     });
@@ -1467,7 +1456,7 @@ describe('closePane bridge ordering', () => {
     invokeMock.mockReset();
     teardownMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'get_window_pane_layout') return { type: 'leaf', id: 'pane-keep' };
+      if (cmd === 'get_pane_layout') return { type: 'leaf', id: 'pane-keep' };
       if (cmd === 'get_active_workspace_id') return 'ws-close';
       return null;
     });
@@ -1522,9 +1511,7 @@ describe('workspace switch responsiveness', () => {
     const switchBlocked = new Promise<void>((resolve) => {
       releaseSwitch = resolve;
     });
-    invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'claim_workspace_window') return { claimed: true, ownerWindowLabel: 'main' };
-      if (cmd === 'switch_window_workspace') {
+    invokeMock.mockImplementation(async (cmd: string) => {      if (cmd === 'switch_workspace') {
         await switchBlocked;
         return undefined;
       }
@@ -1560,9 +1547,7 @@ describe('workspace switch responsiveness', () => {
     const firstBlocked = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
-    invokeMock.mockImplementation(async (cmd: string, args?: { workspaceId?: string }) => {
-      if (cmd === 'claim_workspace_window') return { claimed: true, ownerWindowLabel: 'main' };
-      if (cmd === 'switch_window_workspace') {
+    invokeMock.mockImplementation(async (cmd: string, args?: { workspaceId?: string }) => {      if (cmd === 'switch_workspace') {
         switchCalls.push(args?.workspaceId ?? '');
         if (switchCalls.length === 1) {
           firstEntered();
@@ -1790,6 +1775,8 @@ describe('startup and saved-workspace projections', () => {
 		await paneTreeModule.saveCurrentWorkspace();
 		await paneTreeModule.deleteSavedWorkspace('saved-a');
 		await paneTreeModule.renameSavedWorkspace('saved-a', 'Renamed');
+        expect(invokeMock).toHaveBeenCalledWith('delete_saved_workspace', { historyId: 'saved-a' });
+        expect(invokeMock).toHaveBeenCalledWith('rename_saved_workspace', { historyId: 'saved-a', name: 'Renamed' });
 		expect(invokeMock.mock.calls.map(([cmd]) => cmd)).toEqual(expect.arrayContaining([
 			'list_workspace_save_info', 'list_saved_workspaces', 'save_workspace',
 			'delete_saved_workspace', 'rename_saved_workspace',
@@ -1804,6 +1791,7 @@ describe('startup and saved-workspace projections', () => {
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === 'get_startup_context') return { cwd: '/repo', wind_file_in_cwd: null, kind: 'cli' };
+      if (cmd === 'get_workspace_file_in_directory') return '/repo/a.ridge';
       if (cmd === 'list_recent_workspaces') return ['/one.ridge', '/two.ridge'];
       if (cmd === 'get_restore_set') return ['/restore.ridge'];
       if (cmd === 'list_saved_workspace_files') return [{ name: 'one', path: '/one.ridge', mtime_secs: 3 }];
@@ -1813,9 +1801,10 @@ describe('startup and saved-workspace projections', () => {
 
     await expect(paneTreeModule.getStartupContext()).resolves.toEqual({
       cwd: '/repo',
-      wind_file_in_cwd: null,
+      wind_file_in_cwd: '/repo/a.ridge',
       kind: 'cli',
     });
+    expect(invokeMock).toHaveBeenCalledWith('get_workspace_file_in_directory', { path: '/repo' });
     await expect(paneTreeModule.listRecentWorkspaces()).resolves.toEqual(['/one.ridge', '/two.ridge']);
     await expect(paneTreeModule.getRestoreSet()).resolves.toEqual(['/restore.ridge']);
     await expect(paneTreeModule.listSavedWorkspaceFiles()).resolves.toEqual([
@@ -1845,5 +1834,82 @@ describe('startup and saved-workspace projections', () => {
     expect(paneTreeModule.collapseCwd('/home/alice/project')).toBe('~/project');
     expect(paneTreeModule.collapseCwd('C:/Users/alice/project')).toBe('~/alice/project');
     expect(paneTreeModule.collapseCwd('/tmp')).toBe('/tmp');
+  });
+});
+
+describe('shared history notifications', () => {
+  it('refreshes after commits and retains the newest list when responses reorder', async () => {
+    vi.resetModules();
+    globalEventListeners.clear();
+    const history = await import('./paneTree');
+    const { invoke, isTauri } = await import('@tauri-apps/api/core');
+    const mocked = vi.mocked(invoke);
+    vi.mocked(isTauri).mockReturnValue(true);
+    mocked.mockReset();
+    let resolveOld!: (value: unknown) => void;
+    mocked.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
+    const oldRequest = history.loadSavedWorkspaces();
+    await vi.waitFor(() => expect(resolveOld).toBeTypeOf('function'));
+    mocked.mockResolvedValueOnce([{ id: 'newest', name: 'Newest' }]);
+    await history.loadSavedWorkspaces();
+    resolveOld([{ id: 'old', name: 'Old' }]);
+    await oldRequest;
+    expect(get(history.savedWorkspacesList).map(item => item.id)).toEqual(['newest']);
+    mocked.mockResolvedValueOnce([{ id: 'committed', name: 'Committed' }]);
+    emitBackendEvent('workspace-history-changed', null);
+    await vi.waitFor(() => expect(get(history.savedWorkspacesList).map(item => item.id)).toEqual(['committed']));
+  });
+});
+
+describe('historical and live workspace separation', () => {
+  it('retains the actual history DTO without overwriting newer live cwd', async () => {
+    vi.resetModules();
+    globalEventListeners.clear();
+    const history = await import('./paneTree');
+    const { invoke, isTauri } = await import('@tauri-apps/api/core');
+    vi.mocked(isTauri).mockReturnValue(true);
+    const row: import('./paneTree').SavedWorkspace = {
+      id: 'history-record', name: 'Saved before navigation', saved_at: '2026-10-01T00:00:00Z',
+      pane_count: 1, is_pinned: false, workspace_id: 'live',
+      pane_tree_json: JSON.stringify({ root: { Leaf: 'pane' }, panes: { pane: { id: 'pane', mode: 'Terminal', cwd: '/old' } } }),
+    };
+    vi.mocked(invoke).mockReset().mockResolvedValue([row]);
+    history.paneCwdStore.set({ 'live:pane': '/new' });
+    await history.loadSavedWorkspaces();
+    expect(get(history.savedWorkspacesList)).toEqual([row]);
+    expect(get(history.paneCwdStore)).toEqual({ 'live:pane': '/new' });
+  });
+});
+
+describe('saving the caller workspace', () => {
+  it('passes the selected workspace ID instead of relying on global backend selection', async () => {
+    vi.resetModules();
+    globalEventListeners.clear();
+    const caller = await import('./paneTree');
+    const { invoke, isTauri } = await import('@tauri-apps/api/core');
+    vi.mocked(isTauri).mockReturnValue(true);
+    const mocked = vi.mocked(invoke);
+    mocked.mockReset().mockImplementation(async command => command === 'list_saved_workspaces' ? [] : undefined);
+    caller.activeWorkspaceId.set('second-window');
+    caller.workspaceNames.set({ 'second-window': 'Caller selection' });
+    await caller.saveCurrentWorkspace();
+    expect(mocked).toHaveBeenCalledWith('save_workspace', { workspaceId: 'second-window', name: 'Caller selection' });
+  });
+});
+
+describe('startup OS hint precedence', () => {
+  it('retains an explicit launch file without scanning an unrelated directory', async () => {
+    vi.resetModules();
+    const caller=await import('./paneTree');
+    const {invoke,isTauri}=await import('@tauri-apps/api/core');
+    vi.mocked(isTauri).mockReturnValue(true);
+    const hint={cwd:'/unrelated',kind:'cli',wind_file_in_cwd:null,workspace_file_arg:'/selected.ridge'};
+    const mocked=vi.mocked(invoke);
+    mocked.mockReset().mockImplementation(async method=>{
+      if(method==='get_startup_context') return hint;
+      throw new Error('Unrelated directory must not be queried');
+    });
+    expect(await caller.getStartupContext()).toEqual(hint);
+    expect(mocked).not.toHaveBeenCalledWith('get_workspace_file_in_directory',expect.anything());
   });
 });

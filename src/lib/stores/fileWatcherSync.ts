@@ -19,6 +19,9 @@
 
 import { get } from 'svelte/store';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { bridge } from '$lib/transport/tauriShim/bridge';
+import { showToast } from './toast';
 import {
 	fileExplorerStore,
 	refreshColumnsCovering,
@@ -39,6 +42,8 @@ let inited = false;
 
 let lastSentSig = '';
 let syncTimer: ReturnType<typeof setTimeout> | null = null;
+let syncInFlight = false;
+let syncPending = false;
 const SYNC_COALESCE_MS = 100;
 
 function normalize(p: string): string {
@@ -89,15 +94,21 @@ function scheduleSync(): void {
 	if (syncTimer) return;
 	syncTimer = setTimeout(() => {
 		syncTimer = null;
+		if (syncInFlight) { syncPending = true; return; }
 		const specs = computeSpecs();
 		const sig = JSON.stringify(specs);
 		if (sig === lastSentSig) return;
 		lastSentSig = sig;
 		if (!isTauri()) return;
+		syncInFlight = true;
 		invoke('start_watching_paths', { roots: specs }).catch((e) => {
 			// Don't keep the cached signature on failure — next change should retry.
 			lastSentSig = '';
 			console.warn('start_watching_paths failed', e);
+			showToast(`文件监听未确认：${String(e)}`, 'error');
+		}).finally(() => {
+			syncInFlight = false;
+			if (syncPending) { syncPending = false; scheduleSync(); }
 		});
 	}, SYNC_COALESCE_MS);
 }
@@ -220,6 +231,11 @@ export function initFileWatcherSync(): void {
 	fileExplorerStore.subscribe(() => scheduleSync());
 	fileEditorStore.subscribe(() => scheduleSync());
 	onFsChange(handleFsChange);
+    bridge.onReady(() => {lastSentSig='';scheduleSync();});
+    void listen<{root:string;error:string}>('fs-watch-error',event => {
+        lastSentSig='';
+        showToast(`${event.payload.root}: ${event.payload.error}`,'error');
+    }).catch(error => console.warn('file watch failure subscription failed',error));
 
 	// ─── Periodic stale expanded-path pruning ───────────────────────────
 	// Every 5 minutes during idle, verify depth>1 expanded paths against

@@ -613,7 +613,7 @@ pub fn replace_in_files(
 
 /// A directory-browse result: the resolved directory, its parent (if any), and
 /// the immediate non-hidden subdirectories (sorted case-insensitively).
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct DirListing {
     pub path: String,
     pub parent: Option<String>,

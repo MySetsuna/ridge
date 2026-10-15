@@ -63,6 +63,7 @@ const APP_USER_MODEL_ID: &str = "com.tauri-app.ridge";
 /// best-effort: taskbar support must never block the terminal/workspace UI.
 #[cfg(windows)]
 pub fn refresh_jump_list<R: Runtime>(app: &AppHandle<R>) {
+    if crate::utils::cdp::isolated() {return;}
     if let Err(error) = refresh_jump_list_inner(app) {
         tracing::debug!(target: "ridge::taskbar", %error, "jump list refresh skipped");
     }

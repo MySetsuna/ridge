@@ -19,13 +19,10 @@ use ratatui::{Frame, Terminal};
 use tokio::sync::mpsc;
 
 use super::qr_display;
-use super::workspace::{new_shared, SharedWorkspace};
 use crate::config;
-use crate::daemon_ctl;
 use crate::kernel_ctl;
 use crate::login_flow;
 use crate::totp::RemoteTotp;
-use ridge_core::workspace::pane_tree::SplitDirection;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum View {
@@ -43,7 +40,7 @@ enum MenuItem {
     StartDaemon,
     StopDaemon,
     Login,
-    /// 仅退出 ridge UI（内核若由桌面承载则继续）。
+    /// 仅退出展示客户端，共享 Runtime 继续运行。
     Quit,
     /// 彻底退出内核；桌面仍在时命令行 Y/N 确认。
     QuitKernel,
@@ -82,8 +79,6 @@ enum Action {
     Refresh,
     StartLanRemote,
     StopLanRemote,
-    /// LAN host task 退出/失败：清 running 并写 log（禁止 UI 假绿）。
-    LanRemoteFailed(String),
 }
 
 /// 仪表盘登录方式：邮箱密码（默认，无浏览器环境）或浏览器授权（WSL / 远端友好）。
@@ -116,35 +111,27 @@ pub struct App {
     auth: Option<config::AuthFile>,
     log_lines: Vec<String>,
     quit: bool,
-    totp: Arc<RemoteTotp>,
+    totp: Arc<ridge_remote::auth::RemoteAuth>,
     qr_text: String,
     totp_code: String,
     lan_addr: String,
-    lan_running: bool,
-    lan_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    lan_running: Option<bool>,
+    public_status: String,
     public_entry: Option<String>,
     action_tx: mpsc::UnboundedSender<Action>,
-    workspace: SharedWorkspace,
+    endpoint:ridge_kernel::registry::KernelEndpoint,
     session_count: usize,
-    /// 进程内云守护任务句柄。`start_daemon()` 记的 PID 就是本 TUI 自己的 PID
-    /// （守护跑在本进程的 tokio 上），所以「Stop daemon」**绝不能**去 taskkill 那个
-    /// PID —— 那会把整个 ridge 打死。改为 abort 这个任务。
-    daemon_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl App {
-    fn new(action_tx: mpsc::UnboundedSender<Action>) -> Self {
+    fn new(action_tx: mpsc::UnboundedSender<Action>, endpoint:ridge_kernel::registry::KernelEndpoint) -> Result<Self> {
         let auth = config::load_auth().ok().flatten();
         let lan_ip = config::detect_lan_ip();
         let port = config::lan_port();
-        let totp = Arc::new(RemoteTotp::load_or_create(&config::totp_identity()));
+        super::lan_session::spawn_local_terminal(&endpoint,None,None)?;
+        let totp = Arc::new(ridge_kernel::auth_client::remote_auth(endpoint.clone()));
         let totp_code = totp.current_code();
-        let workspace = new_shared();
-        {
-            let mut w = workspace.lock().unwrap();
-            let _ = w.create_session(None, None, None, SplitDirection::Horizontal);
-        }
-        Self {
+        Ok(Self {
             view: View::Main,
             selected: 0,
             auth: auth.clone(),
@@ -154,14 +141,13 @@ impl App {
             qr_text: String::new(),
             totp_code,
             lan_addr: lan_origin(&lan_ip, port),
-            lan_running: false,
-            lan_shutdown_tx: None,
+            lan_running: None,
+            public_status: "Unavailable".into(),
             public_entry: auth.as_ref().map(|a| a.public_entry()),
             action_tx,
-            workspace,
+            endpoint,
             session_count: 1,
-            daemon_task: None,
-        }
+        })
     }
 
     fn update_totp(&mut self) {
@@ -169,7 +155,27 @@ impl App {
         if new_code != self.totp_code {
             self.totp_code = new_code;
         }
-        self.session_count = self.workspace.lock().unwrap().sessions.len();
+        match ridge_kernel::client::list_domain_ptys(&self.endpoint){
+            Ok(ptys)=>self.session_count=ptys.len(),
+            Err(error)=>self.log(format!("Runtime session list unavailable: {error}")),
+        }
+        self.refresh_remote_state();
+    }
+
+    fn refresh_remote_state(&mut self) {
+        match self.totp.call("get_remote_info",serde_json::json!({})) {
+            Ok(info)=>{
+                self.lan_running=info["remoteEnabled"].as_bool();
+                if let Some(port)=info["port"].as_u64().and_then(|port|u16::try_from(port).ok()){
+                    self.lan_addr=lan_origin(&config::detect_lan_ip(),port);
+                }
+            },
+            Err(_)=>self.lan_running=None,
+        }
+        self.public_status=match self.totp.call("get_cloud_host_state",serde_json::json!({})) {
+            Ok(state)=>format!("{} {}",state["state"].as_str().unwrap_or("Unavailable"),state["error"].as_str().unwrap_or("")).trim().into(),
+            Err(error)=>format!("Unavailable: {error}"),
+        };
     }
 
     fn log(&mut self, msg: String) {
@@ -185,19 +191,22 @@ pub async fn run() -> Result<()> {
     crate::TUI_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
     // Thin shell cannot run without its authoritative kernel.
     let kernel = kernel_ctl::ensure_kernel_running().map_err(anyhow::Error::msg)?;
+    ridge_kernel::auth_client::remote_auth(kernel.clone())
+        .call("remote_set_totp_identity",serde_json::json!({"username":config::totp_identity()}))
+        .map_err(anyhow::Error::msg)?;
     tracing::info!(
         target: "ridge_cli::dashboard",
         pid = kernel.pid,
         port = kernel.port,
         "ridge-kernel ready"
     );
+    let (tx, mut rx) = mpsc::unbounded_channel::<Action>();
+    let mut app = App::new(tx.clone(),kernel.clone())?;
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<Action>();
-    let mut app = App::new(tx.clone());
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
 
@@ -244,11 +253,6 @@ pub async fn run() -> Result<()> {
         }
     }
 
-    // 退出时关闭 LAN remote
-    if let Some(tx) = app.lan_shutdown_tx.take() {
-        let _ = tx.send(());
-    }
-
     drop(terminal);
     stdout().execute(LeaveAlternateScreen)?;
     disable_raw_mode()?;
@@ -267,11 +271,6 @@ async fn handle_action(
         Action::QuitKernel => quit_kernel_action(app, terminal)?,
         Action::StartLanRemote => start_lan_remote(app),
         Action::StopLanRemote => stop_lan_remote(app),
-        Action::LanRemoteFailed(msg) => {
-            app.lan_shutdown_tx = None;
-            app.lan_running = false;
-            app.log(format!("LAN remote failed: {msg}"));
-        }
     }
     Ok(())
 }
@@ -279,7 +278,7 @@ async fn handle_action(
 fn refresh_app(app: &mut App) {
     app.auth = config::load_auth().ok().flatten();
     app.public_entry = app.auth.as_ref().map(|auth| auth.public_entry());
-    app.log(format!("Daemon: {}", daemon_ctl::status()));
+    app.refresh_remote_state();
 }
 
 async fn run_login_action(app: &mut App, terminal: &mut DashboardTerminal) -> Result<()> {
@@ -336,34 +335,16 @@ fn restore_dashboard_terminal(terminal: &mut DashboardTerminal) -> Result<()> {
 }
 
 fn start_lan_remote(app: &mut App) {
-    if app.lan_running {
-        app.log("LAN remote already running".into());
-        return;
-    }
     let port = config::lan_port();
-    let totp = app.totp.clone();
-    let workspace = app.workspace.clone();
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    app.lan_shutdown_tx = Some(shutdown_tx);
-    app.lan_running = true;
-    app.log(format!("Starting LAN remote on port {port}..."));
-    let fail_tx = app.action_tx.clone();
-    tokio::spawn(async move {
-        if let Err(error) = super::lan_host::run(port, totp, workspace, shutdown_rx).await {
-            tracing::warn!(target: "ridge_cli::dashboard", error = %error, "LAN remote stopped");
-            let _ = fail_tx.send(Action::LanRemoteFailed(error.to_string()));
-        }
-    });
+    let result=app.totp.call("set_remote_enabled",serde_json::json!({"enabled":true,"port":port}));
+    app.log(match result{Ok(_)=>"LAN remote started in Runtime".into(),Err(error)=>format!("Start failed: {error}")});
+    app.refresh_remote_state();
 }
 
 fn stop_lan_remote(app: &mut App) {
-    if let Some(tx) = app.lan_shutdown_tx.take() {
-        let _ = tx.send(());
-        app.lan_running = false;
-        app.log("LAN remote stopped".into());
-    } else {
-        app.log("LAN remote not running".into());
-    }
+    let result=app.totp.call("set_remote_enabled",serde_json::json!({"enabled":false}));
+    app.log(match result{Ok(_)=>"LAN remote stopped".into(),Err(error)=>format!("Stop failed: {error}")});
+    app.refresh_remote_state();
 }
 
 fn handle_main_key(app: &mut App, code: KeyCode) {
@@ -415,43 +396,15 @@ fn show_qr_code(app: &mut App) {
 }
 
 fn start_daemon(app: &mut App) {
-    if config::load_auth().ok().flatten().is_none() {
-        app.log("本机未激活云端设备：先选 Login / activate device".into());
-        return;
-    }
-    if app.daemon_task.is_some() {
-        app.log("云守护已在本进程内运行".into());
-        return;
-    }
-    match daemon_ctl::start_daemon() {
-        Ok(()) => {
-            let entry = app
-                .auth
-                .as_ref()
-                .map(|auth| auth.public_entry())
-                .unwrap_or_default();
-            app.daemon_task = Some(tokio::spawn(async move {
-                if let Err(error) = crate::daemon::run(None, None, None).await {
-                    tracing::error!(target: "ridge_cli::dashboard", error = %error, "daemon exited");
-                }
-            }));
-            app.log(format!("云守护已启动，入口 {entry}"));
-        }
-        Err(error) => app.log(format!("Start failed: {error}")),
-    }
+    let result=crate::daemon::start(&app.endpoint,None,None,None);
+    app.log(match result{Ok(_)=>"Public Remote start accepted by Runtime".into(),Err(error)=>format!("Start failed: {error}")});
+    app.refresh_remote_state();
 }
 
 fn stop_daemon(app: &mut App) {
-    if let Some(task) = app.daemon_task.take() {
-        task.abort();
-        daemon_ctl::remove_pid();
-        app.log("云守护已停止".into());
-        return;
-    }
-    match daemon_ctl::stop_daemon() {
-        Ok(()) => app.log("Daemon stopped".into()),
-        Err(error) => app.log(format!("Stop failed: {error}")),
-    }
+    let result=app.totp.call("cloud_host_offline",serde_json::json!({}));
+    app.log(match result{Ok(_)=>"Public Remote stopped".into(),Err(error)=>format!("Stop failed: {error}")});
+    app.refresh_remote_state();
 }
 
 fn handle_qr_key(app: &mut App, code: KeyCode) {
@@ -491,14 +444,10 @@ fn render_main(frame: &mut Frame, app: &App) {
     .block(Block::default().borders(Borders::ALL).title(" Dashboard "));
     frame.render_widget(title, chunks[0]);
 
-    let mut status_lines = vec![Line::from(format!("  Public:  {}", daemon_ctl::status()))];
+    let mut status_lines = vec![Line::from(format!("  Public:  {}", app.public_status))];
 
-    let lan_status = if app.lan_running {
-        "Running"
-    } else {
-        "Stopped"
-    };
-    let lan_style = if app.lan_running {
+    let lan_status=match app.lan_running{Some(true)=>"Running",Some(false)=>"Stopped",None=>"Unavailable"};
+    let lan_style = if app.lan_running==Some(true) {
         Style::default().fg(Color::Green)
     } else {
         Style::default()
@@ -512,9 +461,8 @@ fn render_main(frame: &mut Frame, app: &App) {
     ]));
 
     status_lines.push(Line::from(format!(
-        "  Sessions: {} active  |  Port: {}",
+        "  Sessions: {} active",
         app.session_count,
-        config::lan_port(),
     )));
 
     if let Some(auth) = &app.auth {

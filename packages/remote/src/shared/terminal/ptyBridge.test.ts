@@ -59,8 +59,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 // TerminalManager singleton mock — capture feed / enqueueDeltaFrame / rows /
 // cols calls so tests can assert dispatch. `hostPorts` returns null: the
-// `pane-pty-closed` rebuild branch reads `defaultShell` via it; null degrades
-// gracefully through `?.`.
+	// Runtime replacements only refresh the canonical projection.
 const managerStub = {
 	feed: vi.fn(),
     setNativeActivation: vi.fn(),
@@ -215,75 +214,108 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		warnSpy.mockRestore();
 	});
 
-	it('does not log a destroyed pane when backend casing differs', async () => {
+	it('leaves exit and restart decisions in Runtime', async () => {
 		const { ensurePtyBridge } = await freshBridge();
-		invokeMock.mockImplementation(async (cmd: string) => {
-			if (cmd === 'activate_pane_pty') throw new Error('pane not found: closed');
-			return undefined;
-		});
 		await ensurePtyBridge(PANE, WS);
-		const closed = listenMock.mock.calls.find(([name]) => name === 'pane-pty-closed');
-		expect(closed).toBeTruthy();
-		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-		await (closed![1] as (event: unknown) => Promise<void>)({
-			payload: { workspaceId: WS, paneId: PANE },
-		});
-		expect(errorSpy).not.toHaveBeenCalledWith(
-			'activate_pane_pty (rebuild) failed',
-			expect.anything(),
-		);
-		errorSpy.mockRestore();
+		invokeMock.mockClear();
+		const closed = listenMock.mock.calls.find(([name]) => name === 'pane-pty-closed')!;
+		closed[1]({ payload: { workspaceId: WS, paneId: PANE, replacementEpoch: null } });
+		expect(invokeMock).not.toHaveBeenCalled();
+		expect(managerStub.leaveAltScreen).not.toHaveBeenCalled();
 	});
 
-	it('does not log a late rebuild when the pane was already destroyed', async () => {
+	it('refreshes the canonical projection once for a Runtime replacement', async () => {
 		const { ensurePtyBridge } = await freshBridge();
-		invokeMock.mockImplementation(async (cmd: string) => {
-			if (cmd === 'create_pane') throw new Error('Pane not found: closed');
-			return undefined;
-		});
+		invokeMock.mockImplementation(async command => command === 'get_terminal_snapshot' ? btoa(String.fromCharCode(0x13)) : undefined);
 		await ensurePtyBridge(PANE, WS);
-		const closed = listenMock.mock.calls.find(([name]) => name === 'pane-pty-closed');
-		expect(closed).toBeTruthy();
-		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-		await (closed![1] as (event: unknown) => Promise<void>)({
-			payload: { workspaceId: WS, paneId: PANE },
-		});
-		expect(errorSpy).not.toHaveBeenCalledWith(
-			'create_pane (rebuild) failed',
-			expect.anything(),
-		);
-		errorSpy.mockRestore();
+		invokeMock.mockClear();
+		const closed = listenMock.mock.calls.find(([name]) => name === 'pane-pty-closed')!;
+		const event = { payload: { workspaceId: WS, paneId: PANE, replacementEpoch: 'new-terminal' } };
+		closed[1](event); closed[1](event);
+		await vi.waitFor(() => expect(managerStub.enqueueDeltaFrame).toHaveBeenCalled());
+		expect(invokeMock.mock.calls.map(([method]) => method)).toEqual(['register_pane_delta_channel', 'get_terminal_snapshot']);
+		expect(invokeMock).toHaveBeenCalledWith('get_terminal_snapshot', expect.objectContaining({ workspaceId: WS, paneId: PANE, activationId: expect.any(Number) }));
+		expect(managerStub.leaveAltScreen).not.toHaveBeenCalled();
+		expect(managerStub.setLocalGridAuthority).not.toHaveBeenCalled();
 	});
 
-	it('rebuilds a closed pane within its composite workspace identity', async () => {
+	it('coalesces a replacement received before the recovery snapshot starts', async () => {
 		const { ensurePtyBridge } = await freshBridge();
 		await ensurePtyBridge(PANE, WS);
-		const closed = listenMock.mock.calls.find(([name]) => name === 'pane-pty-closed');
-		expect(closed).toBeTruthy();
+		invokeMock.mockClear();
+		let release!: () => void;
+		let registrations = 0;
+		invokeMock.mockImplementation(command => {
+			if (command === 'register_pane_delta_channel' && registrations++ === 0) return new Promise<void>(resolve => { release = resolve; });
+			return Promise.resolve(command === 'get_terminal_snapshot' ? btoa(String.fromCharCode(0x13)) : undefined);
+		});
+		managerStub.enqueueDeltaFrame.mockImplementationOnce((_pane: string, _bytes: Uint8Array, onError?: (error: unknown) => void) => onError?.(new Error('old frame')));
+		channels[0].__deliver(new Uint8Array([0xff]));
+		const closed = listenMock.mock.calls.find(([name]) => name === 'pane-pty-closed')!;
+		closed[1]({ payload: { workspaceId: WS, paneId: PANE, replacementEpoch: 'new-terminal' } });
+		release();
+		await vi.waitFor(() => expect(invokeMock.mock.calls.filter(([method]) => method === 'get_terminal_snapshot')).toHaveLength(1));
+		expect(invokeMock.mock.calls.filter(([method]) => method === 'register_pane_delta_channel')).toHaveLength(1);
+		expect(invokeMock.mock.calls.some(([method]) => method === 'create_pane' || method === 'activate_pane_pty')).toBe(false);
+	});
 
-		await (closed![1] as (event: unknown) => Promise<void>)({
-			payload: { workspaceId: WS, paneId: PANE },
-		});
+	it('keeps canonical stream frames arriving before the explicit recovery snapshot returns', async () => {
+		const { ensurePtyBridge } = await freshBridge();
+		await ensurePtyBridge(PANE, WS);
+		let release!: (snapshot: string) => void;
+		invokeMock.mockImplementation(command => command === 'get_terminal_snapshot'
+			? new Promise<string>(resolve => { release = resolve; }) : Promise.resolve());
+		const closed = listenMock.mock.calls.find(([name]) => name === 'pane-pty-closed')!;
+		closed[1]({payload:{workspaceId:WS,paneId:PANE,replacementEpoch:'new'}});
+		await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+		channels[0].__deliver(new Uint8Array([7]));
+		channels[0].__deliver(new Uint8Array([8]));
+		expect(managerStub.enqueueDeltaFrame.mock.calls.map(call => call[1])).toEqual([new Uint8Array([7]),new Uint8Array([8])]);
+		release(btoa(String.fromCharCode(0x13)));
+	});
 
-		expect(invokeMock).toHaveBeenCalledWith('create_pane', {
-			workspaceId: WS,
-			paneId: PANE,
-			shell: null,
-			rows: 24,
-			cols: 80,
-		});
-		expect(invokeMock).toHaveBeenCalledWith('activate_pane_pty', expect.objectContaining({
-			workspaceId: WS,
-			paneId: PANE,
-		}));
-		expect(invokeMock).toHaveBeenCalledWith('set_pane_delta_mode', {
-			workspaceId: WS,
-			paneId: PANE,
-			enabled: true,
-		});
-		expect(managerStub.setLocalGridAuthority).toHaveBeenNthCalledWith(1, PANE, true);
-		expect(managerStub.setLocalGridAuthority).toHaveBeenNthCalledWith(2, PANE, false);
-		expect(managerStub.fitPaneNow).toHaveBeenCalledWith(PANE, true);
+	it('discards an older recovery snapshot if a later lifetime arrives while it is pending', async () => {
+		const { ensurePtyBridge } = await freshBridge();
+		await ensurePtyBridge(PANE, WS);
+		invokeMock.mockClear(); managerStub.enqueueDeltaFrame.mockClear();
+		let release!: (snapshot: string) => void;
+		let snapshots = 0;
+		invokeMock.mockImplementation(command => command === 'get_terminal_snapshot'
+			? ++snapshots === 1 ? new Promise<string>(resolve => { release = resolve; }) : Promise.resolve(btoa(String.fromCharCode(0x14)))
+			: Promise.resolve());
+		const closed = listenMock.mock.calls.find(([name]) => name === 'pane-pty-closed')!;
+		closed[1]({payload:{workspaceId:WS,paneId:PANE,replacementEpoch:'first'}});
+		await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+		closed[1]({payload:{workspaceId:WS,paneId:PANE,replacementEpoch:'second'}});
+		release(btoa(String.fromCharCode(0x13)));
+		await vi.waitFor(() => expect(managerStub.enqueueDeltaFrame).toHaveBeenCalledOnce());
+		expect(managerStub.enqueueDeltaFrame.mock.calls[0][1]).toEqual(new Uint8Array([0x14]));
+	});
+
+	it('ignores a queued frame failure from an activation already replaced', async () => {
+		const { ensurePtyBridge } = await freshBridge();
+		await ensurePtyBridge(PANE, WS);
+		channels[0].__deliver(new Uint8Array([0xff]));
+		const oldFailure = managerStub.enqueueDeltaFrame.mock.calls.at(-1)![2];
+		invokeMock.mockImplementation(async command => command === 'get_terminal_snapshot' ? btoa(String.fromCharCode(0x13)) : undefined);
+		const closed = listenMock.mock.calls.find(([name]) => name === 'pane-pty-closed')!;
+		closed[1]({payload:{workspaceId:WS,paneId:PANE,replacementEpoch:'new'}});
+		await vi.waitFor(() => expect(invokeMock.mock.calls.some(([method]) => method === 'get_terminal_snapshot')).toBe(true));
+		invokeMock.mockClear(); oldFailure(new Error('late old frame'));
+		expect(invokeMock).not.toHaveBeenCalled();
+	});
+
+	it('ignores a replacement for another workspace or a torn-down view', async () => {
+		const { ensurePtyBridge, teardownPtyBridge } = await freshBridge();
+		await ensurePtyBridge(PANE, WS);
+		const closed = listenMock.mock.calls.find(([name]) => name === 'pane-pty-closed')!;
+		invokeMock.mockClear();
+		closed[1]({ payload: { workspaceId: WS2, paneId: PANE, replacementEpoch: 'other' } });
+		expect(invokeMock).not.toHaveBeenCalled();
+		teardownPtyBridge(PANE, WS);
+		invokeMock.mockClear();
+		closed[1]({ payload: { workspaceId: WS, paneId: PANE, replacementEpoch: 'late' } });
+		expect(invokeMock).not.toHaveBeenCalled();
 	});
 
 	it('releases a failed registration and permits a later canonical retry', async () => {
@@ -294,7 +326,7 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		await expect(ensurePtyBridge(PANE, WS)).rejects.toThrow('pane not found');
 		expect(hasPtyBridge(PANE)).toBe(false);
 		expect(stopClosed).toHaveBeenCalledOnce();
-		expect(listenMock.mock.calls.map(([name]) => name)).toEqual(['pane-pty-closed']);
+		expect(listenMock.mock.calls.map(([name]) => name)).toEqual(['pane-pty-closed', 'pane-meta-changed', 'pane-terminal-error']);
 		invokeMock.mockResolvedValue(undefined);
 		await ensurePtyBridge(PANE, WS);
 		expect(hasPtyBridge(PANE)).toBe(true);
@@ -326,9 +358,23 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		await Promise.all([first, second]);
 
 		expect(channels).toHaveLength(1);
-		expect(listenMock).toHaveBeenCalledTimes(1);
+		expect(listenMock).toHaveBeenCalledTimes(3);
 		expect(invokeMock.mock.calls.filter(([cmd]) => cmd === 'register_pane_delta_channel'))
 			.toHaveLength(1);
+	});
+
+	it('retains a stopped projection for a remounted view and rejects old child metadata', async () => {
+		const { ensurePtyBridge, observePtyView } = await freshBridge();
+		await ensurePtyBridge(PANE, WS);
+		const metadata=listenMock.mock.calls.find(([name])=>name==='pane-meta-changed')!;
+		const state={workspaceId:WS,paneId:PANE,runtimeEpoch:'runtime',terminalEpoch:'current',ptyGeneration:2,status:'Exited',error:'outside Runtime roots'};
+		metadata[1]({payload:state});
+		const receive=vi.fn(); const stop=observePtyView(PANE,WS,receive);
+		expect(receive).toHaveBeenLastCalledWith(expect.objectContaining({lifecycle:state}));
+		stop();
+		metadata[1]({payload:{...state,ptyGeneration:1,terminalEpoch:'old',status:'Idle'}});
+		const remount=vi.fn(); observePtyView(PANE,WS,remount);
+		expect(remount).toHaveBeenLastCalledWith(expect.objectContaining({lifecycle:state}));
 	});
 
 	it('keeps same-named panes independent across workspaces', async () => {

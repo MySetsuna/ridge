@@ -1,0 +1,1551 @@
+<script lang="ts">
+  import type { TerminalInputContext, TerminalInputData } from "@ridge/remote/shared/transport/paneRpcScheduler";
+  import { onMount, onDestroy } from 'svelte';
+  import { t } from '$lib/i18n';
+  import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
+  import { paneRefKey, type PaneRef } from '@ridge/remote';
+  import { anyMod, consumeMods } from './modState.svelte';
+  import {
+    resolveInputAnchor,
+    stabilizeTerminalVisualShiftPx,
+    terminalVisualShiftPx,
+  } from './keyboardOffset';
+  import { pinImeCaretToAnchor } from '@ridge/remote/shared/terminal/imeAnchor';
+  import { writeClipboard } from './clipboard';
+  import { copySelectionOnly } from '@ridge/remote/shared/terminal/mobileCopy';
+  import {
+    decideTouchMouseGesture,
+    decideTouchScroll,
+  } from '@ridge/remote/shared/terminal/mobileTouchScroll';
+  import {
+    imeCommitDelta,
+    updatePendingWord,
+    pendingWordBackspace,
+    trailingWord,
+  } from '@ridge/remote/shared/terminal/imeDelta';
+  import { SentenceBuffer, SENTENCE_FLUSH_MS } from '@ridge/remote/shared/terminal/sentenceBuffer';
+  import { activateIme } from '@ridge/remote/shared/terminal/imeAnchor';
+  import { REMOTE_TERM_FONT } from '@ridge/remote/shared/terminal/fontStack';
+  import { isSafeHttpUrl } from '@ridge/remote/shared/terminal/linkOpenHost';
+  import { captureRemoteKey, encodeRemoteKey, editingKeyForInput, type RemoteKey } from './remoteInput';
+
+  // P4 (2026-07-25): this component no longer owns a single `TerminalController`
+  // + canvas. It is now the MOBILE INPUT-ADAPTATION LAYER over the SHARED
+  // multi-kernel `TerminalManager` (same manager the desktop `RidgePane` uses).
+  // It owns ONE pane (paneId, fixed for the component's lifetime — MainApp keys
+  // the component on activePaneId), attaches that pane's keep-alive kernel into
+  // its container, and PARKS it on unmount (kernel survives → zero white-screen
+  // + scrollback preserved across pane switches). All touch / soft-keyboard /
+  // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
+  // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
+  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onInputTask: onPaneInputTask, onResize: onPaneResize, onFocus: onPaneFocus, onDrainPending, onDrainSemantic, onSemanticResync, onFirstPaint, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('WebGPU'), hostError = null, sentenceBuffer = false }: {
+    paneId: string;
+    workspaceId: string;
+    /** Host teammate state; retained for diagnostics, never a persistent pane border. */
+    agentState?: 'idle' | 'busy' | 'starting';
+    /** Short-lived HITL/user-intervention highlight; cleared on focus/claim. */
+    agentNeedsAttention?: boolean;
+    onStdin: (pane: PaneRef, data: Uint8Array, context: TerminalInputContext) => void;
+    /** Reserve input order before an asynchronous clipboard/image read. */
+    onInputTask?: (pane: PaneRef, task: () => Promise<TerminalInputData | null>, context: TerminalInputContext) => boolean;
+    /** Fired when this pane's input surface actually receives focus. */
+    onFocus?: (pane: PaneRef) => void;
+    /** Drain raw frames captured during a keyed pane-switch mount gap. */
+    onDrainPending?: (paneKey: string) => Uint8Array[];
+    onSemanticResync?: (pane: PaneRef) => void;
+    onDrainSemantic?: (paneKey: string) => Array<{
+      bytes: Uint8Array;
+      pane: PaneRef;
+      activationId: number;
+    }>;
+    /** Performance probe callback after the first post-switch browser frame. */
+    onFirstPaint?: (paneKey: string) => void;
+    /** iter-60：句级输入缓冲开关（语音/高频改写场景；alt-screen/TUI 鼠标态自动旁路）。 */
+    sentenceBuffer?: boolean;
+    onResize?: (pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void | Promise<void>;
+    /** Mirror a copied selection onto the desktop host's clipboard (so the host's
+     *  native Ctrl+V paste picks it up). The control end's copy writes BOTH. */
+    onHostClipboard?: (text: string) => void;
+    /** §history-pull: fired when the user scrolls the viewport near the top of the
+     *  in-kernel scrollback, so MainApp can lazily fetch + prepend older history. */
+    onNearTop?: (pane: PaneRef) => void;
+    onRetryScrollback?: (pane: PaneRef) => void;
+    onKeyboardShift?: (shift: number) => void;
+    scrollbackLoading?: boolean;
+    scrollbackError?: boolean;
+    selectionMode?: boolean;
+    backendName?: string;
+    hostError?: string | null;
+  } = $props();
+
+  const paneId = $derived(paneRefKey({ workspaceId, paneId: remotePaneId }));
+  const hostPortSnapshot = {
+    terminalScrollbackLines: 2000,
+    terminalFontFamily: REMOTE_TERM_FONT,
+    defaultShell: '',
+  };
+  TerminalManager.setHostPorts({
+    settings: {
+      get: () => hostPortSnapshot,
+      subscribe: (cb) => { cb(hostPortSnapshot); return () => {}; },
+    },
+    openTextLink: (request) => {
+      if (request.type === 'url' && request.href && isSafeHttpUrl(request.href)) {
+        window.open(request.href, '_blank', 'noopener,noreferrer');
+        return { handled: true };
+      }
+      window.dispatchEvent(new CustomEvent('ridge:remote-open-text-link', {
+        detail: { ...request, origin: { ...request.origin, kind: 'shared' } },
+      }));
+      return { handled: true };
+    },
+    validateTextLink: (request) => {
+      if (request.type === 'url') {
+        return { valid: !!request.href && isSafeHttpUrl(request.href) };
+      }
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (result: { valid: boolean; reason?: string }) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(result);
+        };
+        const timer = setTimeout(() => finish({ valid: false, reason: 'probe_timeout' }), 2_500);
+        window.dispatchEvent(new CustomEvent('ridge:remote-open-text-link', {
+          detail: {
+            ...request,
+            origin: { ...request.origin, kind: 'shared' },
+            validateOnly: true,
+            resolveValidation: finish,
+          },
+        }));
+      });
+    },
+  });
+  const manager = TerminalManager.instance();
+  const inputEncoder = new TextEncoder();
+  $effect(() => {
+    if (attached) manager.setPointerSelectionMode(paneId, selectionMode);
+  });
+
+  function ownPaneRef(): PaneRef | null {
+    return workspaceId && remotePaneId ? { workspaceId, paneId: remotePaneId } : null;
+  }
+
+  function onStdin(input: TerminalInputData): void {
+    const data = typeof input === 'string' ? inputEncoder.encode(input) : input;
+    const pane = ownPaneRef();
+    if (!pane || !data.length) return;
+    if (!attached || bindingUncertain) {
+      // Focus is established before the asynchronous unpark/attach completes
+      // so the first keystrokes after a pane switch are never lost. After
+      // attach, the same bounded buffer holds bytes captured during the
+      // §B binding-uncertain window — the kernel has no usable cursor cell
+      // yet, so forwarding would write into a stale position. Keep only a
+      // bounded local tail; the per-pane RPC queue still owns retry and
+      // ordering once the kernel anchor resolves.
+      const bytes = data.byteLength;
+      if (pendingStdinBytes + bytes <= MAX_PENDING_STDIN_BYTES) {
+        pendingStdin.push(data.slice());
+        pendingStdinBytes += bytes;
+      } else pendingInputError = true;
+      return;
+    }
+    const context = manager.getKernel(paneId)?.terminalInputContext() as TerminalInputContext | null;
+    if (!context) { pendingInputError = true; return; }
+    onPaneStdin(pane, data, context);
+    manager.noteUserInput(paneId);
+  }
+
+  /** Scroll-up rows-from-top threshold that triggers a lazy older-history fetch.
+   *  ~1.5 screens of headroom so the fetch lands before the user hits the very top. */
+  const NEAR_TOP_ROWS = 24;
+
+  /** Fire onNearTop when the viewport is within NEAR_TOP_ROWS of the buffer top. */
+  function maybeLoadOlder() {
+    const pane = ownPaneRef();
+    if (!attached || !pane || !onPaneNearTop) return;
+    if (rowsAboveViewport() <= NEAR_TOP_ROWS) onPaneNearTop(pane);
+  }
+
+  let containerEl: HTMLDivElement | undefined = $state();
+  // Hidden, focusable textarea: the only way to (a) raise the mobile soft
+  // keyboard on tap and (b) receive IME composition events on desktop.
+  let hiddenInput: HTMLTextAreaElement | undefined = $state();
+  // true once this pane's kernel is attached (or unparked) into the container.
+  let attached = $state(false);
+  let attachError = $state<string | null>(null);
+  const webgpuError = $derived(attachError ?? hostError);
+  // §debug-pane-error: mirror attachError/hostError changes through
+  // console.log so logcat captures which canvas mount actually set
+  // REMOTE_RESIZE_FAILED and with which paneId/workspaceId. Always on.
+  $effect(() => {
+    if (attachError) {
+      console.log(`[pane-debug] canvas attachError paneId=${remotePaneId} workspaceId=${workspaceId} err=${attachError.slice(0, 200)}`);
+    }
+    if (hostError) {
+      console.log(`[pane-debug] canvas hostError paneId=${remotePaneId} workspaceId=${workspaceId} err=${hostError.slice(0, 200)}`);
+    }
+  });
+  const MAX_PENDING_STDIN_BYTES = 64 * 1024;
+  const pendingStdin: Array<Uint8Array | RemoteKey> = [];
+  let pendingStdinBytes = 0;
+  let pendingInputError = $state(false);
+  let handledEditingKey: string | null = null;
+  let editingKeyTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function markEditingKey(key: string) {
+    if (!['Enter', 'Backspace', 'Delete'].includes(key)) return;
+    handledEditingKey = key;
+    if (editingKeyTimer !== null) clearTimeout(editingKeyTimer);
+    editingKeyTimer = setTimeout(() => { handledEditingKey = null; editingKeyTimer = null; }, 0);
+  }
+
+  // §B binding-uncertain guard: after `attached=true` but before the kernel
+  // surfaces a usable IME anchor (no user input snapshot, no recent absolute
+  // CSI), forwarding keystrokes would write into the PTY at a stale cursor
+  // cell. Until the anchor resolves, every input-emitting path bails and the
+  // hidden textarea is disabled so native text composition can't fire. The
+  // guard auto-releases when `inputAnchorResolved` returns non-null and the
+  // accumulated `pendingStdin` is flushed at that boundary.
+  let anchorResolved = $state(false);
+  const bindingUncertain = $derived(!attached || !anchorResolved);
+  $effect(() => {
+    // Re-check on attach + whenever the kernel publishes a new anchor. The
+    // manager's `onImeAnchor` subscription (below) already fires on every
+    // anchor update — this effect only seeds the initial sample after attach
+    // and lets `attached` itself invalidate the derived value.
+    if (!attached) return;
+    anchorResolved = !!manager.inputAnchorResolved(paneId);
+  });
+
+  function formatWebgpuInitError(error: unknown): string {
+    const detail = error instanceof Error ? error.message : String(error);
+    return detail.includes('WEBGPU_INIT_FAILED')
+      ? `${detail}. WebGPU and WebGL2 are unavailable; update the browser or OS, then reload.`
+      : detail;
+  }
+
+  function flushPendingStdin(): void {
+    if (!attached) return;
+    const pane = ownPaneRef();
+    if (!pane || pendingStdin.length === 0) return;
+    const kernel = manager.getKernel(paneId);
+    if (!kernel) return;
+    const context = kernel.terminalInputContext() as TerminalInputContext | null;
+    if (!context) return;
+    const queued = pendingStdin.splice(0);
+    pendingStdinBytes = 0;
+    for (const input of queued) {
+      const data = input instanceof Uint8Array ? input : encodeRemoteKey(kernel, input);
+      if (data.length) onPaneStdin(pane, data, context);
+    }
+    manager.noteUserInput(paneId);
+  }
+  // Lifetime flag: false the moment the component starts tearing down, so the
+  // async attach IIFE bails and (if attach already landed) parks the pane.
+  let alive = true;
+  // Local IME composition guard (was `ctrl.isComposing`).
+  let isComposing = false;
+
+  // Mouse drag-select state (desktop; only when the app isn't grabbing mouse).
+
+  // ── Local selection state (mobile bypasses the manager's built-in pointer
+  //    selection path — see the capture-phase neutralizer below — and drives
+  //    the kernel selection directly, mirroring the retired TerminalController). ──
+  let selAnchorRow = 0;
+  let selAnchorCol = 0;
+  let isSelectingLocal = false;
+
+  // Touch state. Single-finger swipe = scroll; tap = focus (+ click-through).
+  let touchStartY = 0;
+  let touchStartX = 0;
+  let touchScrollAccum = 0;
+  let touchLastX = 0;
+  let touchLastY = 0;
+  let touchStartTime = 0;
+  const TOUCH_DRAG_THRESHOLD_PX = 8;
+  const TOUCH_TAP_MAX_MS = 250;
+  let touchMouseDragging = false;
+  let touchMouseCell: { row: number; col: number } | null = null;
+  let suppressMouseUntil = 0;
+  let touchLinkCell: { row: number; col: number } | null = null;
+
+  let hasSelectionState = $state(false);    // drives the floating copy pill
+  let selDragging = false;                  // selection drag in progress
+
+  // ── kernel-level helpers (retarget of the old TerminalController surface) ──
+
+  /** kernel signature is encodeMouse(row, col, button, action, shift, ctrl, alt)
+   *  — note ctrl BEFORE alt. Call sites keep the old (…, shift, alt, ctrl) order;
+   *  this wrapper forwards in the kernel's order so modifiers aren't swapped. */
+  function kEncodeMouse(row: number, col: number, button: number, action: number, shift: boolean, alt: boolean, ctrlMod: boolean): Uint8Array {
+    return manager.getKernel(paneId)?.encodeMouse(row, col, button, action, shift, ctrlMod, alt) ?? new Uint8Array(0);
+  }
+  function kEncodeKey(key: string, ctrlMod: boolean, alt: boolean, shift: boolean, meta = false): Uint8Array {
+    return manager.getKernel(paneId)?.encodeKey(key, ctrlMod, alt, shift, meta) ?? new Uint8Array(0);
+  }
+  function kEncodePaste(text: string): Uint8Array {
+    return manager.getKernel(paneId)?.encodePaste(text) ?? new Uint8Array(0);
+  }
+  function isMouseReporting(): boolean { return manager.isMouseReporting(paneId); }
+  function isAltScreen(): boolean { return manager.isAltScreen(paneId); }
+  function clientToCell(clientX: number, clientY: number) {
+    return manager.cellFromEvent(paneId, { clientX, clientY });
+  }
+  /** How many scrollback rows sit ABOVE the current viewport top. offset 0 = at
+   *  bottom; rowsAboveViewport = max(0, total - offset). Mirrors the retired
+   *  TerminalController.rowsAboveViewport used for lazy older-history prefetch. */
+  function rowsAboveViewport(): number {
+    const { offset, total } = manager.scrollState(paneId);
+    return Math.max(0, total - offset);
+  }
+  function hasSelection(): boolean { return manager.getKernel(paneId)?.hasSelection() ?? false; }
+
+  function startSelection(row: number, col: number) {
+    // 绝对行 = viewport-relative row + 视口上方的 scrollback 行数（= total - offset）。
+    selAnchorRow = rowsAboveViewport() + row;
+    selAnchorCol = col;
+    isSelectingLocal = true;
+    manager.clearSelection(paneId);
+  }
+  function extendSelection(row: number, col: number) {
+    if (!isSelectingLocal) return;
+    const absRow = rowsAboveViewport() + row;
+    manager.getKernel(paneId)?.setSelectionAbs(selAnchorRow, selAnchorCol, absRow, col);
+    // setSelectionAbs on the raw kernel doesn't wake the manager's rAF loop;
+    // forceFullRedraw invalidates + wakes so the highlight repaints immediately.
+    manager.forceFullRedraw(paneId);
+  }
+  function endSelectionLocal() { isSelectingLocal = false; }
+
+  /** Input-cell pixel (TUI-aware anchor), used to park the hidden IME textarea
+   *  and to anchor the keyboard offset. Mirrors the old ctrl.getCursorPixel. */
+  function getCursorPixel(): { x: number; y: number; h: number } | null {
+    const a = manager.inputAnchorResolved(paneId);
+    return a ? { x: a.x, y: a.y, h: a.cellH } : null;
+  }
+
+  let mountedContainer: HTMLElement | undefined;
+  async function attachTerminal(): Promise<void> {
+    // §stale-pane-guard: on cold boot `remotePaneId`/`workspaceId` may carry
+    // localStorage-restored ids from a prior host session that no longer exists
+    // on this kernel. Mounting with such an id makes `fitPaneNow` invoke
+    // `resize_pane` over the bridge and the host's strict cross-workspace
+    // ownership check rejects with `REMOTE_RESIZE_FAILED: pane … does not
+    // belong to workspace …`. Bail out before any attach/fit happens and let
+    // the SPA re-mount once the host's `panes-frame` reports a valid id.
+    if (!remotePaneId || !workspaceId) {
+      return;
+    }
+    attachError = null;
+    try {
+      await manager.ready();
+    } catch (err) {
+      if (!alive) return;
+      attachError = formatWebgpuInitError(err);
+      console.error('[mobile-term] terminal initialization failed', paneId, err);
+      return;
+    }
+    if (!alive || !containerEl) return;
+    mountedContainer = containerEl;
+    const target = containerEl;
+    try {
+      if (manager.isParked(paneId)) {
+        await manager.unpark(paneId, target);
+      } else {
+        await manager.attach(paneId, target, workspaceId);
+      }
+    } catch (err) {
+      attachError = formatWebgpuInitError(err);
+      console.error('[mobile-term] WebGPU attach/unpark failed', paneId, err);
+      return;
+    }
+    if (!alive) { manager.park(paneId, 'component', mountedContainer); return; }
+    if (!manager.ownsContainer(paneId, mountedContainer)) return;
+    attached = true;
+    backendName = manager.backendName(paneId) ?? 'WebGPU';
+    manager.onData(paneId, (bytes) => onStdin(bytes));
+    manager.onResize(paneId, (rows, cols) => {
+      const pane = ownPaneRef();
+      if (onPaneResize && pane && containerEl) {
+        return onPaneResize(pane, rows, cols, Math.round(containerEl.clientWidth), Math.round(containerEl.clientHeight));
+      }
+    });
+    // attach() may already have fitted the local kernel before the Host callback
+    // existed. Force the same measured grid through the Remote-owned claim and
+    // wait for Host PTY/parser acknowledgement before replaying queued bytes.
+    try {
+      await manager.fitPaneNow(paneId, true);
+    } catch (err) {
+      if (alive) attachError = `REMOTE_RESIZE_FAILED: ${err instanceof Error ? err.message : String(err)}`;
+      console.error('[mobile-term] initial Host grid claim failed', paneId, err);
+      return;
+    }
+    if (!alive) { manager.park(paneId, 'component', mountedContainer); return; }
+    const pendingFrames = onDrainPending?.(paneId) ?? [];
+    for (const frame of pendingFrames) manager.feed(paneId, frame);
+    const pendingSemantic = onDrainSemantic?.(paneId) ?? [];
+    for (const frame of pendingSemantic) {
+      try {
+        manager.applyRemoteFrame(paneId, frame.bytes, frame.pane.workspaceId, frame.pane.paneId, frame.activationId);
+      } catch {
+        onSemanticResync?.(frame.pane);
+        break;
+      }
+    }
+    manager.flushPaneFeed(paneId);
+    flushPendingStdin();
+    manager.setFocused(paneId, true);
+    focusInput();
+    requestAnimationFrame(() => {
+      if (alive) onFirstPaint?.(paneId);
+    });
+  }
+
+  // §B: flush queued keystrokes the moment the kernel reports a real anchor
+  // (post-attach without anchor = binding still uncertain; once an anchor
+  // lands, the bytes captured during uncertainty are safe to forward).
+  $effect(() => {
+    if (bindingUncertain) return;
+    if (pendingStdin.length === 0) return;
+    flushPendingStdin();
+  });
+
+  onMount(() => {
+    // `autocorrect` is a non-standard (iOS Safari) attribute missing from
+    // Svelte's textarea typings — set it via the DOM to keep iOS from rewriting
+    // terminal input without tripping svelte-check.
+    hiddenInput?.setAttribute('autocorrect', 'off');
+
+    // Touch owns its mobile gestures; physical mouse/pen uses the same
+    // manager as desktop, including hover, modifiers, capture and release.
+    const stopPointer = (event: PointerEvent) => {
+      if ((event.target as Element | null)?.closest('[data-ridge-control]')) return;
+      if (event.pointerType === 'touch' || Date.now() < suppressMouseUntil) {
+        event.stopPropagation();
+        return;
+      }
+      if (event.type === 'pointerdown') focusInput();
+      if (event.type === 'pointerup') requestAnimationFrame(() => {
+        if (alive) hasSelectionState = hasSelection();
+      });
+    };
+    const el = containerEl;
+    const onContextLost = (e: Event) => { e.preventDefault(); };
+    const onContextRestored = () => {
+      if (!alive || !attached) return;
+      manager.forceFullRedraw(paneId);
+      manager.fitPaneNow(paneId);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') onContextRestored();
+    };
+    if (el) {
+      el.addEventListener('pointerdown', stopPointer, true);
+      el.addEventListener('pointermove', stopPointer, true);
+      el.addEventListener('pointerup', stopPointer, true);
+      el.addEventListener('pointercancel', stopPointer, true);
+      el.addEventListener('webglcontextlost', onContextLost);
+      el.addEventListener('webglcontextrestored', onContextRestored);
+    }
+    document.addEventListener('visibilitychange', onVisibility);
+
+    // Take focus synchronously on a keyed pane switch. The renderer may still
+    // be restoring its parked kernel, but the input surface can already accept
+    // and queue keystrokes instead of making the user wait for WebGPU/wasm.
+    focusInput();
+
+    void attachTerminal();
+
+    return () => {
+      if (el) {
+        el.removeEventListener('pointerdown', stopPointer, true);
+        el.removeEventListener('pointermove', stopPointer, true);
+        el.removeEventListener('pointerup', stopPointer, true);
+        el.removeEventListener('pointercancel', stopPointer, true);
+        el.removeEventListener('webglcontextlost', onContextLost);
+        el.removeEventListener('webglcontextrestored', onContextRestored);
+      }
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  });
+
+  onDestroy(() => {
+    handleTouchCancel();
+    manager.cancelPointerGesture(paneId);
+    alive = false;
+    if (editingKeyTimer !== null) clearTimeout(editingKeyTimer);
+    manager.setVisualOffsetY(paneId, 0);
+    onKeyboardShift?.(0);
+    if (keyboardSettleRaf !== null) {
+      cancelAnimationFrame(keyboardSettleRaf);
+      keyboardSettleRaf = null;
+    }
+    // 句级缓冲：卸载前落笔，防切 pane 丢缓冲文本。
+    if (attached && !sbuf.empty) sbufFlush();
+    if (sbufTimer !== null) { clearTimeout(sbufTimer); sbufTimer = null; }
+    // §B: clear any pendingStdin captured by THIS instance. pendingStdin is
+    // component-local so the next instance owns its own buffer, but a late
+    // flushPendingStdin call from a race against attachTerminal could otherwise
+    // ship this instance's bytes through the (now stale) ownPaneRef().
+    pendingStdin.length = 0;
+    pendingStdinBytes = 0;
+    // §B: replace the manager dataHandler with a noop so any byte that races
+    // through the kernel between park() and the next mount cannot reach this
+    // unmounted component's onStdin closure. (manager.onData replaces by
+    // paneId; the next mount registers a fresh handler.)
+    if (manager.ownsContainer(paneId, mountedContainer)) {
+      try { manager.onData(paneId, () => {}); } catch { /* kernel not loaded */ }
+    }
+    // Keep-alive: PARK (kernel survives, scrollback preserved), never detach.
+    // Real teardown (manager.detach) happens in MainApp only when the host
+    // actually closes the pane.
+    if (attached) manager.park(paneId, 'component', mountedContainer);
+  });
+
+  function positionInputAtCursorOrCenter() {
+    const el = hiddenInput;
+    if (!el) return;
+    const rect = containerEl?.getBoundingClientRect();
+    if (rect) {
+      const vv = window.visualViewport;
+      const anchor = resolveInputAnchor(getCursorPixel(), {
+        containerLeft: rect.left,
+        containerTop: rect.top,
+        containerWidth: rect.width,
+        containerHeight: rect.height,
+        visualLeft: vv?.offsetLeft ?? 0,
+        visualTop: vv?.offsetTop ?? 0,
+        visualWidth: vv?.width ?? window.innerWidth,
+        visualHeight: vv?.height ?? window.innerHeight,
+      });
+      el.style.left = `${Math.round(anchor.x)}px`;
+      el.style.top = `${Math.round(anchor.y)}px`;
+      el.style.height = `${Math.max(1, Math.round(anchor.h))}px`;
+      pinImeCaretToAnchor(el);
+    }
+  }
+
+  function focusHiddenInput() {
+    const el = hiddenInput;
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    // §A iOS sometimes drops focus on the tiny invisible textarea — re-assert
+    // on the next frame and give it a caret so the keyboard reliably stays up.
+    requestAnimationFrame(() => {
+      if (!el) return;
+      if (document.activeElement !== el) el.focus({ preventScroll: true });
+      try { el.setSelectionRange(el.value.length, el.value.length); } catch { /* ignore */ }
+      pinImeCaretToAnchor(el);
+    });
+  }
+
+  function focusInput() {
+    if (attached) manager.captureImeAnchor(paneId);
+    positionInputAtCursorOrCenter();
+    focusHiddenInput();
+  }
+
+  /** Explicit soft-keyboard opening is the only path that snaps history back
+   * to live output. Pointer coordinates never participate in the IME anchor. */
+  function openSoftKeyboard() {
+    if (!attached) return;
+    activateIme({
+      scrollToBottom: () => {
+        manager.scrollToBottom(paneId);
+        // The first mounted pane has no prior switch/focus cycle to seed this
+        // anchor. Capture it inside the trusted tap before focus so keyboard
+        // avoidance never falls back to a null input position.
+        manager.captureImeAnchor(paneId);
+      },
+      positionAtCursorOrCenter: positionInputAtCursorOrCenter,
+      focus: focusHiddenInput,
+    });
+    requestAnimationFrame(() => {
+      if (alive && document.activeElement === hiddenInput) requestKeyboardShift();
+    });
+  }
+
+  export function openSystemKeyboard() {
+    openSoftKeyboard();
+  }
+
+  // ── Public API (called by MainApp via bind:this) ──
+  /** Current grid + pixel size, used by the refresh button / reconnect claim. */
+  export function getDims() {
+    if (!attached) return null;
+    return {
+      rows: manager.rows(paneId),
+      cols: manager.cols(paneId),
+      pixelWidth: Math.round(containerEl?.clientWidth ?? 0),
+      pixelHeight: Math.round(containerEl?.clientHeight ?? 0),
+    };
+  }
+  /** Force one pane-box measurement and a latest-wins host claim. This is the
+   * recovery path for a stale/letterboxed remote grid after orientation, PWA
+   * safe-area, keyboard, or an external pty-resized event. */
+  export function fitPaneNow() {
+    if (attached) manager.fitPaneNow(paneId);
+  }
+  /** Explicit refresh: measure this pane and remount the shared host PTY even
+  * when the claimed rows×cols match the last fit (same-size is not a no-op). */
+  let paneSizeClaimGeneration = 0;
+  export function claimPaneSize(): Promise<void> {
+    const generation = ++paneSizeClaimGeneration;
+    if (!attached) return Promise.resolve();
+    return claimSettledPaneSize(generation);
+  }
+  async function claimSettledPaneSize(generation: number): Promise<void> {
+    let previousGeometry = '';
+    let stableFrames = 0;
+    for (let frame = 0; frame < 30; frame += 1) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      if (!attached || generation !== paneSizeClaimGeneration) return;
+      const rect = containerEl?.getBoundingClientRect();
+      const viewport = window.visualViewport;
+      const geometry = [
+        rect?.left, rect?.top, rect?.width, rect?.height,
+        viewport?.offsetLeft, viewport?.offsetTop, viewport?.width, viewport?.height,
+      ].map((value) => Math.round(value ?? 0)).join(':');
+      stableFrames = geometry === previousGeometry ? stableFrames + 1 : 0;
+      previousGeometry = geometry;
+      if (frame >= 3 && stableFrames >= 2) break;
+    }
+    if (!attached || generation !== paneSizeClaimGeneration) return;
+    manager.resizeHost();
+    await manager.claimPaneSize(paneId);
+    manager.forceFullRedraw(paneId);
+  }
+  /** Feed raw PTY bytes into THIS pane's kernel (MainApp routes the active
+   *  pane's stream here; the manager holds each pane's history). */
+  export function feedUtf8(bytes: Uint8Array) { manager.feed(paneId, bytes); }
+  /** Route bytes to any live/parked pane kernel, not only this mounted surface. */
+  export function feedPane(targetPaneId: string, bytes: Uint8Array) {
+    manager.feed(targetPaneId, bytes);
+    return manager.feedStats(targetPaneId);
+  }
+  export function applyRemoteFrameForPane(
+    targetPaneId: string,
+    bytes: Uint8Array,
+    pane: PaneRef,
+    activationId: number,
+  ) {
+    const applied = manager.applyRemoteFrame(
+      targetPaneId,
+      bytes,
+      pane.workspaceId,
+      pane.paneId,
+      activationId,
+    );
+    if (targetPaneId === paneId && historyRecoveryPending()) queueMicrotask(maybeLoadOlder);
+    return applied;
+  }
+  export function historyRecoveryPending() {
+    return (manager.getKernel(paneId) as unknown as {
+      historyRecoveryPending?: () => boolean;
+    } | null)?.historyRecoveryPending?.() ?? false;
+  }
+  export function clearPendingFeed(targetPaneId: string) {
+    return manager.clearPendingFeed(targetPaneId);
+  }
+  export function terminalHistoryRequest() {
+    return (manager.getKernel(paneId) as unknown as {
+      terminalHistoryRequest?: (maxRows: number) => import('@ridge/remote/shared/cloud/signaling').HistoryRequest | null;
+    } | null)?.terminalHistoryRequest?.(128) ?? null;
+  }
+  /** §history-pull: prepend older PTY history at the oldest end of the ring. */
+  export function prependScrollback(bytes: Uint8Array) { manager.prependScrollback(paneId, bytes); }
+  export function prependScrollbackForPane(targetPaneId: string, bytes: Uint8Array) {
+    return manager.prependScrollback(targetPaneId, bytes);
+  }
+  /** Theme is GLOBAL on the manager (all panes); fine for mobile (one theme). */
+  export function applyTheme(theme: Record<string, string>) { manager.setTheme(theme); }
+  /** Host told us the PTY resized → remeasure this pane and repaint locally. */
+  export function resizeKernel(rows: number, cols: number) {
+    manager.applyPaneResize(paneId, rows, cols);
+    manager.forceFullRedraw(paneId);
+  }
+
+  // ── Virtual Keyboard (called from MainApp header) ──
+  export function handleVirtualKey(key: string, ctrlKey: boolean, alt: boolean, shift: boolean) {
+    // §B: refuse virtual keys while the IME anchor is unknown — there is no
+    // cursor cell to address and the bytes would land at a stale position.
+    if (!attached || bindingUncertain) return;
+    // 句级缓冲：同物理键——Backspace 先耗缓冲，其余控制键先落笔再发。
+    if (key === 'Backspace' && !ctrlKey && !alt && sbufActive() && sbuf.backspace()) {
+      sbufPaint();
+      sbufSchedule();
+      return;
+    }
+    if (!sbuf.empty) sbufFlush();
+    if (key === 'Enter') manager.clearInputStart(paneId);
+    // G11：虚拟键盘同物理键界规则——Backspace 削已发词段，其余控制键清段。
+    pendingWord = key === 'Backspace' && !ctrlKey && !alt ? pendingWordBackspace(pendingWord) : '';
+    const bytes = kEncodeKey(key, ctrlKey, alt, shift, false);
+    if (bytes.length > 0) { onStdin(bytes); return; }
+    const map: Record<string, string> = { Tab: '\t', Escape: '\x1b', Enter: '\r', Backspace: '\x7f', Delete: '\x1b[3~', Home: '\x1b[H', End: '\x1b[F', PageUp: '\x1b[5~', PageDown: '\x1b[6~', Insert: '\x1b[2~' };
+    if (map[key]) { onStdin(shift && key === 'Tab' ? '\x1b[Z' : map[key]); return; }
+    if (key.startsWith('Arrow')) {
+      const arrows: Record<string, string> = { ArrowUp: '\x1b[A', ArrowDown: '\x1b[B', ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D' };
+      if (arrows[key]) onStdin(arrows[key]);
+    }
+  }
+
+  // ── Touch ──
+
+  /** Swipe → wheel/mouse/arrows/scrollback — SSOT in decideTouchScroll (desktop parity). */
+  function touchWheel(deltaY: number, clientX: number, clientY: number) {
+    if (!attached) return;
+    const decision = decideTouchScroll({
+      deltaY,
+      isMouseReporting: isMouseReporting(),
+      isAltScreen: isAltScreen(),
+      pixelLike: true,
+      // §D: explicit local-selection beats terminal-driven mouse / alt-scroll.
+      selectionMode,
+    });
+    if (!decision) return;
+    if (decision.kind === 'mouse_wheel') {
+      const cell = clientToCell(clientX, clientY) ?? { row: 0, col: 0 };
+      const bytes = kEncodeMouse(cell.row, cell.col, decision.btn, 0, false, false, false);
+      if (bytes.length > 0) onStdin(bytes);
+      return;
+    }
+    if (decision.kind === 'alt_arrows') {
+      const one = kEncodeKey(decision.key, false, false, false, false);
+      if (one.length === 0) return;
+      for (let i = 0; i < decision.presses; i++) onStdin(one);
+      return;
+    }
+    // local_scroll
+    if (decision.lines < 0) {
+      manager.scrollUp(paneId, -decision.lines);
+      maybeLoadOlder();
+    } else {
+      manager.scrollDown(paneId, decision.lines);
+    }
+  }
+
+  /** Copy the selection to the control device's clipboard, then clear it.
+   *  §copy-no-interrupt: copying must NOT send `\x03` to the PTY.
+   *  V-MOB-CP: never focus hidden input / never paste. */
+  function copyAndClear() {
+    if (!attached) return;
+    let text = '';
+    try {
+      text = manager.getSelectionText(paneId) || '';
+    } catch { /* kernel may have no selection */ }
+    copySelectionOnly(text, {
+      writeText: (t) => {
+        void writeClipboard(t);
+        onHostClipboard?.(t);
+      },
+      clearSelection: () => {
+        manager.clearSelection(paneId);
+        hasSelectionState = false;
+      },
+      // Explicitly pass focus/paste so tests of pure helper prove we never call them.
+      focusInput,
+      paste: (t) => sendPaste(t),
+    });
+  }
+
+  /** Paste arbitrary text (the control device's clipboard) into the terminal as
+   *  a bracketed paste. Driven by the bottom-bar paste button in MainApp. */
+  export function pasteText(text: string) {
+    sendPaste(text);
+  }
+
+  /** Read clipboard under the caller's user gesture while reserving the pane's
+   * input slot before the asynchronous read resolves. */
+  export function pasteClipboard() {
+    void pasteFromClipboard();
+  }
+
+  function handleTouchStart(e: TouchEvent) {
+    if (!attached) return;
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    touchStartY = t.clientY;
+    touchStartX = t.clientX;
+    touchLastX = t.clientX;
+    touchLastY = t.clientY;
+    touchScrollAccum = 0;
+    touchStartTime = Date.now();
+    suppressMouseUntil = touchStartTime + 500;
+    const startCell = clientToCell(t.clientX, t.clientY);
+    // Reserve the gesture for link opening only when this cell is actually a
+    // link. A valid grid cell is not itself a link: treating every cell as one
+    // prevented mouse-reporting TUIs from ever entering touch drag mode.
+    touchLinkCell = !selectionMode && startCell && manager.hasLinkAt(paneId, startCell.row, startCell.col)
+      ? { row: startCell.row, col: startCell.col }
+      : null;
+    // Explicit selection mode always belongs to the controller. This gives the
+    // user an escape hatch even when a full-screen TUI captures every mouse event.
+    if (selectionMode) {
+      const cell = clientToCell(t.clientX, t.clientY);
+      if (cell) startSelection(cell.row, cell.col);
+    } else if (isMouseReporting() && !touchLinkCell) {
+      const cell = clientToCell(t.clientX, t.clientY);
+      if (cell) {
+        const g = decideTouchMouseGesture('press');
+        const bytes = kEncodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
+        if (bytes.length > 0) {
+          onStdin(bytes);
+          touchMouseDragging = true;
+          touchMouseCell = cell;
+        }
+      }
+    }
+  }
+
+  function handleTouchMove(e: TouchEvent) {
+    if (!attached || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const moved = Math.abs(t.clientY - touchStartY) + Math.abs(t.clientX - touchStartX);
+    if (moved < TOUCH_DRAG_THRESHOLD_PX) return;
+    touchLinkCell = null;
+    e.preventDefault();
+    if (touchMouseDragging) {
+      const cell = clientToCell(t.clientX, t.clientY);
+      if (cell) {
+        const g = decideTouchMouseGesture('drag');
+        const bytes = kEncodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
+        if (bytes.length > 0) { onStdin(bytes); touchMouseCell = cell; }
+      }
+      touchLastX = t.clientX;
+      touchLastY = t.clientY;
+      return;
+    }
+    if (selectionMode) {
+      selDragging = true;
+      const cell = clientToCell(t.clientX, t.clientY);
+      if (cell) extendSelection(cell.row, cell.col);
+      return;
+    }
+    touchScrollAccum += touchLastY - t.clientY;
+    touchLastX = t.clientX;
+    touchLastY = t.clientY;
+    if (Math.abs(touchScrollAccum) > 24) {
+      touchWheel(touchScrollAccum, t.clientX, t.clientY);
+      touchScrollAccum = 0;
+    }
+  }
+
+  function handleTouchEnd(e: TouchEvent) {
+    if (e.changedTouches.length !== 1) return;
+    const touch = e.changedTouches[0];
+    if (!attached) return;
+    const elapsed = Date.now() - touchStartTime;
+    const linkCell = touchLinkCell;
+    touchLinkCell = null;
+    if (linkCell && elapsed < TOUCH_TAP_MAX_MS && manager.openLinkAt(paneId, linkCell.row, linkCell.col)) {
+      e.preventDefault();
+      return;
+    }
+    if (touchMouseDragging) {
+      const cell = clientToCell(touch.clientX, touch.clientY) ?? touchMouseCell;
+      if (cell) {
+        const g = decideTouchMouseGesture('release');
+        const bytes = kEncodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
+        if (bytes.length > 0) onStdin(bytes);
+      }
+      touchMouseDragging = false;
+      touchMouseCell = null;
+      if (elapsed < TOUCH_TAP_MAX_MS) {
+        e.preventDefault();
+        openSoftKeyboard();
+      }
+      return;
+    }
+    if (selectionMode) {
+      const wasDragging = selDragging;
+      selDragging = false;
+      if (wasDragging) {
+        endSelectionLocal();
+        hasSelectionState = hasSelection();
+      } else {
+        // A tap in selection mode clears any existing local selection.
+        manager.clearSelection(paneId);
+        hasSelectionState = false;
+      }
+      // §select-tap-keyboard: a TAP (not a drag) in selection mode also raises
+      // the soft keyboard so you can type without first leaving select mode.
+      if (!wasDragging) {
+        e.preventDefault();
+        openSoftKeyboard();
+      }
+      return;
+    }
+    if (elapsed >= TOUCH_TAP_MAX_MS) return;
+    // Focus happens inside this trusted touchend. Cancel its compatibility
+    // mouse/click event or that later event refocuses the canvas and closes IME.
+    e.preventDefault();
+    // Light tap clears an existing selection (and re-raises the keyboard).
+    if (hasSelectionState || hasSelection()) {
+      manager.clearSelection(paneId);
+      hasSelectionState = false;
+      openSoftKeyboard();
+      return;
+    }
+    // §D: a bare tap focuses + raises the soft keyboard. The mouse-mode click
+    // path is handled exclusively by handleTouchStart (press) + the
+    // touchMouseDragging branch above (release) — emitting a second press here
+    // would double-dispatch to TUI mouse-reporting apps (verified by
+    // REMOTE-FOUR-ISSUES §D "touch/pointer/兼容 mouse 事件不会双派发").
+    openSoftKeyboard();
+  }
+
+  function handleTouchCancel() {
+    // §D: cancel paths must clear EVERY touch state. Previously only
+    // touchMouseDragging was reset, so a system-cancelled gesture (Android
+    // edge-swipe, notification shade) could leak selDragging / scrollAccum
+    // / linkCell into the next touchstart and emit a spurious mouse release
+    // against an unintended pane after a switch.
+    touchLinkCell = null;
+    touchScrollAccum = 0;
+    selDragging = false;
+    if (!touchMouseDragging || !attached) {
+      touchMouseDragging = false;
+      touchMouseCell = null;
+      return;
+    }
+    const cell = clientToCell(touchLastX, touchLastY) ?? touchMouseCell;
+    if (cell) {
+      const g = decideTouchMouseGesture('release');
+      const bytes = kEncodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
+      if (bytes.length > 0) onStdin(bytes);
+    }
+    touchMouseDragging = false;
+    touchMouseCell = null;
+  }
+
+  // ── Composition (IME) + plain text input, both via the hidden textarea ──
+  const IME_DUP_WINDOW_MS = 200;
+  let imeCommitExpect = '';     // commit from compositionend; the matching trailing `input` is a dup
+  let imeCommitExpectTime = 0;
+  let lastInputText = '';       // text just emitted by `input`; a matching compositionend is a dup
+  let lastInputTime = 0;
+
+  // §1 英文「逐字实时发送 + 空格提交再发整词」去重
+  const RECENT_SENT_WINDOW_MS = 1200;
+  let recentSent = '';
+  let recentSentTime = 0;
+  // iter-60 G11 二修：已发送「当前词段」精确追踪（无时窗）。补全 commit 与它求
+  // 公共前缀只发差量；控制键/回车/粘贴置空，Backspace 削尾。时窗法实测漏
+  // `Ev`+停顿+选 `Everything` → `EvEverything`。
+  let pendingWord = '';
+
+  // ── 句级输入缓冲（sentenceBuffer prop 开启时）────────────────────────────
+  const sbuf = new SentenceBuffer();
+  let sbufTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** 缓冲激活 = 开关开 && 非 TUI 场景（alt-screen / 鼠标上报要逐键，旁路）。 */
+  function sbufActive(): boolean {
+    return sentenceBuffer && attached && !isAltScreen() && !isMouseReporting();
+  }
+  /** 把缓冲文本画到预编辑覆盖层（与 IME preedit 同通道；组合中则拼上组合段）。 */
+  function sbufPaint(composing = '') {
+    const text = sbuf.preview + composing;
+    const a = manager.inputAnchorResolved(paneId);
+    if (a && text) manager.setPreedit(paneId, text, a.row, a.col);
+    else if (!text && !isComposing) manager.clearPreedit(paneId);
+  }
+  function sbufSchedule() {
+    if (sbufTimer !== null) clearTimeout(sbufTimer);
+    sbufTimer = setTimeout(() => { sbufTimer = null; sbufFlush(); }, SENTENCE_FLUSH_MS);
+  }
+  /** 落笔：缓冲全文一次发 PTY，词段随之更新（后续差量仍可用）。 */
+  function sbufFlush() {
+    if (sbufTimer !== null) { clearTimeout(sbufTimer); sbufTimer = null; }
+    const text = sbuf.takeFlush();
+    if (!text) return;
+    onStdin(text);
+    pendingWord = updatePendingWord(pendingWord, text);
+    if (!isComposing) manager.clearPreedit(paneId);
+  }
+
+  function handleCompositionStart() {
+    // §R4 IME: mark the input-start anchor + capture the preedit anchor cell.
+    isComposing = true;
+    manager.markInputStart(paneId);
+    manager.beginImeComposition(paneId);
+    positionInputAtCursorOrCenter();
+  }
+  function handleCompositionUpdate(e: CompositionEvent) {
+    // Renderer-side preedit overlay: painted on top of the cell grid without
+    // touching kernel cells (a TUI redraw can't corrupt it and vice-versa).
+    // 句级缓冲开启且有缓冲文本时，预览 = 缓冲 + 组合中段（一体显示）。
+    positionInputAtCursorOrCenter();
+    if (sbufActive() && !sbuf.empty) {
+      sbufPaint(e.data ?? '');
+      return;
+    }
+    const a = manager.inputAnchorResolved(paneId);
+    if (a) manager.setPreedit(paneId, e.data ?? '', a.row, a.col);
+  }
+  function handleCompositionEnd(e: CompositionEvent) {
+    isComposing = false;
+    manager.endImeComposition(paneId);
+    manager.clearPreedit(paneId);
+    const data = e.data ?? '';
+    // Clear the textarea so a late `input` can't resend the committed text.
+    if (hiddenInput) hiddenInput.value = '';
+    positionInputAtCursorOrCenter();
+    // §1.27: repaint cells under the (now-cleared) preedit overlay.
+    manager.forceFullRedraw(paneId);
+    if (!data) return;
+    // §1 iOS English predictive streams each letter then fires compositionend
+    // with the whole word on space → committing again duplicates it.
+    if (Date.now() - recentSentTime < RECENT_SENT_WINDOW_MS && recentSent.trimEnd().endsWith(data)) {
+      recentSent = '';
+      return;
+    }
+    // Some IMEs fire `input` before `compositionend`; don't send twice.
+    if (data === lastInputText && Date.now() - lastInputTime < IME_DUP_WINDOW_MS) {
+      lastInputText = '';
+      return;
+    }
+    // 句级缓冲：commit 在缓冲内前缀合并（Ev+Everything→Everything），零 PTY 字节。
+    if (sbufActive()) {
+      if (sbuf.empty) manager.markInputStart(paneId);
+      sbuf.commit(data);
+      sbufPaint();
+      sbufSchedule();
+      imeCommitExpect = data;
+      imeCommitExpectTime = Date.now();
+      return;
+    }
+    // iter-60 G11（二修，无时窗）：自动补全提交去重——已发送「当前词段」与
+    // commit 求公共前缀，只发「退格×N + 差量」（Spac+Space→e；Ev+Everything→
+    // erything；Spac+Spice→␡␡ice）。差量含退格须走 raw onStdin（bracketed
+    // paste 会把 \x7f 变字面量）。
+    {
+      const delta = imeCommitDelta(pendingWord, data);
+      if (delta !== data) {
+        if (delta) onStdin(delta);
+        pendingWord = trailingWord(data);
+        recentSent = data;
+        recentSentTime = Date.now();
+        imeCommitExpect = data;
+        imeCommitExpectTime = Date.now();
+        return;
+      }
+    }
+    // Commit: encodePaste + ship to PTY via the registered dataHandler (onStdin).
+    manager.paste(paneId, data);
+    pendingWord = trailingWord(data);
+    // Arm dedup for the trailing `input` event that normally follows.
+    imeCommitExpect = data;
+    imeCommitExpectTime = Date.now();
+  }
+
+  // Fires for plain typed / predicted / autocorrected text that isn't an IME
+  // composition.
+  function handleInput(e: Event) {
+    if (isComposing || (e as InputEvent).isComposing) return;
+    const ta = e.target as HTMLTextAreaElement;
+    const text = ta.value;
+    ta.value = '';
+    const editingKey = editingKeyForInput((e as InputEvent).inputType);
+    if (editingKey) {
+      if (handledEditingKey !== editingKey) {
+        handleKeydown({ key: editingKey, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false,
+          isComposing: false, preventDefault: () => {} } as KeyboardEvent);
+      }
+      handledEditingKey = null;
+      if (editingKeyTimer !== null) clearTimeout(editingKeyTimer);
+      editingKeyTimer = null;
+      return;
+    }
+    if (!text) return;
+    if (!attached) {
+      onStdin(text);
+      return;
+    }
+    // §1 Robust IME-commit dedup: browsers may re-insert committed text as a
+    // non-composing `input` with inputType `insertCompositionText`. Swallow
+    // only when it matches the commit we already sent. Some mobile keyboards
+    // (notably space/punctuation on iOS and Android) use the same inputType
+    // without a compositionend; an unconditional type check dropped spaces.
+    if (text === imeCommitExpect && Date.now() - imeCommitExpectTime < IME_DUP_WINDOW_MS) {
+      imeCommitExpect = '';
+      return;
+    }
+    // §1 Autocorrect / predictive replacement：旧行为是整帧丢弃（保字面），用户
+    // 点的修正词就此丢失。iter-60 G11 改为差量应用：与已发词段求公共前缀，退格
+    // 删多余尾巴再补差量——修正生效且不重复。无已发词段上下文时仍丢弃防误发。
+    const inputType = (e as InputEvent).inputType || '';
+    if (inputType === 'insertReplacementText') {
+      // 句级缓冲：回改在缓冲内整词替换（跨词回改也不丢，语音主收益点）。
+      if (sbufActive() && sbuf.replaceTrailing(text)) {
+        sbufPaint();
+        sbufSchedule();
+        return;
+      }
+      const delta = imeCommitDelta(pendingWord, text);
+      if (delta && delta !== text) {
+        onStdin(delta);
+        pendingWord = trailingWord(text);
+        recentSent = text;
+        recentSentTime = Date.now();
+      }
+      return;
+    }
+    // §2 Sticky on-screen modifier armed → form a chord (Ctrl+C …) per character.
+    if (anyMod()) {
+      if (!sbuf.empty) sbufFlush(); // 句级缓冲：组合键先落笔。
+      pendingWord = ''; // G11：组合键=词界。
+      const sm = consumeMods();
+      for (const ch of text) {
+        const bytes = kEncodeKey(ch, sm.ctrl, sm.alt, sm.shift, false);
+        onStdin(bytes.length > 0 ? bytes : ch);
+      }
+      return;
+    }
+    // 句级缓冲：明文进缓冲画预编辑，停顿才落笔（语音/高频改写零退格窗口）。
+    if (sbufActive()) {
+      if (sbuf.empty) manager.markInputStart(paneId);
+      sbuf.insert(text);
+      sbufPaint();
+      sbufSchedule();
+      lastInputText = text;
+      lastInputTime = Date.now();
+      return;
+    }
+    onStdin(text);
+    pendingWord = updatePendingWord(pendingWord, text);
+    lastInputText = text;
+    lastInputTime = Date.now();
+    recentSent = (Date.now() - recentSentTime < RECENT_SENT_WINDOW_MS ? recentSent : '') + text;
+    recentSentTime = Date.now();
+  }
+
+  // ── Keyboard ──
+  function handleKeydown(e: KeyboardEvent) {
+    if (isComposing || e.isComposing) return;
+    if (!attached) {
+      const key = captureRemoteKey(e);
+      if (key) {
+        e.preventDefault();
+        if (pendingStdinBytes + 128 <= MAX_PENDING_STDIN_BYTES) {
+          pendingStdin.push(key);
+          pendingStdinBytes += 128;
+          markEditingKey(key.key);
+        } else pendingInputError = true;
+      }
+      return;
+    }
+    // Unmodified printable keys flow into the hidden textarea; its `input` event
+    // emits them (keeps IME + mobile prediction working, avoids double-send).
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) return;
+    // Clipboard: handle paste/copy before the generic ctrl/meta passthrough.
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+      e.preventDefault();
+      void pasteFromClipboard();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && hasSelection()) {
+      e.preventDefault();
+      void copySelection();
+      return;
+    }
+    // 句级缓冲：Backspace 先耗缓冲（本地删，不发 PTY）；其余控制键先把缓冲落笔
+    // 再发控制字节（保证 "word\r" 顺序）。
+    if (e.key === 'Backspace' && !e.ctrlKey && !e.metaKey && !e.altKey && sbufActive() && sbuf.backspace()) {
+      e.preventDefault();
+      markEditingKey(e.key);
+      sbufPaint();
+      sbufSchedule();
+      return;
+    }
+    if (!sbuf.empty) sbufFlush();
+    // G11：控制键=词界。Backspace 削已发词段一格，其余控制/组合键直接清段——
+    // 光标/行内容已非我们可见，宁可放弃去重也不误退格。
+    if (e.key === 'Enter') manager.clearInputStart(paneId);
+    const key = captureRemoteKey(e);
+    const kernel = manager.getKernel(paneId);
+    if (!key || !kernel) return;
+    const bytes = encodeRemoteKey(kernel, key);
+    if (bytes.length === 0) return;
+    e.preventDefault();
+    markEditingKey(e.key);
+    pendingWord = e.key === 'Backspace' ? pendingWordBackspace(pendingWord) : '';
+    onStdin(bytes);
+  }
+
+  function handleBeforeInput(event: InputEvent) {
+    if (isComposing || event.isComposing) return;
+    const key = editingKeyForInput(event.inputType);
+    if (!key) return;
+    event.preventDefault();
+    if (handledEditingKey === key) return;
+    handleKeydown({ key, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false,
+      isComposing: false, preventDefault: () => event.preventDefault() } as KeyboardEvent);
+  }
+
+  /** Encode arbitrary text as a bracketed paste and forward it to the host. */
+  function sendPaste(text: string) {
+    // §B: refuse paste while binding uncertain — bracketed paste bytes go to a
+    // real PTY cell, but we can't promise the right one without an anchor.
+    if (!attached || bindingUncertain || !text) return;
+    if (!sbuf.empty) sbufFlush(); // 句级缓冲：粘贴前先落笔，保输入顺序。
+    pendingWord = ''; // G11：粘贴=词界（粘贴内容不参与补全去重）。
+    const bytes = kEncodePaste(text);
+    if (bytes.length > 0) onStdin(bytes);
+  }
+
+  /** Read the system clipboard and paste it (Ctrl/Cmd+V is the user gesture). */
+  async function pasteFromClipboard() {
+    if (!attached || bindingUncertain) return;
+    const pane = ownPaneRef();
+    if (pane && onPaneInputTask) {
+      if (!sbuf.empty) sbufFlush();
+      pendingWord = '';
+      const context = manager.getKernel(paneId)?.terminalInputContext() as TerminalInputContext | null;
+      if (!context) { pendingInputError = true; return; }
+      onPaneInputTask(pane, async () => {
+        try {
+          const text = await navigator.clipboard.readText();
+          if (!text) return null;
+          const bytes = kEncodePaste(text);
+          return bytes.length > 0 ? bytes : null;
+        } catch {
+          return null;
+        }
+      }, context);
+      return;
+    }
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) sendPaste(text);
+    } catch { /* clipboard blocked: no permission / insecure context */ }
+  }
+
+  /** Copy the active selection to the system clipboard (desktop Ctrl/Cmd+C).
+   *  V-MOB-CP: write + clear only — no focusInput / no paste. */
+  async function copySelection() {
+    if (!attached) return;
+    const text = manager.getSelectionText(paneId) || '';
+    copySelectionOnly(text, {
+      writeText: (t) => {
+        void writeClipboard(t);
+        onHostClipboard?.(t);
+      },
+      clearSelection: () => manager.clearSelection(paneId),
+      focusInput,
+      paste: (t) => sendPaste(t),
+    });
+  }
+
+  // Native paste fallback (right-click → paste, middle-click) on the focused
+  // hidden textarea. Ctrl/Cmd+V is handled in handleKeydown instead.
+  function handlePaste(e: ClipboardEvent) {
+    // §B: textarea is already `disabled` while binding-uncertain, but a
+    // browser may still fire `paste` during the disable transition.
+    if (!attached || bindingUncertain) return;
+    e.preventDefault();
+    const text = e.clipboardData?.getData('text') ?? '';
+    sendPaste(text);
+  }
+
+  function handleWheel(e: WheelEvent) {
+    if (!attached) return;
+    if (isMouseReporting()) {
+      const cell = clientToCell(e.clientX, e.clientY) ?? { row: 0, col: 0 };
+      e.preventDefault();
+      const btn = e.deltaY < 0 ? 64 : 65; // wheel up / down
+      const bytes = kEncodeMouse(cell.row, cell.col, btn, 0, e.shiftKey, e.altKey, e.ctrlKey);
+      if (bytes.length > 0) onStdin(bytes);
+    } else {
+      e.preventDefault();
+      const lines = e.deltaY > 0 ? 3 : -3;
+      if (lines < 0) { manager.scrollUp(paneId, -lines); maybeLoadOlder(); } else manager.scrollDown(paneId, lines);
+    }
+  }
+
+  function handleContextMenu(e: MouseEvent) {
+    // Hand right-click to mouse-capturing apps; otherwise leave the native menu.
+    if (isMouseReporting()) e.preventDefault();
+  }
+
+  // §passive-fix: touchmove (selection drag) and wheel (scroll) call
+  // preventDefault, which Chrome rejects inside its default-passive listeners.
+  // Svelte's declarative on* attributes can't set {passive:false}, so attach
+  // these two manually on the container.
+  $effect(() => {
+    const el = containerEl;
+    if (!el) return;
+    el.addEventListener('touchmove', handleTouchMove, { passive: false });
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      el.removeEventListener('touchmove', handleTouchMove);
+      el.removeEventListener('wheel', handleWheel);
+    };
+  });
+
+  // ── §kb-transform：只移动视觉投影，绝不 refit/resize grid ──
+  let containerTopWhenIdle = 0;
+  let keyboardShiftPx = 0;
+  let keyboardSettleRaf: number | null = null;
+  let keyboardSettleFrames = 0;
+  const KEYBOARD_SAFE_GAP_PX = 10;
+  const KEYBOARD_SHIFT_HYSTERESIS_PX = 3;
+  const KEYBOARD_SHIFT_MAX_STEP_PX = 96;
+  const KEYBOARD_MAX_SETTLE_FRAMES = 6;
+
+  function computeKeyboardTarget(): number {
+    const vv = window.visualViewport;
+    const anchor = manager.inputAnchorResolved(paneId);
+    // Only a focused IME sink may move the terminal. Browser chrome and
+    // address-bar viewport changes otherwise look like a keyboard and cause
+    // the old transform to jump while merely scrolling the page.
+    if (!vv || !containerEl || !anchor || document.activeElement !== hiddenInput) return 0;
+    const keyboardTopPx = (vv.offsetTop || 0) + (vv.height || 0);
+    return terminalVisualShiftPx({
+      layoutHeightPx: window.innerHeight,
+      visualHeightPx: vv.height || 0,
+      visualOffsetTopPx: vv.offsetTop || 0,
+      stageTopPx: containerTopWhenIdle,
+      cursorYPx: anchor.y,
+      cellHeightPx: anchor.cellH,
+      inputTopPx: containerTopWhenIdle + anchor.y,
+      inputBottomPx: containerTopWhenIdle + anchor.y + anchor.cellH,
+      keyboardTopPx,
+      safeGapPx: Math.max(KEYBOARD_SAFE_GAP_PX, anchor.cellH),
+      maxShiftPx: Math.max(0, anchor.y - 3 * anchor.cellH),
+    });
+  }
+
+  function applyKeyboardShift(): void {
+    const target = computeKeyboardTarget();
+    const next = stabilizeTerminalVisualShiftPx(target, keyboardShiftPx, {
+      hysteresisPx: KEYBOARD_SHIFT_HYSTERESIS_PX,
+      maxStepPx: KEYBOARD_SHIFT_MAX_STEP_PX,
+    });
+    if (next !== keyboardShiftPx) {
+      keyboardShiftPx = next;
+      manager.setVisualOffsetY(paneId, next);
+      onKeyboardShift?.(next);
+    }
+    // The shell can move its cursor between the button click and the next
+    // animation frame (notably after Enter prints a new prompt). Keep the
+    // actual IME sink on the same resolved cell as the visual terminal so the
+    // browser never scrolls toward a stale pre-submit anchor.
+    if (document.activeElement === hiddenInput) positionInputAtCursorOrCenter();
+    if (next !== target && keyboardSettleFrames < KEYBOARD_MAX_SETTLE_FRAMES) {
+      keyboardSettleFrames += 1;
+      if (keyboardSettleRaf === null) {
+        keyboardSettleRaf = requestAnimationFrame(() => {
+          keyboardSettleRaf = null;
+          applyKeyboardShift();
+        });
+      }
+    } else {
+      keyboardSettleFrames = 0;
+    }
+  }
+
+  function requestKeyboardShift(): void {
+    keyboardSettleFrames = 0;
+    if (keyboardSettleRaf !== null) {
+      cancelAnimationFrame(keyboardSettleRaf);
+      keyboardSettleRaf = null;
+    }
+    applyKeyboardShift();
+  }
+
+  $effect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    function onViewportChange() {
+      if (containerEl && (vv!.offsetTop + vv!.height >= window.innerHeight - 1 || document.activeElement !== hiddenInput)) {
+        // Undo the previous visual transform when sampling the layout baseline;
+        // otherwise keyboard close would bake the stale negative shift into the
+        // next keyboard-open calculation.
+        containerTopWhenIdle = Math.round(containerEl.getBoundingClientRect().top - keyboardShiftPx);
+      }
+      requestKeyboardShift();
+    }
+    if (containerEl) containerTopWhenIdle = Math.round(containerEl.getBoundingClientRect().top - keyboardShiftPx);
+    vv.addEventListener('resize', onViewportChange);
+    vv.addEventListener('scroll', onViewportChange);
+    onViewportChange();
+    return () => {
+      vv.removeEventListener('resize', onViewportChange);
+      vv.removeEventListener('scroll', onViewportChange);
+      if (keyboardSettleRaf !== null) {
+        cancelAnimationFrame(keyboardSettleRaf);
+        keyboardSettleRaf = null;
+      }
+    };
+  });
+
+  // PTY echo advances the kernel cursor on a later frame. Reposition the
+  // focused IME sink from the manager's authoritative post-echo anchor.
+  $effect(() => {
+    if (!attached || !alive) return;
+    return manager.onImeAnchor(paneId, (anchor) => {
+      // §B: a fresh anchor is the signal that the binding has resolved.
+      // `anchor === null` means the kernel dropped the previous capture
+      // (rare; preserves the prior certain state to avoid a flip-flop).
+      if (anchor) anchorResolved = true;
+      if (alive && document.activeElement === hiddenInput) {
+        positionInputAtCursorOrCenter();
+        requestKeyboardShift();
+      }
+    });
+  });
+
+  // orientationchange fires the most disruptive grid change; refit explicitly
+  // (idempotent + debounced by the manager — at most one extra fit).
+  $effect(() => {
+    function onOrientation() {
+      if (attached) manager.viewportChanged(paneId);
+      if (containerEl) containerTopWhenIdle = Math.round(containerEl.getBoundingClientRect().top - keyboardShiftPx);
+      requestKeyboardShift();
+    }
+    window.addEventListener('orientationchange', onOrientation);
+    return () => window.removeEventListener('orientationchange', onOrientation);
+  });
+
+</script>
+
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div
+  class="container"
+  class:agent-needs-attention={agentNeedsAttention}
+  class:binding-uncertain={attached && bindingUncertain}
+  data-agent-state={agentState ?? ''}
+  data-binding-uncertain={attached && bindingUncertain ? 'true' : 'false'}
+  data-renderer-backend={backendName}
+  bind:this={containerEl}
+  role="application"
+  aria-busy={scrollbackLoading}
+  ontouchstart={handleTouchStart}
+  ontouchend={handleTouchEnd}
+  oncontextmenu={handleContextMenu}
+  ontouchcancel={handleTouchCancel}
+>
+  {#if pendingInputError}
+    <div role="alert" class="binding-rail input-error" data-ridge-control
+      ontouchstart={(event) => event.stopPropagation()} ontouchend={(event) => event.stopPropagation()}>
+      本次输入未送达；请等待终端就绪后重试。
+      <button onclick={() => { pendingInputError = false; }}>关闭</button>
+    </div>
+  {/if}
+  {#if scrollbackLoading}
+    <div class="scrollback-loading" role="progressbar" aria-label="Loading older terminal output"></div>
+  {/if}
+  {#if scrollbackError}
+    <button
+      class="scrollback-error"
+      onclick={(event) => {
+        event.stopPropagation();
+        const pane = ownPaneRef();
+        if (pane) onRetryScrollback?.(pane);
+      }}
+      ontouchstart={(event) => event.stopPropagation()}
+      ontouchend={(event) => event.stopPropagation()}
+      onpointerdown={(event) => event.stopPropagation()}
+      onpointerup={(event) => event.stopPropagation()}
+      onpointermove={(event) => event.stopPropagation()}
+      onmousedown={(event) => event.stopPropagation()}
+      onmouseup={(event) => event.stopPropagation()}
+      onmousemove={(event) => event.stopPropagation()}
+      oncontextmenu={(event) => event.stopPropagation()}
+      aria-label="Retry loading older terminal output"
+    >
+      Older output unavailable · Retry
+    </button>
+  {/if}
+  {#if webgpuError}
+    <div class="webgpu-error" role="alert" aria-live="assertive">
+      <span>{webgpuError}</span>
+    </div>
+  {/if}
+  {#if !webgpuError && !attached}
+    <div class="loading">{$t('mobile.initializingTerminal')}</div>
+  {/if}
+
+  <!-- The TerminalManager appends this pane's <canvas> here on attach. -->
+
+  <!-- Hidden, focusable input sink: raises the mobile keyboard on tap and
+       receives IME composition. pointer-events:none so it never steals canvas
+       clicks; it is focused programmatically. -->
+  <textarea
+    bind:this={hiddenInput}
+    class="hidden-input"
+    autocapitalize="off"
+    autocomplete="off"
+    spellcheck="false"
+    aria-hidden="true"
+    tabindex="-1"
+    disabled={attached && bindingUncertain}
+    onkeydown={handleKeydown}
+    onbeforeinput={handleBeforeInput}
+    oninput={handleInput}
+    oncompositionstart={handleCompositionStart}
+    oncompositionupdate={handleCompositionUpdate}
+    oncompositionend={handleCompositionEnd}
+    onpaste={handlePaste}
+    onfocus={() => {
+      manager.setFocused(paneId, true);
+      const pane = ownPaneRef();
+      if (pane) onPaneFocus?.(pane);
+    }}
+    onblur={() => { /* IME sink blur must not hide the active pane renderer cursor. */ }}
+  ></textarea>
+
+  <!-- §B: binding-uncertain rail — surfaces the "wait, no anchor yet" state
+       without blocking the renderer. Pure diagnostics; not interactive. -->
+  {#if attached && bindingUncertain}
+    <div class="binding-rail" role="status" aria-live="polite" data-binding-rail="true">
+      <span>{$t('mobile.binding')}</span>
+    </div>
+  {/if}
+
+  <!-- §D Floating copy pill (R8) — shown while a text selection exists. Copy
+       fires on touchend directly (with preventDefault) so the tap never falls
+       through to the container's synthesized mousedown → focusInput (which
+       popped the keyboard and swallowed the copy). Mouse events are stopped so a
+       pill tap can't reach the container's mouse handlers. -->
+  {#if hasSelectionState}
+    <button
+      class="copy-pill"
+      onclick={copyAndClear}
+      ontouchstart={(e) => e.stopPropagation()}
+      ontouchend={(e) => { e.preventDefault(); e.stopPropagation(); copyAndClear(); }}
+      onmousedown={(e) => e.stopPropagation()}
+      onmouseup={(e) => e.stopPropagation()}
+    >{$t('mobile.copy')}</button>
+  {/if}
+</div>
+
+<style>
+  .container{position:relative;flex:1;overflow:hidden;background:var(--rg-bg);touch-action:manipulation}
+  /* Temporary HITL rail only: normal running/idle panes have no border. */
+  .container.agent-needs-attention{box-shadow:inset 0 0 0 2px var(--rg-ansi-yellow,#d29922)}
+  .scrollback-loading{position:absolute;top:0;left:0;right:0;height:2px;z-index:8;overflow:hidden;background:color-mix(in srgb,var(--rg-accent) 20%,transparent)}
+  .scrollback-loading::after{content:"";position:absolute;inset:0;width:35%;background:var(--rg-accent);animation:scrollback-progress .9s ease-in-out infinite}
+  .scrollback-error{position:absolute;top:6px;left:50%;z-index:9;transform:translateX(-50%);max-width:calc(100% - 24px);padding:5px 10px;border:1px solid color-mix(in srgb,var(--rg-danger,#ef4444) 45%,transparent);border-radius:999px;background:color-mix(in srgb,var(--rg-bg,#111827) 92%,transparent);color:var(--rg-fg,#f9fafb);font-size:11px;white-space:nowrap}
+  .webgpu-error{position:absolute;inset:0;z-index:10;display:grid;place-content:center;padding:24px;background:var(--rg-bg,#111);color:var(--rg-danger,#ff7b72);font:13px/1.5 ui-monospace,monospace;text-align:center;white-space:pre-wrap}
+  @keyframes scrollback-progress{from{transform:translateX(-100%)}to{transform:translateX(385%)}}
+  /* Near-invisible input sink parked at the cursor. pointer-events:none keeps it
+     from stealing canvas clicks. Opacity must be >0 so the IME candidate window
+     anchors to a detectable element. */
+  .hidden-input{position:absolute;top:0;left:0;width:1px;height:1em;margin:0;padding:0;border:0;font-size:16px;
+    opacity:0.01;pointer-events:none;resize:none;overflow:hidden;white-space:nowrap;z-index:5;
+    background:transparent;color:transparent;caret-color:transparent;outline:none;font-family:inherit}
+  .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--rg-fg-muted);font-size:14px;z-index:4}
+  .copy-pill{position:absolute;top:8px;right:8px;z-index:6;display:flex;align-items:center;justify-content:center;height:32px;padding:0 16px;border:1px solid var(--rg-accent);border-radius:16px;background:color-mix(in srgb,var(--rg-accent) 22%,var(--rg-surface));color:var(--rg-fg);font-size:13px;font-weight:600;cursor:pointer;box-shadow:0 4px 14px -2px rgba(0,0,0,.5);-webkit-tap-highlight-color:transparent}
+  .copy-pill:active{background:color-mix(in srgb,var(--rg-accent) 36%,var(--rg-surface))}
+  /* §B: lightweight rail confirming the input sink is currently disabled
+     while the kernel anchor resolves. Lives below the canvas chrome so it
+     never overlaps the copy pill or scrollback indicator. */
+  .binding-rail{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);z-index:5;padding:4px 10px;border-radius:999px;background:color-mix(in srgb,var(--rg-bg,#111827) 88%,transparent);color:var(--rg-fg-muted);font-size:11px;letter-spacing:.02em;backdrop-filter:blur(6px);pointer-events:none;opacity:.85}
+  .binding-rail.input-error{pointer-events:auto}
+  .container.binding-uncertain .hidden-input{caret-color:transparent}
+</style>

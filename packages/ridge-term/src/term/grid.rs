@@ -307,6 +307,7 @@ pub struct Grid {
     /// 窗口，那 80ms 窗口就会吞掉它 SIGWINCH 重绘的字节（实测 ~25ms，落在窗口内）→
     /// 画面冻在旧内容。`resize_pane_inner` 据此对无集成的 pane 跳过 silence 窗口。
     seen_prompt_osc: bool,
+    prompt_pending: bool,
 }
 
 impl Grid {
@@ -335,6 +336,7 @@ impl Grid {
             frame_top_row: 0,
             pen: Attrs::DEFAULT,
             seen_prompt_osc: false,
+            prompt_pending: false,
         }
     }
 
@@ -485,6 +487,11 @@ impl Grid {
     /// 从 parser 处理 prompt-start 时调用（与 `clear_inline_tui_sticky` 同点）。
     pub fn mark_prompt_osc_seen(&mut self) {
         self.seen_prompt_osc = true;
+        self.prompt_pending = true;
+    }
+
+    pub fn take_prompt_marker(&mut self) -> bool {
+        std::mem::take(&mut self.prompt_pending)
     }
 
     /// §wsl-resize-silence — 该 pane 是否发过 prompt OSC（= 有 shell-integration）。

@@ -2,6 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { bridge } from '$lib/transport/tauriShim/bridge';
   import { get } from 'svelte/store';
   import {
     ChevronRight,
@@ -136,6 +137,16 @@
    */
   let scanController: AbortController | null = null;
   let unlistenRepoChanged: (() => void) | undefined;
+  let unlistenWatchReconnect: (() => void) | undefined;
+  let unlistenWatchError: (() => void) | undefined;
+  let watchError = $state('');
+  let watchRequestVersion = 0;
+  let watchDisposed = false;
+  async function syncGitWatches(roots: string[]): Promise<void> {
+    const version=++watchRequestVersion;
+    try {await invoke('start_watching_repos',{roots});if (version===watchRequestVersion) watchError='';}
+    catch (error) {if (version===watchRequestVersion) watchError=`Git 监听未确认：${String(error)}`;}
+  }
   let unsubCwdWatch: (() => void) | undefined;
   let unsubFsChange: (() => void) | undefined;
   /** Per-repo debounce for the filesystem-watcher listener (ε阶段二). A
@@ -282,8 +293,8 @@
       // Register discovered roots with the backend filesystem watcher so
       // external git changes (pull, commit from terminal, CI) trigger automatic
       // SCM refreshes without requiring user interaction.
-      if (activeRoots.length > 0 && isTauri()) {
-        void invoke('start_watching_repos', { roots: activeRoots }).catch(() => {});
+      if (isTauri()) {
+        void syncGitWatches(activeRoots);
       }
 
       if (selectedRepo && !activeRoots.includes(selectedRepo)) {
@@ -1801,6 +1812,15 @@ onMount(() => {
           // branch switch, sync). Initial discovery handles rootsChanged.
           scheduleWatcherRefresh(root);
         });
+        if (watchDisposed) {unlistenRepoChanged();return;}
+        unlistenWatchReconnect = bridge.onReady(() => {
+          if (!watchDisposed) void syncGitWatches(getScmCache().repoRoots);
+        });
+        if (watchDisposed) {unlistenRepoChanged();unlistenWatchReconnect();return;}
+        unlistenWatchError = await listen<{root:string;error:string}>('fs-watch-error',event => {
+          if (getScmCache().repoRoots.includes(event.payload.root)) watchError=event.payload.error;
+        });
+        if (watchDisposed) {unlistenRepoChanged();unlistenWatchReconnect();unlistenWatchError();}
       } catch (e) {
         console.warn('listen scm-repo-changed failed', e);
       }
@@ -1819,6 +1839,7 @@ onMount(() => {
 });
 
   onDestroy(() => {
+    watchDisposed=true;watchRequestVersion++;
     if (debounceHandle !== undefined) clearTimeout(debounceHandle);
     // 组件卸载（用户切走 SCM tab）时，取消正在跑的扫描，别让它在后台继续
     // 烧 git.exe。
@@ -1827,6 +1848,8 @@ onMount(() => {
     watcherDebounce.clear();
     lastWatcherRefreshAt.clear();
     unlistenRepoChanged?.();
+    unlistenWatchReconnect?.();
+    unlistenWatchError?.();
     unsubCwdWatch?.();
     unsubFsChange?.();
   });
@@ -1854,6 +1877,7 @@ onMount(() => {
 </script>
 
 <div class="scm-root flex flex-col h-full min-h-0 rg-git-graph">
+  {#if watchError}<p role="alert" class="px-2 py-1 text-[11px] text-red-300">{watchError}</p>{/if}
   <Splitpanes horizontal={true} theme="" class="rg-split flex-1 min-h-0">
     <!-- ═══ Top: Changes section ═══ -->
     <SPane size={50} minSize={20}>

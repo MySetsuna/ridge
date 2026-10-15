@@ -87,6 +87,7 @@ struct Pane {
     writer: Arc<parking_lot::Mutex<Box<dyn Write + Send>>>,
     /// 子进程句柄，供 `kill-*` 终止。
     child: Box<dyn Child + Send + Sync>,
+    child_instance: Option<ridge_core::process_identity::ProcessInstance>,
     width: u16,
     height: u16,
     cwd: Option<String>,
@@ -393,6 +394,7 @@ fn spawn_pane(
         .slave
         .spawn_command(cmd)
         .map_err(|e| NativeError::Internal(format!("spawn: {e}")))?;
+    let child_instance = child.process_id().and_then(|pid| ridge_core::process_identity::instance(pid).ok());
     // slave 句柄交给子进程后即可丢弃，OS 侧 fd 仍由子进程持有。
     drop(pair.slave);
 
@@ -442,6 +444,7 @@ fn spawn_pane(
         master: Arc::new(parking_lot::Mutex::new(pair.master)),
         writer: Arc::new(parking_lot::Mutex::new(writer)),
         child,
+        child_instance,
         width,
         height,
         cwd: cwd.map(|s| s.to_string()),
@@ -866,6 +869,7 @@ fn finalize_capture(mut rows_text: Vec<String>, lines: Option<usize>) -> String 
 /// 召唤计划里的单个面板：携带与 native 面板**共享**的 writer/master、实时输出
 /// 订阅端、首屏 replay 快照，供上层建一个领养 GUI pane（共享 PTY，不新开 shell）。
 pub struct SummonPane {
+    pub child_instance:Option<ridge_core::process_identity::ProcessInstance>,
     pub global_id: usize,
     pub width: u16,
     pub height: u16,
@@ -900,6 +904,7 @@ pub fn summon(
             g.iter().copied().collect()
         };
         out.push(SummonPane {
+            child_instance:p.child_instance.clone(),
             global_id: p.global_id,
             width: p.width,
             height: p.height,
@@ -929,6 +934,29 @@ pub fn set_attachment(socket: &str, global_id: usize, att: Option<(Uuid, Uuid)>)
             }
         }
     }
+}
+
+pub fn clear_attachment_if_owner(socket:&str,global_id:usize,owner:(Uuid,Uuid)) {
+    let mut server=registry().lock().unwrap();
+    if let Some(socket)=server.sockets.get_mut(socket) {
+        for pane in socket.sessions.iter_mut().flat_map(|session|session.windows.iter_mut()).flat_map(|window|window.panes.iter_mut()) {
+            if pane.global_id==global_id&&pane.attachment==Some(owner){pane.attachment=None;return;}
+        }
+    }
+}
+/// The live native owner identifies a borrowed GUI view; no new session is created.
+pub fn attachment_origin(view:Uuid)->Option<(String,usize)> {
+    let server=registry().lock().unwrap();
+    for (socket,state) in &server.sockets {
+        for pane in state.sessions.iter().flat_map(|session|&session.windows).flat_map(|window|&window.panes) {
+            if pane.attachment.is_some_and(|(_,id)|id==view){return Some((socket.clone(),pane.global_id));}
+        }
+    }
+    None
+}
+pub fn shutdown_all() {
+    let sockets=registry().lock().unwrap().sockets.keys().cloned().collect::<Vec<_>>();
+    for socket in sockets {let _=kill_server(&socket);}
 }
 
 /// 把 native 面板的输出广播包装成阻塞 `Read`，喂给现有 `spawn_pty_reader`，使领养
@@ -1095,7 +1123,7 @@ pub fn list_sessions_lines(socket: &str, fmt: Option<&str>) -> Vec<String> {
 }
 
 /// 跨所有 socket 列出 native 会话的结构化信息，供 GUI 侧边栏展示。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize,serde::Deserialize)]
 pub struct NativeSessionInfo {
     pub socket: String,
     pub name: String,
@@ -1329,7 +1357,7 @@ fn remove_pane_from_session(session: &mut Session, window_index: usize, pane_ind
         return false;
     }
     let mut pane = window.panes.remove(pane_index);
-    let _ = pane.child.kill();
+    terminate_owned_pane(&mut pane);
     window.active_pane = window.active_pane.min(window.panes.len().saturating_sub(1));
     if !window.panes.is_empty() {
         return false;
@@ -1350,7 +1378,7 @@ pub fn kill_window(socket: &str, target: &str, gui: &[GuiSession]) -> NativeResu
         if r.window_index < s.windows.len() {
             let mut w = s.windows.remove(r.window_index);
             for p in w.panes.iter_mut() {
-                let _ = p.child.kill();
+                terminate_owned_pane(p);
             }
             if s.active_window >= s.windows.len() {
                 s.active_window = s.windows.len().saturating_sub(1);
@@ -1390,10 +1418,20 @@ pub fn select(socket: &str, target: &str, gui: &[GuiSession]) -> NativeResult {
     Ok(String::new())
 }
 
+fn terminate_owned_pane(pane: &mut Pane) {
+    if let Some(process) = &pane.child_instance {
+        if ridge_core::process_identity::validate(process).is_ok() {
+            ridge_core::process_guard::kill_process_tree(process.pid);
+        }
+    }
+    // The retained OS child handle still targets the originally spawned child.
+    let _ = pane.child.kill();
+}
+
 fn kill_session_panes(s: &mut Session) {
     for w in s.windows.iter_mut() {
         for p in w.panes.iter_mut() {
-            let _ = p.child.kill();
+            terminate_owned_pane(p);
         }
     }
 }

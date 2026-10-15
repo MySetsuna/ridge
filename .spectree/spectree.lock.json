@@ -1,12 +1,12 @@
 {
   "version": 1,
   "changeId": "CHG-070",
-  "specHash": "56904d98f823872c78885fda7485e8290cf11682914cbaa7b47fa40ff65ca48d",
+  "specHash": "437aaf65b5ad3bcb8a2cc9dfe66a5bd41a49369c4f75f2ad61b1eaa715dddb93",
   "units": [
     {
       "id": "L2-UNIFIED-CLIENT-RUNTIME",
       "level": "L2",
-      "nodeHash": "2e4a466dd8c9ec3fa34d3a68ddd9279ede9a968dbb51ff63f2e80f685f25a173",
+      "nodeHash": "bf86c10bb76cab45311d4b201ad61bdb9916a58f9a63c21d6fd4f2f0d960b04f",
       "codeTargets": [
         "Cargo.toml",
         "Cargo.lock",
@@ -28,7 +28,11 @@
         "vite.config.js",
         "scripts/**",
         "docs/archive/**",
-        "svelte.config.js"
+        "svelte.config.js",
+        "packages/ridge-term-font/pkg/**",
+        "packages/ridge-term-render/pkg/**",
+        "src-tauri/binaries/ridge-mcp-x86_64-pc-windows-msvc.exe",
+        "src-tauri/installer-hooks.nsh"
       ],
       "testTargets": [
         "packages/ridge-core/**",
@@ -44,7 +48,7 @@
     {
       "id": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
       "level": "L3",
-      "nodeHash": "8a88ca821a9637b6cf61ef990561488c9ceb4a26cd1981f2b8438c2ef4322731",
+      "nodeHash": "759f3849538062ef47eb1f85eb148bf5d48870266d7e6a1a60bc6b1cbe46b74e",
       "codeTargets": [
         "packages/ridge-acp/**",
         "packages/ridge-mcp/**",
@@ -86,11 +90,15 @@
     "packages/ridge-kernel/**",
     "packages/ridge-mcp/**",
     "packages/ridge-remote/**",
+    "packages/ridge-term-font/pkg/**",
+    "packages/ridge-term-render/pkg/**",
     "packages/ridge-term/**",
     "packages/ridge-tmux/**",
     "scripts/**",
     "src-tauri/Cargo.toml",
+    "src-tauri/binaries/ridge-mcp-x86_64-pc-windows-msvc.exe",
     "src-tauri/capabilities/**",
+    "src-tauri/installer-hooks.nsh",
     "src-tauri/src/**",
     "src-tauri/src/bridge/**",
     "src-tauri/src/commands/**",
@@ -2521,6 +2529,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-011c3fcb8713",
-  "manifestHash": "011c3fcb8713467d5b7aaa1189f97e903308ff0043e6ce56247bd70b4151e2ed"
+  "buildId": "BUILD-b727d8b8d247",
+  "manifestHash": "b727d8b8d24707150f6c847b76124a6d0228ab9a04eeda1956944899ce700f0f"
 }

@@ -11,23 +11,11 @@
 //!   落到服务器端（远程下 `invoke` 经 WS 路由到 host，本机 `read_image` 读到的是 host 的
 //!   剪贴板而非远程用户的，故远程必须前端读图）。
 
-use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
-
-use uuid::Uuid;
-
-/// 临时图片落盘目录：`<系统临时目录>/wind-clipboard/`。
-fn temp_image_dir() -> PathBuf {
-    std::env::temp_dir().join("wind-clipboard")
-}
 
 /// 把 PNG 字节落盘成 `clip-<uuid>.png`，返回绝对路径字符串。两个 command 共用。
 fn save_png_bytes_to_temp(png: &[u8]) -> Result<String, String> {
-    let dir = temp_image_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create temp dir failed: {e}"))?;
-    let path = dir.join(format!("clip-{}.png", Uuid::new_v4()));
-    std::fs::write(&path, png).map_err(|e| format!("write png failed: {e}"))?;
-    Ok(path.to_string_lossy().into_owned())
+    use base64::Engine;
+    crate::commands::runtime::request("save_clipboard_image_to_temp",serde_json::json!({"pngBase64":base64::engine::general_purpose::STANDARD.encode(png)}),true,crate::commands::runtime::window_connection("clipboard-read"))
 }
 
 /// 把 RGBA8 像素编码为 PNG 字节（arboard 读到的剪贴板图片即 RGBA8）。
@@ -72,47 +60,6 @@ pub async fn read_clipboard_image_to_temp(app: tauri::AppHandle) -> Result<Optio
     .map_err(|_| "clipboard read task panicked".to_string())?
 }
 
-/// 远程/通用：前端传来已编码好的 PNG（base64），落盘到服务器端临时目录，返回路径。
-/// 容忍 `data:image/png;base64,...` 这种 data URL 前缀。
-#[tauri::command]
-pub async fn save_clipboard_image_to_temp(png_base64: String) -> Result<String, String> {
-    use base64::Engine;
-    // 若是 data URL（`data:...;base64,XXXX`），只取逗号后的 base64 主体。
-    let b64 = png_base64
-        .split_once(',')
-        .map(|(_, b)| b)
-        .unwrap_or(png_base64.as_str());
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(b64.as_bytes())
-        .map_err(|e| format!("invalid base64: {e}"))?;
-    tokio::task::spawn_blocking(move || save_png_bytes_to_temp(&bytes))
-        .await
-        .map_err(|_| "save image task panicked".to_string())?
-}
-
-/// 启动期清理：删掉临时目录里超过 `max_age` 的旧图片。不做单文件即时删除，避免与 CLI
-/// 异步读图竞态（CLI 可能在粘贴后才去读文件）。目录不存在时静默返回。
-pub fn cleanup_old_temp_images(max_age: Duration) {
-    let dir = temp_image_dir();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return;
-    };
-    let now = SystemTime::now();
-    for entry in entries.flatten() {
-        let Ok(meta) = entry.metadata() else { continue };
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        if now
-            .duration_since(modified)
-            .map(|age| age > max_age)
-            .unwrap_or(false)
-        {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
-}
-
 /// Windows：读剪贴板文件列表（CF_HDROP，即资源管理器里「复制」图片文件的格式），
 /// 返回第一个存在的图片文件绝对路径。剪贴板没有文件列表时 get_clipboard 返回 Err → None。
 #[cfg(windows)]
@@ -125,12 +72,4 @@ fn first_clipboard_image_file() -> Option<String> {
 #[cfg(not(windows))]
 fn first_clipboard_image_file() -> Option<String> {
     None
-}
-
-/// 把「复制为路径 / Copy as path」文本解析成真实存在的图片路径。纯逻辑在
-/// `ridge_core::clipboard`（不链 Tauri、可在 `cargo test` 下单测）；这里只做
-/// `#[tauri::command]` 薄包装暴露给前端。
-#[tauri::command]
-pub fn resolve_pasted_image_path(text: String) -> Option<String> {
-    ridge_core::clipboard::resolve_pasted_image_path(&text)
 }

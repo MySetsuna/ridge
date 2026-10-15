@@ -57,7 +57,7 @@ static GRANTS_DIR_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<std::pat
 ///    共享、tokio `#[tokio::test]` 多线程 runtime 下亦可见，专门给单测隔离用。
 /// 2. 环境变量 `RIDGE_GRANTS_DIR`（非空时）——保留兼容 shell 注入场景。
 /// 3. 默认 `ProjectDirs("ridge").config_dir().join("grants")`。
-fn grants_dir() -> Option<std::path::PathBuf> {
+pub fn grants_dir() -> Option<std::path::PathBuf> {
     if let Some(p) = GRANTS_DIR_OVERRIDE
         .get()
         .and_then(|m| m.lock().ok())
@@ -217,6 +217,28 @@ pub fn record_in_dir(dir: &Path, identity: &str, ctrl_pub: &[u8]) {
 
 pub fn revoke_all_in_dir(dir: &Path, identity: &str) {
     revoke_all_in(dir, identity);
+}
+
+/// Runtime writer preserves damaged grants and reports persistence failures.
+pub fn record_checked_in(dir: &Path, identity: &str, ctrl_pub: &[u8]) -> std::io::Result<()> {
+    let path = dir.join(grants_filename(identity));
+    let mut map: HashMap<String, i64> = match std::fs::read(&path) {
+        Ok(raw) => {
+            let plain = decrypt(&raw).ok_or_else(|| std::io::Error::other("grants decryption failed"))?;
+            serde_json::from_slice(&plain).map_err(std::io::Error::other)?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+        Err(error) => return Err(error),
+    };
+    map.insert(ctrl_pub_hash_hex(ctrl_pub), now_unix_i64());
+    write_grants_in_inner(dir, identity, &map)
+}
+
+pub fn revoke_checked_in(dir: &Path, identity: &str) -> std::io::Result<()> {
+    match std::fs::remove_file(dir.join(grants_filename(identity))) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
 }
 
 // ── 可注入目录的实现（供单测隔离）──────────────────────────────────────────────

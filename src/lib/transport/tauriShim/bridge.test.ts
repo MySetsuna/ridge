@@ -116,3 +116,43 @@ describe('TauriBridge isolated attachment', () => {
     await expect(pending).rejects.toThrow('method not supported by kernel host');
   });
 });
+
+it('retains mounted event consumers across transport replacement and clears them on full detach', () => {
+  const first = rig(); const second = rig(); const third = rig();
+  const bridge = new TauriBridge();
+  const seen: unknown[] = [];
+  let ready = 0;
+  const stopReady = bridge.onReady(() => { ready++; });
+  bridge.listen('shared-setting-changed', event => seen.push(event.payload));
+  bridge.attach(first.transport);
+  first.receive({type:'event',name:'shared-setting-changed',payload:1});
+  bridge.attach(second.transport);
+  first.receive({type:'event',name:'shared-setting-changed',payload:'stale transport'});
+  second.receive({type:'event',name:'shared-setting-changed',payload:2});
+  expect(seen).toEqual([1,2]);
+  expect(ready).toBe(2);
+  stopReady();
+  bridge.detach();
+  bridge.attach(third.transport);
+  third.receive({type:'event',name:'shared-setting-changed',payload:3});
+  expect(seen).toEqual([1,2]);
+  expect(ready).toBe(2);
+  bridge.detach();
+});
+
+it('reissues exact pane and activation subscriptions after transport replacement only', () => {
+  const first = rig(); const second = rig(); const third = rig();
+  first.transport.onTerminalFrame = () => () => {};
+  second.transport.onTerminalFrame = () => () => {};
+  const bridge = new TauriBridge();
+  bridge.attach(first.transport, {useGlobalWorkspace:false});
+  bridge.subscribePane('pane-legacy', 'workspace-a', false);
+  bridge.registerTerminalChannel('pane-canonical','workspace-b',7,{onmessage:()=>{}});
+  bridge.attach(second.transport, {useGlobalWorkspace:false});
+  expect(second.sent).toContainEqual({jsonrpc:'2.0',method:'subscribe-pane',params:{paneId:'pane-legacy',workspaceId:'workspace-a',active:false}});
+  expect(second.sent).toContainEqual({jsonrpc:'2.0',method:'subscribe-pane',params:{paneId:'pane-canonical',workspaceId:'workspace-b',activationId:7,active:true}});
+  bridge.detach();
+  bridge.attach(third.transport, {useGlobalWorkspace:false});
+  expect(third.sent.some(frame => 'method' in frame && frame.method === 'subscribe-pane')).toBe(false);
+  bridge.detach();
+});

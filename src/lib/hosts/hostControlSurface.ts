@@ -13,7 +13,7 @@ import {
   foreignCloseConfirmMessage,
   type ForeignHostLink,
 } from '../../../packages/remote/src/shared/hosts/foreignPaneStatus';
-import { sleepMsForAttempt } from '../stores/hostReconnect';
+import { outboundReconnectDelayMs as sleepMsForAttempt } from '../../../packages/remote/src/shared/hosts/outboundReconnect';
 
 export type HostKindUi = 'headless' | 'remote' | 'rdg' | 'shared' | 'sharing';
 
@@ -25,7 +25,7 @@ export interface HostRowModel {
   detail?: string;
   sessionCount: number;
   attachedCount: number;
-  reconnectAttempt: number;
+  reconnectAttempt?: number;
   reconnectPhase?: string;
   outbound?: {
     state: string;
@@ -61,7 +61,7 @@ export function buildHostRowAlerts(row: HostRowModel): string[] {
           droppedBytes: 0,
           highWaterMark: 0,
         },
-        reconnectAttempt: row.reconnectAttempt,
+        reconnectAttempt: row.reconnectAttempt ?? 0,
       }) || `状态 ${row.status}`,
     );
   }
@@ -121,7 +121,7 @@ export function showReconnectControls(row: HostRowModel): boolean {
     row.status === 'disconnected' ||
     row.status === 'error' ||
     row.status === 'connecting' ||
-    (row.reconnectAttempt > 0 && row.reconnectPhase !== 'Succeeded')
+    ((row.reconnectAttempt ?? 0) > 0 && row.reconnectPhase !== 'Succeeded')
   );
 }
 
@@ -129,7 +129,7 @@ export function showReconnectControls(row: HostRowModel): boolean {
 export function hostsPollIntervalMs(rows: HostRowModel[], defaultMs = 5000): number {
   const reconnecting = rows.some(
     (r) =>
-      r.reconnectAttempt > 0 ||
+      (r.reconnectAttempt ?? 0) > 0 ||
       r.status === 'connecting' ||
       r.reconnectPhase === 'Waiting' ||
       r.reconnectPhase === 'Resubscribing',
@@ -138,7 +138,7 @@ export function hostsPollIntervalMs(rows: HostRowModel[], defaultMs = 5000): num
   // Use smallest scheduled delay among attempts (floor 500ms)
   let min = defaultMs;
   for (const r of rows) {
-    const d = sleepMsForAttempt(Math.max(0, r.reconnectAttempt - 1));
+    const d = sleepMsForAttempt(Math.max(0, (r.reconnectAttempt ?? 0) - 1));
     if (d != null) min = Math.min(min, Math.max(500, d));
   }
   return min;

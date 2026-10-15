@@ -38,9 +38,10 @@
   // + scrollback preserved across pane switches). All touch / soft-keyboard /
   // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
   // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
-  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onInputTask: onPaneInputTask, onResize: onPaneResize, onFocus: onPaneFocus, onDrainPending, onDrainSemantic, onSemanticResync, onFirstPaint, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('WebGPU'), hostError = null, sentenceBuffer = false }: {
+  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, terminalStopped = false, onStdin: onPaneStdin, onInputTask: onPaneInputTask, onResize: onPaneResize, onFocus: onPaneFocus, onDrainPending, onDrainSemantic, onSemanticResync, onFirstPaint, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('WebGPU'), hostError = null, sentenceBuffer = false }: {
     paneId: string;
     workspaceId: string;
+    terminalStopped?: boolean;
     /** Host teammate state; retained for diagnostics, never a persistent pane border. */
     agentState?: 'idle' | 'busy' | 'starting';
     /** Short-lived HITL/user-intervention highlight; cleared on focus/claim. */
@@ -176,6 +177,7 @@
   // true once this pane's kernel is attached (or unparked) into the container.
   let attached = $state(false);
   let attachError = $state<string | null>(null);
+  let resizeError = $state<string | null>(null);
   const webgpuError = $derived(attachError ?? hostError);
   // §debug-pane-error: mirror attachError/hostError changes through
   // console.log so logcat captures which canvas mount actually set
@@ -369,7 +371,7 @@
     manager.onData(paneId, (bytes) => onStdin(bytes));
     manager.onResize(paneId, (rows, cols) => {
       const pane = ownPaneRef();
-      if (onPaneResize && pane && containerEl) {
+      if (!terminalStopped && onPaneResize && pane && containerEl) {
         return onPaneResize(pane, rows, cols, Math.round(containerEl.clientWidth), Math.round(containerEl.clientHeight));
       }
     });
@@ -379,9 +381,9 @@
     try {
       await manager.fitPaneNow(paneId, true);
     } catch (err) {
-      if (alive) attachError = `REMOTE_RESIZE_FAILED: ${err instanceof Error ? err.message : String(err)}`;
+      // A failed size claim must not hide retained canonical output.
+      if (alive) resizeError = `REMOTE_RESIZE_FAILED: ${err instanceof Error ? err.message : String(err)}`;
       console.error('[mobile-term] initial Host grid claim failed', paneId, err);
-      return;
     }
     if (!alive) { manager.park(paneId, 'component', mountedContainer); return; }
     const pendingFrames = onDrainPending?.(paneId) ?? [];
@@ -1465,6 +1467,9 @@
     <div class="webgpu-error" role="alert" aria-live="assertive">
       <span>{webgpuError}</span>
     </div>
+  {/if}
+  {#if resizeError && !terminalStopped}
+    <div role="alert" style="position:absolute;top:8px;left:8px;z-index:20;background:var(--rg-bg,#111827);color:var(--rg-fg,#f9fafb);padding:8px">{resizeError}</div>
   {/if}
   {#if !webgpuError && !attached}
     <div class="loading">{$t('mobile.initializingTerminal')}</div>

@@ -1,0 +1,1538 @@
+// src/lib/stores/hosts.ts
+//
+// 「接入」侧边栏 tab 的状态 SSOT。承载所有外部终端与共享工作区 provider：
+//   - headless：本机无头会话（复用后端 list/summon/new/terminate native 命令）
+//   - remote / rdg：远端 ridge / rdg 主机（P3/P4 接入，此处先留类型与占位）
+//
+// 生命周期不变量：
+//   工作区里关闭 foreign pane = detach（会话保活）；**真正终止**只能在此面板里做。
+import { writable, get } from 'svelte/store';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import {
+  activeWorkspaceId,
+  paneTreeStore,
+  syncPaneLayoutFromBackend,
+  dockPane,
+  setPaneCwd,
+  closePane as closeLocalPane,
+  workspacePaneTrees,
+  getAllPaneIds,
+} from '$lib/stores/paneTree';
+import type { PaneNode } from '$lib/types';
+import type { AttachRegion } from '$lib/stores/dockRegionPicker';
+import {
+  applyPumpBatch,
+  formatPumpBadge,
+  initialPumpState,
+  type PumpState,
+} from '../../../packages/remote/src/shared/hosts/livePumpPolicy';
+import {
+  snapshotFromOutboundStats,
+  hostsLineAlert,
+} from '../../../packages/remote/src/shared/hosts/liveBackpressure';
+import {
+  reduceLifecycle,
+  safeSubscribe,
+  createSession,
+  type OutboundSession,
+} from '../../../packages/remote/src/shared/hosts/outboundLifecycle';
+import {
+  planAttachSeed,
+  summarizeHistoryBadge,
+  type HistoryTailSnapshot,
+} from '$lib/hosts/foreignHistorySession';
+import * as cloudAuth from '@ridge/remote/shared/cloud/auth';
+import {
+  acceptWorkspaceShare,
+  listWorkspaceShares,
+  listSharedWithMe,
+  revokeWorkspaceShare,
+  BASE_DOMAIN,
+  cloudHttpScheme,
+} from '@ridge/remote/shared/cloud/apiClient';
+import { connectPresentationRuntime } from '$lib/transport/runtimeClient';
+import { WsDataProvider } from '$lib/transport/ws';
+import {
+  retainHostForest,
+  loadHostForest,
+  settleHostTopologyRefreshes,
+  type HostForestResult,
+  type HostForestProgressListener,
+  type HostTopologyLink,
+} from '$lib/hosts/hostForest';
+import {
+  bindRemotePane,
+  deleteRemotePane,
+  unbindRemotePane,
+  remotePaneBinding,
+  activateRemotePaneBinding,
+} from '$lib/hosts/remotePaneBindings';
+import {
+  activeSharedWorkspaceProjection,
+  currentSharedWorkspaceProjection,
+  openSharedWorkspaceProjection,
+} from '$lib/remote/cloud/sharedWorkspaceProjection';
+import { schedulePaneSizeSynchronization } from '$lib/terminal/paneSizeSync';
+import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
+
+export type HostKind = 'headless' | 'remote' | 'rdg' | 'shared' | 'sharing';
+export type HostStatus = 'connected' | 'connecting' | 'disconnected' | 'error';
+
+/** 后端 `list_native_sessions` 回传的 native 会话摘要（与 ridge_tmux::NativeSessionInfo 对齐）。 */
+export interface NativeSessionInfo {
+  socket: string;
+  name: string;
+  creator_workspace_id?: string;
+  creator_pane_id?: string;
+  windows: number;
+  panes: number;
+  width: number;
+  height: number;
+  attached: boolean;
+  cwd?: string;
+}
+
+/** 一台主机下的一个会话（provider 真正持有的 PTY）。 */
+export interface HostSession {
+  /** provider 域内会话键：headless 用 (socket, name)。 */
+  socket: string;
+  name: string;
+  creator_workspace_id?: string;
+  creator_pane_id?: string;
+  /**
+   * Remote/rdg: backend HostSessionMeta.id (pane id on host).
+   * Headless: empty (uses socket+name).
+   */
+  remoteSessionId?: string;
+  windows: number;
+  panes: number;
+  width: number;
+  height: number;
+  /** 是否已被某工作区领养（attached=已接入）。 */
+  attached: boolean;
+  /** 跨账号工作区分享元数据；普通终端会话均为空。 */
+  workspaceId?: string;
+  shareGrantId?: string;
+  shareStatus?: 'pending' | 'active' | 'declined' | 'revoked';
+  ownerUsername?: string;
+  deviceName?: string;
+  granteeLabel?: string;
+  cwd?: string;
+  isAgent?: boolean;
+}
+
+export interface HostWorkspace {
+  id: string;
+  name: string;
+  active: boolean;
+  sessions: HostSession[];
+  shareGrantId?: string;
+  shareStatus?: NonNullable<HostSession['shareStatus']>;
+  role?: 'operator';
+}
+
+export interface Host {
+  id: string;
+  kind: HostKind;
+  label: string;
+  status: HostStatus;
+  /** 远端主机的状态说明（如「live 传输待接入」）；headless 无。 */
+  detail?: string;
+  sessions: HostSession[];
+  workspaces: HostWorkspace[];
+}
+
+/** 后端 `host_list_snapshot` 回传的远端主机记录（crate::hosts::HostRecord，不含凭据）。 */
+interface HostRecord {
+  runtimeManaged?: boolean;
+  id: string;
+  kind: 'remote' | 'rdg';
+  label: string;
+  addr: string;
+  status: HostStatus;
+  detail: string;
+  sessions: { id: string; title: string; attached: boolean }[];
+}
+
+export const hostsStore = writable<Host[]>([]);
+export const hostsLoading = writable(false);
+/** 上次刷新错误（面板顶部提示用），空串=无错误。 */
+export const hostsError = writable('');
+export interface HostConnectProgress {
+  phase: 'connecting' | 'loading-workspaces' | 'error';
+  label: string;
+  detail: string;
+}
+/** Long host handshakes outlive the modal; keep their progress visible in the panel. */
+export const hostConnectProgress = writable<HostConnectProgress | null>(null);
+
+const HEADLESS_HOST_ID = 'headless';
+
+activeSharedWorkspaceProjection.subscribe((projection) => {
+  if (!projection) return;
+  hostsStore.update((hosts) => hosts.map((host) => {
+    if (host.kind !== 'shared') return host;
+    const workspace = host.workspaces.find((entry) => entry.shareGrantId === projection.grantId);
+    if (!workspace) return host;
+    const seed = host.sessions.find((session) => session.shareGrantId === projection.grantId);
+    const base: HostSession = seed ?? {
+      socket: host.id,
+      name: projection.name,
+      workspaceId: projection.workspaceId,
+      shareGrantId: projection.grantId,
+      shareStatus: workspace.shareStatus,
+      ownerUsername: projection.ownerUsername,
+      deviceName: projection.deviceName,
+      windows: 0,
+      panes: 0,
+      width: 0,
+      height: 0,
+      attached: true,
+    };
+    const projected = projection.panes.map((pane): HostSession => ({
+      ...base,
+      name: pane.title || pane.id,
+      remoteSessionId: pane.id,
+      windows: 0,
+      panes: 1,
+      attached: true,
+      cwd: pane.cwd,
+      isAgent: pane.isAgent,
+    }));
+    const otherSessions = host.sessions.filter((session) => session.shareGrantId !== projection.grantId);
+    return {
+      ...host,
+      sessions: [...otherSessions, ...projected],
+      workspaces: host.workspaces.map((entry) => entry.shareGrantId === projection.grantId
+        ? { ...entry, name: projection.name, sessions: projected }
+        : entry),
+    };
+  }));
+});
+
+export interface RegisteredHostLink {
+  kernelOwned?: boolean;
+  hostId: string;
+  kind: 'remote' | 'rdg';
+  label: string;
+  detail?: string;
+  deviceName?: string;
+  link: HostTopologyLink;
+  manualDisconnected?: boolean;
+}
+
+const registeredHostLinks = new Map<string, RegisteredHostLink>();
+const topologyByHost = new Map<string, HostForestResult>();
+const topologyInFlight = new Map<string, Promise<HostForestResult | null>>();
+const topologyRetryInFlight = new Map<string, Promise<HostForestResult | null>>();
+const topologyAbortByHost = new Map<string, AbortController>();
+const topologyGenerationByHost = new Map<string, number>();
+let hostsRefreshGeneration = 0;
+let hostConnectGeneration = 0;
+
+function supersedeHostTopology(hostId: string): number {
+  topologyAbortByHost.get(hostId)?.abort();
+  topologyAbortByHost.delete(hostId);
+  topologyInFlight.delete(hostId);
+  topologyRetryInFlight.delete(hostId);
+  const generation = (topologyGenerationByHost.get(hostId) ?? 0) + 1;
+  topologyGenerationByHost.set(hostId, generation);
+  return generation;
+}
+
+export function registerHostTopologyLink(source: RegisteredHostLink): () => void {
+  const previous = registeredHostLinks.get(source.hostId);
+  if (previous && previous.link !== source.link) {
+    supersedeHostTopology(source.hostId);
+    previous.link.disconnect();
+  }
+  registeredHostLinks.set(source.hostId, source);
+  publishPendingHost(source);
+  return () => {
+    if (registeredHostLinks.get(source.hostId)?.link !== source.link) return;
+    supersedeHostTopology(source.hostId);
+    registeredHostLinks.delete(source.hostId);
+    topologyByHost.delete(source.hostId);
+  };
+}
+
+export function hasHostTopologyLink(hostId: string): boolean {
+  return registeredHostLinks.has(hostId);
+}
+
+export function hostShareDeviceName(hostId: string): string | undefined {
+  return registeredHostLinks.get(hostId)?.deviceName;
+}
+
+export async function refreshHostTopology(
+  hostId: string,
+  options?: { supersede?: boolean; onProgress?: HostForestProgressListener },
+): Promise<HostForestResult | null> {
+  const source = registeredHostLinks.get(hostId);
+  if (!source) return null;
+  if (source.manualDisconnected || source.link.state() === 'disconnected') {
+    return topologyByHost.get(hostId) ?? null;
+  }
+  if (options?.supersede) supersedeHostTopology(hostId);
+  const current = topologyInFlight.get(hostId);
+  if (current !== undefined) return current;
+  const generation = (topologyGenerationByHost.get(hostId) ?? 0) + 1;
+  topologyGenerationByHost.set(hostId, generation);
+  const controller = new AbortController();
+  topologyAbortByHost.set(hostId, controller);
+  let pending!: Promise<HostForestResult | null>;
+  pending = loadHostForest(
+    [{ hostId, link: source.link, signal: controller.signal }],
+    (progress) => {
+      if (
+        controller.signal.aborted ||
+        topologyGenerationByHost.get(hostId) !== generation ||
+        registeredHostLinks.get(hostId)?.link !== source.link
+      ) return;
+      publishHostTopology(hostId, progress);
+      options?.onProgress?.(progress);
+    },
+  )
+    .then(async ([loaded]) => {
+      if (
+        controller.signal.aborted ||
+        topologyGenerationByHost.get(hostId) !== generation ||
+        registeredHostLinks.get(hostId)?.link !== source.link
+      ) {
+        return null;
+      }
+      const result = retainHostForest(topologyByHost.get(hostId), loaded);
+      topologyByHost.set(hostId, result);
+      if (isTauri() && !source.kernelOwned && !result.error) {
+        await invoke('register_frontend_host', {
+          hostId,
+          kind: source.kind,
+          label: source.label,
+          sessions: result.workspaces.flatMap((workspace) =>
+            workspace.panes.map((pane) => ({ id: pane.id, title: pane.title }))),
+        });
+      }
+      return result;
+    })
+    .finally(() => {
+      if (topologyInFlight.get(hostId) === pending) topologyInFlight.delete(hostId);
+      if (topologyAbortByHost.get(hostId) === controller) {
+        topologyAbortByHost.delete(hostId);
+      }
+    });
+  topologyInFlight.set(hostId, pending);
+  return pending;
+}
+
+export function cancelHostTopologyRetry(hostId: string): void {
+  supersedeHostTopology(hostId);
+}
+
+/** Refresh one linked host only. Existing in-flight work is shared. */
+export async function retryHostTopology(hostId: string): Promise<HostForestResult | null> {
+  const current = topologyRetryInFlight.get(hostId);
+  if (current) return current;
+  const pending = refreshLinkedHost(hostId).finally(() => {
+    if (topologyRetryInFlight.get(hostId) === pending) {
+      topologyRetryInFlight.delete(hostId);
+    }
+  });
+  topologyRetryInFlight.set(hostId, pending);
+  return pending;
+}
+
+/** Refresh and publish one host only; unrelated slow hosts cannot delay it. */
+async function refreshLinkedHost(
+  hostId: string,
+  onProgress?: HostForestProgressListener,
+): Promise<HostForestResult | null> {
+  const result = await refreshHostTopology(hostId, { supersede: true, onProgress });
+  if (result) publishHostTopology(hostId, result);
+  return result;
+}
+
+async function refreshLinkedHostAfterMutation(hostId: string): Promise<void> {
+  const result = await refreshLinkedHost(hostId);
+  if (!result) throw new Error('远端操作已完成，但主机连接已失效');
+  if (result.error) {
+    throw new Error(`远端操作已完成，但工作区刷新失败：${result.error}`);
+  }
+}
+
+export async function closeHostPane(hostId: string, workspaceId: string, paneId: string): Promise<void> {
+  const source = registeredHostLinks.get(hostId);
+  if (!source) throw new Error('该主机未提供 pane 删除能力');
+  const closed = await deleteRemotePane(hostId, workspaceId, paneId, source.link, closeLocalPane);
+  if (!closed) throw new Error('远端 pane 删除失败');
+  await refreshLinkedHostAfterMutation(hostId);
+}
+
+function topologyLink(hostId: string): HostTopologyLink {
+  const source = registeredHostLinks.get(hostId);
+  if (!source || source.manualDisconnected) throw new Error('主机未连接');
+  return source.link;
+}
+
+export async function createHostWorkspace(hostId: string, name?: string): Promise<void> {
+  const id = await topologyLink(hostId).createWorkspace(name);
+  if (!id) throw new Error('远端工作区创建失败');
+  await refreshLinkedHostAfterMutation(hostId);
+}
+
+export async function openHostWorkspace(hostId: string, workspaceId: string): Promise<void> {
+  if (!await topologyLink(hostId).switchWorkspace(workspaceId)) {
+    throw new Error('远端工作区打开失败');
+  }
+  await refreshLinkedHostAfterMutation(hostId);
+}
+
+export async function renameHostWorkspace(
+  hostId: string,
+  workspaceId: string,
+  name: string,
+): Promise<void> {
+  const link = topologyLink(hostId);
+  if (!link.renameWorkspace || !await link.renameWorkspace(workspaceId, name)) {
+    throw new Error('远端工作区重命名失败');
+  }
+  await refreshLinkedHostAfterMutation(hostId);
+}
+
+export async function saveHostWorkspace(
+  hostId: string,
+  workspaceId: string,
+  name: string,
+): Promise<void> {
+  const link = topologyLink(hostId);
+  if (!link.saveWorkspace || !await link.saveWorkspace(workspaceId, name)) {
+    throw new Error('远端工作区保存失败');
+  }
+  await refreshLinkedHostAfterMutation(hostId);
+}
+
+export async function createHostPane(hostId: string, workspaceId: string): Promise<void> {
+  const link = topologyLink(hostId);
+  if (!await link.switchWorkspace(workspaceId)) throw new Error('远端工作区打开失败');
+  if (!await link.createPane()) throw new Error('远端 pane 创建失败');
+  await refreshLinkedHostAfterMutation(hostId);
+}
+
+export async function closeHostWorkspace(hostId: string, workspaceId: string): Promise<void> {
+  if (!await topologyLink(hostId).closeWorkspace(workspaceId)) {
+    throw new Error('远端工作区关闭失败');
+  }
+  await refreshLinkedHostAfterMutation(hostId);
+}
+
+export async function markHostPaneAgent(
+  hostId: string,
+  workspaceId: string,
+  paneId: string,
+  on: boolean,
+): Promise<void> {
+  const link = topologyLink(hostId);
+  const mark = link.markPaneAgent;
+  if (!mark) throw new Error('该主机不支持 Agent 标记');
+  await mark.call(link, workspaceId, paneId, on);
+  await refreshLinkedHostAfterMutation(hostId);
+}
+
+export async function changeHostPaneShell(
+  hostId: string,
+  workspaceId: string,
+  paneId: string,
+  shellId: string,
+): Promise<void> {
+  const link = topologyLink(hostId);
+  if (!link.listShells || !link.changePaneShell) throw new Error('该主机不支持切换 shell');
+  const shells = await link.listShells();
+  const shell = shells.find((candidate) => candidate.id === shellId);
+  if (!shell) throw new Error('所选 shell 不可用');
+  await link.changePaneShell(workspaceId, paneId, shell);
+  await refreshLinkedHostAfterMutation(hostId);
+}
+
+export async function hostShellChoices(hostId: string): Promise<Array<{ id: string; label: string }>> {
+  const link = topologyLink(hostId);
+  if (!link.listShells) return [];
+  return (await link.listShells()).map(({ id, label }) => ({ id, label }));
+}
+
+function paneSession(
+  hostId: string,
+  workspaceId: string,
+  pane: HostForestResult['workspaces'][number]['panes'][number],
+): HostSession {
+  return {
+    socket: hostId,
+    name: pane.title,
+    remoteSessionId: pane.id,
+    workspaceId,
+    windows: 0,
+    panes: 1,
+    width: 0,
+    height: 0,
+    attached: false,
+    cwd: pane.cwd,
+    isAgent: pane.isAgent,
+  };
+}
+
+function linkedHost(
+  source: RegisteredHostLink,
+  topology: HostForestResult,
+  previous?: Host,
+): Host {
+  const attached = collectAttachedRemotePanes(previous?.sessions ?? []);
+  const paneOccurrences = new Map<string, number>();
+  for (const workspace of topology.workspaces) {
+    for (const pane of workspace.panes) {
+      paneOccurrences.set(pane.id, (paneOccurrences.get(pane.id) ?? 0) + 1);
+    }
+  }
+  const workspaces = topology.workspaces.map((workspace) => ({
+    id: workspace.id,
+    name: workspace.name,
+    active: workspace.active,
+    sessions: workspace.panes.map((pane) => ({
+      ...paneSession(source.hostId, workspace.id, pane),
+      attached: isRemotePaneAttached(
+        attached,
+        workspace.id,
+        pane.id,
+        paneOccurrences.get(pane.id) ?? 0,
+      ),
+    })),
+  }));
+  let status: HostStatus = 'connecting';
+  if (source.manualDisconnected || source.link.state() === 'disconnected') status = 'disconnected';
+  else if (topology.error) status = 'error';
+  else if (!topology.loading && source.link.state() === 'connected') status = 'connected';
+  return {
+    id: source.hostId,
+    kind: source.kind,
+    label: source.label,
+    status,
+    detail: topology.error
+      || (topology.loading
+        ? `正在读取远端工作区（${topology.loadedWorkspaces ?? 0}/${topology.totalWorkspaces ?? 0}）…`
+        : topology.warning || source.detail),
+    workspaces,
+    sessions: workspaces.flatMap((workspace) => workspace.sessions),
+  };
+}
+
+function pendingLinkedHost(source: RegisteredHostLink, previous?: Host): Host {
+  const disconnected = source.manualDisconnected || source.link.state() === 'disconnected';
+  return {
+    id: source.hostId,
+    kind: source.kind,
+    label: source.label,
+    status: disconnected ? 'disconnected' : 'connecting',
+    detail: disconnected
+      ? source.detail
+      : previous?.detail || '正在读取远端工作区…',
+    workspaces: previous?.workspaces ?? [],
+    sessions: previous?.sessions ?? [],
+  };
+}
+
+function publishPendingHost(source: RegisteredHostLink): void {
+  hostsStore.update((hosts) => {
+    const index = hosts.findIndex((host) => host.id === source.hostId);
+    const projected = pendingLinkedHost(source, index >= 0 ? hosts[index] : undefined);
+    if (index < 0) return [...hosts, projected];
+    const next = [...hosts];
+    next[index] = projected;
+    return next;
+  });
+}
+
+function publishHostTopology(hostId: string, loaded: HostForestResult): void {
+  const source = registeredHostLinks.get(hostId);
+  if (!source) return;
+  const result = retainHostForest(topologyByHost.get(hostId), loaded);
+  topologyByHost.set(hostId, result);
+  hostsStore.update((hosts) => {
+    const index = hosts.findIndex((host) => host.id === hostId);
+    const projected = linkedHost(source, result, index >= 0 ? hosts[index] : undefined);
+    if (index < 0) return [...hosts, projected];
+    const next = [...hosts];
+    next[index] = projected;
+    return next;
+  });
+}
+
+/**
+ * 刷新主机/会话快照。当前聚合后端 native 会话为「本机（无头）」单一 host；
+ * 远端/rdg host 在 P3/P4 由各自连接推送后合并进 hostsStore。
+ */
+export async function refreshHosts(): Promise<void> {
+  const refreshGeneration = ++hostsRefreshGeneration;
+  hostsLoading.set(true);
+  const previousById = new Map(get(hostsStore).map((host) => [host.id, host]));
+  const next: Host[] = [];
+  const native = await loadNativeHost();
+  if (native.host) next.push(native.host);
+  let err = native.error ?? '';
+
+  const remote = await loadRemoteHosts();
+  next.push(...remote.hosts);
+  err ||= remote.error ?? '';
+
+  const auth = cloudAuth.snapshot();
+  if (auth.userToken) next.push(...await loadSharedHosts(auth.userToken));
+
+  mergeRegisteredHosts(next, previousById);
+  if (refreshGeneration !== hostsRefreshGeneration) return;
+  hostsStore.set(next);
+  hostsError.set(err);
+  hostsLoading.set(false);
+  settleTopologyRefreshes(refreshGeneration);
+}
+
+async function loadNativeHost(): Promise<{ host: Host | null; error?: string }> {
+  try {
+    const sessions = await invoke<NativeSessionInfo[]>('list_native_sessions');
+    return {
+      host: {
+        id: HEADLESS_HOST_ID,
+        kind: 'headless',
+        label: '本机（无头）',
+        status: 'connected',
+        sessions: sessions ?? [],
+        workspaces: [{
+          id: HEADLESS_HOST_ID,
+          name: '无头会话',
+          active: true,
+          sessions: sessions ?? [],
+        }],
+      },
+    };
+  } catch (error) {
+    return { host: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function loadRemoteHosts(): Promise<{ hosts: Host[]; error?: string }> {
+  try {
+    const recs = await invoke<HostRecord[]>('host_list_snapshot');
+    for (const record of recs ?? []) {
+      if (!record.runtimeManaged || record.status !== 'connected') continue;
+      const current = registeredHostLinks.get(record.id);
+      if (current && !current.manualDisconnected && current.link.state() === 'connected') {
+        restoreForeignBindings(current);
+        continue;
+      }
+      const restored = await attachKernelHostProjection(record);
+      registerHostTopologyLink(restored);
+      restoreForeignBindings(restored);
+    }
+    return {
+      hosts: (recs ?? []).map((record) => {
+        const sessions = (record.sessions ?? []).map((session) => ({
+          socket: record.id,
+          name: session.title || session.id,
+          remoteSessionId: session.id,
+          windows: 0,
+          panes: 0,
+          width: 0,
+          height: 0,
+          attached: session.attached,
+        }));
+        return {
+          id: record.id,
+          kind: record.kind,
+          label: record.label,
+          status: record.status,
+          detail: record.detail,
+          sessions,
+          workspaces: sessions.length ? [{
+            id: `${record.id}:legacy`,
+            name: '远端会话',
+            active: true,
+            sessions,
+          }] : [],
+        };
+      }),
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return { hosts: [], error: `远端主机拓扑不可用：${detail}` };
+  }
+}
+
+async function loadSharedHosts(userToken: string): Promise<Host[]> {
+  try {
+    const { shares } = await listSharedWithMe(userToken);
+    const activeProjection = currentSharedWorkspaceProjection();
+    const grouped = new Map<string, Host>();
+    for (const share of shares) {
+      if (!['pending', 'active'].includes(share.status)) continue;
+      const key = `shared:${share.ownerUserId}:${share.deviceName}`;
+      const host = grouped.get(key) ?? createSharedHost(key, share);
+      grouped.set(key, host);
+      host.status = share.status === 'active' ? 'connected' : host.status;
+      const base = {
+        socket: key,
+        workspaceId: share.workspaceId,
+        shareGrantId: share.id,
+        shareStatus: share.status,
+        ownerUsername: share.ownerUsername,
+        deviceName: share.deviceName,
+      };
+      const projection = activeProjection?.grantId === share.id ? activeProjection : null;
+      const sessions: HostSession[] = projection
+        ? projection.panes.map((pane) => ({
+            ...base,
+            name: pane.title || pane.id,
+            remoteSessionId: pane.id,
+            windows: 0,
+            panes: 1,
+            width: 0,
+            height: 0,
+            attached: true,
+            cwd: pane.cwd,
+            isAgent: pane.isAgent,
+          }))
+        : [{
+            ...base,
+            name: `工作区 ${share.workspaceId.slice(0, 8)}`,
+            remoteSessionId: share.workspaceId,
+            windows: 1,
+            panes: 0,
+            width: 0,
+            height: 0,
+            attached: false,
+          }];
+      host.sessions.push(...sessions);
+      host.workspaces.push({
+        id: share.workspaceId,
+        name: projection?.name || `工作区 ${share.workspaceId.slice(0, 8)}`,
+        active: share.status === 'active',
+        sessions: projection ? sessions : [],
+        shareGrantId: share.id,
+        shareStatus: share.status,
+        role: 'operator',
+      });
+    }
+    const outgoing = await listWorkspaceShares(userToken);
+    const visible = outgoing.shares.filter((share) => ['pending', 'active'].includes(share.status));
+    if (visible.length) grouped.set('sharing:outgoing', outgoingHost(visible));
+    return [...grouped.values()];
+  } catch {
+    return [];
+  }
+}
+
+type SharedWithMeShare = Awaited<ReturnType<typeof listSharedWithMe>>['shares'][number];
+type WorkspaceShare = Awaited<ReturnType<typeof listWorkspaceShares>>['shares'][number];
+
+function createSharedHost(key: string, share: SharedWithMeShare): Host {
+  return {
+    id: key,
+    kind: 'shared',
+    label: `${share.ownerUsername || '共享用户'} · ${share.deviceName}`,
+    status: share.status === 'active' ? 'connected' : 'connecting',
+    detail: '跨账号单工作区；不可二次转发主机或 Remote',
+    sessions: [],
+    workspaces: [],
+  };
+}
+
+function outgoingHost(shares: WorkspaceShare[]): Host {
+  return {
+    id: 'sharing:outgoing',
+    kind: 'sharing',
+    label: '本机已分享',
+    status: 'connected',
+    detail: '在此撤销邀请或已生效分享',
+    sessions: shares.map((share) => ({
+      socket: 'sharing:outgoing',
+      name: `工作区 ${share.workspaceId.slice(0, 8)}`,
+      workspaceId: share.workspaceId,
+      shareGrantId: share.id,
+      shareStatus: share.status,
+      granteeLabel: share.granteeUsername || share.granteeEmail,
+      windows: 1,
+      panes: 0,
+      width: 0,
+      height: 0,
+      attached: false,
+    })),
+    workspaces: shares.map((share) => ({
+      id: share.workspaceId,
+      name: `工作区 ${share.workspaceId.slice(0, 8)}`,
+      active: share.status === 'active',
+      sessions: [],
+      shareGrantId: share.id,
+      shareStatus: share.status,
+      role: 'operator',
+    })),
+  };
+}
+
+function mergeRegisteredHosts(next: Host[], previousById: Map<string, Host>): void {
+  for (const source of registeredHostLinks.values()) {
+    const topology = topologyByHost.get(source.hostId);
+    const index = next.findIndex((host) => host.id === source.hostId);
+    const previous = index >= 0 ? next[index] : previousById.get(source.hostId);
+    const projected = topology
+      ? linkedHost(source, topology, previous)
+      : pendingLinkedHost(source, previous);
+    if (index >= 0) next[index] = projected;
+    else next.push(projected);
+  }
+}
+
+function settleTopologyRefreshes(refreshGeneration: number): void {
+  const jobs = [...registeredHostLinks.keys()]
+    .filter((hostId) => !topologyByHost.get(hostId)?.error)
+    .map((hostId) => ({ hostId, refresh: () => refreshHostTopology(hostId) }));
+  settleHostTopologyRefreshes(jobs, (result) => {
+    if (refreshGeneration === hostsRefreshGeneration) publishHostTopology(result.hostId, result);
+  }).catch((error) => console.warn('[hosts] topology refresh settlement failed', error));
+}
+
+
+/** 新建一个本机无头会话（仅创建、不接入）；返回会话名。 */
+export async function newHeadlessSession(name?: string, cwd?: string): Promise<string> {
+  const created = await invoke<string>('new_headless_session', {
+    name: name?.trim() || null,
+    cwd: cwd?.trim() || null,
+  });
+  await refreshHosts();
+  return created;
+}
+
+/**
+ * **真正终止**一个会话（杀进程）。这是唯一的真关闭入口。
+ * 若该会话当前被领养，后端经 reader-EOF 自动把工作区视图摘除。
+ */
+export async function terminateSession(socket: string, target: string): Promise<void> {
+  await invoke('terminate_native_session', { socket, target });
+  await refreshHosts();
+}
+
+/**
+ * 接入：把一个会话召唤进当前查看的工作区。P1 直接 summon（后端决定落点，通常拆分活动
+ * pane）；P2 在右键/拖拽场景下走 dock 区域选择的 attach_foreign_session 精确落点。
+ */
+export interface HostAttachRequest {
+  kind: 'headless' | 'remote' | 'rdg';
+  socket: string;
+  target: string;
+  hostId?: string;
+  sessionId?: string;
+  workspaceId?: string;
+  targetPaneId?: string;
+  region?: AttachRegion;
+}
+
+/** Single attach pipeline for button, drag/drop, and programmatic callers. */
+export async function attachHostSession(request: HostAttachRequest): Promise<string | null> {
+  if (request.kind === 'remote' || request.kind === 'rdg') {
+    const hostId = request.hostId || request.socket;
+    const sessionId = request.sessionId || request.target;
+    return attachRemoteHostSessionImpl(
+      hostId,
+      sessionId,
+      request.workspaceId,
+      request.targetPaneId,
+      request.region,
+    );
+  }
+
+  const wid = request.workspaceId || get(activeWorkspaceId);
+  const docking = Boolean(request.targetPaneId && request.region);
+  const before = docking ? new Set(getAllPaneIds(await invoke<PaneNode>('get_pane_layout_for', { workspaceId: wid }))) : new Set<string>();
+  const shown = await invoke<number>('summon_native_session', {
+    socket: request.socket,
+    target: request.target,
+    workspaceId: wid ?? null,
+  });
+  let paneId: string | null = null;
+  if (docking && shown > 0) {
+    const layout = await invoke<PaneNode>('get_pane_layout_for', { workspaceId: wid });
+    const adopted = newNativeViews(layout, before, request.socket);
+    if (adopted.length !== shown) throw new Error('Native layout changed during attach; refresh before docking');
+    paneId = adopted[0];
+    await syncPaneLayoutFromBackend();
+    if (paneId && paneId !== request.targetPaneId && request.targetPaneId && request.region) {
+      await dockPane(paneId, request.targetPaneId, request.region);
+    }
+  }
+  await refreshHosts();
+  return paneId;
+}
+
+export async function attachSession(
+  socket: string,
+  target: string,
+  workspaceId?: string
+): Promise<void> {
+  await attachHostSession({ kind: 'headless', socket, target, workspaceId });
+}
+
+/** Summon returns a count; identify the real borrowed views from the shared layout. */
+function newNativeViews(node: PaneNode, before: Set<string>, socket: string): string[] {
+  if (node.type === 'leaf') {
+    return !before.has(node.id) && node.origin?.kind === 'headless' && node.origin.host_label === socket ? [node.id] : [];
+  }
+  return node.children.flatMap(child => newNativeViews(child, before, socket));
+}
+
+/**
+ * 区域精确接入：召唤会话后，把新领养的 pane 停靠到 `targetPaneId` 的指定方向。
+ * 复用既有且经测试的 summon + dock_pane 两个原语（无需新后端命令）：
+ *   1. summon 把会话领养进工作区（后端决定初始落点），返回其 native global_id；
+ *   2. 重新同步布局后按 origin 会话键 `socket:gid` 定位新 pane；
+ *   3. dock_pane 把它移动到目标方向半区。
+ */
+export async function attachSessionAt(
+  socket: string,
+  target: string,
+  targetPaneId: string,
+  region: AttachRegion
+): Promise<void> {
+  await attachHostSession({
+    kind: 'headless',
+    socket,
+    target,
+    targetPaneId,
+    region,
+  });
+}
+
+/**
+ * 登记一台远端主机（ridge LAN / rdg）。凭据仅传给后端 live 传输里程使用，不落库。
+ * P3/P4 基础层：当前仅登记 + 展示，真正出站连接与 PTY 流为下一里程。
+ */
+export async function connectHost(
+  kind: 'remote' | 'rdg',
+  label: string,
+  addr: string,
+  token?: string,
+  channel: 'lan' | 'public' = 'lan',
+): Promise<void> {
+  const generation = ++hostConnectGeneration;
+  const progressLabel = label.trim() || addr.trim();
+  const publishProgress = (value: HostConnectProgress | null): void => {
+    if (generation === hostConnectGeneration) hostConnectProgress.set(value);
+  };
+  publishProgress({
+    phase: 'connecting',
+    label: progressLabel,
+    detail: channel === 'lan' ? '正在连接局域网主机…' : '正在建立公网加密通道…',
+  });
+
+  try {
+    const source = channel === 'lan'
+      ? await openLanHost(kind, label, addr, token)
+      : await openPublicHost(kind, label, addr, token);
+    registerHostTopologyLink(source);
+    publishProgress({
+      phase: 'loading-workspaces',
+      label: progressLabel,
+      detail: '连接成功，正在读取远端工作区…',
+    });
+    const connectedHostId = source.hostId;
+    const topology = await refreshLinkedHost(connectedHostId, (progress) => {
+      publishProgress({
+        phase: 'loading-workspaces',
+        label: progressLabel,
+        detail: progress.totalWorkspaces
+          ? `正在读取远端工作区（${progress.loadedWorkspaces ?? 0}/${progress.totalWorkspaces}）…`
+          : '已连接，远端暂无工作区',
+      });
+    });
+    if (!topology || topology.error) throw new Error(topology?.error || '主机连接已失效');
+    publishProgress(null);
+  } catch (error) {
+    publishProgress({
+      phase: 'error',
+      label: progressLabel,
+      detail: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
+async function openLanHost(
+  kind: 'remote' | 'rdg',
+  label: string,
+  addr: string,
+  token?: string,
+): Promise<RegisteredHostLink> {
+  const raw = addr.trim();
+  const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
+  const host = url.hostname;
+  const secure = url.protocol === 'https:';
+  const port = Number(url.port || (secure ? 443 : 80));
+  const code = token?.trim();
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535 || !code) {
+    throw new Error('LAN 主机地址或 TOTP 无效');
+  }
+  const hostId = await invoke<string>('connect_host', { kind, label, addr: url.origin, token: code });
+  const records = await invoke<HostRecord[]>('host_list_snapshot');
+  const record = records.find(record => record.id === hostId);
+  if (!record || record.status !== 'connected') {
+    const detail = record?.detail || 'LAN host connection failed';
+    throw new Error(lanConnectionError(host, port, secure, detail, /authentication/i.test(detail) ? 'user' : 'channel'));
+  }
+  return attachKernelHostProjection({ ...record, detail: `${secure ? 'wss' : 'ws'}://${host}:${port}`, label: label.trim() || host });
+}
+
+function restoreForeignBindings(source: RegisteredHostLink): void {
+  const walk = (node: PaneNode, workspaceId: string): void => {
+    if (node.type !== 'leaf') { for (const child of node.children) walk(child, workspaceId); return; }
+    const origin = node.origin;
+    if (!origin || origin.kind === 'headless' || origin.host_id !== source.hostId || !origin.workspace_id) return;
+    if (remotePaneBinding(node.id)?.link === source.link) return;
+    bindRemotePane({ localPaneId: node.id, hostId: source.hostId, workspaceId: origin.workspace_id,
+      remotePaneId: origin.session_id, link: source.link });
+    if (workspaceId === get(activeWorkspaceId) && TerminalManager.tryInstance()?.getKernel(node.id)) {
+      activateRemotePaneBinding(node.id);
+      schedulePaneSizeSynchronization(node.id);
+    }
+  };
+  for (const [id, tree] of get(workspacePaneTrees)) walk(tree, id);
+}
+
+async function attachKernelHostProjection(record: HostRecord): Promise<RegisteredHostLink> {
+  const { connection: link, transport } = await connectPresentationRuntime(undefined, record.id);
+  transport.dispose();
+  let files: WsDataProvider | null = null;
+  const topology = link as HostTopologyLink;
+  topology.inspectPath = async (path, signal) => {
+    try {
+      files ??= new WsDataProvider(link);
+      await files.getFileTree(path, 0, signal);
+      return { exists: true, isDirectory: true };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const detail = error instanceof Error ? error.message : String(error);
+      if (/not a directory/i.test(detail)) return { exists: true, isDirectory: false };
+      if (/not exist|no such file|not found/i.test(detail)) return { exists: false };
+      throw error;
+    }
+  };
+  return {
+    hostId: record.id,
+    kernelOwned: true,
+    kind: record.kind,
+    label: record.label,
+    detail: record.detail,
+    link,
+  };
+}
+
+export function lanTrustUrl(host: string, port: number): string {
+  return `https://${host}:${port}/`;
+}
+
+export function lanConnectionError(
+  host: string,
+  port: number,
+  secure: boolean,
+  detail?: string,
+  category?: 'user' | 'parked' | 'channel',
+): string {
+  if (!secure || category === 'user' || category === 'parked') {
+    return detail || 'LAN 主机拒绝连接';
+  }
+  const url = lanTrustUrl(host, port);
+  return `${detail || '安全 WebSocket 握手失败'}。若首次连接，请先在默认浏览器打开 ${url}，确认主机指纹并信任 Ridge 证书，再重试。`;
+}
+
+async function openPublicHost(
+  kind: 'remote' | 'rdg',
+  label: string,
+  addr: string,
+  token?: string,
+): Promise<RegisteredHostLink> {
+  const deviceName = addr.trim();
+  const code = token?.trim();
+  if (!deviceName || !code) throw new Error('公网设备名或 TOTP 无效');
+  const auth = cloudAuth.snapshot();
+  const username = auth.user?.username;
+  if (!auth.userToken || !username) throw new Error('公网接入需登录含用户名的 Ridge 账户');
+  let legacyFingerprint: string | null = null;
+  try { if (typeof window !== 'undefined') legacyFingerprint = window.localStorage.getItem(`ridge.cloud.trust.${deviceName}-${username}`); }
+  catch { throw new Error('读取旧版 Cloud 设备指纹失败，原记录保留'); }
+  const hostId = await invoke<string>('connect_host', { kind, label: label.trim() || deviceName, addr: deviceName,
+    cloud: { userToken: auth.userToken, username, deviceName, code, baseDomain: BASE_DOMAIN, plaintext: cloudHttpScheme(BASE_DOMAIN) === 'http',
+      legacyFingerprint,
+    },
+  });
+  const records = await invoke<HostRecord[]>('host_list_snapshot');
+  const record = records.find(record => record.id === hostId);
+  if (!record || record.status !== 'connected') throw new Error(record?.detail || '公网主机连接失败');
+  return { ...await attachKernelHostProjection(record), deviceName };
+}
+
+
+/** 断开一台远端主机（保留登记）。 */
+export async function disconnectHost(hostId: string): Promise<void> {
+  const linked = registeredHostLinks.get(hostId);
+  if (linked) {
+    if (linked.kernelOwned) await invoke('disconnect_host', { hostId });
+    linked.link.disconnect();
+    linked.manualDisconnected = true;
+    await refreshHosts();
+    return;
+  }
+  await invoke('disconnect_host', { hostId });
+  await refreshHosts();
+}
+
+/** 忘记一台远端主机（移除登记）。 */
+export async function forgetHost(hostId: string): Promise<void> {
+  const linked = registeredHostLinks.get(hostId);
+  if (linked) {
+    // A live frontend link is only the transport adapter.  Its topology was
+    // already persisted by `register_frontend_host`; remove that kernel record
+    // too, otherwise a restart restores the host that the user just forgot.
+    if (isTauri()) await invoke('forget_host', { hostId });
+    linked.link.disconnect();
+    registeredHostLinks.delete(hostId);
+    topologyByHost.delete(hostId);
+    await refreshHosts();
+    return;
+  }
+  await invoke('forget_host', { hostId });
+  await refreshHosts();
+}
+
+export async function acceptSharedWorkspace(grantId: string): Promise<void> {
+  const token = cloudAuth.snapshot().userToken;
+  if (!token) throw new Error('请先登录 Ridge Cloud');
+  await acceptWorkspaceShare(token, grantId);
+  await refreshHosts();
+}
+
+export async function openSharedWorkspace(session: HostSession): Promise<void> {
+  if (!session.shareGrantId || !session.ownerUsername || !session.deviceName) {
+    throw new Error('共享工作区信息不完整');
+  }
+  await openSharedWorkspaceProjection({
+    grantId: session.shareGrantId,
+    workspaceId: session.workspaceId || session.remoteSessionId || '',
+    name: session.name,
+    ownerUsername: session.ownerUsername,
+    deviceName: session.deviceName,
+  });
+  await refreshHosts();
+}
+
+export async function revokeSharedWorkspace(grantId: string): Promise<void> {
+  const token = cloudAuth.snapshot().userToken;
+  if (!token) throw new Error('请先登录 Ridge Cloud');
+  await revokeWorkspaceShare(token, grantId);
+  await refreshHosts();
+}
+
+// ── Outbound foreign PTY (OP-WS-PTY / OP-WS-LIFE / OP-BP-GUARD) ──────────
+
+export interface OutboundStats {
+  hostId: string;
+  state: string;
+  subscribed: string[];
+  helloOk: number;
+  listOk: number;
+  subscribeOk: number;
+  writeOk: number;
+  resizeOk: number;
+  resizeSuppressed?: number;
+  fanoutBytes: number;
+  reconnectAttempts: number;
+  resubscribeOk: number;
+  errors: number;
+  liveBufferCap?: number;
+  liveBufferBytes?: number;
+  liveDroppedBytes?: number;
+}
+
+/** Per-host reconnect attempt counters (desktop UI). */
+export const outboundReconnectAttempts = writable<Record<string, number>>({});
+
+/** C54 product path: client-side pump shed model keyed by hostId. */
+export const outboundPumpByHost = writable<Record<string, PumpState>>({});
+
+/** C58 product path: outbound lifecycle mirror for attached sessions. */
+export const outboundLifecycleByKey = writable<Record<string, OutboundSession>>({});
+
+/** C50 product path: history tail badges from get_foreign_history_tail. */
+export const foreignHistoryByKey = writable<Record<string, HistoryTailSnapshot>>({});
+
+/** Remote pane identity is scoped by workspace. */
+export function remotePaneKey(workspaceId: string, paneId: string): string {
+  return `${workspaceId}\0${paneId}`;
+}
+
+export interface AttachedRemotePaneIndex {
+  scoped: Set<string>;
+  /** Legacy host snapshots omitted workspaceId; use only when unambiguous. */
+  unscoped: Set<string>;
+}
+
+export function collectAttachedRemotePanes(
+  sessions: readonly Pick<HostSession, 'workspaceId' | 'remoteSessionId' | 'attached'>[],
+): AttachedRemotePaneIndex {
+  const scoped = new Set<string>();
+  const unscoped = new Set<string>();
+  for (const session of sessions) {
+    if (!session.attached || !session.remoteSessionId) continue;
+    if (session.workspaceId) scoped.add(remotePaneKey(session.workspaceId, session.remoteSessionId));
+    else unscoped.add(session.remoteSessionId);
+  }
+  return { scoped, unscoped };
+}
+
+export function isRemotePaneAttached(
+  index: AttachedRemotePaneIndex,
+  workspaceId: string,
+  paneId: string,
+  paneOccurrences: number,
+): boolean {
+  return index.scoped.has(remotePaneKey(workspaceId, paneId))
+    || (paneOccurrences === 1 && index.unscoped.has(paneId));
+}
+
+/**
+ * Attach a remote host session into the active workspace as a foreign pane.
+ * Backend: attach_host_session (subscribe when outbound bound).
+ */
+async function attachRemoteHostSessionImpl(
+  hostId: string,
+  sessionId: string,
+  remoteWorkspaceId?: string,
+  targetPaneId?: string,
+  region?: AttachRegion,
+): Promise<string> {
+  // C50: refresh history tail + seed plan before attach (product path).
+  await fetchForeignHistoryTail(hostId, sessionId);
+  const seedPlan = attachSeedPlanForSession(hostId, sessionId, false);
+  if (seedPlan.seedBeforeLive && seedPlan.seedBytes > 0) {
+    // Backend attach_host_session already seeds parser from ForeignHistoryStore;
+    // plan is retained for UI diagnostics.
+  }
+  const wid = get(activeWorkspaceId);
+  const linked = registeredHostLinks.get(hostId);
+  const paneId = await invoke<string>('attach_host_session', {
+    hostId,
+    sessionId,
+    workspaceId: wid ?? null,
+    remoteWorkspaceId,
+  });
+  if (linked && wid) {
+    const session = get(hostsStore)
+      .find((host) => host.id === hostId)
+      ?.sessions.find((item) => item.remoteSessionId === sessionId
+        && (!remoteWorkspaceId || item.workspaceId === remoteWorkspaceId));
+    bindRemotePane({
+      localPaneId: paneId,
+      hostId,
+      workspaceId: session?.workspaceId || '',
+      remotePaneId: sessionId,
+      link: linked.link,
+    });
+    setPaneCwd(wid, paneId, session?.cwd);
+  }
+  noteLifecycleSubscribe(hostId, sessionId);
+  await refreshLinkedHost(hostId);
+  await syncPaneLayoutFromBackend();
+  if (targetPaneId && region && paneId !== targetPaneId) {
+    // dockPane performs another layout sync and force-fits every mounted pane.
+    // That preserves the first real DOM-measured Resize for remote attachments.
+    await dockPane(paneId, targetPaneId, region);
+  }
+  schedulePaneSizeSynchronization(paneId);
+  return paneId;
+}
+
+export async function attachRemoteHostSession(
+  hostId: string,
+  sessionId: string,
+  remoteWorkspaceId?: string,
+): Promise<string> {
+  const paneId = await attachHostSession({
+    kind: registeredHostLinks.get(hostId)?.kind ?? 'remote',
+    socket: hostId,
+    target: sessionId,
+    hostId,
+    sessionId,
+    workspaceId: remoteWorkspaceId,
+  });
+  if (!paneId) throw new Error('远端 pane 接入失败');
+  return paneId;
+}
+
+/**
+ * Detach local foreign view only (remote PTY continues).
+ */
+export async function detachRemoteHostSession(paneId: string): Promise<void> {
+  const wid = get(activeWorkspaceId);
+  // Best-effort: mark lifecycle detached for any sessions currently attached
+  // on non-headless hosts (C58 product path; remote PTY not killed).
+  const hosts = get(hostsStore);
+  for (const h of hosts) {
+    if (h.kind === 'headless') continue;
+    for (const s of h.sessions) {
+      if (s.attached && s.remoteSessionId) {
+        noteLifecycleDetach(h.id, s.remoteSessionId);
+      }
+    }
+  }
+  await invoke('detach_host_session', {
+    paneId,
+    workspaceId: wid ?? null,
+  });
+  unbindRemotePane(paneId);
+  await refreshHosts();
+  await syncPaneLayoutFromBackend();
+}
+
+/** Drain outbound inbound buffers into foreign parsers (Hosts poll path). */
+export async function pumpHostOutput(hostId: string): Promise<number> {
+  try {
+    const n = await invoke<number>('pump_host_output', { hostId });
+    // C54: feed livePumpPolicy after each real pump so UI badges track shed.
+    if (n > 0) {
+      notePumpBatch(hostId, n);
+      noteLifecycleFanout(hostId, n);
+    }
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
+/** Apply a pump batch into client-side backpressure model (product path). */
+export function notePumpBatch(hostId: string, byteLength: number, capHint = 256 * 1024): void {
+  outboundPumpByHost.update((m) => {
+    const prev = m[hostId] ?? initialPumpState(capHint);
+    const { state } = applyPumpBatch(prev, {
+      hostId,
+      sessionId: '*',
+      byteLength,
+    });
+    // Align cap with server stats when larger
+    return { ...m, [hostId]: state };
+  });
+}
+
+export function pumpBadgeForHost(hostId: string): string {
+  const st = get(outboundPumpByHost)[hostId];
+  if (!st) return '';
+  return formatPumpBadge(st);
+}
+
+export function noteLifecycleFanout(hostId: string, bytes: number): void {
+  outboundLifecycleByKey.update((m) => {
+    const next = { ...m };
+    for (const [k, sess] of Object.entries(m)) {
+      if (sess.hostId !== hostId || !sess.subscribed) continue;
+      next[k] = reduceLifecycle(sess, { type: 'fanout', bytes });
+    }
+    return next;
+  });
+}
+
+export function noteLifecycleSubscribe(hostId: string, sessionId: string): void {
+  const key = `${hostId}\0${sessionId}`;
+  outboundLifecycleByKey.update((m) => {
+    const prev = m[key] ?? createSession(hostId, sessionId);
+    let s = reduceLifecycle(prev, { type: 'hello_ok' });
+    s = reduceLifecycle(s, { type: 'list_ok', sessions: [sessionId] });
+    s = safeSubscribe(s, sessionId);
+    return { ...m, [key]: s };
+  });
+}
+
+export function noteLifecycleDetach(hostId: string, sessionId: string): void {
+  const key = `${hostId}\0${sessionId}`;
+  outboundLifecycleByKey.update((m) => {
+    const prev = m[key];
+    if (!prev) return m;
+    return {
+      ...m,
+      [key]: reduceLifecycle(prev, { type: 'detach_view' }),
+    };
+  });
+}
+
+export async function fetchOutboundStats(hostId: string): Promise<OutboundStats | null> {
+  try {
+    const st = await invoke<OutboundStats>('get_outbound_stats', { hostId });
+    // Sync client pump cap/bytes from server DTO when present.
+    if (st && (st.liveBufferCap || st.liveBufferBytes || st.liveDroppedBytes)) {
+      outboundPumpByHost.update((m) => {
+        const cap = Number(st.liveBufferCap ?? m[hostId]?.capBytes ?? 256 * 1024);
+        const prev = m[hostId] ?? initialPumpState(cap);
+        return {
+          ...m,
+          [hostId]: {
+            ...prev,
+            capBytes: cap > 0 ? cap : prev.capBytes,
+            bufferedBytes: Number(st.liveBufferBytes ?? prev.bufferedBytes),
+            droppedBytes: Number(st.liveDroppedBytes ?? prev.droppedBytes),
+            highWaterMark: Math.max(
+              prev.highWaterMark,
+              Number(st.liveBufferBytes ?? 0),
+            ),
+          },
+        };
+      });
+    }
+    // Perf (iter 50): do NOT auto-fetch get_live_backpressure here — that was
+    // a second IPC on every Hosts poll. Callers that need aggregate BP invoke
+    // fetchLiveBackpressure explicitly (or rely on liveDroppedBytes above).
+    return st;
+  } catch {
+    return null;
+  }
+}
+
+export interface LiveBackpressureDto {
+  hostId: string;
+  cap: number;
+  buffered: number;
+  dropped: number;
+  highWater: number;
+  sessions: number;
+  sheddingSessions: number;
+  level: string;
+  totalDroppedGlobal: number;
+  injects: number;
+}
+
+export const liveBackpressureByHost = writable<Record<string, LiveBackpressureDto>>({});
+
+/** C8 product path: desktop get_live_backpressure aggregate. */
+export async function fetchLiveBackpressure(
+  hostId: string,
+): Promise<LiveBackpressureDto | null> {
+  try {
+    const raw = await invoke<LiveBackpressureDto>('get_live_backpressure', { hostId });
+    liveBackpressureByHost.update((m) => ({ ...m, [hostId]: raw }));
+    if (raw && (raw.dropped > 0 || raw.buffered > 0)) {
+      outboundPumpByHost.update((m) => {
+        const prev = m[hostId] ?? initialPumpState(Number(raw.cap) || 256 * 1024);
+        return {
+          ...m,
+          [hostId]: {
+            ...prev,
+            capBytes: Number(raw.cap) || prev.capBytes,
+            bufferedBytes: Number(raw.buffered),
+            droppedBytes: Math.max(prev.droppedBytes, Number(raw.dropped)),
+            highWaterMark: Math.max(prev.highWaterMark, Number(raw.highWater)),
+          },
+        };
+      });
+    }
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * After refresh: for each Connected remote host, pump outbound live output.
+ * This is the shipped UI-side read-loop companion to pump_host_output.
+ */
+export async function pumpAllConnectedOutbound(): Promise<number> {
+  const hosts = get(hostsStore);
+  const targets = hosts.filter((h) =>
+    h.kind !== 'headless'
+    && h.status === 'connected'
+    && !registeredHostLinks.has(h.id));
+  // Perf (iter 50): pump hosts in parallel — sequential IPC stacked latency.
+  const parts = await Promise.all(targets.map((h) => pumpHostOutput(h.id)));
+  return parts.reduce((a, b) => a + b, 0);
+}
+
+/** C50: pull foreign history tail for attach badge (desktop-only command). */
+export async function fetchForeignHistoryTail(
+  hostId: string,
+  sessionId: string,
+): Promise<HistoryTailSnapshot | null> {
+  try {
+    const raw = await invoke<{
+      hostId: string;
+      sessionId: string;
+      bytes: number;
+      cap: number;
+      dataB64?: string;
+    }>('get_foreign_history_tail', { hostId, sessionId });
+    const snap: HistoryTailSnapshot = {
+      hostId: raw.hostId,
+      sessionId: raw.sessionId,
+      bytes: raw.bytes,
+      cap: raw.cap,
+      dataB64: raw.dataB64,
+    };
+    const key = `${hostId}\0${sessionId}`;
+    foreignHistoryByKey.update((m) => ({ ...m, [key]: snap }));
+    return snap;
+  } catch {
+    return null;
+  }
+}
+
+export function historyBadgeForSession(hostId: string, sessionId: string): string {
+  const snap = get(foreignHistoryByKey)[`${hostId}\0${sessionId}`];
+  return summarizeHistoryBadge(snap ?? null);
+}
+
+/** Plan attach seed from last known history (product decision for UI). */
+export function attachSeedPlanForSession(
+  hostId: string,
+  sessionId: string,
+  reattach: boolean,
+): ReturnType<typeof planAttachSeed> {
+  const snap = get(foreignHistoryByKey)[`${hostId}\0${sessionId}`];
+  return planAttachSeed({
+    localTailBytes: snap?.bytes ?? 0,
+    rows: 24,
+    cols: 80,
+    reattach,
+    hostHistoryKnown: (snap?.bytes ?? 0) > 0,
+  });
+}
+
+/** Operator line for a host from pump + reconnect (Hosts panel). */
+export function hostOperatorAlert(
+  hostId: string,
+  reconnectAttempt: number,
+): string | null {
+  const pump = get(outboundPumpByHost)[hostId];
+  const bp = pump
+    ? {
+        bufferedBytes: pump.bufferedBytes,
+        capBytes: pump.capBytes,
+        droppedBytes: pump.droppedBytes,
+        highWaterMark: pump.highWaterMark,
+      }
+    : snapshotFromOutboundStats({});
+  return hostsLineAlert({ backpressure: bp, reconnectAttempt });
+}
+
+/** Record a reconnect attempt for UI badge (pure counter; schedule in outboundReconnect). */
+export function noteOutboundReconnectAttempt(hostId: string): number {
+  let next = 0;
+  outboundReconnectAttempts.update((m) => {
+    next = (m[hostId] ?? 0) + 1;
+    return { ...m, [hostId]: next };
+  });
+  return next;
+}
+
+export function resetOutboundReconnectAttempt(hostId: string): void {
+  outboundReconnectAttempts.update((m) => {
+    const copy = { ...m };
+    delete copy[hostId];
+    return copy;
+  });
+}
+

@@ -108,6 +108,7 @@ struct Replay {
     id: Option<String>,
     committed: u64,
     agent: Option<String>,
+    items:std::collections::HashMap<String,u64>,
 }
 fn replay(path: &Path, length: u64) -> Result<Replay, String> {
     let mut latest = Replay::default();
@@ -122,11 +123,23 @@ fn replay(path: &Path, length: u64) -> Result<Replay, String> {
         }
         Ok(())
     })?;
+    records(path,length,|sequence,record|{
+        if record["params"]["protocol"]=="app-server" && record["params"]["update"]["sessionUpdate"]=="protocol_item"
+            && record["params"]["update"]["method"]!="item/started"
+            && (if record["phase"]=="replay" {latest.id.as_deref()==record["replayId"].as_str()}else{latest.id.is_none()||sequence>latest.committed}) {
+            if let Some(id)=record["params"]["update"]["item"]["id"].as_str(){latest.items.insert(id.to_owned(),sequence);}
+        }
+        Ok(())
+    })?;
     Ok(latest)
 }
 fn visible(sequence: u64, record: &Value, replay: &Replay) -> bool {
     if record["kind"] == "replay_begin" || record["kind"] == "replay_committed" {
         return false;
+    }
+    if record["params"]["protocol"]=="app-server" && (record["params"]["wire"]["method"].as_str().is_some_and(|method|method.ends_with("/delta")||method.ends_with("Delta")) || record["params"]["update"]["method"]=="item/started") {return false;}
+    if record["params"]["protocol"]=="app-server" && record["params"]["update"]["sessionUpdate"]=="protocol_item" {
+        if let Some(id)=record["params"]["update"]["item"]["id"].as_str(){if replay.items.get(id)!=Some(&sequence){return false;}}
     }
     if record["kind"] != "session_update" && record["params"]["update"].is_null() {
         return true;
@@ -139,6 +152,15 @@ fn visible(sequence: u64, record: &Value, replay: &Replay) -> bool {
 pub(crate) fn content(record: &Value, native: bool) -> (String, String) {
     let update = &record["params"]["update"];
     if let Some(kind) = update["sessionUpdate"].as_str() {
+        if kind=="protocol_item" {
+            let item=&update["item"];
+            let kind=item["type"].as_str().unwrap_or("protocol_item");
+            let text=if kind=="userMessage" {
+                item["content"].as_array().map(|content|content.iter().filter_map(|part|part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default()
+            }else if kind=="agentMessage" {item["text"].as_str().unwrap_or("").to_owned()}
+            else if native {item.to_string()}else{json!({"kind":kind,"id":item["id"],"status":item["status"]}).to_string()};
+            return (kind.into(),text);
+        }
         if matches!(
             kind,
             "agent_message_chunk" | "user_message_chunk" | "agent_thought_chunk"
@@ -217,7 +239,7 @@ fn row(
         json!({"id":format!("{}:{sequence}",member.agent_id),"memberId":member.agent_id,"workspaceId":member.workspace_id,
         "sessionId":member.session_id,"sequence":sequence,"agent":replay.agent.as_deref().unwrap_or(&member.agent_id),"cwd":if native {Some(&member.cwd)}else{None},
         "title":kind,"kind":kind,"text":fragment,"timestamp":record["timestamp"].as_u64().unwrap_or(0),"timestampSource":"observed",
-        "source":if record["phase"]=="replay" {"acp-replay"}else if !record["params"]["update"].is_null() {"acp-live"}else{"ridge-ledger"},
+        "source":if record["params"]["protocol"]=="app-server" {if record["phase"]=="replay" {"app-server-replay"}else{"app-server-live"}}else if record["phase"]=="replay" {"acp-replay"}else if !record["params"]["update"].is_null() {"acp-live"}else{"ridge-ledger"},
         "coverage":if replay.id.is_some() {"Agent 回放与接入后记录；接入前完整度未独立验证"}else{"自接入起记录；接入前覆盖未知"},
         "textOffset":offset,"textLength":count,"textCursor":next,"previousTextCursor":previous,
         "groupId":record["payload"]["groupContext"]["groupId"],"groupRevision":record["payload"]["groupContext"]["groupRevision"],"groupTaskId":record["groupTaskId"].as_str().or(record["payload"]["groupContext"]["groupTaskId"].as_str()),
@@ -494,4 +516,54 @@ mod tests {
         assert_eq!(joined, text);
         assert!(value["previousTextCursor"].is_string());
     }
+}
+
+/// Redacted facts from the durable permission ledger, never inferred execution/risk.
+pub(crate) fn audit(state:&AppState,args:&Value)->Result<Value,String> {
+    if args.get("limit").is_some_and(|value|!value.is_null() && !value.is_u64()) {return Err("invalid audit limit".into());}
+    let limit=args["limit"].as_u64().unwrap_or(20).clamp(1,50) as usize;
+    if args.get("workspaceId").is_some_and(|value|!value.is_null() && !value.is_string()) {return Err("invalid workspaceId".into());}
+    let workspace=args["workspaceId"].as_str();
+    if let Some(workspace)=workspace {
+        let id=Uuid::parse_str(workspace).map_err(|_|"invalid workspaceId")?;
+        if state.workspaces.lock().map_err(|_|"workspace unavailable")?.workspace(id).is_none() {return Err("workspace not found".into());}
+    }
+    let members=state.roster.lock().map_err(|_|"roster unavailable")?.agent_identities().into_iter()
+        .filter(|member|member.protocol_binding.is_some() && workspace.is_none_or(|workspace|member.workspace_id==workspace)).cloned().collect::<Vec<_>>();
+    let mut rows=BTreeMap::new();
+    for entry in state.gateway_permissions.audit(workspace)? {
+        rows.insert(Key(entry["ts"].as_u64().ok_or("invalid gateway audit timestamp")?,entry["id"].as_str().ok_or("invalid gateway audit ID")?.to_owned(),0),entry);
+        if rows.len()>limit {rows.pop_first();}
+    }
+
+    if workspace.is_none() {
+        for entry in state.execution_rejections.audit()? {
+            rows.insert(Key(entry["ts"].as_u64().ok_or("invalid rejection audit timestamp")?,
+                entry["id"].as_str().ok_or("invalid rejection audit ID")?.to_owned(), 0), entry);
+            if rows.len() > limit { rows.pop_first(); }
+        }
+    }
+
+    for member in members {
+        let file=path(&member.agent_id)?;
+        let Some(length)=state.permissions.history_length(&member.agent_id,&file)? else {continue;};
+        records(&file,length,|sequence,record| {
+            let cancelled=record["kind"]=="permission_cancelled";
+            if !cancelled && record["kind"]!="permission_decided" {return Ok(());}
+            let verdict=if cancelled {"cancelled"} else {match record["optionKind"].as_str() {
+                Some("allow_once"|"allow_always")=>"approve",
+                Some("reject_once"|"reject_always")=>"reject",
+                _=>"unknown",
+            }};
+            let timestamp=record["timestamp"].as_u64().ok_or("invalid permission audit timestamp")?;
+            let id=record["id"].as_str().ok_or("invalid permission audit ID")?;
+            let source=match record["source"].as_str() {Some("local")=>"local",Some("remote")=>"remote",_=>"unknown"};
+            rows.insert(Key(timestamp,member.agent_id.clone(),sequence),json!({"id":id,"ts":timestamp,"source":source,
+                "initiator":member.agent_id,"verdict":verdict,"riskLevel":"unknown",
+                "reasonSummary":"ACP permission request","outcome":if cancelled {"cancelled"} else {"decided"}}));
+            if rows.len()>limit {rows.pop_first();}
+            Ok(())
+        })?;
+    }
+    Ok(json!({"items":rows.into_values().rev().collect::<Vec<_>>(),"cap":50}))
 }

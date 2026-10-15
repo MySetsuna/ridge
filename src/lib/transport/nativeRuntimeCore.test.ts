@@ -17,9 +17,25 @@ describe('native presentation command boundary', () => {
   it('retains only audited native presentation plugin/bootstrap calls', async () => {
     runtime.mockClear();os.mockResolvedValueOnce('grant');
     expect(await invoke('bootstrap_runtime_client')).toBe('grant');
+    os.mockResolvedValueOnce('launch hint');
+    expect(await invoke('get_startup_context')).toBe('launch hint');
     os.mockResolvedValueOnce('dialog');expect(await invoke('plugin:dialog|open')).toBe('dialog');
+    os.mockResolvedValueOnce(undefined);
+    await invoke('reveal_in_file_manager', { path: 'C:/workspace/readme.md' });
+    expect(os).toHaveBeenCalledWith('reveal_in_file_manager', { path: 'C:/workspace/readme.md' });
     expect(runtime).not.toHaveBeenCalled();
     runtime.mockResolvedValueOnce('service');expect(await invoke('plugin:shell|execute')).toBe('service');
     expect(os).not.toHaveBeenCalledWith('plugin:shell|execute',{});
+  });
+  it('keeps OS clipboard access native while terminal mutations use Runtime', async () => {
+    runtime.mockClear();os.mockClear();
+    for (const method of ['read_clipboard_image_to_temp','read_clipboard_file_paths','write_clipboard_file_paths','read_clipboard_sequence']) {
+      await invoke(method);expect(os).toHaveBeenCalledWith(method,{});
+    }
+    expect(runtime).not.toHaveBeenCalled();os.mockClear();
+    await invoke('clear_pane_terminal',{workspaceId:'workspace',paneId:'pane'});
+    await invoke('toggle_mode',{paneId:'pane',mode:'Terminal'});
+    expect(runtime).toHaveBeenCalledWith('clear_pane_terminal',{workspaceId:'workspace',paneId:'pane'});
+    expect(os).not.toHaveBeenCalled();
   });
 });

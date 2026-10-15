@@ -282,8 +282,8 @@ function unwrapEnvelope<T>(envelope: Envelope<T> | null, status: number): T {
  *
  * 桌面（Tauri WebView，Windows 源 `http://tauri.localhost`）对云主域是**跨域** fetch，
  * 受 CORS 管控；云端 allowlist 只放行 `https://tauri.localhost` → WebView fetch 被拦
- * → 旧实现抛 `NETWORK`（「网络连接失败」）。故桌面改经 Rust 代理（`invoke('cloud_http')`，
- * 见 src-tauri/src/commands/cloud_http.rs）绕过浏览器 CORS/CSP；web-remote（浏览器同源
+ * → 旧实现抛 `NETWORK`（「网络连接失败」）。故桌面经 Runtime 代理（`invoke('cloud_http')`，
+ * 见 packages/ridge-kernel/src/cloud/http.rs）绕过浏览器 CORS/CSP；web-remote（浏览器同源
  * 访问云子域）仍走原生 fetch，并保留 `credentials` 供父域 SSO cookie。
  */
 async function requestOnce<T>(path: string, opts: RequestOptions = {}): Promise<T> {
@@ -294,7 +294,7 @@ async function requestOnce<T>(path: string, opts: RequestOptions = {}): Promise<
   const url = `${API_BASE}${path}`;
   const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
 
-  // ── 桌面：Rust HTTP 代理（绕过 WebView 跨域 CORS）──────────────────────────
+  // ── 桌面：共享 Runtime HTTP 代理（绕过 WebView 跨域 CORS）─────────────────
   if (inTauri()) {
     let status: number;
     let text: string;

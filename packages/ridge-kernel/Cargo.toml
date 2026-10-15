@@ -12,6 +12,19 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+bytes = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+hkdf = "0.12"
+sha2 = "0.10"
+chacha20poly1305 = "0.10"
+rand = "0.8"
+webrtc = { version = "0.11", optional = true }
+cloud-ws = { package = "tokio-tungstenite", version = "0.23", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "0.26"
+rustls-native-certs = "0.8"
+ridge-signaling = { git = "https://github.com/MySetsuna/ridge-signaling", rev = "7f958215d5d694746d743805226da1083fd494d8" }
 axum = { version = "0.7", features = ["ws"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -19,23 +32,33 @@ clap = { version = "4", features = ["derive"] }
 dirs = "5"
 futures = "0.3"
 parking_lot = "0.12"
+notify = { version = "6", features = ["macos_fsevent"] }
 portable-pty = "0.8"
 ridge-core = { path = "../ridge-core" }
+ridge-tmux = { path = "../ridge-tmux", features = ["http"] }
+rusqlite = { version = "0.31", features = ["bundled", "backup"] }
 ridge-acp = { path = "../ridge-acp" }
 ridge-remote = { path = "../ridge-remote" }
 ridge-mcp = { path = "../ridge-mcp", features = ["axum-transport"] }
 ridge-term = { path = "../ridge-term", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "net", "time"] }
+sysinfo = "0.31"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "net", "time", "process", "io-util"] }
 tokio-tungstenite = "0.21"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "v7"] }
 thiserror = "1"
+url = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
 # integration smoke via binary spawn uses std only
+ed25519-dalek = { version = "2", features = ["std", "zeroize"] }
+
+[features]
+default = ["rtc"]
+rtc = ["dep:webrtc"]

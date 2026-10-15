@@ -10,6 +10,7 @@
 
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
+  import { bridge } from '$lib/transport/tauriShim/bridge';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { ShieldAlert, Check, X, Pencil } from 'lucide-svelte';
   import { parseHitlRequest, riskLabel, type HitlRequest, type HitlVerdict } from './teammateModel';
@@ -27,6 +28,9 @@
   let draft = $state('');
   let busy = $state(false);
   let decisionError = $state('');
+  let mounted = false;
+  let externalReadGeneration = 0;
+  let pendingReadGeneration = 0;
 
   function enqueue(req: HitlRequest) {
     // 去重：同 id 不重复入队。
@@ -43,16 +47,19 @@
     try {
       const resolved = await invoke<boolean>(RESOLVE_CMD, { id: req.id, verdict, replacement });
       if (!resolved) {
-        decisionError = '审批已失效或已被其他端处理；原操作未执行。请重新发起，或改用执行网关允许的方式。';
+        decisionError = '审批已失效或已由其他客户端处理；请核对原任务状态，勿重复提交。';
         return;
       }
       // The originating request remains suspended. Approval therefore resumes
       // the exact original action without asking the user to re-enter it.
+      ++pendingReadGeneration;
       queue = queue.filter(item => item.id !== req.id);
+      void refreshPending().catch(() => {});
       editing = false;
       draft = '';
     } catch (error) {
-      decisionError = `未能提交审批决定：${error instanceof Error ? error.message : String(error)}。请求仍保留，可重试。`;
+      decisionError = `审批结果未确认：${error instanceof Error ? error.message : String(error)}。请核对原任务状态，勿重复提交任务。`;
+      void refreshPending().catch(() => {});
     } finally {
       busy = false;
     }
@@ -64,16 +71,31 @@
     busy = true;
     decisionError = '';
     try {
-      if (await invoke<boolean>(RESOLVE_CMD, { id: req.id, optionId })) queue = queue.filter(item => item.id !== req.id);
+      if (await invoke<boolean>(RESOLVE_CMD, { id: req.id, optionId })) {
+        ++pendingReadGeneration;
+        queue = queue.filter(item => item.id !== req.id);
+        void refreshPending().catch(() => {});
+      }
       else decisionError = '审批已失效或已由其他客户端处理。';
     } catch (error) {
-      decisionError = `未能提交审批决定：${error instanceof Error ? error.message : String(error)}`;
+      decisionError = `审批结果未确认：${error instanceof Error ? error.message : String(error)}；请核对原任务状态。`;
+      void refreshPending().catch(() => {});
     } finally { busy = false; }
   }
 
   async function refreshPending() {
+    const generation = ++pendingReadGeneration;
     const items = await invoke<unknown>('list_hitl_pending_local');
-    if (Array.isArray(items)) queue = [...items.map(parseHitlRequest).filter((item): item is HitlRequest => item !== null), ...queue.filter(item => item.kind === 'external_rejection')];
+    if (!mounted || generation !== pendingReadGeneration || !Array.isArray(items)) return;
+    queue = [...items.map(parseHitlRequest).filter((item): item is HitlRequest => item !== null),
+      ...queue.filter(item => item.kind === 'external_rejection')];
+  }
+  async function refreshExternalRejections() {
+    const generation = ++externalReadGeneration;
+    const items = await invoke<unknown>('list_execution_rejections_local');
+    if (!mounted || generation !== externalReadGeneration || !Array.isArray(items)) return;
+    queue = [...queue.filter(item => item.kind !== 'external_rejection'),
+      ...items.map(parseHitlRequest).filter((item): item is HitlRequest => item?.kind === 'external_rejection')];
   }
   async function cancelOriginalTask() {
     const req = current;
@@ -101,9 +123,12 @@
         decisionError = '该拒绝事件已失效；外部操作未被 Ridge 重试。';
         return;
       }
+      ++externalReadGeneration;
       queue = queue.filter(item => item.id !== req.id);
+      void refreshExternalRejections().catch(() => {});
     } catch (error) {
-      decisionError = `未能确认该拒绝事件：${error instanceof Error ? error.message : String(error)}。事件仍保留，可重试。`;
+      decisionError = `关闭报告结果未确认：${error instanceof Error ? error.message : String(error)}。正在重新读取报告列表。`;
+      void refreshExternalRejections().catch(() => {});
     } finally {
       busy = false;
     }
@@ -117,36 +142,30 @@
 
   onMount(() => {
     if (!isTauri()) return;
+    mounted = true;
     const un = listen(HITL_EVENT, (e) => {
+      if (!mounted) return;
+      ++pendingReadGeneration;
       const req = parseHitlRequest(e.payload);
       if (req) enqueue(req);
     });
     const unChanged = listen('teammate://hitl-pending-changed', () => { void refreshPending().catch(() => {}); });
+    const unExternal = listen('teammate://execution-rejections-changed', () => { void refreshExternalRejections().catch(() => {}); });
+    const unReconnect = bridge.onReady(() => {
+      if (!mounted) return;
+      void refreshPending().catch(() => {});
+      void refreshExternalRejections().catch(() => {});
+    });
     // Recover a request emitted before this renderer mounted or after it
     // restarted; pending actions must not silently degrade to a timeout.
-    void invoke<unknown>('list_hitl_pending_local')
-      .then((items) => {
-        if (!Array.isArray(items)) return;
-        for (const item of items) {
-          const req = parseHitlRequest(item);
-          if (req) enqueue(req);
-        }
-      })
-      .catch(() => {
-        // Older hosts lack this recovery command; live events still work.
-      });
-    void invoke<unknown>('list_execution_rejections_local')
-      .then((items) => {
-        if (!Array.isArray(items)) return;
-        for (const item of items) {
-          const req = parseHitlRequest(item);
-          if (req) enqueue(req);
-        }
-      })
-      .catch(() => {
-        // Older hosts have no external-gateway report channel.
-      });
+    void refreshPending().catch(() => {});
+    void refreshExternalRejections().catch(() => {});
     return () => {
+      mounted = false;
+      ++pendingReadGeneration;
+      unReconnect();
+      ++externalReadGeneration;
+      unExternal.then(stop => stop()).catch(() => {});
       un.then((f) => f()).catch(() => {});
       unChanged.then((f) => f()).catch(() => {});
     };

@@ -3,72 +3,136 @@ use std::time::{Duration, Instant};
 
 use parking_lot::{Mutex, RwLock};
 use ridge_core::RemoteTotp;
+use serde_json::{json, Value};
+use std::path::PathBuf;
+
+type AuthRequest = dyn Fn(&str, Value) -> Result<Value, String> + Send + Sync;
 
 /// 本机 TOTP 持有者（契约 §4）。内部委托 ridge-core 的 `RemoteTotp`（唯一权威
 /// 实现），secret 由其持久化层跨重启恢复。`RwLock` 支持登录态变化时**实时切换**
 /// 活动种子（远控 server 持 `Arc<RemoteAuth>`，需内部可变）。
 pub struct RemoteAuth {
-    totp: RwLock<RemoteTotp>,
+    totp: Option<RwLock<RemoteTotp>>,
+    request: Option<Box<AuthRequest>>,
+    seeds: Option<PathBuf>,
+    grants: Option<PathBuf>,
 }
 
 impl RemoteAuth {
+    /// Shell adapter contains no TOTP secret and never falls back to local storage.
+    pub fn delegated(request: impl Fn(&str,Value)->Result<Value,String> + Send + Sync + 'static) -> Self {
+        Self {totp:None,request:Some(Box::new(request)),seeds:None,grants:None}
+    }
+    pub fn persistent(seeds: PathBuf, grants: PathBuf) -> Result<Self,String> {
+        let totp=RemoteTotp::load_or_create_checked_in(&seeds,"default").map_err(|e|e.to_string())?;
+        Ok(Self {totp:Some(RwLock::new(totp)),request:None,seeds:Some(seeds),grants:Some(grants)})
+    }
+    pub fn call(&self, method:&str, args:Value) -> Result<Value,String> {
+        if let Some(request)=&self.request { return request(method,args); }
+        // One lock covers verification, identity changes and identity-scoped grant writes.
+        let mut totp=self.totp.as_ref().ok_or("authentication owner unavailable")?.write();
+        let bytes=|key:&str| serde_json::from_value::<Vec<u8>>(args[key].clone()).map_err(|e|e.to_string());
+        let public=|| -> Result<Vec<u8>,String> {
+            use base64::Engine;
+            let key=base64::engine::general_purpose::STANDARD.decode(args["ctrlPubB64"].as_str().ok_or("missing controller public key")?).map_err(|e|e.to_string())?;
+            if key.len()!=32 {return Err("invalid controller public key length".into());} Ok(key)
+        };
+        Ok(match method {
+            "remote_totp_info" => json!({"code":totp.current_code(),"uri":totp.otpauth_uri(args["machineName"].as_str().unwrap_or("unknown")),"identity":totp.identity()}),
+            "verify_remote_totp" => json!(totp.verify(args["code"].as_str().ok_or("missing code")?)),
+            "verify_remote_totp_bind" => {
+                let transcript=bytes("transcript")?;let tag=bytes("tag")?;
+                if transcript.len()>65536 {return Err("TOTP transcript too large".into());}
+                json!(totp.verify_bind_tag(&transcript,&tag))
+            }
+            "remote_reset_totp" => {
+                if let Some(dir)=&self.seeds {totp.reset_checked_in(dir).map_err(|e|e.to_string())?;} else {totp.reset();} Value::Null
+            }
+            "remote_set_totp_identity" => {
+                let identity=match &args["username"] {Value::Null=>"default",Value::String(s) if !s.is_empty() && s.len()<=256=>s, _=>return Err("invalid TOTP identity".into())};
+                if let Some(dir)=&self.seeds {*totp=RemoteTotp::load_or_create_checked_in(dir,identity).map_err(|e|e.to_string())?;} else {totp.switch_identity(identity);} Value::Null
+            }
+            "totp_trust_check" => {
+                let Ok(key)=public() else {return Ok(json!(false));};
+                json!(if let Some(dir)=&self.grants {ridge_core::grant_store::check_in_dir(dir,&totp.identity(),&key)} else {ridge_core::grant_store::check(&totp.identity(),&key)})
+            }
+            "totp_trust_record" => {
+                let key=public()?;
+                let dir=self.grants.clone().or_else(ridge_core::grant_store::grants_dir).ok_or("grants directory unavailable")?;
+                ridge_core::grant_store::record_checked_in(&dir,&totp.identity(),&key).map_err(|e|e.to_string())?; Value::Null
+            }
+            "totp_trust_revoke_all" => {
+                let dir=self.grants.clone().or_else(ridge_core::grant_store::grants_dir).ok_or("grants directory unavailable")?;
+                ridge_core::grant_store::revoke_checked_in(&dir,&totp.identity()).map_err(|e|e.to_string())?; Value::Null
+            }
+            _=>return Err("unknown authentication method".into()),
+        })
+    }
+    pub fn trust_check(&self,key:&[u8])->bool {
+        use base64::Engine;
+        self.call("totp_trust_check",json!({"ctrlPubB64":base64::engine::general_purpose::STANDARD.encode(key)})).ok().and_then(|v|v.as_bool()).unwrap_or(false)
+    }
+    pub fn trust_record(&self,key:&[u8]) {
+        use base64::Engine;
+        if let Err(error)=self.call("totp_trust_record",json!({"ctrlPubB64":base64::engine::general_purpose::STANDARD.encode(key)})) {tracing::warn!(%error,"TOTP trust record failed");}
+    }
     /// 启动时桌面尚未登录 → 先用 `"default"` 身份的持久化种子；登录后由
     /// `switch_identity` 切到账号专属种子。
     pub fn new() -> Self {
         Self {
-            totp: RwLock::new(RemoteTotp::load_or_create("default")),
+            totp: Some(RwLock::new(RemoteTotp::load_or_create("default"))),
+            request: None, seeds: None, grants: None,
         }
     }
 
     /// 生成当前 6 位 TOTP。
     pub fn current_code(&self) -> String {
-        self.totp.read().current_code()
+        self.code_and_uri("unknown").0
     }
 
     /// 校验用户输入的 code（±1 窗口在 `RemoteTotp::verify` 内）。
     pub fn verify(&self, code: &str) -> bool {
-        self.totp.read().verify(code)
+        self.call("verify_remote_totp", json!({"code":code})).ok().and_then(|v|v.as_bool()).unwrap_or(false)
     }
 
     /// 零信任 #1：校验对端在 transcript 上的信道绑定 tag（±1 窗口，透传 `RemoteTotp::verify_bind_tag`）。
     pub fn verify_bind_tag(&self, transcript: &[u8], tag: &[u8]) -> bool {
-        self.totp.read().verify_bind_tag(transcript, tag)
+        self.call("verify_remote_totp_bind", json!({"transcript":transcript,"tag":tag})).ok().and_then(|v|v.as_bool()).unwrap_or(false)
     }
 
     /// 当前 code + otpauth URI 一次取（同一把读锁，避免时间步在两次调用间跳变）。
     pub fn code_and_uri(&self, machine_name: &str) -> (String, String) {
-        let g = self.totp.read();
-        (g.current_code(), g.otpauth_uri(machine_name))
+        let v = self.call("remote_totp_info", json!({"machineName":machine_name})).unwrap_or(Value::Null);
+        (v["code"].as_str().unwrap_or_default().into(), v["uri"].as_str().unwrap_or_default().into())
     }
 
     /// 供二维码生成的 `otpauth://` URI。
     pub fn otpauth_uri(&self, machine_name: &str) -> String {
-        self.totp.read().otpauth_uri(machine_name)
+        self.code_and_uri(machine_name).1
     }
 
     /// 重置当前身份的种子（已配对验证器即失效，需重新扫码）。
     pub fn reset_totp(&self) {
-        self.totp.write().reset();
+        if let Err(error)=self.call("remote_reset_totp", json!({})) { tracing::warn!(%error,"TOTP reset failed"); }
     }
 
     /// 切换活动种子到指定云身份（`None` → `"default"`）。登录/登出时调用。
     pub fn switch_identity(&self, username: Option<&str>) {
-        self.totp
-            .write()
-            .switch_identity(username.unwrap_or("default"));
+        if let Err(error)=self.call("remote_set_totp_identity", json!({"username":username})) { tracing::warn!(%error,"TOTP identity switch failed"); }
     }
 
     /// 返回当前 TOTP 归属身份（`"default"` 或云账号 username）。
     /// 供 `totp_trust_check` / `totp_trust_record` / `totp_trust_revoke_all` 三条命令取身份标签。
     pub fn current_identity(&self) -> String {
-        self.totp.read().identity()
+        self.call("remote_totp_info",json!({})).ok().and_then(|v|v["identity"].as_str().map(str::to_owned)).unwrap_or_default()
     }
 
-    /// 测试用：临时随机种子，不落盘（避免单测写真实 AppData）。
-    #[cfg(test)]
-    fn ephemeral() -> Self {
+    /// Explicit non-persistent authentication for owned, isolated sessions.
+    /// Default construction continues to load the existing persistent seed.
+    pub fn ephemeral() -> Self {
         Self {
-            totp: RwLock::new(RemoteTotp::new()),
+            totp: Some(RwLock::new(RemoteTotp::new())),
+            request: None, seeds: None, grants: None,
         }
     }
 }
@@ -99,6 +163,7 @@ struct SessionRecord {
     /// validators must never accept them as ordinary controller sessions.
     origin: Option<String>,
     workspace: Option<String>,
+    connection_id: String,
 }
 
 pub struct SessionStore {
@@ -128,6 +193,7 @@ impl SessionStore {
                 ip: ip.to_string(),
                 origin: None,
                 workspace: None,
+                connection_id: uuid::Uuid::new_v4().to_string(),
             },
         );
         self.cleanup_expired();
@@ -163,6 +229,7 @@ impl SessionStore {
                 ip: ip.into(),
                 origin: Some(origin.into()),
                 workspace: None,
+                connection_id: uuid::Uuid::new_v4().to_string(),
             },
         );
         Ok(token)
@@ -192,6 +259,13 @@ impl SessionStore {
             .get(token)
             .filter(|record| record.origin.is_some() && record.created.elapsed() < SESSION_TTL)
             .and_then(|record| record.workspace.clone())
+    }
+
+    /// Private routing identity survives socket replacement; it grants no capability.
+    pub fn origin_bound_connection_id(&self, token: &str) -> Option<String> {
+        self.tokens.lock().get(token)
+            .filter(|record|record.origin.is_some() && record.created.elapsed()<SESSION_TTL)
+            .map(|record|record.connection_id.clone())
     }
 
     pub fn set_origin_bound_workspace(&self, token: &str, workspace: &str) -> bool {
@@ -553,6 +627,12 @@ mod tests {
         let token = store
             .create_origin_bound_session("window-a", "127.0.0.1", "http://tauri.localhost")
             .unwrap();
+        let connection=store.origin_bound_connection_id(&token).unwrap();
+        assert!(uuid::Uuid::parse_str(&connection).is_ok());
+        assert_eq!(store.origin_bound_connection_id(&token).as_deref(),Some(connection.as_str()));
+        assert!(store.origin_bound_connection_id("unknown-token").is_none());
+        let other=store.create_origin_bound_session("window-b","127.0.0.1","http://tauri.localhost").unwrap();
+        assert_ne!(store.origin_bound_connection_id(&other).unwrap(),connection);
         assert!(store.validate_origin_bound_token(
             &token,
             "window-a",

@@ -15,31 +15,6 @@ import { retirePtyWriteQueuesForPane } from '$lib/terminal/ptyWriteQueue';
 import { retirePaneInputsForPane } from '@ridge/remote/shared/terminal/paneInputGate';
 import { trimTrailingSeparators } from '$lib/utils/path';
 
-const webRemote = import.meta.env.RIDGE_WEB_REMOTE === true;
-const activeWorkspaceCommand = webRemote
-  ? 'get_active_workspace_id'
-  : 'get_window_active_workspace_id';
-const paneLayoutCommand = webRemote ? 'get_pane_layout' : 'get_window_pane_layout';
-const switchWorkspaceCommand = webRemote
-  ? 'switch_workspace'
-  : 'switch_window_workspace';
-
-type WorkspaceWindowClaimResult = {
-  claimed: boolean;
-  ownerWindowLabel: string;
-};
-
-async function claimWorkspaceForThisWindow(workspaceId: string): Promise<boolean> {
-  if (webRemote) return true;
-  const result = await invoke<WorkspaceWindowClaimResult>(
-    'claim_workspace_window',
-    { workspaceId }
-  );
-  // Older hosts and lightweight test shims may not expose this desktop-only
-  // command yet; their undefined result preserves the former single-window path.
-  return result?.claimed ?? true;
-}
-
 function normalizeSplitRatios(sizes: number[]): number[] {
   const s = sizes.reduce((a, b) => a + b, 0);
   if (s <= 1e-9) return sizes.map(() => 100 / Math.max(sizes.length, 1));
@@ -1315,14 +1290,14 @@ export async function syncPaneLayoutFromBackend() {
     // to the default. Re-deriving the id from the host (mirrors refreshWorkspaces)
     // guarantees the refresh lands in the rendered key. On desktop the host id
     // already equals the store, so this is just one extra (cheap) IPC.
-    layout = await invoke<PaneNode>(paneLayoutCommand);
+    layout = await invoke<PaneNode>('get_pane_layout');
     // Prefer the host's authoritative active workspace id for the render key,
     // but fall back to the local store if the host is unreachable or returns an
     // unexpected (non-string/empty) value — never clobber the store with a
     // non-string result (keeps behaviour correct on desktop and in tests).
     let wsId = get(activeWorkspaceId);
     try {
-      const hostActive = await invoke<string>(activeWorkspaceCommand);
+      const hostActive = await invoke<string>('get_active_workspace_id');
       if (typeof hostActive === 'string' && hostActive) wsId = hostActive;
     } catch {
       /* keep local store value */
@@ -1408,27 +1383,21 @@ export async function syncPaneLayoutFromBackend() {
 }
 
 export interface RefreshWorkspacesOptions {
-  /** Use this workspace instead of reacquiring the desktop window owner. */
+  /** Use this workspace instead of the caller's current Runtime selection. */
   workspaceId?: string;
-  /** Desktop callers normally acquire atomically; restore/open flows must not. */
-  acquireWindow?: boolean;
 }
 
 export async function refreshWorkspaces(options: RefreshWorkspacesOptions = {}) {
   if (!isTauri()) return;
   try {
-    let list = await invoke<
+    const list = await invoke<
       { id: string; index: number; name?: string; displaySeq: number }[]
     >('list_workspaces');
     let active: string;
     if (options.workspaceId) {
       active = options.workspaceId;
-    } else if (webRemote) {
-      active = await invoke<string>(activeWorkspaceCommand);
-    } else if (options.acquireWindow !== false) {
-      active = await invoke<string>('acquire_window_workspace');
     } else {
-      active = get(activeWorkspaceId) || list[0]?.id || '';
+      active = await invoke<string>('get_active_workspace_id');
     }
     if (!active) {
       // A close can briefly leave the backend with an empty list while the
@@ -1438,14 +1407,6 @@ export async function refreshWorkspaces(options: RefreshWorkspacesOptions = {}) 
       workspacesList.set(list);
       await refreshWorkspaceSaveInfo();
       return;
-    }
-    // The atomic desktop acquisition creates a workspace only when every
-    // existing one is owned by another window. Refresh the snapshot exactly
-    // once in that uncommon path so the new tab is present immediately.
-    if (!webRemote && !list.some((workspace) => workspace.id === active)) {
-      list = await invoke<
-        { id: string; index: number; name?: string; displaySeq: number }[]
-      >('list_workspaces');
     }
     const layout = await invoke<PaneNode>('get_pane_layout_for', {
       workspaceId: active,
@@ -1477,10 +1438,9 @@ export async function refreshWorkspaces(options: RefreshWorkspacesOptions = {}) 
 export async function createWorkspace() {
   if (!isTauri()) return;
   try {
-    await invoke<string>(
-      webRemote ? 'create_workspace' : 'create_workspace_for_window'
-    );
-    await refreshWorkspaces();
+    const created = await invoke<string>('create_workspace');
+    if (!created || !await switchWorkspace(created)) throw new Error('Workspace created but caller selection failed');
+    await refreshWorkspaces({ workspaceId: created });
   } catch (e) {
     console.error('createWorkspace', e);
     reportDevIssue({
@@ -1515,11 +1475,8 @@ export async function switchWorkspace(workspaceId: string): Promise<boolean> {
   return enqueueWorkspaceSwitch(async () => {
     try {
       if (generation !== workspaceSwitchGeneration) return false;
-      if (!(await claimWorkspaceForThisWindow(workspaceId))) return false;
-      if (generation !== workspaceSwitchGeneration) return false;
-
       // The authoritative layout below still replaces the cache when it differs.
-      await invoke(switchWorkspaceCommand, { workspaceId });
+      await invoke('switch_workspace', { workspaceId });
       if (generation !== workspaceSwitchGeneration) return false;
       const layout = await invoke<PaneNode>('get_pane_layout_for', {
         workspaceId,
@@ -1635,7 +1592,7 @@ export const __test_scheduleForceFitAfterSplit = scheduleForceFitAfterSplit;
 /**
  * Belt-and-suspenders fit after a BACKEND-driven layout change (teammate
  * `split` / `reused` / `detached` / `removed` arriving via the
- * `teammate-layout-changed` event), mirroring `scheduleForceFitAfterSplit`
+ * `pane-tree-changed` event), mirroring `scheduleForceFitAfterSplit`
  * for the front-end `splitPane` path.
  *
  * Why the teammate path needs its own variant: a teammate split creates the
@@ -1723,7 +1680,7 @@ export async function persistSplitRatios(splitPath: number[], sizes: number[]) {
   if (!isTauri()) return;
   try {
     await invoke(
-      webRemote ? 'set_split_ratios_at_path' : 'set_window_split_ratios_at_path',
+      'set_split_ratios_at_path',
       {
       workspaceId: get(activeWorkspaceId),
       path: splitPath,
@@ -1745,7 +1702,7 @@ export async function persistSplitRatiosBatch(updates: SplitRatioUpdate[]) {
   if (!isTauri()) return;
   try {
     await invoke(
-      webRemote ? 'set_split_ratios_batch' : 'set_window_split_ratios_batch',
+      'set_split_ratios_batch',
       {
       workspaceId: get(activeWorkspaceId),
       updates,
@@ -1810,24 +1767,6 @@ function cleanupPaneRuntime(paneId: string, workspaceId?: string): void {
 
 export async function closePane(paneId: string) {
   if (!isTauri()) return;
-  // Foreign multi-host view: best-effort detach first (unsubscribe remote;
-  // backend kill_pty_if_present also detaches — double-call is safe).
-  try {
-    const tree = get(paneTreeStore);
-    const leaf = findLeafOrigin(tree, paneId);
-    if (
-      leaf?.type === 'leaf' &&
-      leaf.origin &&
-      (leaf.origin.kind === 'remote' || leaf.origin.kind === 'rdg')
-    ) {
-      await invoke('detach_host_session', {
-        paneId,
-        workspaceId: get(activeWorkspaceId) || null,
-      });
-    }
-  } catch {
-    /* local pane or already detached */
-  }
   const closingWorkspaceId = get(activeWorkspaceId) || undefined;
   teardownPtyBridge(paneId, closingWorkspaceId);
   try {
@@ -1984,16 +1923,15 @@ export async function renameWorkspace(workspaceId: string, name: string) {
 // Pane cwds ARE preserved in the .ridge format: the backend PaneTree struct
 // serialises Pane.cwd (Option<PathBuf>) into JSON, so openWorkspaceFromFile
 // �?refreshWorkspaces �?get_pane_layout �?extractCwdsFromLayout restores them.
-// `SavedWorkspace.paneCwds` below is kept for future use but is currently
-// not populated by list_saved_workspaces (workspace-history path), which is
-// fine because that path is not yet exposed in the frontend restore UI.
-
+// Historical snapshots remain separate from live pane state.
 export interface SavedWorkspace {
   id: string;
   name: string;
-  paneTree: PaneNode;
-  paneCwds: Record<string, string>;
-  savedAt: string;
+  saved_at: string;
+  pane_count: number;
+  is_pinned: boolean;
+  pane_tree_json: string;
+  workspace_id?: string;
 }
 
 /** Keyed by "${workspaceId}:${paneId}" �?cwd string. */
@@ -2051,12 +1989,8 @@ export async function saveWorkspaceToFile(
 
 export async function openWorkspaceFromFile(path: string): Promise<string> {
   const id = await invoke<string>('open_workspace_from_file', { path });
-  // `open_workspace_from_file` already selects/claims the returned workspace.
-  // Re-running desktop `acquire_window_workspace` here can select the old
-  // default tab (or create another one when a second window is present),
-  // which made restore-on-restart appear to lose tabs.  Refresh the list while
-  // preserving the authoritative id returned by the backend.
-  await refreshWorkspaces({ workspaceId: id, acquireWindow: false });
+  // Refresh the returned workspace explicitly, preserving this caller's restored view.
+  await refreshWorkspaces({ workspaceId: id });
   await refreshWorkspaceSaveInfo();
   return id;
 }
@@ -2102,7 +2036,11 @@ export interface StartupContext {
 export async function getStartupContext(): Promise<StartupContext | null> {
   if (!isTauri()) return null;
   try {
-    return await invoke<StartupContext>('get_startup_context');
+    const context=await invoke<StartupContext>('get_startup_context');
+    if (!context.workspace_file_arg && !context.wind_file_in_cwd) {
+      context.wind_file_in_cwd=await invoke<string|null>('get_workspace_file_in_directory',{path:context.cwd}) ?? null;
+    }
+    return context;
   } catch {
     return null;
   }
@@ -2348,20 +2286,26 @@ export async function setupPaneCwdListeners(
 }
 
 export const savedWorkspacesList = writable<SavedWorkspace[]>([]);
+let savedHistorySubscription: Promise<void> | undefined;
+let savedHistoryUnlisten: (() => void) | undefined;
+let savedHistoryRequest = 0;
+if (import.meta.hot) import.meta.hot.dispose(() => savedHistoryUnlisten?.());
 
 /** 获取已保存的工作区列�?*/
 export async function loadSavedWorkspaces() {
   if (!isTauri()) return;
   try {
+    savedHistorySubscription ??= listen('workspace-history-changed', () => {
+      void loadSavedWorkspaces().catch(error => console.warn('Workspace history refresh failed', error));
+    }).then(unlisten => { savedHistoryUnlisten = unlisten; }).catch(error => {
+      savedHistorySubscription = undefined;
+      throw error;
+    });
+    await savedHistorySubscription;
+    const request = ++savedHistoryRequest;
     const list = await invoke<SavedWorkspace[]>('list_saved_workspaces');
+    if (request !== savedHistoryRequest) return;
     savedWorkspacesList.set(list);
-
-    // Populate paneCwdStore from the persisted paneTree layouts.
-    // The layout's LayoutNode::Leaf carries cwd from the backend.
-    for (const sw of list) {
-      const cwds = extractCwdsFromLayout(sw.paneTree, sw.id);
-      paneCwdStore.update((store) => mergePaneCwds(store, cwds));
-    }
 
     // Set up cwd change listeners for the currently active workspace
     const active = get(activeWorkspaceId);
@@ -2388,7 +2332,7 @@ export async function saveCurrentWorkspace() {
     const activeId = get(activeWorkspaceId);
     const names = get(workspaceNames);
     const name = activeId ? names[activeId]?.trim() : '';
-    await invoke('save_workspace', name ? { name } : {});
+    await invoke('save_workspace', { workspaceId: activeId, ...(name ? { name } : {}) });
     await loadSavedWorkspaces();
   } catch (e) {
     console.error('saveCurrentWorkspace', e);
@@ -2399,7 +2343,7 @@ export async function saveCurrentWorkspace() {
 export async function deleteSavedWorkspace(id: string) {
   if (!isTauri()) return;
   try {
-    await invoke('delete_saved_workspace', { id });
+    await invoke('delete_saved_workspace', { historyId: id });
     await loadSavedWorkspaces();
   } catch (e) {
     console.error('deleteSavedWorkspace', e);
@@ -2410,7 +2354,7 @@ export async function deleteSavedWorkspace(id: string) {
 export async function renameSavedWorkspace(id: string, name: string) {
   if (!isTauri()) return;
   try {
-    await invoke('rename_saved_workspace', { id, name });
+    await invoke('rename_saved_workspace', { historyId: id, name });
     await loadSavedWorkspaces();
   } catch (e) {
     console.error('renameSavedWorkspace', e);

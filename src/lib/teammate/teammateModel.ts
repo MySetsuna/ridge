@@ -5,12 +5,10 @@
  * The Tauri backend emits:
  *   - `get_teammate_topology` → a TopologySnapshot (roster + leader + edges)
  *   - event `teammate://hitl-approval-required` → a HitlRequest (Domain D2)
- *   - event `teammate://circuit-tripped` → a CircuitTrip (Domain D3)
  *
  * This module normalizes those wire shapes into typed front-end view models.
  * Every parser degrades gracefully on an unexpected payload so the Agent Center /
- * HITL UI can never break on a malformed event — same defensive posture as
- * `layoutEvent.ts`. （TML 协作审计已退场——底座化瘦身。）
+ * HITL UI can never break on a malformed event.
  *
  * Wire enums mirror serde's default unit-variant encoding (the variant name as a
  * bare string): AgentRole/TeammateStatus/RiskLevel.
@@ -63,6 +61,7 @@ export interface TeammateProfile {
   readonly recentOutput: string;
   /** Kernel-owned identity/fencing fields; absent for legacy projections. */
   readonly sessionId?: string;
+  readonly process?: DiscoveredAgent['process'];
   readonly executable?: string;
   /** Agent process cwd; authoritative for binding native history fallback. */
   readonly cwd?: string;
@@ -96,11 +95,24 @@ export interface TopologyEdge {
 
 /** The full team snapshot rendered by the Agent Center sidebar. */
 export interface TopologySnapshot {
+  /** OS-observed processes have no protocol membership or execution authority. */
+  readonly discovered?: readonly DiscoveredAgent[];
   readonly roster: readonly TeammateProfile[];
   readonly leaderId: string | null;
   readonly edges: readonly TopologyEdge[];
   /** Backend auto-discovery changed pane↔agent projection during this snapshot. */
   readonly rosterChanged: boolean;
+}
+
+export interface DiscoveredAgent {
+  readonly workspaceId: string;
+  readonly paneId: string;
+  readonly name: string;
+  readonly process: { readonly pid: number; readonly startInstance: string };
+  readonly reason: string;
+  readonly terminalEpoch?: string;
+  readonly recentOutput?: string;
+  readonly protocolConnected?: boolean;
 }
 
 export const EMPTY_TOPOLOGY: TopologySnapshot = {
@@ -208,6 +220,7 @@ function parseProfile(v: unknown): TeammateProfile | null {
   // 显示名自动同步 pane 标题（iter-61 用户需求）：后端 inject_roster_titles 随拓扑
   // 附带实时 OSC 标题 `title`；有则优先于注册时的静态 name。id 保持稳定不受影响。
   const title = asString(rec.title);
+  const process = asRecord(asRecord(rec.protocolBinding)?.process);
   return {
     id,
     name: title?.trim() ? title : (asString(rec.name) ?? id),
@@ -220,6 +233,8 @@ function parseProfile(v: unknown): TeammateProfile | null {
     outputSeq: typeof rec.outputSeq === 'number' ? rec.outputSeq : 0,
     recentOutput: asString(rec.recentOutput) ?? '',
     sessionId: asString(rec.sessionId) ?? asString(rec.session_id),
+    ...(process && Number.isSafeInteger(process.pid) && (process.pid as number) > 0 && asString(process.startInstance)
+      ? { process: { pid: process.pid as number, startInstance: process.startInstance as string } } : {}),
     executable: asString(rec.executable),
     cwd: asString(rec.cwd),
     workspaceId: asString(rec.workspaceId) ?? asString(rec.workspace_id),
@@ -274,7 +289,20 @@ export function parseTopologySnapshot(payload: unknown): TopologySnapshot {
     })
     .filter((e): e is TopologyEdge => e !== null);
 
-  return { roster, leaderId, edges, rosterChanged: rec.rosterChanged === true };
+  const discovered: DiscoveredAgent[] = Array.isArray(rec.discovered) ? rec.discovered.flatMap(value => {
+    const row = asRecord(value), process = asRecord(row?.process);
+    return row && process && typeof row.workspaceId === 'string' && typeof row.paneId === 'string'
+      && typeof row.name === 'string' && row.connectionState === 'discovered'
+      && typeof process.pid === 'number' && Number.isSafeInteger(process.pid) && process.pid > 0
+      && typeof process.startInstance === 'string' && process.startInstance.length > 0
+      ? [{ workspaceId: row.workspaceId, paneId: row.paneId, name: row.name,
+        process: { pid: process.pid, startInstance: process.startInstance }, reason: asString(row.reason) ?? '尚未接入会话协议',
+        ...(typeof row.terminalEpoch === 'string' ? { terminalEpoch: row.terminalEpoch } : {}),
+        ...(typeof row.recentOutput === 'string' ? { recentOutput: row.recentOutput } : {}),
+        ...(typeof row.protocolConnected === 'boolean' ? { protocolConnected: row.protocolConnected } : {}) }] : [];
+  }) : [];
+  return { roster, leaderId, edges, rosterChanged: rec.rosterChanged === true,
+    ...(discovered.length ? { discovered } : {}) };
 }
 
 /**
@@ -308,27 +336,4 @@ export function parseHitlRequest(payload: unknown): HitlRequest | null {
         ? [{ optionId: option.optionId, name: option.name, kind: option.kind }] : [];
     }) : undefined,
   };
-}
-
-// ── Circuit breaker (Domain D3) ──
-
-/** A worker that tripped the loop-breaker (from `teammate://circuit-tripped`). */
-export interface CircuitTrip {
-  /** Affected pane id (Uuid string). */
-  readonly paneId: string;
-  /** Why it tripped — the repeated-failure fingerprint surfaced by the breaker. */
-  readonly reason: string;
-}
-
-/**
- * Parse a `teammate://circuit-tripped` event payload into a {@link CircuitTrip}.
- * Backend payload (circuit.rs): `{ workspaceId, paneId, reason }`. Returns null
- * without a pane id; an empty reason degrades to a generic "逻辑死锁".
- */
-export function parseCircuitTripped(payload: unknown): CircuitTrip | null {
-  const rec = asRecord(payload);
-  if (!rec) return null;
-  const paneId = asString(rec.paneId) ?? asString(rec.pane_id);
-  if (!paneId) return null;
-  return { paneId, reason: asString(rec.reason) || '逻辑死锁' };
 }

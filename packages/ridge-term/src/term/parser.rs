@@ -492,7 +492,7 @@ impl<'a> Perform for Performer<'a> {
                 // needs. Cheap, idempotent.
                 let prompt_start = params
                     .get(1)
-                    .map(|s| s.first() == Some(&b'A'))
+                    .map(|s| *s == b"A")
                     .unwrap_or(false);
                 if prompt_start {
                     self.grid.clear_inline_tui_sticky();

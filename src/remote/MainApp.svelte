@@ -2,6 +2,7 @@
   import type { TerminalInputContext, TerminalInputData } from "@ridge/remote/shared/transport/paneRpcScheduler";
   import { clearRemoteToken } from './lib/remoteSession';
   import terminalHello from '@ridge/remote/shared/cloud/signaling/fixtures/terminal/hello.json';
+  import { readTerminalLifecycle, terminalLifecycleMessage } from '@ridge/remote/shared/terminal/lifecycle';
   import { onDestroy, onMount, untrack } from 'svelte';
   import { t, tr } from '$lib/i18n';
   import { Folder, GitBranch, Search, Bot, Keyboard, TextCursorInput } from 'lucide-svelte';
@@ -445,6 +446,20 @@
   let subscribedPaneId: string | null = null;
   let activationCounter = 0;
   let activeTerminalActivation: { key: string; id: number } | null = null;
+  let terminalLifecycle = $state<import('@ridge/remote/shared/terminal/lifecycle').TerminalLifecycle | null>(null);
+  let terminalStreamFailure = $state<{key:string;activation:number} | null>(null);
+  const terminalExitMessage = $derived.by(() => {
+    const pane = activePaneRef();
+    return pane && terminalLifecycle?.workspaceId === pane.workspaceId && terminalLifecycle.paneId === pane.paneId ? terminalLifecycleMessage(terminalLifecycle) : null;
+  });
+  const terminalStopped = $derived.by(() => {
+    const pane = activePaneRef();
+    return Boolean(pane && terminalLifecycle?.workspaceId === pane.workspaceId && terminalLifecycle.paneId === pane.paneId && terminalLifecycle.status === 'Exited');
+  });
+  const terminalFailed = $derived.by(() => {
+    const active = activeTerminalActivation;
+    return Boolean(terminalStreamFailure && active && terminalStreamFailure.key === active.key && terminalStreamFailure.activation === active.id);
+  });
   const pendingSemanticFrames = new Map<
     string,
     Array<{ bytes: Uint8Array; pane: PaneRef; activationId: number }>
@@ -455,6 +470,7 @@
       ? 1
       : activationCounter + 1;
     activeTerminalActivation = { key, id: activationCounter };
+    terminalStreamFailure = null;
     return activationCounter;
   }
 
@@ -671,6 +687,7 @@
   // button (resize real PTY + parser, broadcast `pty-resized`), giving automatic
   // 自适应全屏 reflow without the manual tap.
   function onResize(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number): Promise<void> {
+    if (terminalLifecycle?.workspaceId === pane.workspaceId && terminalLifecycle.paneId === pane.paneId && terminalLifecycle.status === 'Exited') return Promise.resolve();
     // This callback originates in the browser viewer. Keep ownership explicit
     // so host and remote resize paths cannot overwrite each other's authority.
     return ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight, 'remote');
@@ -870,6 +887,28 @@
     wsState = ws.state();
     failure = ws.lastFailure();
     stops.push(ws.onMessage((msg) => {
+      if (msg.type === 'event' && msg.name === 'pane-meta-changed') {
+        const pane = activePaneRef();
+        if (pane && activeTerminalActivation) {
+          const next = readTerminalLifecycle(msg.payload, pane, terminalLifecycle, activeTerminalActivation.id);
+          if (next) {
+            const previous = terminalLifecycle?.workspaceId === pane.workspaceId && terminalLifecycle.paneId === pane.paneId ? terminalLifecycle : null;
+            terminalLifecycle = next;
+            if (next.status === 'Idle' && (previous?.terminalEpoch !== next.terminalEpoch || terminalStreamFailure?.key === paneRefKey(pane))) {
+              terminalStreamFailure = null;
+              if (previous) requestFeedResync(paneRefKey(pane));
+            }
+          }
+        }
+      }
+      if (msg.type === 'event' && msg.name === 'pane-terminal-error') {
+        const payload = msg.payload as {workspaceId?:unknown;paneId?:unknown;activationId?:unknown} | null;
+        const pane = activePaneRef();
+        const active = activeTerminalActivation;
+        if (pane && active && payload?.workspaceId === pane.workspaceId && payload.paneId === pane.paneId && payload.activationId === active.id) {
+          terminalStreamFailure = {key:paneRefKey(pane),activation:active.id};
+        }
+      }
       if (msg.type === 'panes') {
         // Steady-state pane snapshots must carry their source workspace.
         // A current-UI fallback races late responses onto the wrong identity.
@@ -1402,6 +1441,12 @@
    <!-- term-stage keeps the shared WebGPU host canvas and terminal input surface
         inside the terminal region; initialization failures remain visible. -->
     <div class="term-stage" style:transform={`translateY(${ui.keyboardShift}px)`}>
+      {#if terminalExitMessage}
+        <div role={terminalLifecycle?.error ? 'alert' : 'status'} aria-live={terminalLifecycle?.error ? 'assertive' : 'polite'} data-testid="terminal-exit-status" style="position:absolute;bottom:8px;left:8px;z-index:20;max-width:calc(100% - 16px);background:var(--rg-bg,#111827);color:var(--rg-fg,#f9fafb);border:1px solid var(--rg-border,#475569)" class="rounded px-3 py-2 text-xs">{terminalExitMessage}</div>
+      {/if}
+      {#if terminalFailed}
+        <button data-testid="terminal-stream-retry" style="position:absolute;top:8px;left:8px;z-index:20" onclick={() => {const pane=activePaneRef(); if(pane) requestFeedResync(paneRefKey(pane));}}>Terminal connection failed · Retry</button>
+      {/if}
       <canvas class="host-canvas" data-rg-host aria-hidden="true" use:hostCanvas></canvas>
       {#if terminalCanvasPromise && activePane}
         {#await terminalCanvasPromise}
@@ -1418,7 +1463,8 @@
                hostError={hostCanvasError}
                paneId={ui.activePaneId}
               workspaceId={ui.activeWorkspaceId}
-              agentState={activePane?.agentState ?? (activePane?.isAgent ? 'busy' : undefined)}
+              {terminalStopped}
+              agentState={activePane?.agentState}
               agentNeedsAttention={paneNeedsAttention(activePane)}
               {onStdin}
               {onInputTask}

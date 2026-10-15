@@ -3,7 +3,7 @@
   // UI stays lazy; pane borders must not wait for that first visit.
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
-  import { emit, listen } from '@tauri-apps/api/event';
+  import { listen } from '@tauri-apps/api/event';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { agentPaneStatusStore, workspacesList } from '$lib/stores/paneTree';
   import {
@@ -19,8 +19,7 @@
   const expiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   async function run(workspaceIds: readonly string[]): Promise<void> {
-    const { rosterChanged } = await refreshAgentPaneHighlight({ workspaceIds, invoke });
-    if (!disposed && rosterChanged) await emit('teammate-layout-changed', { kind: 'state' });
+    await refreshAgentPaneHighlight({ workspaceIds, invoke });
     if (!disposed) scheduleActivityExpiry(workspaceIds);
   }
 
@@ -97,18 +96,20 @@
     if (!isTauri()) return;
     disposed = false;
     schedule();
+    // A process can start without changing pane metadata or emitting protocol events.
+    // Reads remain single-flight; Runtime shares its bounded process snapshot.
+    const discoveryTimer = setInterval(() => { if (!document.hidden) schedule(); }, 3000);
     const unsubs = [
-      listen('teammate-layout-changed', (event) => scheduleEvent(event.payload)),
       listen('commune-members-changed', (event) => scheduleEvent(event.payload)),
       listen('commune-task-changed', (event) => scheduleEvent(event.payload)),
       listen('teammate://hitl-pending-changed', () => schedule()),
-      listen('pane-output-activity', (event) => scheduleEvent(event.payload)),
       listen('pane-tree-changed', (event) => scheduleEvent(event.payload)),
       listen('pane-pty-closed', (event) => scheduleEvent(event.payload)),
       listen('pane-meta-changed', (event) => scheduleEvent(event.payload)),
     ];
     return () => {
       disposed = true;
+      clearInterval(discoveryTimer);
       if (timer) clearTimeout(timer);
       queuedWorkspaceIds.clear();
       for (const expiry of expiryTimers.values()) clearTimeout(expiry);

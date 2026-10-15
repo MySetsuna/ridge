@@ -41,6 +41,8 @@ pub trait GuiSessionSource: Send + Sync + 'static {
     /// GUI workspace `ls` lines prepended to native `list-sessions` on the
     /// default socket (empty for headless hosts).
     fn session_lines(&self, fmt: Option<&str>) -> Vec<String>;
+    /// Apply the owner's filesystem boundary before launching a native child.
+    fn cwd_allowed(&self, _cwd: &str) -> bool { true }
 }
 
 /// Headless host: no desktop workspaces exist, so no GUI sessions fold in.
@@ -122,6 +124,7 @@ pub async fn serve(listener: tokio::net::TcpListener, ctx: NativeHttpCtx) -> std
 // ===================== helpers =====================
 
 pub(crate) fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
+    if headers.get("x-ridge-kernel-token").and_then(|value|value.to_str().ok())==Some(token){return true;}
     if headers
         .get("x-ridge-token")
         .and_then(|v| v.to_str().ok())
@@ -258,6 +261,9 @@ async fn route_new_session(
 ) -> impl IntoResponse {
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    if body.cwd.as_deref().is_some_and(|cwd| !ctx.gui.cwd_allowed(cwd)) {
+        return (StatusCode::FORBIDDEN, "cwd outside host roots").into_response();
     }
     let gui = ctx.gui.sessions_for(&body.socket);
     let print = if body.print {
@@ -450,6 +456,9 @@ async fn route_split_window(
 ) -> impl IntoResponse {
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    if body.cwd.as_deref().is_some_and(|cwd| !ctx.gui.cwd_allowed(cwd)) {
+        return (StatusCode::FORBIDDEN, "cwd outside host roots").into_response();
     }
     let gui = ctx.gui.sessions_for(&body.socket);
     let print = if body.print {

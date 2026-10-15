@@ -87,16 +87,10 @@ function flattenLeaves(node: PaneNode | null | undefined): PaneInfo[] {
   if (!node) return [];
   if (node.type === 'leaf') {
     if (!node.id) return []; // pre-hydration placeholder leaf
-    // iter-61：agent 标记态随叶子下发（LAN 腿在 build_remote_pane_list 里同源附带）。
     return [{
       id: node.id,
       title: node.title,
       cwd: node.cwd,
-      // Agent identity persists while runtime state changes between idle,
-      // starting, and busy. Do not make the card disappear when it is idle.
-      isAgent: node.agent_state !== undefined || node.agent_id !== undefined,
-      ...(node.agent_state ? { agentState: node.agent_state } : {}),
-      ...(node.agent_id ? { agentId: node.agent_id } : {}),
     }];
   }
   return node.children.flatMap(flattenLeaves);
@@ -330,8 +324,7 @@ export class CloudRemoteConnection implements RemoteLink {
       const key = paneRefKey(payload);
       if (this.disposed || this.terminalActivations.get(key) !== payload.activationId) return;
       this._unsubscribePaneStream(payload);
-      this._failure = { category: 'channel', message: 'Terminal connection failed; reconnect to retry' };
-      this.setState('error');
+      this.emitMessage({type:'event',name:'pane-terminal-error',payload});
     });
     if (this.disposed) { this.terminalErrorUnlisten(); this.terminalErrorUnlisten = null; return; }
     try {
@@ -365,15 +358,14 @@ export class CloudRemoteConnection implements RemoteLink {
     // header title/cwd and the pane-switcher popup refresh in real time instead
     // of waiting for the next layout poll.
     try {
-      this.metaUnlisten = await this.bridge.listen<{ paneId?: string; title?: string; cwd?: string }>(
+      this.metaUnlisten = await this.bridge.listen<{ workspaceId?: string; paneId?: string; title?: string; cwd?: string }>(
         'pane-meta-changed',
         (e) => {
           const p = e.payload;
-          if (!p || typeof p.paneId !== 'string') return;
-          this.metaListeners.forEach((fn) => fn({
-            workspaceId: this._activeWorkspaceId,
-            paneId: p.paneId!,
-          }, p.title ?? null, p.cwd ?? null));
+          if (!p || typeof p.paneId !== 'string' || typeof p.workspaceId !== 'string') return;
+          const pane = {workspaceId:p.workspaceId,paneId:p.paneId};
+          this.emitMessage({type:'event',name:'pane-meta-changed',payload:p});
+          this.metaListeners.forEach((fn) => fn(pane, p.title ?? null, p.cwd ?? null));
         },
       );
     } catch {
@@ -923,30 +915,6 @@ export class CloudRemoteConnection implements RemoteLink {
       this.closingPaneKeys.delete(key);
       return false;
     }
-  }
-
-  // iter-61：标记 / 取消标记某 pane 为 agent（工作区弹层终端项的标记按钮）。
-  // 与 LAN 腿同一对命令；老 host 的 allowlist 无此项 → invoke 抛错，UI 提示不静默。
-  async markPaneAgent(
-    workspaceId: string,
-    paneId: string,
-    on: boolean,
-    agentId?: string,
-  ): Promise<void> {
-    if (on) {
-      await this._invokePane({ workspaceId, paneId }, 'register_teammate_agent', {
-        workspaceId,
-        paneId,
-        agentId: agentId || 'agent',
-      });
-    } else {
-      await this._invokePane(
-        { workspaceId, paneId },
-        'release_teammate_agent',
-        { workspaceId, paneId },
-      );
-    }
-    void this._refreshPanes();
   }
 
   // iter-63：终端类型列表与切换。与 LAN 腿同一对命令、与桌面同一个 host 检测器

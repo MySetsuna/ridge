@@ -31,12 +31,21 @@ impl Default for BusinessEvents {
     }
 }
 impl BusinessEvents {
-    fn subscribe(&self) -> broadcast::Receiver<Value> {
+    pub(crate) fn generation(&self)->Result<u64,String> {
+        self.inner.lock().map(|events|events.0).map_err(|_|"business events unavailable".into())
+    }
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<Value> {
         self.inner
             .lock()
             .expect("business events lock")
             .1
             .subscribe()
+    }
+    pub(crate) fn workspace_history_changed(&self) {
+        self.broadcast("workspace-history-changed", Value::Null);
+    }
+    pub(crate) fn default_cwd_changed(&self) {
+        self.broadcast("user-default-cwd-changed", Value::Null);
     }
     pub fn workspace_list_changed(&self) {
         self.broadcast("workspace-list-changed", Value::Null);
@@ -65,13 +74,13 @@ fn authorized(headers: &HeaderMap, state: &AppState) -> bool {
         == Some(state.token.as_str())
 }
 
-fn targets_connection(event: &Value, connection: &str) -> bool {
+pub(crate) fn targets_connection(event: &Value, connection: &str) -> bool {
     event["connectionId"].is_null() || event["connectionId"].as_str() == Some(connection)
 }
-fn project_event(mut event: Value, native: bool) -> Option<Value> {
+pub(crate) fn project_event(mut event: Value, native: bool) -> Option<Value> {
     if native { return Some(event); }
     match event["name"].as_str() {
-        Some("teammate://hitl-approval-required") => return None,
+        Some("teammate://hitl-approval-required" | "lsp://diagnostics") => return None,
         Some("commune-session-update") => {
             let record = &event["payload"];
             let (kind,text) = crate::commune_history::content(record,false);
@@ -107,6 +116,10 @@ pub async fn command(
     if uuid::Uuid::parse_str(&request.connection_id).is_err() {
         return Err(StatusCode::BAD_REQUEST);
     }
+    if matches!(request.method.as_str(),"dispatch_remote_invoke"|"bind_remote_terminal") {
+        let result=crate::remote_invoke::execute(state,request.args,request.native,request.connection_id,request.method=="bind_remote_terminal").await;
+        return Ok(Json(match result {Ok(value)=>json!({"ok":true,"value":value}),Err(error)=>json!({"ok":false,"error":error})}));
+    }
     let ctx = crate::host_core::runtime_ctx_with_events(
         &request.roots,
         request.native,
@@ -128,12 +141,49 @@ pub async fn command(
         Ok(method) => method,
         Err(error) => return Ok(Json(json!({"ok":false,"error":error.to_json_rpc()}))),
     };
-    let result = if crate::commune::owns_method(&method) {
+    let result = if method=="cloud_http" {
+        crate::cloud::http::execute(&request.args,request.native).await
+    } else if let Some(result)=crate::git_commands::dispatch(&method,&request.args,&state.fs_scope,&ctx).await {
+        result
+    } else if let Some(result)=crate::terminal_ops::dispatch(&state,&method,&request.args,&ctx).await {
+        result
+    } else if let Some(result)=crate::foreign_panes::dispatch(&state,&method,&request.args,request.native).await {
+        result.map_err(ridge_core::CoreError::InvalidArgs)
+    } else if let Some(result)=state.outbound_hosts.dispatch(&state,&method,&request.args,request.native).await {
+        result.map_err(ridge_core::CoreError::InvalidArgs)
+    } else if let Some(result)=state.cloud.dispatch(&state,&method,&request.args,request.native).await {
+        result.map_err(ridge_core::CoreError::InvalidArgs)
+    } else if let Some(result)=state.lan.dispatch(&state,&method,&request.args,request.native).await {
+        result.map_err(ridge_core::CoreError::InvalidArgs)
+    } else if crate::lsp::owns_method(&method) {
+        crate::lsp::dispatch(&state, &method, &request.args, request.native, &ctx).await.map_err(ridge_core::CoreError::InvalidArgs)
+    } else if crate::commune::owns_method(&method) {
         crate::commune::dispatch(&state, &method, &request.args, request.native)
             .await
             .map_err(ridge_core::CoreError::InvalidArgs)
     } else {
         tokio::task::spawn_blocking(move || {
+            if let Some(result)=crate::clipboard_assets::dispatch(&state,&method,&request.args,&ctx){return result;}
+            if let Some(result)=crate::headless::dispatch(&state,&method,&request.args,&ctx){return result;}
+            if let Some(result) = crate::remote_auth::dispatch(&state, &method, &request.args, request.native) { return result; }
+            if let Some(result) = crate::identity::dispatch(&state, &method, &request.args, request.native) { return result; }
+            if let Some(result) = crate::remote_hosts::dispatch(&state, &method, &request.args, request.native) { return result; }
+            if method == "get_workspace_file_in_directory" {
+                let path=request.args["path"].as_str().ok_or_else(||ridge_core::CoreError::InvalidArgs("missing path".into()))?;
+                return ridge_core::workspace::file::first_in_directory(std::path::Path::new(path),&[&state.fs_scope,ctx.capabilities().root_scope()]);
+            }
+            if method == "scan_workspace_context_files" {
+                let root=request.args["workspaceRoot"].as_str().ok_or_else(||ridge_core::CoreError::InvalidArgs("missing workspaceRoot".into()))?;
+                return ridge_core::teammate::context_files::scan_command(std::path::Path::new(root),&[&state.fs_scope,ctx.capabilities().root_scope()]);
+            }
+            if method == "get_user_default_cwd" {return crate::settings::get(&state,&ctx);}
+            if method == "set_user_default_cwd" {return crate::settings::set(&state,&request.args,&ctx);}
+            if let Some(result)=crate::workspace_history::dispatch(&state,&method,&request.args,&ctx) {return result;}
+            if let Some(result)=crate::workspace_files::dispatch(&state,&method,&request.args,&ctx) {return result;}
+            if let Some(result) = crate::processes::dispatch(&state,&method,&request.args,&ctx) {return result;}
+            if let Some(result) = state.projects.dispatch(&method,&request.args,&ctx,&state.fs_scope) {return result;}
+            if method == "start_watching_paths" {return state.fs_watches.sync(&request.args,&ctx,&state.fs_scope).map_err(ridge_core::CoreError::InvalidArgs);}
+            if method == "start_watching_repos" {return state.fs_watches.sync_git(&request.args,&ctx,&state.fs_scope).map_err(ridge_core::CoreError::InvalidArgs);}
             crate::workspace_commands::dispatch(&state, &method, &request.args, &ctx)
                 .unwrap_or_else(|| ridge_core::dispatch(&method, request.args, &ctx))
         })
@@ -175,6 +225,7 @@ pub async fn stream(
         json!({"initial":true}),
     );
     Ok(upgrade.on_upgrade(move |socket| async move {
+        let _watches=state.fs_watches.attach(query.connection_id.clone(),state.business_events.clone());
         let (mut sink, mut incoming) = socket.split();
         loop {
             tokio::select! {
@@ -212,6 +263,7 @@ mod tests {
         let task=json!({"name":"commune-task-changed","payload":{"workspaceId":"workspace","execution":{"state":"unknown","reason":"private-input"}}});
         assert!(!project_event(task,false).unwrap().to_string().contains("private-input"));
         assert!(project_event(json!({"name":"teammate://hitl-approval-required"}),false).is_none());
+        assert!(project_event(json!({"name":"lsp://diagnostics","payload":{"privateFile":"private"}}),false).is_none());
     }
     #[test]
     fn broadcast_order_and_connection_privacy() {

@@ -567,8 +567,7 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
     expect(await resolveInvoke(() => conn.listHitlPending(), [], 'list_hitl_pending')).toEqual([]);
     expect(await resolveInvoke(() => conn.resolveHitlRemote('hitl', 'nonce', 'approve'), { outcome: 'consumed' }, 'resolve_hitl_remote')).toBe('consumed');
     expect(await resolveInvoke(() => conn.getOrchestrationHealth(), { suspendedAgents: 2, pendingHitl: 3 }, 'get_orchestration_health')).toEqual({ suspendedAgents: 2, pendingHitl: 3 });
-    await resolveInvoke(() => conn.markPaneAgent('workspace-a', 'agent', true, 'agent-1'), null, 'register_teammate_agent');
-    await resolveInvoke(() => conn.markPaneAgent('workspace-a', 'agent', false), null, 'release_teammate_agent');
+    expect('markPaneAgent' in conn).toBe(false);
     expect(await resolveInvoke(() => conn.listSavedWorkspaceFiles(), [{ name: 'x', path: '/x.ridge', mtime_secs: 4 }, { name: 'bad', path: '' }], 'list_saved_workspace_files')).toEqual([{ name: 'x', path: '/x.ridge', mtimeSecs: 4 }]);
     expect(await resolveInvoke(() => conn.openWorkspaceFromFile('/x.ridge'), 'workspace-b', 'open_workspace_from_file')).toBe('workspace-b');
     const project = conn.requestCurrentProject();

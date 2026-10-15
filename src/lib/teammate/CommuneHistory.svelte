@@ -76,7 +76,7 @@
   </div>
   <p class="text-[11px] text-[var(--rg-fg-muted)]">只读协议与任务账本；日期为 Ridge 观察时间。查看不加载会话、不发送 prompt。</p>
   {#if error}<p role="alert" class="text-[12px] text-red-300">历史读取失败：{error}</p>{/if}
-  {#if !busy && rows.length === 0}<p class="text-[12px] text-[var(--rg-fg-muted)]">此工作区尚无已登记会话的协议记录。</p>{/if}
+  {#if !busy && rows.length === 0}<p class="text-[12px] text-[var(--rg-fg-muted)]">此工作区尚未取得已登记会话的协议记录。终端中运行但未接入协议的 Agent，其既有历史尚未同步；这不表示该 Agent 没有历史。</p>{/if}
   <ul class="space-y-2">
     {#each rows as row (key(row))}
       <li class="rounded-md border border-[var(--rg-border)] bg-[var(--rg-bg)]/40 px-3 py-2" data-history-kind={row.kind}>

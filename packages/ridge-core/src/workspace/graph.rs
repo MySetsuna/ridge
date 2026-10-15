@@ -24,8 +24,20 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 /// 单个 workspace 的图谱数据：布局树 + 名称 + 每 pane 锁定渲染尺寸（共享属性）。
+#[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
+pub struct ForeignPaneBinding {
+    pub host_id:String,
+    pub host_label:String,
+    pub kind:crate::remote::HostKind,
+    pub workspace_id:Uuid,
+    pub session_id:Uuid,
+    pub title:String,
+    pub cwd:Option<String>,
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WorkspaceMeta {
+    #[serde(default,skip_serializing_if="HashMap::is_empty")]
+    pub foreign_panes:HashMap<Uuid,ForeignPaneBinding>,
     #[serde(default)]
     pub display_seq: u64,
     #[serde(default, skip_serializing_if="Option::is_none")]
@@ -166,6 +178,7 @@ impl WorkspaceGraph {
         let meta = self.meta_mut(wid)?;
         meta.pane_tree.close(pane)?;
         meta.locked_sizes.remove(&pane);
+        meta.foreign_panes.remove(&pane);
         Ok(())
     }
 
@@ -179,6 +192,32 @@ impl WorkspaceGraph {
         self.meta_mut(wid)?
             .pane_tree
             .dock_pane(source, target, region)
+    }
+
+    /// Move one leaf without recreating its identity. Returns whether the source workspace closed.
+    pub fn dock_between(&mut self, from: Uuid, to: Uuid, source: Uuid, target: Uuid, region: DockRegion) -> Result<bool, CoreError> {
+        if from == to { self.dock(from, source, target, region)?; return Ok(false); }
+        if !self.leaves(from)?.contains(&source) { return Err(CoreError::PaneNotFound(source)); }
+        if !self.leaves(to)?.contains(&target) { return Err(CoreError::PaneNotFound(target)); }
+        if self.meta(to)?.pane_tree.panes.contains_key(&source) { return Err(CoreError::InvalidArgs("duplicate pane identity".into())); }
+        let closed = self.leaves(from)?.len() == 1;
+        let mut next = self.clone();
+        let src = next.meta_mut(from)?;
+        if !src.pane_tree.detach_external_leaf(source) { return Err(CoreError::PaneNotFound(source)); }
+        let pane = src.pane_tree.panes.remove(&source).ok_or(CoreError::PaneNotFound(source))?;
+        let size = src.locked_sizes.remove(&source);
+        let foreign = src.foreign_panes.remove(&source);
+        let dst = next.meta_mut(to)?;
+        dst.pane_tree.panes.insert(source, pane);
+        if let Some(size) = size { dst.locked_sizes.insert(source, size); }
+        if let Some(foreign) = foreign { dst.foreign_panes.insert(source, foreign); }
+        dst.pane_tree.attach_external_leaf(source, target, region)?;
+        if closed {
+            next.remove_workspace(from);
+            next.set_active(to)?;
+        }
+        *self = next;
+        Ok(closed)
     }
 
     pub fn set_split_ratios_at_path(
@@ -380,6 +419,37 @@ mod tests {
         let leaves = g.leaves(wid).unwrap();
         assert_eq!(leaves.len(), 2);
         assert!(leaves.contains(&root) && leaves.contains(&new));
+    }
+
+    #[test]
+    fn dock_between_preserves_metadata_and_commits_only_valid_moves() {
+        for region in [DockRegion::Left, DockRegion::Right, DockRegion::Top, DockRegion::Bottom, DockRegion::Center] {
+            let mut graph = WorkspaceGraph::new();
+            let from = graph.create_workspace();
+            let to = graph.create_workspace();
+            let third = graph.create_workspace();
+            let source = graph.leaves(from).unwrap()[0];
+            let remaining = graph.split(from, source, SplitDirection::Horizontal).unwrap();
+            let target = graph.leaves(to).unwrap()[0];
+            graph.set_locked_size(from, source, 103, 37).unwrap();
+            let binding = ForeignPaneBinding { host_id: "retained-host".into(), host_label: "peer".into(), kind: crate::remote::HostKind::Remote,
+                workspace_id: Uuid::new_v4(), session_id: Uuid::new_v4(), title: "existing".into(), cwd: None };
+            graph.workspace_mut(from).unwrap().foreign_panes.insert(source, binding.clone());
+            let pane = serde_json::to_value(&graph.workspace(from).unwrap().pane_tree.panes[&source]).unwrap();
+            let before = serde_json::to_value(&graph).unwrap();
+            assert!(graph.dock_between(from, to, source, Uuid::new_v4(), region.clone()).is_err());
+            assert_eq!(serde_json::to_value(&graph).unwrap(), before);
+            assert!(!graph.dock_between(from, to, source, target, region.clone()).unwrap());
+            assert_eq!(graph.leaves(from).unwrap(), vec![remaining]);
+            assert_eq!(graph.locked_size(to, source), Some((103, 37)));
+            assert_eq!(graph.workspace(to).unwrap().foreign_panes[&source], binding);
+            assert_eq!(serde_json::to_value(&graph.workspace(to).unwrap().pane_tree.panes[&source]).unwrap(), pane);
+            graph.set_active(third).unwrap();
+            assert!(graph.dock_between(from, to, remaining, target, region).unwrap());
+            assert!(graph.workspace(from).is_none());
+            assert_eq!(graph.active(), Some(to));
+            assert_eq!(graph.leaves(to).unwrap().len(), 3);
+        }
     }
 
     #[test]

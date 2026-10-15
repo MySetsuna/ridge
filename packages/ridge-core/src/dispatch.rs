@@ -43,7 +43,7 @@ use crate::sandbox::RootScope;
 
 /// Path-bearing argument keys swept for `..` traversal, identical to the legacy
 /// desktop dispatcher's list.
-const PATH_KEYS: &[&str] = &["path", "from", "to", "repoRoot", "root", "cwd"];
+const PATH_KEYS: &[&str] = &["path", "from", "to", "repoRoot", "root", "cwd", "workspaceRoot"];
 
 /// Visit every path-bearing string argument (the scalar [`PATH_KEYS`] plus each
 /// element of the `paths` array), short-circuiting on the first `Err` from
@@ -92,8 +92,13 @@ fn sandbox_guard(method: &str, args: &Value, scope: &RootScope) -> CoreResult<()
         return Ok(()); // fast path: sandbox off
     }
     for_each_path_arg(args, |key, v| {
-        // Git pathspecs are relative to repoRoot, not the service process CWD.
-        let candidate = if key == "paths" && matches!(method, "git_stage" | "git_unstage") && std::path::Path::new(v).is_relative() {
+        // The settings contract trims path input; blank clears without filesystem access.
+        let v = if method == "set_user_default_cwd" && key == "path" {v.trim()} else {v};
+        if method == "set_user_default_cwd" && key == "path" && v.is_empty() {return Ok(());}
+        // These Git fields are revisions, not filesystem paths.
+        if matches!(method, "git_compare_commits" | "git_get_file_versions_between") && matches!(key, "from" | "to") { return Ok(()); }
+        // Git file paths/pathspecs are relative to repoRoot, not the service process CWD.
+        let candidate = if matches!(key, "path" | "paths") && method.starts_with("git_") && std::path::Path::new(v).is_relative() {
             args["repoRoot"].as_str().map(|root| std::path::Path::new(root).join(v))
         } else { None };
         if scope.is_allowed(candidate.as_ref().map(|path|path.to_string_lossy()).as_deref().unwrap_or(v)) {
@@ -175,6 +180,19 @@ fn dispatch_admitted(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> 
 
     // 4. Method table (vertical slice: settings + theme).
     match method {
+        "classify_command_risk" => {
+            let command = args.get("command").and_then(Value::as_str)
+                .ok_or_else(|| CoreError::InvalidArgs("command must be a string".into()))?;
+            serde_json::to_value(crate::classify_shell_command(command)).map_err(CoreError::internal)
+        }
+        "get_workspace_file_in_directory" => {
+            let path=opt_s(&args,"path").ok_or_else(||CoreError::InvalidArgs("missing path".into()))?;
+            crate::workspace::file::first_in_directory(std::path::Path::new(&path),&[ctx.capabilities().root_scope()])
+        }
+        "scan_workspace_context_files" => {
+            let root=opt_s(&args,"workspaceRoot").ok_or_else(||CoreError::InvalidArgs("missing workspaceRoot".into()))?;
+            crate::teammate::context_files::scan_command(std::path::Path::new(&root),&[ctx.capabilities().root_scope()])
+        }
         "get_theme_data" => {
             let tf = theme::get_theme_data();
             serde_json::to_value(tf).map_err(CoreError::internal)
@@ -185,6 +203,28 @@ fn dispatch_admitted(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> 
             })?;
             theme::set_active_theme(&id)?;
             Ok(Value::Null)
+        }
+        "get_active_theme_entry" => serde_json::to_value(theme::active_theme_entry()).map_err(CoreError::internal),
+        "get_theme_assets_dir" => Ok(Value::String(theme::get_theme_assets_dir())),
+        "save_user_theme" => {
+            let entry = serde_json::from_value(args["entry"].clone())
+                .map_err(|error| CoreError::InvalidArgs(format!("invalid theme entry: {error}")))?;
+            serde_json::to_value(theme::save_user_theme(entry)?).map_err(CoreError::internal)
+        }
+        "delete_user_theme" => {
+            let id = opt_s(&args, "id").ok_or_else(|| CoreError::InvalidArgs("missing id".into()))?;
+            theme::delete_user_theme(&id)?;
+            Ok(Value::Null)
+        }
+        "save_theme_bg_image" => {
+            let bytes = serde_json::from_value(args["bytes"].clone())
+                .map_err(|error| CoreError::InvalidArgs(format!("invalid image bytes: {error}")))?;
+            let ext = opt_s(&args, "ext").ok_or_else(|| CoreError::InvalidArgs("missing ext".into()))?;
+            Ok(Value::String(theme::save_theme_bg_image(bytes, &ext)?))
+        }
+        "save_theme_bg_image_from_path" => {
+            let path = opt_s(&args, "path").ok_or_else(|| CoreError::InvalidArgs("missing path".into()))?;
+            Ok(Value::String(theme::save_theme_bg_image_from_path(&path)?))
         }
         "set_user_default_cwd" => {
             settings::set_user_default_cwd(ctx, opt_s(&args, "path"))?;
@@ -381,12 +421,14 @@ fn dispatch_admitted(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> 
             let st = git::git_op_in_progress(s(&args, "repoRoot"));
             serde_json::to_value(st).map_err(CoreError::internal)
         }
+        "get_git_guard_stats" => serde_json::to_value(git::git_guard_stats()).map_err(CoreError::internal),
         "get_git_info_with_cwd" => {
             let info = git::git_info_for_path(std::path::Path::new(&s(&args, "cwd")));
             serde_json::to_value(info).map_err(CoreError::internal)
         }
         // 这几个桌面侧是 async(spawn_git_blocking)，但都薄包一个同步内核；dispatch 是同步的，
         // 故直接调其**同步内核**（git.rs:9 明许「直接跑同款逻辑」，与 fs 只读同为阻塞式路由）。
+        "git_stash_list" => serde_json::to_value(git::git_stash_list_sync(s(&args,"repoRoot")).map_err(CoreError::internal)?).map_err(CoreError::internal),
         "get_scm_status" => {
             let st = git::get_scm_status_sync(s(&args, "repoRoot")).map_err(CoreError::internal)?;
             serde_json::to_value(st).map_err(CoreError::internal)
@@ -533,11 +575,36 @@ mod tests {
     }
 
     #[test]
+    fn git_guard_stats_remains_native_only() {
+        let (native, _) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::allow_all());
+        let stats = dispatch("get_git_guard_stats", Value::Null, &native).unwrap();
+        assert!(stats["logicalConcurrencyCap"].as_u64().unwrap() > 0);
+        assert!(stats["activeChildren"].is_u64());
+        let (remote, _) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        assert_eq!(dispatch("get_git_guard_stats", Value::Null, &remote)
+            .unwrap_err().kind_tag(), "capability_denied");
+    }
+
+    #[test]
     fn traversal_rejected_before_handler_runs() {
         let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::allow_all());
         let args = serde_json::json!({ "path": "../../etc/passwd" });
         let err = dispatch("read_file", args, &ctx).unwrap_err();
         assert_eq!(err.kind_tag(), "path_traversal");
+    }
+
+    #[test]
+    fn command_risk_admits_native_and_rejects_invalid_or_remote_requests() {
+        let (ctx, _) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::allow_all());
+        let risk = dispatch("classify_command_risk", serde_json::json!({"command":"rm -rf /"}), &ctx).unwrap();
+        assert_eq!(risk["level"], "Dangerous");
+        for command in [Value::Null, serde_json::json!(42)] {
+            let error = dispatch("classify_command_risk", serde_json::json!({"command":command}), &ctx).unwrap_err();
+            assert_eq!(error.kind_tag(), "invalid_args");
+        }
+        let (remote, _) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        assert_eq!(dispatch("classify_command_risk", serde_json::json!({"command":"pwd"}), &remote)
+            .unwrap_err().kind_tag(), "capability_denied");
     }
 
     #[test]
@@ -942,11 +1009,18 @@ mod tests {
         let root = std::env::current_dir().unwrap().join("shared-sandbox-git");
         let outside = root.parent().unwrap().join("escape.txt");
         let (ctx, _) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::allow_all().with_roots([&root]));
-        for method in ["git_stage", "git_unstage"] {
+        for method in ["git_stage", "git_unstage", "git_discard", "git_clean_untracked"] {
             assert!(validate_request(method, &serde_json::json!({"repoRoot":root,"paths":["src/tracked.txt"]}), &ctx).is_ok());
             assert!(matches!(validate_request(method, &serde_json::json!({"repoRoot":root,"paths":[outside]}), &ctx), Err(CoreError::OutsideSandbox)));
             assert!(matches!(validate_request(method, &serde_json::json!({"repoRoot":root,"paths":["../escape.txt"]}), &ctx), Err(CoreError::PathTraversal)));
         }
+        for method in ["git_blame", "git_file_log", "git_diff_file", "git_get_file_versions_at_commit", "git_get_file_versions_between"] {
+            assert!(validate_request(method, &serde_json::json!({"repoRoot":root,"path":"src/tracked.txt"}), &ctx).is_ok());
+            assert!(matches!(validate_request(method, &serde_json::json!({"repoRoot":root,"path":"../escape.txt"}), &ctx), Err(CoreError::PathTraversal)));
+            assert!(matches!(validate_request(method, &serde_json::json!({"repoRoot":root,"path":outside}), &ctx), Err(CoreError::OutsideSandbox)));
+        }
+        assert!(validate_request("git_compare_commits", &serde_json::json!({"repoRoot":root,"from":"HEAD~1","to":"HEAD"}), &ctx).is_ok());
+        assert!(validate_request("git_get_file_versions_between", &serde_json::json!({"repoRoot":root,"path":"src/tracked.txt","from":"HEAD~1","to":"HEAD"}), &ctx).is_ok());
         assert!(matches!(validate_request("write_file", &serde_json::json!({"repoRoot":root,"path":outside}), &ctx), Err(CoreError::OutsideSandbox)));
     }
 
