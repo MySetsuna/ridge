@@ -588,10 +588,11 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
     let connection_history = history.clone();
     let events = state.business_events.clone();
     let event_agent = agent_id.clone();
+    let event_workspace = request.workspace_id.to_string();
     let updates:ridge_acp::existing::UpdateSink=Arc::new(move |update| {
             let context = observed_turn.lock().map_err(|_|ridge_acp::AcpErrorWrap::Transport("turn context unavailable".into()))?.clone();
             let record = history
-                .append(json!({"kind":"session_update","agentId":event_agent,"params":update,"generation":generation,
+                .append(json!({"kind":"session_update","workspaceId":event_workspace,"agentId":event_agent,"params":update,"generation":generation,
                     "phase":if update_phase.load(std::sync::atomic::Ordering::Acquire) {"replay"}else{"live"},"replayId":update_replay,
                     "deliveryId":context["deliveryId"],"taskId":context["taskId"],"groupTaskId":context["payload"]["groupContext"]["groupTaskId"],"correlationId":context["correlationId"],"binding":context["to"]}))
                 .map_err(ridge_acp::AcpErrorWrap::Io)?;

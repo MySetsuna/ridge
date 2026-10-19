@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::{
     body::Bytes,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -41,6 +41,8 @@ pub struct NativeA2aCtx {
     pub version: Arc<String>,
     pub state: Arc<McpSessionState>,
     pub tenant: Option<Arc<String>>,
+    base_url: Option<Arc<String>>,
+    target: Option<Value>,
 }
 
 impl NativeA2aCtx {
@@ -56,11 +58,18 @@ impl NativeA2aCtx {
             version: Arc::new(version.into()),
             state,
             tenant: None,
+            base_url: None,
+            target: None,
         }
     }
 
     pub fn with_tenant(mut self, tenant: impl Into<String>) -> Self {
         self.tenant = Some(Arc::new(tenant.into()));
+        self
+    }
+
+    pub fn with_base_url(mut self, base_url: String) -> Self {
+        self.base_url = Some(Arc::new(base_url));
         self
     }
 }
@@ -80,16 +89,19 @@ pub fn router(ctx: NativeA2aCtx) -> Router {
         .route(AGENT_CARD_PATH, get(agent_card))
         .route("/api/v1/a2a/agent-card", get(agent_card))
         .route(A2A_JSONRPC_PATH, post(json_rpc))
+        .route("/api/v1/a2a/members", get(member_catalog))
+        .route("/api/v1/a2a/members/:workspace/:agent/:generation/.well-known/agent-card.json", get(member_card))
+        .route("/api/v1/a2a/members/:workspace/:agent/:generation", post(member_rpc))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .with_state(ctx)
 }
 
-async fn agent_card(State(ctx): State<NativeA2aCtx>) -> Response {
+fn card_value(ctx: &NativeA2aCtx) -> Value {
     let card = AgentCard {
         name: "Ridge".into(),
         description: "Ridge Agent Hub native A2A endpoint".into(),
         supported_interfaces: vec![AgentInterface {
-            url: A2A_JSONRPC_PATH.into(),
+            url: ctx.base_url.as_ref().map(|base|format!("{}{A2A_JSONRPC_PATH}",base.trim_end_matches('/'))).unwrap_or_else(||A2A_JSONRPC_PATH.into()),
             protocol_binding: "JSONRPC".into(),
             protocol_version: "1.0".into(),
             tenant: ctx.tenant.as_deref().map(ToString::to_string),
@@ -104,9 +116,9 @@ async fn agent_card(State(ctx): State<NativeA2aCtx>) -> Response {
             extensions: Vec::new(),
         },
         security_schemes: json!({
-            "bearerAuth": { "type": "http", "scheme": "bearer" }
+            "bearerAuth": { "httpAuthSecurityScheme": { "scheme": "bearer" } }
         }),
-        security_requirements: vec![json!({ "bearerAuth": [] })],
+        security_requirements: vec![json!({ "schemes": { "bearerAuth": { "list": [] } } })],
         default_input_modes: vec!["text/plain".into()],
         default_output_modes: vec!["text/plain".into()],
         skills: vec![json!({
@@ -117,10 +129,65 @@ async fn agent_card(State(ctx): State<NativeA2aCtx>) -> Response {
         signatures: Vec::new(),
         icon_url: None,
     };
-    json_response(
-        StatusCode::OK,
-        serde_json::to_value(card).expect("Agent Card is serializable"),
-    )
+    serde_json::to_value(card).expect("Agent Card is serializable")
+}
+
+async fn agent_card(State(ctx): State<NativeA2aCtx>) -> Response {
+    json_response(StatusCode::OK, card_value(&ctx))
+}
+
+fn member_endpoint(ctx: &NativeA2aCtx, member: &Value) -> Result<String, String> {
+    let mut url=reqwest::Url::parse(ctx.base_url.as_deref().ok_or("A2A member discovery requires a canonical base URL")?).map_err(|_|"invalid A2A base URL")?;
+    let workspace=member["workspaceId"].as_str().ok_or("member has no workspace")?;
+    let agent=member["agentId"].as_str().ok_or("member has no Agent ID")?;
+    let generation=member["generation"].as_u64().filter(|value|*value>0).ok_or("member has no generation")?.to_string();
+    url.path_segments_mut().map_err(|_|"invalid A2A base URL")?.clear().extend(["api","v1","a2a","members",workspace,agent,&generation]);
+    Ok(url.to_string())
+}
+
+fn bound_member(ctx: &NativeA2aCtx, workspace: &str, agent: &str, generation: u64) -> Result<NativeA2aCtx, String> {
+    let profile=ctx.host.team_profile_for(Some(workspace)).map_err(|error|error.message())?;
+    let member=profile["roster"].as_array().and_then(|rows|rows.iter().find(|member|
+        member["workspaceId"]==workspace && member["agentId"]==agent && member["generation"]==generation
+        && member["protocolBinding"].is_object() && member["lease"].as_str().is_some_and(|value|!value.is_empty())))
+        .ok_or("registered A2A member binding is unavailable or stale")?;
+    let mut bound=ctx.clone();bound.target=Some(member.clone());Ok(bound)
+}
+
+async fn member_catalog(State(ctx): State<NativeA2aCtx>, headers: HeaderMap) -> Response {
+    if !auth_ok(&headers,&ctx.token) {return json_response(StatusCode::UNAUTHORIZED,json!({"error":"unauthorized"}));}
+    let result=(||->Result<Value,String>{
+        let profile=ctx.host.team_profile();
+        let mut cards=Vec::new();
+        for member in profile["roster"].as_array().ok_or("Agent roster unavailable")? {
+            if member["protocolBinding"].is_object() && member["online"]==true {
+                cards.push(format!("{}/.well-known/agent-card.json",member_endpoint(&ctx,member)?));
+            }
+        }
+        Ok(json!({"agentCards":cards}))
+    })();
+    match result {Ok(value)=>json_response(StatusCode::OK,value),Err(error)=>json_response(StatusCode::SERVICE_UNAVAILABLE,json!({"error":error}))}
+}
+
+async fn member_card(State(ctx): State<NativeA2aCtx>, Path((workspace,agent,generation)):Path<(String,String,u64)>, headers:HeaderMap) -> Response {
+    if !auth_ok(&headers,&ctx.token) {return json_response(StatusCode::UNAUTHORIZED,json!({"error":"unauthorized"}));}
+    let result=(||->Result<Value,String>{
+        let bound=bound_member(&ctx,&workspace,&agent,generation)?;
+        let member=bound.target.as_ref().ok_or("missing member binding")?;
+        let mut card=card_value(&bound);
+        card["name"]=json!(agent);card["description"]=json!("Existing Commune conversation; prompt completion does not assert objective success");
+        card["supportedInterfaces"][0]["url"]=json!(member_endpoint(&ctx,member)?);
+        Ok(card)
+    })();
+    match result {Ok(value)=>json_response(StatusCode::OK,value),Err(error)=>json_response(StatusCode::NOT_FOUND,json!({"error":error}))}
+}
+
+async fn member_rpc(State(ctx):State<NativeA2aCtx>,Path((workspace,agent,generation)):Path<(String,String,u64)>,headers:HeaderMap,body:Bytes)->Response {
+    if !auth_ok(&headers,&ctx.token) {return json_response(StatusCode::UNAUTHORIZED,json!({"error":"unauthorized"}));}
+    match bound_member(&ctx,&workspace,&agent,generation) {
+        Ok(bound)=>json_rpc(State(bound),headers,body).await,
+        Err(error)=>rpc_error(serde_json::from_slice::<Value>(&body).ok().and_then(|value|value.get("id").cloned()).unwrap_or(Value::Null),-32001,error),
+    }
 }
 
 async fn json_rpc(State(ctx): State<NativeA2aCtx>, headers: HeaderMap, body: Bytes) -> Response {
@@ -154,8 +221,12 @@ async fn json_rpc(State(ctx): State<NativeA2aCtx>, headers: HeaderMap, body: Byt
     if let Err(error) = validate_tenant(&ctx, &request.params) {
         return rpc_error(request.id, -32602, error);
     }
+    if headers.get("a2a-version").is_some_and(|value|value.as_bytes()!=b"1.0") {
+        return rpc_error(request.id,-32602,"unsupported A2A version; expected 1.0");
+    }
 
-    let result = dispatch(&ctx, &request.method, &request.params);
+    let result = tokio::task::spawn_blocking(move||dispatch(&ctx, &request.method, &request.params)).await
+        .unwrap_or_else(|_|Err(internal_error("A2A worker unavailable")));
     match result {
         Ok(value) => bounded_rpc_response(request.id, value),
         Err(error) => rpc_error(request.id, error.0, error.1),
@@ -185,6 +256,12 @@ fn send_message(ctx: &NativeA2aCtx, params: &Value) -> Result<Value, (i64, Strin
     let message = params
         .get("message")
         .ok_or_else(|| invalid_params("SendMessage requires message"))?;
+    if ctx.target.is_some() {
+        if message["role"]!="ROLE_USER" {return Err(invalid_params("member messages require ROLE_USER"));}
+        if ["contextId","taskId"].iter().any(|key|message[*key].as_str().is_some_and(|value|!value.is_empty())) {
+            return Err((-32004,"existing conversation does not support independent A2A context or task continuation".into()));
+        }
+    }
     let message_id = bounded_string(message, "messageId", MAX_MESSAGE_ID_BYTES)?;
     let text = message_text(message)?;
     let target = target_from_params(ctx, params)?;
@@ -205,19 +282,23 @@ fn send_message(ctx: &NativeA2aCtx, params: &Value) -> Result<Value, (i64, Strin
         .and_then(Value::as_str)
         .ok_or_else(|| internal_error("Hub receipt has no deliveryId"))?;
     Ok(json!({
-        "task": task_from_entry(task_id, &entry, message)
+        "task": task_result(ctx, task_id, &entry, message)?
     }))
 }
 
 fn get_task(ctx: &NativeA2aCtx, params: &Value) -> Result<Value, (i64, String)> {
+    if params["historyLength"].as_u64().is_some_and(|length|length>0) {
+        return Err((-32004,"full A2A conversation history is not supported".into()));
+    }
     let task_id = bounded_string(params, "id", MAX_ID_BYTES)?;
     let target = target_from_params(ctx, params)?;
     let args = target_args(&target, [("delivery_id", Value::String(task_id.clone()))])?;
     let entry = call_tool_json("ridge_delivery_status", args, ctx)?;
-    Ok(task_from_entry(&task_id, &entry, &Value::Null))
+    task_result(ctx, &task_id, &entry, &Value::Null)
 }
 
 fn list_tasks(ctx: &NativeA2aCtx, params: &Value) -> Result<Value, (i64, String)> {
+    if ctx.target.is_some() {return Err((-32601,"member task listing is not implemented; use GetTask with the returned task ID".into()));}
     let target = target_from_params(ctx, params)?;
     let limit = params
         .get("pagination")
@@ -254,7 +335,20 @@ fn cancel_task(ctx: &NativeA2aCtx, params: &Value) -> Result<Value, (i64, String
     let target = target_from_params(ctx, params)?;
     let args = target_args(&target, [("delivery_id", Value::String(task_id.clone()))])?;
     let entry = call_tool_json("ridge_cancel_delivery", args, ctx)?;
-    Ok(task_from_entry(&task_id, &entry, &Value::Null))
+    task_result(ctx, &task_id, &entry, &Value::Null)
+}
+
+fn task_result(ctx:&NativeA2aCtx,id:&str,entry:&Value,message:&Value)->Result<Value,(i64,String)> {
+    let mut task=task_from_entry(id,entry,message);
+    if ctx.target.as_ref().is_some_and(|target|target["protocolBinding"].is_object()) {
+        if task["status"]["state"]=="TASK_STATE_WORKING" && ctx.host.requires_permission(ctx.target.as_ref().unwrap()).map_err(|error|internal_error(error.message()))? {
+            task["status"]["state"]=json!("TASK_STATE_AUTH_REQUIRED");
+        }
+        let outputs=ctx.state.protocol_outputs(id,true).map_err(internal_error)?;
+        task["artifacts"]=Value::Array(outputs["items"].as_array().ok_or_else(||internal_error("protocol outputs unavailable"))?.iter()
+            .map(|output|json!({"artifactId":output["id"],"name":"Reported protocol output","parts":[{"data":output}],"metadata":{"verified":false}})).collect());
+    }
+    Ok(task)
 }
 
 fn task_from_entry(id: &str, entry: &Value, message: &Value) -> Value {
@@ -266,6 +360,7 @@ fn task_from_entry(id: &str, entry: &Value, message: &Value) -> Value {
     };
     let state = match entry["execution"]["state"].as_str() {
         Some("dispatching" | "running") => "working",
+        Some("failed") => "failed",
         Some("cancelled") => "canceled",
         Some("rejected") => "rejected",
         // ACP end_turn proves a conversation turn ended, not that the user's
@@ -275,7 +370,8 @@ fn task_from_entry(id: &str, entry: &Value, message: &Value) -> Value {
     };
     let mut task = json!({
         "id": id,
-        "status": { "state": state },
+        "contextId": id,
+        "status": { "state": format!("TASK_STATE_{}",state.replace('-',"_").to_ascii_uppercase()) },
         "metadata": { "ridge": {
             "deliveryId": entry.get("deliveryId"),
             "messageId": entry.get("messageId"),
@@ -291,7 +387,13 @@ fn task_from_entry(id: &str, entry: &Value, message: &Value) -> Value {
     task
 }
 
-fn target_from_params(_ctx: &NativeA2aCtx, params: &Value) -> Result<Value, (i64, String)> {
+fn target_from_params(ctx: &NativeA2aCtx, params: &Value) -> Result<Value, (i64, String)> {
+    if let Some(target)=&ctx.target {
+        if params.get("target").is_some() || params.pointer("/metadata/ridge/target").is_some() {
+            return Err(invalid_params("member route does not accept a target override"));
+        }
+        return Ok(target.clone());
+    }
     let explicit = params
         .get("metadata")
         .and_then(|metadata| metadata.get("ridge"))
@@ -494,6 +596,7 @@ mod tests {
                     "online": true,
                     "lifecycle": "Online",
                     "capabilities": ["messages", "tasks"]
+                    ,"protocolBinding": {"protocol":"app-server"}
                 }]
             })
         }
@@ -565,23 +668,23 @@ mod tests {
         let accepted = json!({"status":"adapter_accepted"});
         assert_eq!(
             task_from_entry("id", &accepted, &Value::Null)["status"]["state"],
-            "submitted"
+            "TASK_STATE_SUBMITTED"
         );
         for (execution, expected) in [
-            (json!({"state":"running"}), "working"),
+            (json!({"state":"running"}), "TASK_STATE_WORKING"),
             (
                 json!({"state":"turn_ended","response":{"stopReason":"end_turn"}}),
-                "input-required",
+                "TASK_STATE_INPUT_REQUIRED",
             ),
             (
                 json!({"state":"unknown","reason":"connection lost"}),
-                "input-required",
+                "TASK_STATE_INPUT_REQUIRED",
             ),
             (
                 json!({"state":"cancelled","response":{"stopReason":"cancelled"}}),
-                "canceled",
+                "TASK_STATE_CANCELED",
             ),
-            (json!({"state":"rejected","sent":false}), "rejected"),
+            (json!({"state":"rejected","sent":false}), "TASK_STATE_REJECTED"),
         ] {
             let mut entry = accepted.clone();
             entry["execution"] = execution.clone();
@@ -650,6 +753,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn member_routes_require_auth_and_reject_cross_scope_stale_generation_and_target_overrides() {
+        let app=router(NativeA2aCtx::new(Arc::new(TestHost),Arc::new("token".into()),"test",Arc::new(McpSessionState::default()))
+            .with_base_url("http://127.0.0.1:48000".into()));
+        let path="/api/v1/a2a/members/workspace-a/agent-a/2";
+        for uri in ["/api/v1/a2a/members".to_owned(),format!("{path}/.well-known/agent-card.json")] {
+            let response=app.clone().oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(),StatusCode::UNAUTHORIZED);
+        }
+        let response=app.clone().oneshot(Request::builder().uri("/api/v1/a2a/members").header("authorization","Bearer token").body(Body::empty()).unwrap()).await.unwrap();
+        let catalog=body(response).await;
+        assert_eq!(catalog["agentCards"],json!([format!("http://127.0.0.1:48000{path}/.well-known/agent-card.json")]));
+        for uri in [path.replace("workspace-a","workspace-other"),path.replace("/2","/3")] {
+            let response=app.clone().oneshot(Request::builder().uri(format!("{uri}/.well-known/agent-card.json")).header("authorization","Bearer token").body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(),StatusCode::NOT_FOUND);
+        }
+        let request=json!({"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"messageId":"m","role":"ROLE_USER","parts":[{"text":"hello"}]},"target":{"agentId":"someone-else"}}});
+        let response=app.clone().oneshot(Request::builder().method("POST").uri(path).header("authorization","Bearer token").body(Body::from(request.to_string())).unwrap()).await.unwrap();
+        let result=body(response).await;
+        assert_eq!(result["error"]["code"],-32602);assert!(result["error"]["message"].as_str().unwrap().contains("target override"));
+        let response=app.oneshot(Request::builder().method("POST").uri(path).header("authorization","Bearer token").header("a2a-version","0.3")
+            .body(Body::from(json!({"jsonrpc":"2.0","id":2,"method":"GetTask","params":{"id":"task"}}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(body(response).await["error"]["message"],"unsupported A2A version; expected 1.0");
+    }
+
+    #[tokio::test]
     async fn send_get_cancel_share_authenticated_fenced_hub_receipt() {
         let target = json!({
             "agentId": "agent-a", "sessionId": "session-a", "workspaceId": "workspace-a",
@@ -704,7 +832,7 @@ mod tests {
             "params": { "id": task_id, "metadata": { "ridge": { "target": target } } }
         });
         let (_, result) = rpc(&app, cancel).await;
-        assert_eq!(result["result"]["status"]["state"], "canceled");
+        assert_eq!(result["result"]["status"]["state"], "TASK_STATE_CANCELED");
     }
 
     #[tokio::test]

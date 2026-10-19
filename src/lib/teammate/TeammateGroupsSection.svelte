@@ -31,6 +31,7 @@
     type ResolvedGroupMember,
   } from './teammateGroups.svelte';
   import { sortMembersBySessionId } from './agentCommuneModel';
+  import { t, tr } from '$lib/i18n';
 
   interface Props {
     /** 当前工作区的实时花名册（成员来源 + 失联对齐基准）。 */
@@ -132,12 +133,12 @@
   }
 
   async function renameGroup(g: TeammateGroup) {
-    const name = await promptDialog({ title: '重命名编组', message: '新的组名', defaultValue: g.name });
+    const name = await promptDialog({ title: tr('commune.renameGroup'), message: tr('commune.newGroupName'), defaultValue: g.name });
     if (name && name.trim()) store.rename(g.id, name);
   }
 
   async function dissolveGroup(g: TeammateGroup) {
-    const ok = await confirmDialog({ title: '解散编组', message: `确定解散「${g.name}」？组内成员不受影响。` });
+    const ok = await confirmDialog({ title: tr('commune.dissolveGroup'), message: tr('commune.dissolveGroupConfirm', { name: g.name }) });
     if (ok) store.dissolve(g.id);
   }
 
@@ -156,14 +157,14 @@
     const text = (taskInput[g.id] ?? '').trim();
     if (!text) return;
     if (!g.leaderAgentId) {
-      void alertDialog({ title: '给组派任务', message: '请先在该组指定一名组长，再派任务。' });
+      void alertDialog({ title: tr('commune.groupTaskTitle'), message: tr('commune.selectLeader') });
       return;
     }
     const leader = resolveMembers(g.memberAgentIds, roster).find(
       (m) => m.agentId === g.leaderAgentId && m.present && m.paneId
     );
     if (!leader || !leader.paneId) {
-      void alertDialog({ title: '给组派任务', message: '该组组长当前不在线，无法接收任务。' });
+      void alertDialog({ title: tr('commune.groupTaskTitle'), message: tr('commune.leaderOffline') });
       return;
     }
     const draft = JSON.stringify([workspaceId,g.id,g.revision,leader.agentId,leader.profile?.generation,leader.profile?.lease,text]);
@@ -189,7 +190,7 @@
       dispatchKeys.delete(g.id);
     } catch (e) {
       console.error('[teammate-groups] teammate service dispatch failed', e);
-      void alertDialog({ title: '给组派任务', message: '向组长投递任务失败，请重试。' });
+      void alertDialog({ title: tr('commune.groupTaskTitle'), message: tr('commune.dispatchFailed') });
     } finally { sending = {...sending,[g.id]:false}; }
   }
 </script>
@@ -215,17 +216,17 @@
   />
 {/snippet}
 
-<section>
-  {#if store.error}<p role="alert" class="text-[12px] text-red-300">编组操作失败：{store.error}</p>{/if}
+<section class="rg-commune-groups">
+  {#if store.error}<p role="alert" class="text-[12px] text-red-300">{tr('commune.groupOperationFailed', { error: store.error })}</p>{/if}
   {#if store.notice}<p role="status" class="text-[11px] text-[var(--rg-fg-muted)]">{store.notice}</p>{/if}
-  {#if store.busy}<p class="text-[11px] text-[var(--rg-fg-muted)]">编组同步中…</p>{/if}
+  {#if store.busy}<p class="text-[11px] text-[var(--rg-fg-muted)]">{$t('commune.groupSyncing')}</p>{/if}
   <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-    <Users class="h-3 w-3 text-[var(--rg-accent)]/70" /> 编组
+    <Users class="h-3 w-3 text-[var(--rg-accent)]/70" /> {$t('commune.groups')}
     <span class="ml-auto font-mono">{store.groups.length}</span>
     <button
       type="button"
-      title="新建编组"
-      aria-label="新建编组"
+      title={$t('commune.createGroup')}
+      aria-label={$t('commune.createGroup')}
       onclick={() => (building = !building)}
       class="ml-1 flex items-center justify-center rounded border border-[var(--rg-border)] p-0.5 text-[var(--rg-fg-muted)] transition-colors hover:text-[var(--rg-fg)]"
     >
@@ -237,7 +238,7 @@
   {#if building}
     <div class="mt-1.5 rounded-md border border-[var(--rg-border)] bg-[var(--rg-surface)]/40 p-2 space-y-2">
       {#if roster.length === 0}
-        <p class="text-[11px] text-[var(--rg-fg-muted)]">暂无可编组的成员。</p>
+        <p class="text-[11px] text-[var(--rg-fg-muted)]">{$t('commune.noGroupableMembers')}</p>
       {:else}
         <ul class="space-y-0.5 max-h-32 overflow-y-auto rg-scroll">
           {#each roster.filter(m => !groupOfAgent(store.groups, m.id)) as m (m.id)}
@@ -257,14 +258,14 @@
         <input
           type="text"
           bind:value={newName}
-          placeholder="组名（可选）"
+          placeholder={$t('commune.groupName')}
           class="w-full rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] px-2 py-1 text-[12px] text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)]"
         />
         <div class="flex items-center gap-1.5">
           {#each GROUP_COLORS as c (c)}
             <button
               type="button"
-              aria-label="选择配色"
+              aria-label={$t('commune.chooseColor')}
               onclick={() => (newColor = c)}
               style="background-color: {c}"
               class="h-4 w-4 rounded-full ring-offset-1 ring-offset-[var(--rg-bg)] transition-all {newColor === c
@@ -274,7 +275,7 @@
           {/each}
           <!-- 自定义颜色：隐藏的原生取色器覆盖在色块上 -->
           <label
-            title="自定义颜色"
+            title={$t('commune.customColor')}
             class="relative flex h-4 w-4 cursor-pointer items-center justify-center rounded-full ring-1 ring-[var(--rg-border)] {GROUP_COLORS.includes(
               newColor
             )
@@ -296,7 +297,7 @@
             onclick={resetBuilder}
             class="rounded px-2 py-1 text-[11px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
           >
-            取消
+            {$t('commune.cancel')}
           </button>
           <button
             type="button"
@@ -304,7 +305,7 @@
             onclick={commitGroup}
             class="rounded bg-[var(--rg-accent)] px-2 py-1 text-[11px] font-medium text-[var(--rg-bg)] disabled:opacity-40"
           >
-            建组（{selectedIds.length}）
+            {tr('commune.createGroupCount', { count: selectedIds.length })}
           </button>
         </div>
       {/if}
@@ -318,7 +319,7 @@
         <div class="space-y-1">
           <div class="flex items-center gap-1.5">
             <Ghost class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
-            <span class="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--rg-fg-muted)]">未分组</span>
+            <span class="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--rg-fg-muted)]">{$t('commune.ungrouped')}</span>
             <span class="font-mono text-[10px] text-[var(--rg-fg-muted)]">{ungrouped.length}</span>
           </div>
           <ul class="space-y-0.5">
@@ -340,7 +341,7 @@
             <span class="font-mono text-[10px] text-[var(--rg-fg-muted)]">{members.length}</span>
             <!-- 改配色（预设或自定义）：原生取色器覆盖在图标上 -->
             <label
-              title="改配色"
+              title={$t('commune.changeColor')}
               class="relative flex cursor-pointer items-center justify-center text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
             >
               <Palette class="h-3 w-3" />
@@ -353,8 +354,8 @@
             </label>
             <button
               type="button"
-              title="加成员"
-              aria-label="向该组加成员"
+              title={$t('commune.addMember')}
+              aria-label={$t('commune.addMemberToGroup')}
               onclick={() => (addingFor = addingFor === group.id ? null : group.id)}
               class="text-[var(--rg-fg-muted)] hover:text-[var(--rg-accent)] {addingFor === group.id
                 ? 'text-[var(--rg-accent)]'
@@ -364,8 +365,8 @@
             </button>
             <button
               type="button"
-              title="重命名"
-              aria-label="重命名编组"
+              title={$t('commune.rename')}
+              aria-label={$t('commune.renameGroup')}
               onclick={() => renameGroup(group)}
               class="text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
             >
@@ -373,8 +374,8 @@
             </button>
             <button
               type="button"
-              title="解散"
-              aria-label="解散编组"
+              title={$t('commune.dissolve')}
+              aria-label={$t('commune.dissolveGroup')}
               onclick={() => dissolveGroup(group)}
               class="text-[var(--rg-fg-muted)] hover:text-red-400"
             >
@@ -388,7 +389,7 @@
               {@render memberRow(mem, group)}
             {/each}
             {#if members.length === 0}
-              <li class="px-1 py-0.5 text-[11px] text-[var(--rg-fg-muted)]">空组</li>
+              <li class="px-1 py-0.5 text-[11px] text-[var(--rg-fg-muted)]">{$t('commune.emptyGroup')}</li>
             {/if}
           </ul>
 
@@ -397,7 +398,7 @@
             {@const candidates = candidatesFor(group)}
             <div class="rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/40 p-1">
               {#if candidates.length === 0}
-                <p class="px-1 py-0.5 text-[11px] text-[var(--rg-fg-muted)]">没有可加入的成员。</p>
+                <p class="px-1 py-0.5 text-[11px] text-[var(--rg-fg-muted)]">{$t('commune.noMembersToAdd')}</p>
               {:else}
                 <ul class="max-h-28 space-y-0.5 overflow-y-auto rg-scroll">
                   {#each candidates as cand (cand.id)}
@@ -432,14 +433,14 @@
                 }
               }}
               placeholder={group.leaderAgentId
-                ? '给组长派任务…（Enter 发送 / Shift+Enter 换行）'
-                : '请先指定组长（成员行金冠）'}
+                ? $t('commune.assignPlaceholder')
+                : $t('commune.selectGroupLeader')}
               class="min-w-0 flex-1 resize-none rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] px-2 py-1 text-[11px] leading-snug text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)]"
             ></textarea>
             <button
               type="button"
-              title={group.leaderAgentId ? '把任务派给组长' : '请先指定组长'}
-              aria-label="给组派任务"
+              title={group.leaderAgentId ? $t('commune.assignToLeader') : $t('commune.selectLeaderFirst')}
+              aria-label={$t('commune.dispatchGroupTask')}
               disabled={!group.leaderAgentId || sending[group.id] || store.busy}
               onclick={() => dispatchTask(group)}
               class="flex items-center justify-center rounded border border-[var(--rg-border)] p-1 text-[var(--rg-fg-muted)] transition-colors hover:text-[var(--rg-accent)] disabled:opacity-40 disabled:hover:text-[var(--rg-fg-muted)]"
@@ -459,7 +460,7 @@
           {#if store.tasksFor(group.id)[0]}
             {@const last = store.tasksFor(group.id)[0]}
             <p class="truncate text-[10px] text-[var(--rg-fg-muted)]" title={last.objective}>
-              旧本地记录：{last.objective}（{last.targets.length} 名成员；执行未核实）
+              {tr('commune.oldLocalTask', { objective: last.objective, count: last.targets.length })}
             </p>
           {/if}
         </div>
@@ -467,7 +468,7 @@
     {/each}
 
     {#if ungrouped.length === 0 && groupViews.length === 0}
-      <li class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">暂无成员</li>
+      <li class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">{$t('commune.noMembersInGroup')}</li>
     {/if}
   </ul>
 </section>

@@ -1,0 +1,128 @@
+/* Shared desktop and Remote Commune visual system. Theme surfaces remain host-owned. */
+.rg-commune {
+  container: commune / inline-size;
+  --commune-brand: color-mix(in oklab, #2f5d4e 58%, var(--rg-fg));
+  --rg-accent: var(--commune-brand);
+}
+.rg-commune > header {
+  background: color-mix(in srgb, var(--rg-surface) 72%, var(--rg-bg));
+  box-shadow: inset 0 2px 0 color-mix(in srgb, var(--commune-brand) 62%, transparent);
+}
+.rg-commune [role="tablist"] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--rg-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--rg-bg) 70%, var(--rg-surface));
+}
+.rg-commune [role="tab"] { min-height: 36px; border: 0; border-radius: 7px; }
+.rg-commune [role="tab"][aria-selected="true"] {
+  background: color-mix(in srgb, var(--rg-accent) 14%, var(--rg-surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rg-accent) 25%, transparent);
+}
+.rg-commune-member {
+  min-height: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--rg-surface) 62%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+}
+.rg-commune-history li,
+.rg-commune-task {
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--rg-surface) 72%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+}
+.rg-commune-task { border-left: 2px solid color-mix(in srgb, var(--commune-brand) 78%, var(--rg-border)); }
+.rg-task-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 1px 7px;
+  border: 1px solid var(--rg-border);
+  border-radius: 999px;
+  color: var(--rg-fg-muted);
+  background: color-mix(in srgb, var(--rg-bg) 52%, transparent);
+  font-size: 10px;
+  line-height: 1.2;
+}
+.rg-task-state[data-state="running"],
+.rg-task-state[data-state="dispatching"] {
+  color: var(--rg-accent);
+  border-color: color-mix(in srgb, var(--rg-accent) 36%, var(--rg-border));
+}
+.rg-task-state[data-state="waiting_permission"] {
+  color: var(--rg-ansi-yellow, #c99d55);
+  border-color: color-mix(in srgb, var(--rg-ansi-yellow, #c99d55) 35%, var(--rg-border));
+}
+.rg-task-state[data-state="unknown"],
+.rg-task-state[data-state="delivery_failed"],
+.rg-task-state[data-state="rejected"] {
+  color: var(--rg-ansi-red, #c77d6c);
+  border-color: color-mix(in srgb, var(--rg-ansi-red, #c77d6c) 35%, var(--rg-border));
+}
+.rg-commune-groups > details,
+.rg-commune > div > section { border-radius: 10px; }
+.rg-commune-group-tasks :is(button, input, select, textarea),
+.rg-commune-history :is(button, input) { border-radius: 7px; }
+.rg-commune-group-tasks :is(button, select),
+.rg-commune button { min-height: 30px; }
+.rg-commune-group-tasks textarea,
+.rg-commune-history input { min-height: 38px; line-height: 1.45; }
+.rg-commune :is(button, input, select, textarea):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--rg-accent) 80%, transparent);
+  outline-offset: 2px;
+}
+.rg-commune :is(button, summary) { transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease; }
+.rg-commune [class~="text-[10px]"] { font-size: 11px !important; }
+.rg-commune [class~="text-[11px]"] { font-size: 12px !important; }
+
+/* Remote's compact cards and two-tab switch share desktop surfaces and focus. */
+.rg-commune .subtabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--rg-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--rg-bg) 70%, var(--rg-surface));
+}
+.rg-commune .subtabs button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 7px;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.rg-commune .subtabs button.active {
+  color: var(--rg-fg);
+  background: color-mix(in srgb, var(--rg-accent) 14%, var(--rg-surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rg-accent) 25%, transparent);
+}
+.rg-commune .member-card,
+.rg-commune .approval,
+.rg-commune .group {
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--rg-surface) 72%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+}
+.rg-commune .member-card { padding: 9px 10px; }
+.rg-commune .member-cwd { font-size: 11px; }
+.rg-commune .section { font-size: 11px; letter-spacing: .03em; }
+.rg-commune [data-testid="remote-member-groups"] {
+  padding: 8px;
+  border: 1px solid var(--rg-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--rg-surface) 38%, transparent);
+}
+.rg-commune :is(input, button):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--rg-accent) 80%, transparent);
+  outline-offset: 2px;
+}
+
+@container commune (max-width: 320px) {
+  .rg-commune > div { padding-inline: 10px; }
+  .rg-commune-member { padding: 10px; }
+  .rg-commune-tabs [role="tab"] { padding-inline: 6px; font-size: 12px; }
+  .rg-commune .member-card { padding: 8px; }
+}

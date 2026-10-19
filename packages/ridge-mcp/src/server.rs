@@ -156,6 +156,10 @@ pub trait McpHost: Send + Sync {
         })
     }
 
+    fn requires_permission(&self, _target: &Value) -> HostResult<bool> {
+        Ok(false)
+    }
+
     /// Return one host-atomically sampled PTY runtime snapshot, if this host
     /// owns a verified sampler. `None` is fail-closed: the Hub never invents
     /// prompt/foreground/input state from a roster entry or pane title.

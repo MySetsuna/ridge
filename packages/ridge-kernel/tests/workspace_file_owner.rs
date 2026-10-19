@@ -276,22 +276,40 @@ async fn legacy_payloads_survive_shared_saves_and_deferred_writer_outlives_its_p
     .unwrap()["workspace_id"]
         .clone();
     let fresh_id = fresh.as_str().unwrap();
+    let saved = client::request_json(
+        &owned.endpoint,
+        "POST",
+        "/v1/domain/workspaces",
+        Some(&json!({"name":"Saved workspace survives restart"})),
+    )
+    .unwrap()["workspace_id"]
+        .clone();
+    let saved_path = root.join("saved-for-restore.ridge");
+    let saved_result = file_op(
+        &owned.endpoint,
+        json!({"operation":"save","workspaceId":saved,"name":"Saved workspace","path":saved_path}),
+    );
+    assert_eq!(saved_result["ok"], true, "{saved_result}");
     let exported = file_op(&owned.endpoint, json!({"operation":"save-restore"}));
     assert_eq!(exported["ok"], true, "{exported}");
     let session = root
         .join("session-workspaces")
         .join(format!("session-{fresh_id}.ridge"));
-    assert!(session.exists());
+    assert!(
+        !session.exists(),
+        "temporary workspaces must not be exported as user-saved files"
+    );
+    assert_eq!(exported["value"], json!([saved_path]));
     assert!(
         file_op(&owned.endpoint, json!({"operation":"restore"}))["value"]
             .as_array()
             .unwrap()
-            .contains(&json!(session))
+            .contains(&json!(saved_path))
     );
     assert_eq!(
-        file_op(&owned.endpoint, json!({"operation":"open","path":session}))["value"]
+        file_op(&owned.endpoint, json!({"operation":"open","path":saved_path}))["value"]
             ["workspaceId"],
-        fresh,
+        saved,
         "restoration reuses the live authority rather than creating another workspace"
     );
     assert!(
@@ -309,13 +327,10 @@ async fn legacy_payloads_survive_shared_saves_and_deferred_writer_outlives_its_p
     assert_eq!(snapshot["value"]["name"], "Unsaved survives detach");
     drop(owned);
     let restarted = start(&root).await;
-    let restored = file_op(
-        &restarted.endpoint,
-        json!({"operation":"open","path":session}),
-    );
+    let restored = file_op(&restarted.endpoint, json!({"operation":"open","path":saved_path}));
     assert_eq!(restored["ok"], true, "{restored}");
     assert_eq!(
-        restored["value"]["workspaceId"], fresh,
+        restored["value"]["workspaceId"], saved,
         "persistent workspace identities survive service restart"
     );
     let persisted = file_op(

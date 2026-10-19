@@ -1302,7 +1302,7 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
     paneTreeModule.activeWorkspaceId.set('ws-left');
     mockInvoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'split_pane') {
-        return { pane_id: 'new-pane-uuid', initial_cwd: null };
+        return { pane_id: 'new-pane-uuid', initial_cwd: 'C:/work/nested cwd' };
       }
       if (cmd === 'get_pane_layout') {
         return {
@@ -1322,9 +1322,11 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
     const newId = await paneTreeModule.splitPane('source-pane-uuid', 'horizontal');
     expect(newId).toBe('new-pane-uuid');
     expect(mockInvoke).toHaveBeenCalledWith('split_pane', {
+      workspaceId: 'ws-left',
       paneId: 'source-pane-uuid',
       direction: 'horizontal',
     });
+    expect(get(paneTreeModule.paneCwdStore)['ws-left:new-pane-uuid']).toBe('C:/work/nested cwd');
 
     // splitPane returns BEFORE the deferred fit fires (the RAFs are
     // still queued at this point). This is the whole point of the

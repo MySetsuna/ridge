@@ -1523,6 +1523,7 @@ export async function splitPane(
   if (!isTauri()) return '';
   const workspaceId = get(activeWorkspaceId);
   const result = await invoke<{ pane_id: string; initial_cwd: string | null }>('split_pane', {
+    workspaceId,
     paneId,
     direction,
   });

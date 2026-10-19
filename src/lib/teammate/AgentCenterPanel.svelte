@@ -1,4 +1,5 @@
 <script lang="ts">
+  import './communeVisual.css';
   // AgentCenterPanel —— 智能体状态面板（左侧图标栏独立 Tab）。
   //
   // 成员、审批与健康状态取自 Runtime；共享 topology 由 AgentPaneHighlightSync 更新。
@@ -6,23 +7,25 @@
   // 完整开关在设置面板「智能体」分区。
 
   import { onMount } from 'svelte';
+  import { t, tr } from '$lib/i18n';
   import { listen } from '@tauri-apps/api/event';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
-  import { Bot, ShieldCheck, BookOpen, Users } from 'lucide-svelte';
+  import { Bot, ShieldCheck, BookOpen } from 'lucide-svelte';
   import CommuneHistory from './CommuneHistory.svelte';
   import type { AgentHistoryReply } from '../../../packages/remote/src/shared/transport/wsRemote';
   import AgentMemberRow from './AgentMemberRow.svelte';
   import TerminalAgentRow from './TerminalAgentRow.svelte';
+  import { locateTerminal } from './locateTerminal';
   import { collectTerminalAgents, matchesTerminalAgent, terminalAgentKey } from './terminalAgent';
   import { registerCommuneMember } from './communeMembership';
+  import { communeUnreadWorkspaces, markCommuneRead } from './communeAttention';
   import { settingsStore } from '$lib/stores/settings';
   import { fileEditorStore } from '$lib/stores/fileEditor';
   import {
     workspaceSaveInfoStore,
     refreshWorkspaceSaveInfo,
     workspacesList,
-    focusPane,
     terminalTitles,
     paneForegroundProcessStore,
     paneCwdStore,
@@ -46,12 +49,11 @@
     type GitGuardStats,
   } from '$lib/stores/gitGuardStats';
   import {
-    auditPanelTitle,
     buildHitlAuditPanel,
     shouldShowAuditSection,
   } from './hitlAuditPanel';
   import { filterAuditItems, formatAuditTimeline } from './hitlAuditFilter';
-  import { buildOrchControlModel, formatOrchHeader } from './orchControlPlane';
+  import { buildOrchControlModel } from './orchControlPlane';
   import { pressureFromStats, shouldSurfaceGitGuard } from '$lib/stores/processGuardPolicy';
   import type { HitlAuditItem } from '../../../packages/remote/src/shared/teammate/hitlAuditRemote';
   import {
@@ -71,8 +73,9 @@
   interface Props {
     /** 当前工作区 id；用于拉取该工作区的拓扑。 */
     workspaceId?: string;
+    visible?: boolean;
   }
-  let { workspaceId }: Props = $props();
+  let { workspaceId, visible = false }: Props = $props();
 
   const topology = $derived(
     workspaceId ? ($agentTopologyStore[workspaceId] ?? EMPTY_TOPOLOGY) : EMPTY_TOPOLOGY
@@ -82,7 +85,7 @@
 
   async function connectDiscovered(ownerWorkspaceId: string, paneId: string) {
     try { await registerCommuneMember(ownerWorkspaceId, paneId); await refreshSharedState(); }
-    catch (error) { void alertDialog({ title: '连接既有 Agent 会话', message: String(error) }); }
+    catch (error) { void alertDialog({ title: tr('commune.connectExistingAgent'), message: String(error) }); }
   }
   /** Aggregate display only; every action retains its original workspace binding. */
   const allMembers = $derived(
@@ -188,10 +191,9 @@
   );
   const auditFiltered = $derived(filterAuditItems(hitlAuditItems, { limit: 12 }));
   const gitPressure = $derived(pressureFromStats(gitGuard));
-  const orchHeader = $derived(formatOrchHeader(orchModel));
 
-  // 顶部「成员聚合 / 编组」两视图 Tab（核心监控：目标 / 异常 / 审批 始终在 Tab 之上，不随切换）。
-  let teamTab = $state<'members' | 'groups' | 'history'>('members');
+  // 编组协作并入成员页；顶层只保留成员与历史。
+  let teamTab = $state<'members' | 'history'>('members');
   // 编组 store（单例，与 TeammateGroups 共用）：成员聚合列表据此标注每人组归属。
   const groupStore = teammateGroupStore();
   $effect(() => { groupStore.setWorkspace(workspaceId, filePath); });
@@ -241,12 +243,12 @@
   }
   const hitlPending = $derived(parseHitlPending($agentHitlPendingStore));
 
-  /** Global display still requires the exact current protocol binding. */
+  /** Public permission rows retain workspace/pane; local rows add protocol fences. */
   function pendingFor(m: TeammateProfile): HitlPendingItem[] {
     return hitlPending.filter(
       (p) => p.workspaceId === m.workspaceId && p.initiator === m.paneId
-        && p.agentId === m.id && p.sessionId === m.sessionId
-        && p.generation === m.generation && p.lease === m.lease
+        && (p.agentId === undefined || p.agentId === m.id) && (p.sessionId === undefined || p.sessionId === m.sessionId)
+        && (p.generation === undefined || p.generation === m.generation) && (p.lease === undefined || p.lease === m.lease)
     );
   }
 
@@ -296,7 +298,7 @@
       healthLoaded = true;
       healthError = '';
     } catch {
-      healthError = healthLoaded ? '控制面查询失败；数值为末次快照' : '控制面状态暂不可用';
+      healthError = healthLoaded ? tr('commune.healthSnapshotFailed') : tr('commune.healthUnavailable');
       try {
         pendingHitl = await invoke<number>('get_pending_hitl_count');
       } catch {
@@ -367,8 +369,8 @@
       await fileEditorStore.openFile(path);
     } catch (e) {
       void alertDialog({
-        title: 'MCP 接入引导',
-        message: `打开引导文档失败：${e instanceof Error ? e.message : String(e)}`,
+        title: tr('commune.mcpGuide'),
+        message: tr('commune.mcpGuideFailed', { error: e instanceof Error ? e.message : String(e) }),
       });
     }
   }
@@ -383,7 +385,9 @@
     void refreshWorkspaceSaveInfo();
     const unCommune = ['commune-members-changed', 'commune-task-changed', 'teammate://hitl-pending-changed']
       .map(name => listen(name, () => scheduleRefresh({ heavy: true })));
-    const unConversation = listen('commune-session-update', () => scheduleHistoryRefresh());
+    const unConversation = listen<{workspaceId?: string}>('commune-session-update', (event) => {
+      if (event.payload?.workspaceId === workspaceId) scheduleHistoryRefresh();
+    });
     const unGroups = listen('commune-groups-changed', e => {
       if ((e.payload as {workspaceId?: string}).workspaceId === workspaceId) void groupStore.refresh();
     });
@@ -396,7 +400,7 @@
   });
 </script>
 
-<div class="flex h-full flex-col text-[var(--rg-fg)]" data-testid="commune-panel">
+<div class="rg-commune flex h-full flex-col text-[var(--rg-fg)]" data-testid="commune-panel" data-allow-tab>
   <!-- 标题栏仅承载标题；控制项属于面板内容，可随窄侧栏自然换行。 -->
   <header
     data-tauri-drag-region
@@ -420,8 +424,8 @@
       <!-- MCP 接入引导：内置编辑器只读打开打包文档 -->
       <button
         type="button"
-        title="MCP 接入引导（打开接入文档）"
-        aria-label="MCP 接入引导"
+        title={$t('commune.mcpGuide')}
+        aria-label={$t('commune.mcpGuide')}
         onclick={openMcpGuide}
         class="flex items-center justify-center rounded border border-[var(--rg-border)] p-1 text-[var(--rg-fg-muted)] transition-colors hover:text-[var(--rg-fg)]"
       >
@@ -431,18 +435,18 @@
         type="button"
         role="switch"
         aria-checked={hitlOn}
-        title={hitlOn ? '安全审批已开：危险命令需你批准' : '安全审批已关：命令直接执行'}
+        title={hitlOn ? $t('commune.approvalOpen') : $t('commune.approvalClosed')}
         disabled={$hitlSync.pending}
         onclick={() => setTeammateHitlEnabled(!hitlOn)}
         class="flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors {hitlOn
           ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300'
           : 'border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
       >
-        <ShieldCheck class="h-3 w-3" /> 审批 {hitlOn ? '开' : '关'}
+        <ShieldCheck class="h-3.5 w-3.5" /> {hitlOn ? $t('commune.approvalsEnabled') : $t('commune.approvalsDisabled')}
         {#if pendingHitl > 0}
           <span
             class="ml-0.5 inline-flex min-w-[1rem] items-center justify-center rounded-full bg-amber-500/90 px-1 text-[9px] font-bold text-black"
-            title="待审批"
+            title={$t('commune.pendingApproval')}
             data-testid="hitl-pending-badge"
           >{pendingHitl}</span>
         {/if}
@@ -453,37 +457,37 @@
             ? 'bg-rose-500/20 text-rose-300'
             : 'bg-amber-500/20 text-amber-200'}"
           title="gen {healthGeneration} · foreign {foreignAttached} · outbound hosts {outboundHostsConnected}"
-          >控制面 {orchLevel}{#if foreignAttached > 0}
-            · 远端视图 {foreignAttached}{/if}</span
+          >{$t('commune.controlPlane', { state: orchLevel })}{#if foreignAttached > 0}
+            · {$t('commune.remoteViews', { count: foreignAttached })}{/if}</span
         >
       {/if}
       {#if gitGuard && gitGuardNeedsAttention(gitGuard)}
         <span
           class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-200"
           title="active {gitGuard.activeChildren}/{gitGuard.logicalConcurrencyCap} · timeout kills {gitGuard.timeoutKills} · acquire timeouts {gitGuard.acquireTimeouts}"
-          >git 护栏 · kill {gitGuard.timeoutKills} · busy {gitGuard.acquireTimeouts}</span
+          >{$t('commune.gitGuard', { kills: gitGuard.timeoutKills, timeouts: gitGuard.acquireTimeouts })}</span
         >
       {/if}
       {#if suspendedAgents > 0}
         <span
           class="rounded-full border border-[var(--rg-border)] px-1.5 py-0.5 text-[10px] text-[var(--rg-fg-muted)]"
-          title="已暂停的 agent 数"
+          title={$t('commune.pausedAgents', { count: suspendedAgents })}
           data-testid="orch-suspended-badge"
-        >暂停 {suspendedAgents}</span>
+        >{$t('commune.pausedAgents', { count: suspendedAgents })}</span>
       {/if}
     </section>
     {#if shouldShowAuditSection(pendingHitl, hitlAuditItems.length)}
       {@const auditModel = buildHitlAuditPanel(auditFiltered.items)}
       <section class="rounded-md border border-[var(--rg-border)] px-2 py-1.5" data-testid="hitl-audit-panel">
         <h3 class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-          {auditPanelTitle(auditModel)} · {auditFiltered.summary}
+          {auditModel.empty ? $t('commune.approvalAuditEmpty') : $t('commune.approvalAuditCounts', { approved: auditModel.approved, rejected: auditModel.rejected })} · {auditFiltered.summary}
         </h3>
-        <p class="mt-0.5 text-[10px] text-[var(--rg-fg-muted)]" data-testid="orch-header-line">{orchHeader}</p>
+        <p class="mt-0.5 text-[11px] text-[var(--rg-fg-muted)]" data-testid="orch-header-line">{$t('commune.controlPlaneDetail', { level: orchModel.level, generation: healthGeneration })}</p>
         {#if gitPressure.badge && shouldSurfaceGitGuard(gitGuard)}
           <p class="mt-0.5 text-[10px] text-amber-500" title={gitPressure.detail}>{gitPressure.badge}</p>
         {/if}
         {#if auditModel.empty}
-          <p class="mt-1 text-[10px] text-[var(--rg-fg-muted)]">尚无脱敏审批记录</p>
+          <p class="mt-1 text-[12px] text-[var(--rg-fg-muted)]">{$t('commune.noApprovalHistory')}</p>
         {:else}
           <ul class="mt-1 space-y-0.5">
             {#each formatAuditTimeline(auditFiltered.items, 12) as line}
@@ -497,7 +501,7 @@
     {#if decisions.length > 0}
       <section>
         <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-          <ShieldCheck class="h-3 w-3 text-[var(--rg-accent)]/70" /> 审批历史
+          <ShieldCheck class="h-3 w-3 text-[var(--rg-accent)]/70" /> {$t('commune.approvalHistory')}
           <span class="ml-auto font-mono">{decisions.length}</span>
         </h3>
         <ul class="mt-1 space-y-0.5">
@@ -518,52 +522,50 @@
     {/snippet}
 
     {#snippet historyContent()}
-      <CommuneHistory {workspaceId}
+      <CommuneHistory {workspaceId} visible={visible && teamTab === 'history'}
         canLocate={row => historyMember(row)?.profile.online === true}
-        onLocate={row => { const member = historyMember(row); if (member?.profile.paneId) focusPane(member.profile.paneId, member.workspaceId); }} />
+        onLocate={row => { const member = historyMember(row); if (member?.profile.paneId) void locateTerminal(member.workspaceId, member.profile.paneId).catch(error => showToast(String(error), 'error')); }} />
     {/snippet}
 
-    <!-- 成员 / 编组 / 历史：顶级三视图。 -->
+    <!-- 成员（含编组协作）/ 历史。 -->
     <section class="flex flex-col gap-3">
-      <div class="flex items-center gap-1 rounded-lg border border-[var(--rg-border)] bg-[var(--rg-bg)]/35 p-1">
+      <div class="rg-commune-tabs flex items-center gap-1 border-b border-[var(--rg-border)]" role="tablist" aria-label="{$t('commune.members')} / {$t('commune.history')}">
         <button
           type="button"
+          role="tab"
+          aria-selected={teamTab === 'members'}
+          aria-controls="commune-panel-members"
           data-testid="commune-tab-members"
           onclick={() => (teamTab = 'members')}
-          class="flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60 {teamTab ===
+          class="flex flex-1 items-center justify-center gap-1.5 border-b-2 px-2 py-2.5 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60 {teamTab ===
           'members'
-            ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)]'
-            : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
+            ? 'border-[var(--rg-accent)] text-[var(--rg-fg)]'
+            : 'border-transparent text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
         >
-          <Bot class="h-3.5 w-3.5" /> 成员
+          <Bot class="h-3.5 w-3.5" /> {$t('commune.members')}
           <span class="font-mono text-[11px] opacity-70">{terminalAgents.length + protocolOnlyMembers.length}</span>
         </button>
         <button
           type="button"
-          data-testid="commune-tab-groups"
-          onclick={() => (teamTab = 'groups')}
-          class="flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60 {teamTab ===
-          'groups'
-            ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)]'
-            : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
-        >
-          <Users class="h-3.5 w-3.5" /> 编组
-          <span class="font-mono text-[11px] opacity-70">{groupStore.groups.length}</span>
-        </button>
-        <button
-          type="button"
+          role="tab"
+          aria-selected={teamTab === 'history'}
+          aria-controls="commune-panel-history"
           data-testid="commune-tab-history"
-          onclick={() => (teamTab = 'history')}
-          class="flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60 {teamTab ===
+          onclick={() => { teamTab = 'history'; if (workspaceId) markCommuneRead(workspaceId); }}
+          class="flex flex-1 items-center justify-center gap-1.5 border-b-2 px-2 py-2.5 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60 {teamTab ===
           'history'
-            ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)]'
-            : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
+            ? 'border-[var(--rg-accent)] text-[var(--rg-fg)]'
+            : 'border-transparent text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
         >
-          历史
+          {$t('commune.history')}
+          {#if $communeUnreadWorkspaces[workspaceId ?? '']}
+            <span class="h-1.5 w-1.5 rounded-full bg-[var(--rg-accent)]" aria-label={$t('commune.historyTabUnread')}></span>
+          {/if}
         </button>
       </div>
 
       {#if teamTab === 'members'}
+        <div id="commune-panel-members" role="tabpanel" aria-labelledby="commune-tab-members">
         <!-- 跨工作区聚合；成员行仍复用完整监控/干预组件。 -->
         <ul class="space-y-3">
           {#each terminalAgents as entry (terminalAgentKey(entry.agent))}
@@ -579,7 +581,7 @@
               {:else}
                 <li class="text-[11px] text-[var(--rg-fg-muted)]">
                   <p>{candidate.reason}</p>
-                  <button class="mt-2 text-[var(--rg-accent)]" onclick={() => connectDiscovered(candidate.workspaceId, candidate.paneId)}>连接已有协议端点</button>
+                  <button class="mt-2 text-[var(--rg-accent)]" onclick={() => connectDiscovered(candidate.workspaceId, candidate.paneId)}>{$t('commune.connectSession')}</button>
                 </li>
               {/if}
             </TerminalAgentRow>
@@ -604,22 +606,29 @@
           {/each}
           {#if allMembers.length === 0 && terminalAgents.length === 0}
             <li class="rounded-lg border border-dashed border-[var(--rg-border)] px-3 py-8 text-center text-[12px] leading-5 text-[var(--rg-fg-muted)]">
-              所有工作区暂无 Agent。请在终端中启动，侧栏将自动显示。
+              {$t('commune.allWorkspacesEmpty')}
             </li>
           {/if}
         </ul>
-      {:else if teamTab === 'groups'}
-        <!-- 编组视图：与成员视图同款成员行 + 组长设定 / 建组 / 配色 / 给组派任务。 -->
-        <TeammateGroups
-          roster={topology.roster}
-          {workspaceId}
-          {filePath}
-          {hitlPending}
-          {recentReplyFor}
-          onRefresh={() => void refreshSharedState()}
-        />
+        <details class="rounded-lg border border-[var(--rg-border)] p-3" data-testid="commune-member-groups">
+          <summary class="cursor-pointer text-[12px] font-medium">
+            {$t('commune.groups')} <span class="font-mono text-[11px] text-[var(--rg-fg-muted)]">{groupStore.groups.length}</span>
+          </summary>
+          <p class="my-2 text-[12px] text-[var(--rg-fg-muted)]">{$t('commune.currentWorkspace')}: {$workspacesList.find(workspace => workspace.id === workspaceId)?.name?.trim() || workspaceId}</p>
+          <TeammateGroups
+            roster={topology.roster}
+            {workspaceId}
+            {filePath}
+            hitlPending={hitlPending.filter(item => item.workspaceId === workspaceId)}
+            {recentReplyFor}
+            onRefresh={() => void refreshSharedState()}
+          />
+        </details>
+        </div>
       {:else}
-        {@render historyContent()}
+        <div id="commune-panel-history" role="tabpanel" aria-labelledby="commune-tab-history">
+          {@render historyContent()}
+        </div>
       {/if}
     </section>
 

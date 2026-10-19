@@ -76,27 +76,28 @@ test.describe("Agent's Commune visibility", () => {
     );
   });
 
-  test('members, groups, and history tabs are reachable in the empty state', async ({ page }) => {
+  test('members and history tabs work; groups remain reachable within members', async ({ page }) => {
     await bootSpa(page, true);
     await page.getByTestId('commune-entry').click();
     const panel = page.getByTestId('commune-panel');
 
     const members = page.getByTestId('commune-tab-members');
-    const groups = page.getByTestId('commune-tab-groups');
+    const groups = page.getByTestId('commune-member-groups');
     const history = page.getByTestId('commune-tab-history');
     await expect(members).toBeVisible();
     await expect(groups).toBeVisible();
     await expect(history).toBeVisible();
+    await expect(members).toHaveAttribute('aria-selected', 'true');
 
-    await groups.click();
-    await expect(groups).toHaveClass(/bg-\[var\(--rg-accent\)\]/);
+    await groups.locator('summary').click();
+    await expect(groups).toHaveAttribute('open', '');
 
     await history.click();
-    await expect(history).toHaveClass(/bg-\[var\(--rg-accent\)\]/);
-    await expect(panel).toContainText('暂无历史会话');
+    await expect(history).toHaveAttribute('aria-selected', 'true');
+    await expect(panel).toContainText('暂无已登记会话的协议记录');
 
     await members.click();
-    await expect(members).toHaveClass(/bg-\[var\(--rg-accent\)\]/);
-    await expect(panel).toContainText('暂无成员');
+    await expect(members).toHaveAttribute('aria-selected', 'true');
+    await expect(panel).toContainText('所有工作区暂无 Agent');
   });
 });

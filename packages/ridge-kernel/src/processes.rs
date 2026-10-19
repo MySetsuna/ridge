@@ -57,7 +57,12 @@ pub(crate) fn dispatch(
             return Ok(Value::Null);
         }
         let result = if method == "get_pane_cwd" {
-            ridge_core::commands::process::get_process_cwd(pid)
+            state.ptys.shell_cwd(pane).and_then(|cwd| {
+                let mut uri = url::Url::parse("file:///").ok()?;
+                uri.set_path(&cwd.replace('\\', "/"));
+                uri.to_file_path().ok().map(|path| path.to_string_lossy().into_owned())
+            })
+                .or_else(|| ridge_core::commands::process::get_process_cwd(pid))
                 .map(ridge_core::commands::process::normalize_cwd)
                 .map(Value::String)
                 .unwrap_or(Value::Null)

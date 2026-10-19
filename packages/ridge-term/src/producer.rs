@@ -106,6 +106,9 @@ pub struct TerminalProducer {
     last_title: Option<String>,
     /// Latest OSC 7 working directory, included in atomic remote snapshots.
     last_cwd: Option<String>,
+    /// Shell prompt observations take precedence over the OS process cwd
+    /// (PowerShell provider locations do not update that process field).
+    shell_cwd: Option<String>,
 }
 
 impl TerminalProducer {
@@ -149,6 +152,7 @@ impl TerminalProducer {
             pane_seq: 0,
             last_title: None,
             last_cwd: None,
+            shell_cwd: None,
         }
     }
 
@@ -172,6 +176,10 @@ impl TerminalProducer {
     pub fn set_initial_cwd(&mut self, cwd: String) {
         assert_eq!(self.pane_seq, 0);
         self.last_cwd = Some(cwd);
+    }
+
+    pub fn shell_cwd(&self) -> Option<&str> {
+        self.shell_cwd.as_deref()
     }
 
     /// Runtime OS observations share the existing metadata/sequence path; no PTY reparse.
@@ -709,6 +717,7 @@ impl TerminalProducer {
                     deltas.push(GridDelta::Title(title));
                 }
                 KernelEvent::CwdChanged(path) => {
+                    self.shell_cwd = Some(path.clone());
                     self.last_cwd = Some(path.clone());
                     deltas.push(GridDelta::Cwd(path));
                 }
@@ -822,6 +831,19 @@ mod tests {
         assert!(before_st_tail ^ producer.take_prompt_marker(), "split ST must emit exactly one prompt signal");
         producer.feed_semantic(b"\x1bc");
         assert!(!producer.take_prompt_marker(), "RIS must not manufacture a prompt");
+    }
+
+    #[test]
+    fn prompt_cwd_is_distinct_from_spawn_and_os_fallback() {
+        let mut producer = super::TerminalProducer::new(24, 80, 100);
+        producer.set_initial_cwd("/spawn".into());
+        assert_eq!(producer.shell_cwd(), None);
+        producer.feed_semantic(b"\x1b]7;file:///work/nested%20cwd\x07");
+        assert_eq!(producer.shell_cwd(), Some("/work/nested%20cwd"));
+        producer.observe_cwd("/old-process-cwd".into());
+        assert_eq!(producer.shell_cwd(), Some("/work/nested%20cwd"));
+        producer.feed_semantic(b"\x1b]7;file:///work/next\x07");
+        assert_eq!(producer.shell_cwd(), Some("/work/next"));
     }
 
     #[test]

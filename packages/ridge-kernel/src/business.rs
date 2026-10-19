@@ -84,7 +84,7 @@ pub(crate) fn project_event(mut event: Value, native: bool) -> Option<Value> {
         Some("commune-session-update") => {
             let record = &event["payload"];
             let (kind,text) = crate::commune_history::content(record,false);
-            event["payload"] = json!({"agentId":record["agentId"],"sequence":record["sequence"],"timestamp":record["timestamp"],"kind":kind,"text":text.chars().take(4096).collect::<String>()});
+            event["payload"] = json!({"workspaceId":record["workspaceId"],"agentId":record["agentId"],"sequence":record["sequence"],"timestamp":record["timestamp"],"phase":record["phase"],"kind":kind,"text":text.chars().take(4096).collect::<String>()});
         }
         Some("commune-task-changed") => {
             let record = &event["payload"];
@@ -255,9 +255,11 @@ mod tests {
     use super::*;
     #[test]
     fn remote_notifications_cannot_bypass_history_or_permission_redaction() {
-        let event=json!({"name":"commune-session-update","payload":{"kind":"session_update","params":{"update":{"sessionUpdate":"tool_call","rawInput":{"secret":"private-input"}}}}});
+        let event=json!({"name":"commune-session-update","payload":{"kind":"session_update","workspaceId":"workspace-a","params":{"update":{"sessionUpdate":"tool_call","rawInput":{"secret":"private-input"}}}}});
         assert!(project_event(event.clone(),true).unwrap().to_string().contains("private-input"));
-        assert!(!project_event(event,false).unwrap().to_string().contains("private-input"));
+        let projected=project_event(event,false).unwrap();
+        assert!(!projected.to_string().contains("private-input"));
+        assert_eq!(projected["payload"]["workspaceId"],"workspace-a");
         let unknown=json!({"name":"commune-session-update","payload":{"kind":"session_update","params":{"unknownPrivateField":"private-input"}}});
         assert!(!project_event(unknown,false).unwrap().to_string().contains("private-input"));
         let task=json!({"name":"commune-task-changed","payload":{"workspaceId":"workspace","execution":{"state":"unknown","reason":"private-input"}}});

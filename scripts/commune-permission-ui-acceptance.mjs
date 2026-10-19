@@ -83,10 +83,10 @@ try {
   browser = await chromium.launch({ headless: true });
   page = await browser.newPage({ viewport: { width: 900, height: 700 } });
   page.setDefaultTimeout(15000);
-  await page.route('**/__commune_permission_ui', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Owned Commune permission UI</title><body><main id="component"></main></body>' }));
+  await page.route('**/__commune_permission_ui', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Owned Commune permission UI</title><link rel="stylesheet" href="/src/app.css"><body><main id="component" class="rg-commune"></main></body>' }));
   await page.exposeFunction('fixtureGrant', () => grant);
   page.on('pageerror', error => pageErrors.push(error.message));
-  await page.goto(devUrl + '/__commune_permission_ui');
+  await page.goto(devUrl + '/__commune_permission_ui', { waitUntil: 'domcontentloaded', timeout: 45000 });
   const target = { workspaceId, paneId, agentId: identity.agentId, generation: identity.generation, lease: identity.lease };
   await page.evaluate(async target => {
     const osCalls = [];
@@ -95,14 +95,16 @@ try {
       osCalls.push(command); if (command === 'bootstrap_runtime_client') return window.fixtureGrant();
       throw Error('Unexpected OS business call: ' + command);
     }, transformCallback: () => { throw Error('Unexpected native Channel'); } };
-    const [{ connectPresentationRuntime }, { bridge }, { invoke }, { mount, unmount }, { default: Modal }, { default: History }, { default: Groups }, { parseTopologySnapshot }, { teammateGroupStore }] = await Promise.all([
+    const [{ connectPresentationRuntime }, { bridge }, { invoke }, { mount, unmount }, { default: Modal }, { default: History }, { default: Groups }, { parseTopologySnapshot }, { teammateGroupStore }, { default: WorkspaceTabs }] = await Promise.all([
       import('/src/lib/transport/runtimeClient.ts'), import('/src/lib/transport/tauriShim/bridge.ts'),
       import('/src/lib/transport/nativeRuntimeCore.ts'), import('/scripts/commune-permission-ui-client.mjs'),
       import('/src/lib/teammate/HitlApprovalModal.svelte'),
       import('/src/lib/teammate/CommuneHistory.svelte'),
       import('/src/lib/teammate/TeammateGroupsSection.svelte'), import('/src/lib/teammate/teammateModel.ts'),
       import('/src/lib/teammate/teammateGroups.svelte.ts'),
+      import('/src/lib/components/WorkspaceTabs.svelte'),
     ]);
+    await import('/src/lib/teammate/AgentCenterPanel.svelte'); // load the production Commune visual tokens
     let connection = await connectPresentationRuntime();
     bridge.attach(connection.transport, { useGlobalWorkspace: false });
     const [{ initThemeSystem, getThemeIds }, { applyTheme }] = await Promise.all([
@@ -110,16 +112,24 @@ try {
     ]);
     await initThemeSystem(); applyTheme(getThemeIds()[0]);
     const modal = mount(Modal, { target: document.getElementById('component') });
-    const historyTarget = document.createElement('section'); document.body.append(historyTarget);
+    const historyTarget = document.createElement('section'); historyTarget.className = 'rg-commune'; document.body.append(historyTarget);
     const history = mount(History, { target: historyTarget, props: { workspaceId: target.workspaceId } });
-    const groupTarget = document.createElement('section'); groupTarget.dataset.testid = 'commune-groups'; document.body.append(groupTarget);
+    const groupTarget = document.createElement('section'); groupTarget.className = 'rg-commune'; groupTarget.dataset.testid = 'commune-groups'; document.body.append(groupTarget);
     const topology = parseTopologySnapshot(await invoke('get_teammate_topology', {workspaceId:target.workspaceId}));
     const groups = mount(Groups, {target:groupTarget, props:{workspaceId:target.workspaceId,filePath:null,roster:topology.roster}});
+    const workspaceTabTarget=document.createElement('section'); workspaceTabTarget.className='rg-commune'; document.body.append(workspaceTabTarget);
+    const workspaceTabs=mount(WorkspaceTabs,{target:workspaceTabTarget,props:{
+      workspaces:[{id:'saved-local',index:0,name:'Ridge',displaySeq:1},{id:'temporary',index:1,name:'Scratch',displaySeq:2}],
+      activeWorkspaceId:'saved-local',savedWorkspaceIds:['saved-local'],unreadWorkspaceIds:['temporary'],
+      onSwitch:()=>{},onClose:()=>{},onReorder:()=>{},onRename:()=>{},
+    }});
+    await new Promise(resolve=>requestAnimationFrame(()=>resolve()));
+    if(workspaceTabTarget.querySelectorAll('[data-testid="workspace-tab-saved"]').length!==1 || workspaceTabTarget.querySelectorAll('[data-testid="workspace-agent-unread"]').length!==1) throw Error('workspace tab does not distinguish the saved workspace from the unread temporary workspace');
     window.ownedGroups = teammateGroupStore();
     window.ownedApproval = { invoke, target, osCalls,
       pause: () => { bridge.detach({ preserveListeners: true }); connection.disconnect(); },
       reconnect: async () => { connection = await connectPresentationRuntime(); bridge.attach(connection.transport, { useGlobalWorkspace: false }); },
-      dispose: async () => { await unmount(groups); await unmount(history); await unmount(modal); bridge.detach(); connection.disconnect(); } };
+      dispose: async () => { await unmount(workspaceTabs); await unmount(groups); await unmount(history); await unmount(modal); bridge.detach(); connection.disconnect(); } };
   }, target);
   if(membershipOnly){
     evidence.scope='Owned existing ACP process + production connection/removal dialogs + actual Runtime RPC; no external Agent claim';
@@ -294,6 +304,20 @@ try {
   assert.equal(fs.readFileSync(path.join(root,'prompt-log'),'utf8'),'browser-group-objective\nbrowser-broadcast\nproduce-outputs\n');
   await groupUi.scrollIntoViewIfNeeded();
   await page.screenshot({path:path.resolve('.webview2-dev-cdp/070-commune-groups-ui.png')});
+  await page.setViewportSize({width:390,height:844});
+  for (const [name, palette] of Object.entries({
+    dark: {'--rg-bg':'#101613','--rg-surface':'#18221e','--rg-fg':'#e8eee9','--rg-fg-muted':'#a0ada5','--rg-border':'#34413a','--rg-accent':'#6e8f7a'},
+    light: {'--rg-bg':'#f3f5f2','--rg-surface':'#ffffff','--rg-fg':'#17221c','--rg-fg-muted':'#617067','--rg-border':'#d6ded8','--rg-accent':'#2f5d4e'},
+  })) {
+    await page.evaluate(values => { for (const [key,value] of Object.entries(values)) document.documentElement.style.setProperty(key,value); },palette);
+    const dimensions=await groupUi.evaluate(el=>({clientWidth:el.clientWidth,scrollWidth:el.scrollWidth}));
+    assert.ok(dimensions.clientWidth>0 && dimensions.scrollWidth<=dimensions.clientWidth+1,`${name} narrow Commune layout overflows: ${JSON.stringify(dimensions)}`);
+    await page.screenshot({path:path.resolve(`.webview2-dev-cdp/073-commune-groups-${name}-narrow.png`)});
+    const historyUi=page.getByTestId('commune-history');
+    const historyDimensions=await historyUi.evaluate(el=>({clientWidth:el.clientWidth,scrollWidth:el.scrollWidth}));
+    assert.ok(historyDimensions.clientWidth>0 && historyDimensions.scrollWidth<=historyDimensions.clientWidth+1,`${name} narrow history layout overflows: ${JSON.stringify(historyDimensions)}`);
+    await historyUi.screenshot({path:path.resolve(`.webview2-dev-cdp/073-commune-history-${name}-narrow.png`)});
+  }
   const calls = await page.evaluate(() => window.ownedApproval.osCalls);
   assert.deepEqual(calls, ['bootstrap_runtime_client', 'bootstrap_runtime_client', 'bootstrap_runtime_client']);
   await page.evaluate(() => window.ownedApproval.dispose());
@@ -303,7 +327,7 @@ try {
   const decisions = fs.readFileSync(path.join(root,'permission-decisions'),'utf8').trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(decisions,[{optionId:'once',outcome:'selected'},{outcome:'cancelled'}]);
   assert.ok(ptys.ptys.some(pty => pty.id === secondPane && pty.child_pid === secondDescriptor.process.pid));
-  evidence.checks = ['After Runtime consumes a real permission, a simulated lost client reply triggers a readonly refresh without another authorization call',
+  evidence.checks = ['Workspace tabs mark only a locally named save and independently surface unread Agent activity', 'After Runtime consumes a real permission, a simulated lost client reply triggers a readonly refresh without another authorization call',
     'Production modal reconnect recovers a rejection created offline and removes a card dismissed offline',
     'Actual peer options appear in the production modal with actual tool input', 'No Modify action for standard ACP permissions',
     'A real click resolves the original permission ID and the original prompt ends', 'Business RPC and permission events use Runtime; OS IPC only issues bootstrap grant',

@@ -476,15 +476,28 @@ pub async fn domain_workspace_split(
         Ok(value) => value,
         Err(body) => return Ok(body),
     };
+    // Resolve the exact live shell before taking the graph lock. This also
+    // refreshes its persisted cwd with the existing PID/start-instance fence.
+    let observed = match crate::processes::dispatch(&st, "get_pane_cwd",
+        &json!({"workspaceId":workspace_id,"paneId":pane_id}),
+        &crate::host_core::runtime_ctx(&[], true)).expect("cwd command is supported") {
+        Ok(value) => value.as_str().map(std::path::PathBuf::from),
+        Err(error) => return Ok(bad_request(error.to_string())),
+    };
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
     let mut next = graph.clone();
+    let cwd = observed.or_else(|| next.workspace(workspace_id)
+        .and_then(|workspace| workspace.pane_tree.panes.get(&pane_id))
+        .and_then(|pane| pane.cwd.clone()));
     match next.split(workspace_id, pane_id, direction) {
         Ok(new_pane_id) => {
+            next.workspace_mut(workspace_id).unwrap().pane_tree.panes
+                .get_mut(&new_pane_id).unwrap().cwd = cwd.clone();
             persist_workspaces(&st, &next)?;
             *graph = next;
     drop(graph);
     st.business_events.pane_tree_changed(workspace_id);
-            Ok(Json(json!({ "ok": true, "pane_id": new_pane_id })))
+            Ok(Json(json!({ "ok": true, "pane_id": new_pane_id, "initial_cwd": cwd })))
         }
         Err(e) => Ok(bad_request(e.to_string())),
     }
@@ -938,6 +951,12 @@ pub async fn domain_pty_create(
     // A desktop shell may create the first PTY before it has persisted the
     // corresponding graph entry.  Seed that stable workspace identity here so
     // a detached LAN/WebRTC host can expose a real layout after a hard kill.
+    if request.cwd.is_none() {
+        request.cwd = request.workspace_id.and_then(|workspace| st.workspaces.lock().ok()
+            .and_then(|graph| graph.workspace(workspace)
+                .and_then(|workspace| workspace.pane_tree.panes.get(&pty_id))
+                .and_then(|pane| pane.cwd.as_ref().map(|cwd| cwd.to_string_lossy().into_owned()))));
+    }
     if request.cwd.is_none() {
         request.cwd = match crate::settings::default_cwd() {
             Ok(path) => path,
@@ -3063,6 +3082,10 @@ mod tests {
         .unwrap()
         .0;
         let pane_id = detail["panes"][0].as_str().unwrap().to_string();
+        let inherited_cwd = std::env::temp_dir().join("split inherited cwd");
+        state.workspaces.lock().unwrap().workspace_mut(Uuid::parse_str(&workspace_id).unwrap())
+            .unwrap().pane_tree.panes.get_mut(&Uuid::parse_str(&pane_id).unwrap())
+            .unwrap().cwd = Some(inherited_cwd.clone());
         let split = domain_workspace_split(
             State(state.clone()),
             test_headers(),
@@ -3076,9 +3099,12 @@ mod tests {
         .unwrap()
         .0;
         assert!(split["pane_id"].is_string());
+        assert_eq!(split["initial_cwd"], json!(inherited_cwd));
         let restored: ridge_core::workspace::graph::WorkspaceGraph =
             serde_json::from_slice(&std::fs::read(&persisted).unwrap()).unwrap();
         assert_eq!(restored.active().unwrap().to_string(), workspace_id);
+        assert_eq!(restored.workspace(restored.active().unwrap()).unwrap().pane_tree.panes
+            [&Uuid::parse_str(split["pane_id"].as_str().unwrap()).unwrap()].cwd.as_ref(), Some(&inherited_cwd));
         assert_eq!(
             restored.leaves(restored.active().unwrap()).unwrap().len(),
             2

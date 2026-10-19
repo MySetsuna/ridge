@@ -1,7 +1,9 @@
 <script lang="ts">
+  import '../../lib/teammate/communeVisual.css';
   import CommuneHistory from '$lib/teammate/CommuneHistory.svelte';
   import CommuneGroupTasks from '$lib/teammate/CommuneGroupTasks.svelte';
   import { onMount } from 'svelte';
+  import { t, tr } from '$lib/i18n';
   import { ArrowDown, ArrowUp, Check, Crown, Palette, Send, ShieldAlert, X } from 'lucide-svelte';
   import type {
     HitlPendingItem,
@@ -65,8 +67,8 @@
 
   // 编组镜像（workspace-memory；Remote 写回同一投影，桌面重开可见）。
   let groups = $state<TeammateGroup[]>([]);
-  // 成员 / 编组 / 历史三视图；核心监控徽章 + 待审批始终在子 Tab 之上。
-  let subTab = $state<'members' | 'groups' | 'history'>('members');
+  // 编组协作并入成员页，顶层只保留成员与历史。
+  let subTab = $state<'members' | 'history'>('members');
   let history = $state<AgentHistoryReply[]>([]);
   const HISTORY_PAGE_SIZE = 100;
   let historyLoadedAt = 0;
@@ -139,11 +141,11 @@
       const projection = await connection.setTeammateGroups(scope, next, expectedRevision);
       if (version !== groupMutationVersion || scope !== workspaceId || session !== remoteSessionId(ws) || connection !== ws) return;
       groups = projection.groups; groupsRevision = projection.groupsRevision;
-      groupNote = '编组已保存';
+      groupNote = tr('commune.groupSaved');
       await invalidateRosterQuery(scope);
     } catch (failure) {
       if (version === groupMutationVersion && scope === workspaceId && session === remoteSessionId(ws) && connection === ws) {
-        groupNote = `保存失败：${failure instanceof Error ? failure.message : String(failure)}`;
+        groupNote = tr('commune.groupSaveFailed', { error: failure instanceof Error ? failure.message : String(failure) });
         await invalidateRosterQuery(scope);
         void startRefresh();
       }
@@ -420,65 +422,62 @@
   });
 </script>
 
-<div class="roster">
+<div class="rg-commune roster">
   {#if health.suspendedAgents > 0 || health.pendingHitl > 0 || pending.length > 0}
     <div class="badges" data-testid="remote-orch-badges">
       {#if health.pendingHitl > 0 || pending.length > 0}
-        <span class="badge hitl" title="待审批">审批 {Math.max(health.pendingHitl, pending.length)}</span>
+        <span class="badge hitl" title={$t('commune.pendingApproval')}>{tr('commune.approvalCount', { count: Math.max(health.pendingHitl, pending.length) })}</span>
       {/if}
       {#if health.suspendedAgents > 0}
-        <span class="badge sus" title="已暂停 agent" data-testid="remote-orch-suspended">暂停 {health.suspendedAgents}</span>
+        <span class="badge sus" title={$t('commune.pausedAgents', { count: health.suspendedAgents })} data-testid="remote-orch-suspended">{tr('commune.pausedAgents', { count: health.suspendedAgents })}</span>
       {/if}
     </div>
   {/if}
   {#if pending.length > 0 || resolveNote}
-    <p class="section">Pending approvals</p>
+    <p class="section">{$t('commune.pendingApprovals')}</p>
     {#if resolveNote}<p class="note">{resolveNote}</p>{/if}
     {#each pending as p (p.id)}
       <div class="approval" title={p.id}>
         <ShieldAlert class="w-3 h-3 risk" />
         <span class="name">{p.reason}</span>
         <span class="role">{p.initiator}</span>
-        <button class="act approve" title="Approve" onclick={() => void decide(p, 'approve')}>
+        <button class="act approve" title={$t('commune.approve')} onclick={() => void decide(p, 'approve')}>
           <Check class="w-3 h-3" />
         </button>
-        <button class="act reject" title="Reject" onclick={() => void decide(p, 'reject')}>
+        <button class="act reject" title={$t('commune.reject')} onclick={() => void decide(p, 'reject')}>
           <X class="w-3 h-3" />
         </button>
       </div>
     {/each}
   {/if}
 
-  <!-- 成员聚合 / 编组：两视图子 Tab 切换 -->
+  <!-- 成员（含编组协作）/ 历史 -->
   <div class="subtabs" data-testid="remote-team-subtabs">
     <button class:active={subTab === 'members'} onclick={() => (subTab = 'members')}>
-      成员 {topo.roster.length}
-    </button>
-    <button class:active={subTab === 'groups'} onclick={() => (subTab = 'groups')}>
-      编组 {groups.length}
+      {tr('commune.membersCount', { count: topo.roster.length })}
     </button>
     <button class:active={subTab === 'history'} onclick={() => (subTab = 'history')}>
-      History {history.length}
+      {tr('commune.historyCount', { count: history.length })}
     </button>
   </div>
 
   {#if subTab === 'members'}
     <!-- 成员列表：与桌面同构的监控 + 干预（状态 / 最近回复 / 单独发消息）。 -->
     {#if topo.roster.length === 0}
-      <p class="empty">{failed ? '—' : '本工作区暂无 agent'}</p>
+      <p class="empty">{failed ? '—' : $t('commune.noMembers')}</p>
     {:else}
       {#each sortedRosterMembers() as m (m.id)}
         {@render memberCard(m, topo.leaderId === m.id)}
       {/each}
     {/if}
-  {:else if subTab === 'groups'}
-    <!-- 编组视图：桌面建的编组镜像；成员卡与「成员」页完全一致（可发消息/看状态）。 -->
+    <details data-testid="remote-member-groups">
+    <summary class="section">{tr('commune.groupsCount', { count: groups.length })}</summary>
     <div class="group-create">
       <input
         class="msg-input"
         value={newGroupName}
-        placeholder="新建编组"
-        aria-label="新建编组名称"
+        placeholder={$t('commune.createGroup')}
+        aria-label={$t('commune.newGroupName')}
         oninput={(e) => (newGroupName = e.currentTarget.value)}
         onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); createGroup(); } }}
       />
@@ -486,7 +485,7 @@
     </div>
     {#if groupNote}<p class="note" role="status">{groupNote}</p>{/if}
     {#if groups.length === 0}
-      <p class="empty">暂无编组（在桌面端「编组」里创建）</p>
+      <p class="empty">{$t('commune.noGroupsHint')}</p>
     {:else}
       {#each groups as g, groupIndex (g.id)}
         <div class="group">
@@ -495,35 +494,35 @@
             <input
               class="group-name"
               value={g.name}
-              aria-label={`编组 ${g.name}`}
+              aria-label={tr('commune.groupAria', { name: g.name })}
               onchange={(e) => renameGroup(g, e.currentTarget.value)}
             />
             <span class="role">{g.memberAgentIds.length}</span>
-            <label class="group-color" title="Change group color" aria-label={`Change color for ${g.name}`}>
+            <label class="group-color" title={$t('commune.changeColor')} aria-label={tr('commune.changeColorFor', { name: g.name })}>
               <Palette class="w-3 h-3" />
               <input type="color" value={g.color} onchange={(e) => persistGroups(groups.map((item) => item.id === g.id ? { ...item, color: e.currentTarget.value } : item))} />
             </label>
             <button
               class="group-move"
               type="button"
-              title="Move group up"
-              aria-label={`Move ${g.name} up`}
+              title={$t('commune.moveGroupUp')}
+              aria-label={tr('commune.moveGroupUpAria', { name: g.name })}
               disabled={groupBusy || groupIndex === 0}
               onclick={() => moveGroup(g, -1)}
             ><ArrowUp class="w-3 h-3" /></button>
             <button
               class="group-move"
               type="button"
-              title="Move group down"
-              aria-label={`Move ${g.name} down`}
+              title={$t('commune.moveGroupDown')}
+              aria-label={tr('commune.moveGroupDownAria', { name: g.name })}
               disabled={groupBusy || groupIndex === groups.length - 1}
               onclick={() => moveGroup(g, 1)}
             ><ArrowDown class="w-3 h-3" /></button>
             <button
               class="group-delete"
               type="button"
-              title="Delete group"
-              aria-label={`Delete group ${g.name}`}
+              title={$t('commune.dissolve')}
+              aria-label={tr('commune.dissolveGroupAria', { name: g.name })}
               disabled={groupBusy}
               onclick={() => deleteGroup(g)}
             >
@@ -531,7 +530,7 @@
             </button>
           </div>
           {#if g.memberAgentIds.length === 0}
-            <p class="empty-group">空组</p>
+            <p class="empty-group">{$t('commune.emptyGroup')}</p>
           {:else}
             {#each sortedMemberIds(g) as aid (aid)}
               {@const m = memberOf(aid)}
@@ -539,10 +538,10 @@
                 <div class="group-member">
                   {@render memberCard(m, g.leaderAgentId === aid)}
                   <div class="member-actions">
-                    <button class:leader-active={g.leaderAgentId === aid} class="member-leader" title={g.leaderAgentId === aid ? 'Clear group leader' : 'Set group leader'} aria-label={g.leaderAgentId === aid ? `Clear ${m.name} as group leader` : `Set ${m.name} as group leader`} onclick={() => toggleLeader(g, aid)}>
+                    <button class:leader-active={g.leaderAgentId === aid} class="member-leader" title={g.leaderAgentId === aid ? $t('commune.unsetLeader') : $t('commune.setLeader')} aria-label={g.leaderAgentId === aid ? tr('commune.unsetLeaderFor', { name: m.name }) : tr('commune.setLeaderFor', { name: m.name })} onclick={() => toggleLeader(g, aid)}>
                       <Crown class="w-3 h-3" />
                     </button>
-                    <button class="member-remove" title="Remove from group" aria-label={`Remove ${m.name} from group`} onclick={() => toggleMember(g, aid)}>−</button>
+                    <button class="member-remove" title={$t('commune.removeFromGroup')} aria-label={tr('commune.removeFromGroupFor', { name: m.name })} onclick={() => toggleMember(g, aid)}>−</button>
                   </div>
                 </div>
               {:else}
@@ -550,7 +549,7 @@
                   <div class="member-head">
                     <span class="dot"></span>
                     <span class="name" title={aid}>{aid}</span>
-                    <span class="role">失联</span>
+                    <span class="role">{$t('commune.disconnected')}</span>
                   </div>
                 </div>
               {/if}
@@ -563,6 +562,7 @@
         </div>
       {/each}
     {/if}
+    </details>
   {:else}
     <CommuneHistory {workspaceId}
       load={request => ws.listAgentHistory(request.workspaceId, request.limit, request.cursor, request.query, request.textCursor)}
@@ -593,7 +593,7 @@
         <span class="name" title={m.id}>{title}</span>
       </button>
       {#if isLeader}<Crown class="w-3 h-3 crown" />{/if}
-      {#if m.isAuto}<span class="tag">自动</span>{/if}
+      {#if m.isAuto}<span class="tag">{$t('commune.autoDetected')}</span>{/if}
       <span class="role" class:live={st.key === 'working'}>{st.text}</span>
     </div>
 
@@ -604,11 +604,11 @@
     {#if pendingFor(m).length > 0}
       {#each pendingFor(m) as p (p.id)}
         <div class="member-approval">
-          <span class="name" title={p.reason}>审批：{p.reason}</span>
-          <button class="act approve" title="Approve" onclick={() => void decide(p, 'approve')}>
+          <span class="name" title={p.reason}>{tr('commune.approvalReason', { reason: p.reason })}</span>
+          <button class="act approve" title={$t('commune.approve')} onclick={() => void decide(p, 'approve')}>
             <Check class="w-3 h-3" />
           </button>
-          <button class="act reject" title="Reject" onclick={() => void decide(p, 'reject')}>
+          <button class="act reject" title={$t('commune.reject')} onclick={() => void decide(p, 'reject')}>
             <X class="w-3 h-3" />
           </button>
         </div>
@@ -617,7 +617,7 @@
 
     {#if visibleReply}
       <button class="reply-toggle" onclick={() => (openReply[m.id] = !openReply[m.id])}>
-        <span>{persistedReply ? '最近回复' : '最近输出'} {openReply[m.id] ? '▾' : '▸'}</span>
+        <span>{persistedReply ? $t('commune.recentReply') : $t('commune.latestOutput')} {openReply[m.id] ? '▾' : '▸'}</span>
         {#if !openReply[m.id]}
           <span class="reply-peek">{visibleReply.split('\n').at(-1) ?? ''}</span>
         {/if}
@@ -631,7 +631,7 @@
       <input
         class="msg-input"
         type="text"
-        placeholder="给 {m.name} 发消息…"
+        placeholder={tr('commune.sendMessage', { name: m.name })}
         value={msgInput[m.id] ?? ''}
         oninput={(e) => (msgInput = { ...msgInput, [m.id]: e.currentTarget.value })}
         onkeydown={(e) => {
@@ -641,7 +641,7 @@
           }
         }}
       />
-      <button class="act send" title="发送" aria-label="发送给该成员" onclick={() => sendTo(m)}>
+      <button class="act send" title={$t('commune.send')} aria-label={$t('commune.sendToMember')} onclick={() => sendTo(m)}>
         <Send class="w-3 h-3" />
       </button>
     </div>

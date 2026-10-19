@@ -79,9 +79,7 @@ describe('desktop Pane Agent border contract', () => {
     expect(highlightComponentSource).toContain('schedule([workspaceId])');
     expect(highlightComponentSource).toContain("typeof event?.workspaceId === 'string'");
     expect(highlightComponentSource).toContain('disposed = true');
-    expect(memberSource).toContain('min-h-52');
-    expect(memberSource).toContain('text-[15px]');
-    expect(memberSource).toContain('aria-label="最近回复"');
+    expect(memberSource).toContain("aria-label={$t('commune.recentReply')}");
     expect(memberSource).toContain('aria-live="polite"');
     expect(memberSource).not.toContain('answerOpen');
     expect(pageSource).toContain('const AGENT_SIDEBAR_MIN_WIDTH = 360');

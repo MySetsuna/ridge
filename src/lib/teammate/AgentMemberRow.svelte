@@ -9,16 +9,15 @@
   // 编组 Tab 额外传 group 上下文 → 多出「设为组长 / 从组移除」。
 
   import { invoke } from '@tauri-apps/api/core';
-  import { tick } from 'svelte';
+  import { t, tr } from '$lib/i18n';
+  import { locateTerminal } from './locateTerminal';
   import { Crown, Square, Send, X, Ghost } from 'lucide-svelte';
   import { autoGrow } from '$lib/actions/autoGrow';
   import { memberTasksStore, recordMemberTask } from './memberTasks';
   import { showToast } from '$lib/stores/toast';
   import {
-    focusPane,
     agentPaneAttentionStore,
     clearAgentPaneAttention,
-    switchWorkspace,
   } from '$lib/stores/paneTree';
   import type { TeammateProfile, PendingApproval, ProtocolDelivery } from './teammateModel';
 
@@ -103,7 +102,7 @@
     workspaceId && paneId ? $agentPaneAttentionStore[`${workspaceId}:${paneId}`] : undefined
   );
   const attentionText = $derived(
-    attention === 'waiting' ? '待审批' : attention === 'stopped' ? '连接已失效，待查看' : attention === 'idle' ? '回复已结束，待查看' : ''
+    attention === 'waiting' ? $t('commune.pendingApproval') : attention === 'stopped' ? $t('commune.disconnectedReview') : attention === 'idle' ? $t('commune.replyFinishedReview') : ''
   );
 
   function acknowledgeAttention(): void {
@@ -112,36 +111,25 @@
 
   /** 状态徽标优先级：待审批 > 已暂停 > 失联 > 运行中 > 空闲。 */
   const status = $derived.by(() => {
-    if (pending.length > 0) return { text: '等待审批', cls: 'text-amber-300', dot: 'bg-amber-400 animate-pulse', rail: 'border-l-amber-400' };
-    if (!profile) return { text: '失联', cls: 'text-red-300', dot: 'bg-red-400', rail: 'border-l-red-400' };
+    if (pending.length > 0) return { text: $t('commune.waitingApproval'), cls: 'text-amber-300', dot: 'bg-amber-400 animate-pulse', rail: 'border-l-amber-400' };
+    if (!profile) return { text: $t('commune.disconnected'), cls: 'text-red-300', dot: 'bg-red-400', rail: 'border-l-red-400' };
     if (profile.online === false)
-      return { text: profile.lifecycle === 'Stopped' ? '已退出' : '失联', cls: 'text-red-300', dot: 'bg-red-400', rail: 'border-l-red-400' };
+      return { text: profile.lifecycle === 'Stopped' ? $t('commune.exited') : $t('commune.disconnected'), cls: 'text-red-300', dot: 'bg-red-400', rail: 'border-l-red-400' };
     if (profile.status === 'Suspended')
-      return { text: '已暂停', cls: 'text-amber-300', dot: 'bg-amber-400', rail: 'border-l-amber-400' };
+      return { text: $t('commune.paused'), cls: 'text-amber-300', dot: 'bg-amber-400', rail: 'border-l-amber-400' };
     if (profile.status === 'Disappeared')
-      return { text: '下线', cls: 'text-red-300', dot: 'bg-red-400', rail: 'border-l-red-400' };
+      return { text: $t('commune.offline'), cls: 'text-red-300', dot: 'bg-red-400', rail: 'border-l-red-400' };
     if (profile.activity === 'working')
-      return { text: '运行中', cls: 'text-emerald-300', dot: 'bg-emerald-400 animate-pulse', rail: 'border-l-emerald-400' };
-    return { text: '空闲', cls: 'text-[var(--rg-fg-muted)]', dot: 'bg-[var(--rg-fg-muted)]', rail: 'border-l-sky-400' };
+      return { text: $t('commune.running'), cls: 'text-emerald-300', dot: 'bg-emerald-400 animate-pulse', rail: 'border-l-emerald-400' };
+    return { text: $t('commune.idle'), cls: 'text-[var(--rg-fg-muted)]', dot: 'bg-[var(--rg-fg-muted)]', rail: 'border-l-sky-400' };
   });
 
   async function activatePane(): Promise<void> {
     if (!workspaceId || !paneId) return;
     try {
-      await switchWorkspace(workspaceId);
-      focusPane(paneId, workspaceId);
-      await tick();
-      const host = [...document.querySelectorAll<HTMLElement>('[data-rg-ws-pane-host]')]
-        .find((element) => element.getAttribute('data-rg-ws-pane-host') === workspaceId);
-      const pane = [...(host?.querySelectorAll<HTMLElement>('[data-rg-pane-id]') ?? [])]
-        .find((element) => element.getAttribute('data-rg-pane-id') === paneId);
-      const focusTarget = pane?.querySelector<HTMLElement>('.rg-ime-helper') ?? pane;
-      focusTarget?.focus();
-      if (pane && pane.contains(document.activeElement)) {
-        clearAgentPaneAttention(workspaceId, paneId);
-      }
+      await locateTerminal(workspaceId, paneId);
     } catch (error) {
-      showToast(`定位 ${name} 失败：${error instanceof Error ? error.message : String(error)}`, 'error');
+      showToast(tr('commune.locateFailed', { name, error: error instanceof Error ? error.message : String(error) }), 'error');
     }
   }
 
@@ -170,7 +158,7 @@
       pendingSend = null;
     } catch (e) {
       console.warn('[agent-member] dispatch failed', e);
-      showToast(`未取得投递确认：${e instanceof Error ? e.message : String(e)}`, 'error');
+      showToast(tr('commune.deliveryUnconfirmed', { error: e instanceof Error ? e.message : String(e) }), 'error');
     } finally { sending = false; }
   }
 
@@ -181,10 +169,10 @@
         workspaceId, agentId, generation: profile?.generation, lease: profile?.lease,
         deliveryId: activeDelivery.deliveryId,
       });
-      showToast('已请求取消，等待 Agent 返回', 'info');
+      showToast(tr('commune.cancelRequested'), 'info');
       onRefresh?.();
     } catch (e) {
-      showToast(`取消失败：${e instanceof Error ? e.message : String(e)}`, 'error');
+      showToast(tr('commune.cancelFailed', { error: e instanceof Error ? e.message : String(e) }), 'error');
     }
   }
 
@@ -194,9 +182,9 @@
       const consumed = nonce
         ? (await invoke<{ outcome: string }>('resolve_hitl_remote', { id, nonce, verdict })).outcome === 'consumed'
         : await invoke<boolean>('resolve_hitl_request', { id, verdict, replacement: null });
-      if (!consumed) showToast('审批已失效或已由其他客户端处理', 'info');
+      if (!consumed) showToast(tr('commune.approvalExpired'), 'info');
     } catch (e) {
-      showToast(`审批失败：${e instanceof Error ? e.message : String(e)}`, 'error');
+      showToast(tr('commune.approvalFailed', { error: e instanceof Error ? e.message : String(e) }), 'error');
     }
     onRefresh?.();
   }
@@ -208,7 +196,7 @@
   onpointerdown={acknowledgeAttention}
   data-agent-title={displayTitle}
   data-agent-attention={attention ?? ''}
-  class="group/mem min-h-52 rounded-lg border border-l-[3px] px-3 py-3 transition-colors duration-200
+  class="rg-commune-member group/mem min-h-52 rounded-lg border border-l-[3px] px-3 py-3 transition-colors duration-200
     hover:bg-[var(--rg-surface)]/70 focus-within:ring-1 focus-within:ring-[var(--rg-accent)]/45
     {attention === 'waiting'
       ? 'border-amber-400/70 bg-amber-500/10'
@@ -231,8 +219,8 @@
         class="block w-full truncate rounded-sm text-left text-[15px] font-semibold leading-5 tracking-[-0.01em]
           hover:text-[var(--rg-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60
           disabled:cursor-default"
-        title={paneId ? `定位到 ${displayTitle}` : displayTitle}
-        aria-label={paneId ? `定位到 ${displayTitle} 的终端` : displayTitle}
+        title={paneId ? $t('commune.locateTo', { name: displayTitle }) : displayTitle}
+        aria-label={paneId ? $t('commune.locateTerminalFor', { name: displayTitle }) : displayTitle}
         disabled={!paneId || !workspaceId}
         onclick={() => void activatePane()}
       >{displayTitle}</button>
@@ -245,13 +233,13 @@
           <span class="rounded-md bg-sky-400/15 px-1.5 py-0.5 text-sky-300">{attentionText}</span>
         {/if}
         {#if profile?.isAuto}
-          <span class="rounded-md border border-[var(--rg-border)] px-1.5 py-0.5 text-[var(--rg-fg-muted)]" title="自动识别：该分屏下正跑着 agent CLI">自动识别</span>
+          <span class="rounded-md border border-[var(--rg-border)] px-1.5 py-0.5 text-[var(--rg-fg-muted)]" title={$t('commune.autoDetectedHint')}>{$t('commune.autoDetected')}</span>
         {/if}
         {#if groupBadge}
           <span
             class="flex items-center gap-1 rounded-md px-1.5 py-0.5 font-medium"
             style="color:{groupBadge.color};background:color-mix(in srgb, {groupBadge.color} 16%, transparent)"
-            title="所属编组：{groupBadge.name}"
+            title={$t('commune.groupBelongs', { name: groupBadge.name })}
           >
             <span class="h-1.5 w-1.5 rounded-full" style="background:{groupBadge.color}"></span>
             {groupBadge.name}
@@ -264,8 +252,8 @@
       {#if leader && present}
         <button
           type="button"
-          title={leader.isLeader ? '取消组长' : '设为组长'}
-          aria-label={leader.isLeader ? '取消组长' : '设为组长'}
+          title={leader.isLeader ? $t('commune.unsetLeader') : $t('commune.setLeader')}
+          aria-label={leader.isLeader ? $t('commune.unsetLeader') : $t('commune.setLeader')}
           onclick={leader.toggle}
           class="rounded-md p-1.5 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60 {leader.isLeader
             ? 'text-amber-400'
@@ -277,8 +265,8 @@
       {#if canCancel}
         <button
           type="button"
-          title="停止当前任务；保留 Agent 进程"
-          aria-label="停止当前任务"
+          title={$t('commune.stopTask')}
+          aria-label={$t('commune.stopTaskAria')}
           onclick={cancelCurrentTask}
           class="rounded-md p-1.5 text-[var(--rg-fg-muted)] opacity-0 transition hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)]
             group-hover/mem:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60"
@@ -289,8 +277,8 @@
       {#if leader && !present}
         <button
           type="button"
-          title="从组移除失联成员"
-          aria-label="从组移除失联成员"
+          title={$t('commune.removeOfflineMember')}
+          aria-label={$t('commune.removeOfflineMember')}
           onclick={leader.remove}
           class="rounded-md p-1.5 text-[var(--rg-fg-muted)] hover:bg-red-500/10 hover:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/60"
         >
@@ -302,51 +290,51 @@
 
   {#if lastTask}
     <p class="mt-2 truncate rounded-md bg-[var(--rg-surface)]/55 px-2 py-1.5 text-[11px] leading-4 text-[var(--rg-fg-muted)]" title={lastTask.text}>
-      <span class="font-medium text-[var(--rg-fg)]/80">当前任务</span> · {lastTask.text}
+      <span class="font-medium text-[var(--rg-fg)]/80">{$t('commune.currentTask')}</span> · {lastTask.text}
     </p>
   {/if}
 
   {#if deliveryReceipt}
     <p class="mt-2 rounded-md bg-sky-500/10 px-2 py-1.5 text-[11px] leading-4 text-sky-200" aria-live="polite">
-      Hub 投递{deliveryReceipt.deliveryId ? ` · ${deliveryReceipt.deliveryId.slice(0, 8)}` : ''}
+      {$t('commune.delivery')} {deliveryReceipt.deliveryId ? ` · ${deliveryReceipt.deliveryId.slice(0, 8)}` : ''}
       {#if deliveryReceipt.execution?.state === 'turn_ended'}
-        · 回复已结束（{deliveryReceipt.execution.response?.stopReason ?? '未知原因'}）
+        · {$t('commune.responseEnded', { reason: deliveryReceipt.execution.response?.stopReason ?? $t('commune.unknownReason') })}
       {:else if deliveryReceipt.execution?.state === 'cancelled'}
-        · 已取消
+        · {$t('commune.cancelled')}
       {:else if deliveryReceipt.execution?.state === 'unknown'}
-        · 结果待确认，不自动重发
+        · {$t('commune.resultUnconfirmed')}
       {:else if deliveryReceipt.execution?.state === 'rejected'}
-        · 未执行：{deliveryReceipt.execution.reason ?? '请求被拒绝'}
+        · {$t('commune.notExecuted', { reason: deliveryReceipt.execution.reason ?? $t('commune.requestRejected') })}
       {:else if deliveryReceipt.execution?.state === 'running'}
-        · Agent 执行中
+        · {$t('commune.agentExecuting')}
       {:else if deliveryReceipt.agentAcknowledged}
-        · agent 已确认
+        · {$t('commune.agentConfirmed')}
       {:else if deliveryReceipt.terminalAccepted}
-        · 终端适配器已接收
+        · {$t('commune.adapterAccepted')}
       {:else}
-        · 等待 agent 确认
+        · {$t('commune.waitingAgent')}
       {/if}
     </p>
   {/if}
 
   {#each pending as p (p.id)}
     <div class="mt-2 flex items-center gap-2 rounded-md border border-amber-400/25 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-300">
-      <span class="min-w-0 flex-1 truncate" title={p.reason}>审批：{p.reason || '高危操作待裁决'}</span>
+      <span class="min-w-0 flex-1 truncate" title={p.reason}>{$t('commune.approvalReason', { reason: p.reason || $t('commune.riskyActionPending') })}</span>
       <button
         class="shrink-0 rounded-md border border-emerald-400/40 px-2 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/60"
         onclick={() => decide(p.id, 'approve')}
-      >批准</button>
+      >{$t('commune.approve')}</button>
       <button
         class="shrink-0 rounded-md border border-red-400/40 px-2 py-1 text-[10px] text-red-300 hover:bg-red-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/60"
         onclick={() => decide(p.id, 'reject')}
-      >驳回</button>
+      >{$t('commune.reject')}</button>
     </div>
   {/each}
 
   {#if present && paneId}
-    <section class="mt-3" aria-label="最近回复">
+    <section class="mt-3" aria-label={$t('commune.recentReply')}>
       <div class="flex items-center gap-2">
-        <h3 class="text-[11px] font-semibold tracking-wide text-[var(--rg-fg-muted)]">最近回复</h3>
+        <h3 class="text-[12px] font-semibold tracking-wide text-[var(--rg-fg-muted)]">{$t('commune.recentReply')}</h3>
         <span class="h-px flex-1 bg-[var(--rg-border)]/70"></span>
       </div>
       <!-- JSONL is the reply SSOT. PTY tail is diagnostic output, not an answer. -->
@@ -358,7 +346,7 @@
         >{recentReply}</pre>
       {:else}
         <p class="mt-1.5 flex min-h-20 items-center rounded-md bg-[var(--rg-bg)]/55 px-2.5 py-2 text-[12px] text-[var(--rg-fg-muted)]/70">
-          尚无可显示的回复
+          {$t('commune.noReply')}
         </p>
       {/if}
 
@@ -373,15 +361,15 @@
               void send();
             }
           }}
-          placeholder="给 {name} 发消息…（Enter 发送）"
-          aria-label={`给 ${name} 发消息`}
-          class="min-w-0 flex-1 resize-none rounded-md border border-[var(--rg-border)] bg-[var(--rg-bg)] px-2.5 py-2 text-[12px] leading-5 text-[var(--rg-fg)]
+          placeholder={$t('commune.sendMessage', { name })}
+          aria-label={$t('commune.sendToMember')}
+          class="min-w-0 flex-1 resize-none rounded-md border border-[var(--rg-border)] bg-[var(--rg-bg)] px-2.5 py-2 text-[13px] leading-5 text-[var(--rg-fg)]
             outline-none transition-colors placeholder:text-[var(--rg-fg-muted)]/65 focus:border-[var(--rg-accent)] focus:ring-1 focus:ring-[var(--rg-accent)]/35"
         ></textarea>
         <button
           type="button"
-          title={canSend ? '发送给该成员' : '需先连接支持 ACP prompt 的既有会话'}
-          aria-label="发送给该成员"
+          title={canSend ? $t('commune.sendToMember') : $t('commune.connectAcpFirst')}
+          aria-label={$t('commune.sendToMember')}
           onclick={send}
           disabled={!input.trim() || !canSend || sending}
           class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--rg-accent)]/14 text-[var(--rg-accent)] transition
@@ -391,7 +379,7 @@
           <Send class="h-4 w-4" />
         </button>
       </div>
-      {#if !canSend}<p class="mt-1 text-[11px] text-[var(--rg-fg-muted)]">协议未连接或能力未确认，暂不能发送。</p>{/if}
+      {#if !canSend}<p class="mt-1 text-[12px] text-[var(--rg-fg-muted)]">{$t('commune.cannotSend')}</p>{/if}
     </section>
   {/if}
 </li>

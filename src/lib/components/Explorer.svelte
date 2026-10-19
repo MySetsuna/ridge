@@ -434,17 +434,12 @@
 		], 'sidebar', undefined, targetWorkspaceId);
 	}
 
-	async function openTreeFile(path: string, columnId: string): Promise<void> {
-		if (get(fileEditorStore).openFiles.some((file) => file.path === path)) {
-			await fileEditorStore.openFile(path);
-			return;
-		}
-		const freshPath = await fileExplorerStore.resolveFreshFile(columnId, path);
-		if (!freshPath) {
-			await fileExplorerStore.loadTree(columnId);
-			return;
-		}
-		await fileEditorStore.openFile(freshPath);
+	async function openTreeFile(path: string): Promise<void> {
+		// The editor read is already authoritative: it checks existence, file type,
+		// permissions, and size. Re-listing the entire parent directory here added
+		// up to 50 serial RPCs before every first open, so large folders looked like
+		// a dead click and entries beyond the hard cap could never open.
+		await fileEditorStore.openFile(path);
 	}
 
 	/**
@@ -504,7 +499,7 @@
 		// Plain click → single selection.
 		fileExplorerStore.setSelectedPath(_columnId, path);
 		// Open file into the editor on plain click (dirs already toggled by FileTree).
-		if (!isDir) void openTreeFile(path, _columnId);
+		if (!isDir) void openTreeFile(path);
 	}
 
 	// Root-level keyboard nav (ArrowUp/Down/Home/End) lives on `.explorer` so it can

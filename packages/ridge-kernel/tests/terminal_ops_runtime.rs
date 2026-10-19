@@ -19,6 +19,12 @@ async fn terminal_clear_updates_shared_history_without_replacing_child_and_mode_
     first.send(Message::Text(json!({"type":"subscribe-pane","workspaceId":workspace,"paneId":pane,"activationId":1,"active":true}).to_string())).await.unwrap();
     let original=tokio::time::timeout(std::time::Duration::from_secs(5),async{loop{if let Message::Binary(bytes)=first.next().await.unwrap().unwrap(){if bytes.first()==Some(&0x13){break decode_frame(&bytes).unwrap();}}}}).await.unwrap();
     let TerminalBody::Snapshot(initial)=original.body else{panic!("initial snapshot required")};
+    let other=rpc(&mut first,90,"create_workspace",json!({"name":"keep alive"})).await["result"].clone();
+    for (id,selected) in [(91,other.clone()),(92,workspace.clone())] {
+        assert!(rpc(&mut first,id,"switch_workspace",json!({"workspaceId":selected})).await["error"].is_null());
+        let retained=rpc(&mut first,id+10,"get_terminal_snapshot",json!({"workspaceId":workspace,"paneId":pane,"activationId":1})).await;
+        assert!(retained["error"].is_null(),"workspace selection must retain the original pane subscription: {retained}");
+    }
     let mut second=attach(&owned.endpoint).await;
     assert!(rpc(&mut second,1,"clear_pane_terminal",json!({"workspaceId":workspace,"paneId":pane})).await["error"].is_null());
     let cleared=rpc(&mut first,3,"get_terminal_snapshot",json!({"workspaceId":workspace,"paneId":pane,"activationId":1})).await;

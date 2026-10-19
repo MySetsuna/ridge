@@ -8,6 +8,10 @@ export const zh: Record<string, string> = {
   tabClose: '关闭',
   tabSwitchTo: '切换到 {name}',
   tabCloseWorkspace: '关闭工作区',
+  tabShare: '分享工作区…',
+  tabUnreadAgentMessage: 'Agent 有新消息',
+  tabSwitchToUnread: '{name} · Agent 有新消息',
+  tabSavedLocally: '已命名并保存在本地',
 
   // SplitContainer
   opFailed: '操作失败',
@@ -82,6 +86,10 @@ export const en: Record<string, string> = {
   tabClose: 'Close',
   tabSwitchTo: 'Switch to {name}',
   tabCloseWorkspace: 'Close workspace',
+  tabShare: 'Share workspace…',
+  tabUnreadAgentMessage: 'Unread Agent message',
+  tabSwitchToUnread: '{name} · Unread Agent message',
+  tabSavedLocally: 'Named and saved locally',
 
   // SplitContainer
   opFailed: 'Operation failed',

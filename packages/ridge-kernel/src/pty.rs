@@ -1235,6 +1235,11 @@ impl PtyRegistry {
             .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))
     }
 
+    pub(crate) fn shell_cwd(&self, id: Uuid) -> Option<String> {
+        self.ptys.lock().get(&id)
+            .and_then(|managed| managed.renderer.lock().shell_cwd().map(str::to_owned))
+    }
+
     pub(crate) fn record_cwd(&self, id: Uuid, instance: &ridge_core::process_identity::ProcessInstance, cwd: &str) -> Result<()> {
         let mut ptys=self.ptys.lock();
         let managed=ptys.get_mut(&id).ok_or_else(||anyhow::anyhow!("PTY no longer exists"))?;

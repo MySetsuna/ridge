@@ -14,6 +14,10 @@
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { ShieldAlert, Check, X, Pencil } from 'lucide-svelte';
   import { parseHitlRequest, riskLabel, type HitlRequest, type HitlVerdict } from './teammateModel';
+  import { locale } from '$lib/i18n/locale';
+  import { communeText, type CommuneUiTextKey } from './communeUiText';
+
+  const ct = (key: CommuneUiTextKey, vars?: Record<string, string | number>) => communeText($locale, key, vars);
 
   const HITL_EVENT = 'teammate://hitl-approval-required';
   const RESOLVE_CMD = 'resolve_hitl_request';
@@ -47,7 +51,7 @@
     try {
       const resolved = await invoke<boolean>(RESOLVE_CMD, { id: req.id, verdict, replacement });
       if (!resolved) {
-        decisionError = '审批已失效或已由其他客户端处理；请核对原任务状态，勿重复提交。';
+        decisionError = ct('approvalInvalid');
         return;
       }
       // The originating request remains suspended. Approval therefore resumes
@@ -58,7 +62,7 @@
       editing = false;
       draft = '';
     } catch (error) {
-      decisionError = `审批结果未确认：${error instanceof Error ? error.message : String(error)}。请核对原任务状态，勿重复提交任务。`;
+      decisionError = ct('approvalUnknown', {error: error instanceof Error ? error.message : String(error)});
       void refreshPending().catch(() => {});
     } finally {
       busy = false;
@@ -76,9 +80,9 @@
         queue = queue.filter(item => item.id !== req.id);
         void refreshPending().catch(() => {});
       }
-      else decisionError = '审批已失效或已由其他客户端处理。';
+      else decisionError = ct('approvalExpired');
     } catch (error) {
-      decisionError = `审批结果未确认：${error instanceof Error ? error.message : String(error)}；请核对原任务状态。`;
+      decisionError = ct('approvalUnknownBrief', {error: error instanceof Error ? error.message : String(error)});
       void refreshPending().catch(() => {});
     } finally { busy = false; }
   }
@@ -108,7 +112,7 @@
       if (result.cancellationErrors?.length) decisionError = result.cancellationErrors.map(item => `${item.memberId}: ${item.error}`).join('\n');
       // Keep the permission visible until the original protocol turn actually settles.
       await refreshPending();
-    } catch (failure) { decisionError = `取消尚未确认：${String(failure)}`; }
+    } catch (failure) { decisionError = ct('cancelUnknown', {error:String(failure)}); }
     finally { busy = false; }
   }
 
@@ -120,14 +124,14 @@
     try {
       const dismissed = await invoke<boolean>(DISMISS_EXTERNAL_REJECTION_CMD, { id: req.id });
       if (!dismissed) {
-        decisionError = '该拒绝事件已失效；外部操作未被 Ridge 重试。';
+        decisionError = ct('rejectionExpired');
         return;
       }
       ++externalReadGeneration;
       queue = queue.filter(item => item.id !== req.id);
       void refreshExternalRejections().catch(() => {});
     } catch (error) {
-      decisionError = `关闭报告结果未确认：${error instanceof Error ? error.message : String(error)}。正在重新读取报告列表。`;
+      decisionError = ct('rejectionUnknown', {error:error instanceof Error ? error.message : String(error)});
       void refreshExternalRejections().catch(() => {});
     } finally {
       busy = false;
@@ -186,9 +190,9 @@
       <div class="flex items-center gap-2.5 px-4 py-3 border-b border-[var(--rg-border)] bg-red-500/10">
         <ShieldAlert class="h-5 w-5 text-red-400 shrink-0" />
         <div class="min-w-0 flex-1">
-          <h2 id="hitl-title" class="text-sm font-semibold text-[var(--rg-fg)]">{current.kind === 'external_rejection' ? '外部执行被拒' : '需要你的授权'}</h2>
+          <h2 id="hitl-title" class="text-sm font-semibold text-[var(--rg-fg)]">{current.kind === 'external_rejection' ? ct('rejectedExternally') : ct('authorize')}</h2>
           <p class="text-[11px] text-[var(--rg-fg-muted)] truncate">
-            来自 {current.initiator}
+            {ct('from',{name:current.initiator})}
           </p>
         </div>
         <span
@@ -208,10 +212,10 @@
           <p class="text-[11px] text-[var(--rg-fg-muted)]">{current.reason}</p>
         {/if}
         <p class="text-[10px] text-[var(--rg-fg-muted)]">
-          执行者：{current.executor ?? '未识别'} · 策略来源：{current.policySource ?? '未识别'}{#if current.requestId} · 请求：{current.requestId}{/if}
+          {ct('executor')}：{current.executor ?? ct('unknown')} · {ct('policySource')}：{current.policySource ?? ct('unknown')}{#if current.requestId} · {ct('request')}：{current.requestId}{/if}
         </p>
         {#if current.nextStep}
-          <p class="text-[10px] text-[var(--rg-fg-muted)]">下一步：{current.nextStep}</p>
+          <p class="text-[10px] text-[var(--rg-fg-muted)]">{ct('nextStep')}：{current.nextStep}</p>
         {/if}
         {#if decisionError}
           <p class="rounded border border-amber-500/35 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-200" role="alert">
@@ -223,7 +227,7 @@
             bind:value={draft}
             rows="2"
             class="w-full resize-none rounded border border-[var(--rg-border)] bg-[var(--rg-bg,#0b0b0b)] px-2 py-1.5 font-mono text-[12px] text-[var(--rg-fg)] focus:outline-none focus:border-[var(--rg-accent)]"
-            aria-label="修改命令"
+            aria-label={ct('editCommand')}
           ></textarea>
         {:else}
           <pre
@@ -239,12 +243,12 @@
             disabled={busy}
             class="flex items-center gap-1.5 rounded px-3 py-1.5 text-[12px] font-medium text-red-300 hover:bg-red-500/15 transition-colors disabled:opacity-50"
           >
-            <X class="h-3.5 w-3.5" /> 拒绝
+            <X class="h-3.5 w-3.5" /> {ct('reject')}
           </button>
         {/if}
         <div class="flex-1"></div>
         {#if current.protocol === 'acp'}
-          {#if current.workspaceId && current.deliveryId}<button onclick={cancelOriginalTask} disabled={busy} class="rounded px-3 py-1.5 text-[12px] text-red-300 hover:bg-red-500/15 disabled:opacity-50">{current.groupTaskId ? '取消所属组任务' : '取消此任务'}</button>{/if}
+          {#if current.workspaceId && current.deliveryId}<button onclick={cancelOriginalTask} disabled={busy} class="rounded px-3 py-1.5 text-[12px] text-red-300 hover:bg-red-500/15 disabled:opacity-50">{current.groupTaskId ? ct('cancelGroup') : ct('cancelTask')}</button>{/if}
           {#each current.options ?? [] as option (option.optionId)}
             <button onclick={() => selectOption(option.optionId)} disabled={busy}
               class="rounded px-3 py-1.5 text-[12px] font-medium text-[var(--rg-fg)] bg-[var(--rg-surface)] hover:opacity-80 disabled:opacity-50">{option.name}</button>
@@ -255,7 +259,7 @@
             disabled={busy}
             class="ml-auto flex items-center gap-1.5 rounded bg-[var(--rg-accent)] px-3 py-1.5 text-[12px] font-semibold text-black hover:opacity-90 transition-opacity disabled:opacity-50"
           >
-            <Check class="h-3.5 w-3.5" /> 知悉
+            <Check class="h-3.5 w-3.5" /> {ct('acknowledge')}
           </button>
         {:else if editing}
           <button
@@ -263,7 +267,7 @@
             disabled={busy}
             class="flex items-center gap-1.5 rounded px-3 py-1.5 text-[12px] font-medium text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/15 transition-colors disabled:opacity-50"
           >
-            <Check class="h-3.5 w-3.5" /> 改后执行
+            <Check class="h-3.5 w-3.5" /> {ct('modifyAndRun')}
           </button>
         {:else}
           <button
@@ -271,14 +275,14 @@
             disabled={busy}
             class="flex items-center gap-1.5 rounded px-3 py-1.5 text-[12px] font-medium text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)] transition-colors disabled:opacity-50"
           >
-            <Pencil class="h-3.5 w-3.5" /> 修改
+            <Pencil class="h-3.5 w-3.5" /> {ct('modify')}
           </button>
           <button
             onclick={() => decide('approve')}
             disabled={busy}
             class="flex items-center gap-1.5 rounded bg-[var(--rg-accent)] px-3 py-1.5 text-[12px] font-semibold text-black hover:opacity-90 transition-opacity disabled:opacity-50"
           >
-            <Check class="h-3.5 w-3.5" /> 批准并继续原操作
+            <Check class="h-3.5 w-3.5" /> {ct('approveContinue')}
           </button>
         {/if}
       </div>

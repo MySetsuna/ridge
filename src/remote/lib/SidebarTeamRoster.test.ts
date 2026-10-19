@@ -68,7 +68,7 @@ describe('remote Agent drawer alignment contract', () => {
   it('deletes a group only after confirmation and persists the filtered roster', () => {
     expect(source).toContain('globalThis.confirm(`Delete Agent group "${group.name}"?`)');
     expect(source).toContain('persistGroups(groups.filter((g) => g.id !== group.id))');
-    expect(source).toContain('title="Delete group"');
+    expect(source).toContain("title={$t('commune.dissolve')}");
   });
 
   it('keeps group mutations ordered and exposes leader/order/color controls', () => {
@@ -78,8 +78,8 @@ describe('remote Agent drawer alignment contract', () => {
     expect(source).not.toContain('while (pendingGroups)');
     expect(source).toContain('reorderAgentGroups(groups, group.id, direction)');
     expect(source).toContain('toggleAgentGroupLeader(group, agentId)');
-    expect(source).toContain('Move group up');
-    expect(source).toContain('Move group down');
+    expect(source).toContain("$t('commune.moveGroupUp')");
+    expect(source).toContain("$t('commune.moveGroupDown')");
     expect(source).toContain('type="color"');
     expect(source).toContain('class:leader-active={g.leaderAgentId === aid}');
     expect(source).toContain('.member-actions{position:absolute');

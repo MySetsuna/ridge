@@ -7,8 +7,20 @@ describe('cross-surface interaction contracts', () => {
   it('keeps workspace sharing reachable from the workspace tab menu', () => {
     const tabs = read('./WorkspaceTabs.svelte');
     expect(tabs).toContain("id: 'share'");
-    expect(tabs).toContain('分享工作区');
+    expect(tabs).toContain("tr('workspace.tabShare')");
+    expect(read('../i18n/messages/workspace.ts')).toContain('tabShare:');
     expect(tabs).toContain('onShare?.(');
+  });
+
+  it('shows the local-save fact and per-workspace unread state on workspace tabs', () => {
+    const tabs = read('./WorkspaceTabs.svelte');
+    const page = read('../../routes/+page.svelte');
+    expect(tabs).toContain('savedWorkspaceIds.includes(ws.id)');
+    expect(tabs).toContain('data-testid="workspace-tab-saved"');
+    expect(page).toContain('workspaceSaveInfoStore');
+    expect(page).toContain('savedWorkspaceIds={Object.values($workspaceSaveInfoStore)');
+    expect(tabs).toContain('data-testid="workspace-agent-unread"');
+    expect(read('../i18n/messages/workspace.ts')).toContain('tabSavedLocally:');
   });
 
   it('keeps desktop IME punctuation on the same PTY write path', () => {
@@ -51,7 +63,8 @@ describe('cross-surface interaction contracts', () => {
     const desktop = read('../teammate/AgentCenterPanel.svelte');
     const remote = read('../../remote/lib/SidebarTeamRoster.svelte');
     expect(desktop).toContain('历史');
-    expect(remote).toContain('History {history.length}');
+    expect(remote).toContain("tr('commune.historyCount', { count: history.length })");
+    expect(read('../i18n/messages/commune.ts')).toContain("historyCount: 'History {count}'");
     expect(desktop).not.toContain('<History ');
     expect(remote).not.toContain('<History ');
     expect(remote).toContain('cwd');

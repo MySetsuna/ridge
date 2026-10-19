@@ -8,6 +8,7 @@
   import { overlayScroll } from '$lib/actions/overlayScroll';
   import { dndzone, SOURCES, TRIGGERS } from 'svelte-dnd-action';
   import { dragHoverWorkspaceId } from '$lib/stores/paneTree';
+import { BookmarkCheck } from 'lucide-svelte';
 
   interface WorkspaceInfo {
     id: string;
@@ -26,6 +27,8 @@
     onSave?: (id: string, currentName: string | undefined) => void;
     onDeleteSave?: (id: string) => void;
     onShare?: (id: string, currentName: string | undefined) => void;
+    unreadWorkspaceIds?: readonly string[];
+    savedWorkspaceIds?: readonly string[];
     actions?: Snippet;
     trailingActions?: Snippet;
   }
@@ -40,6 +43,8 @@
     onSave,
     onDeleteSave,
     onShare,
+    unreadWorkspaceIds = [],
+    savedWorkspaceIds = [],
     actions,
     trailingActions,
   }: Props = $props();
@@ -132,7 +137,7 @@
       },
       {
         id: 'share',
-        label: '分享工作区…',
+        label: tr('workspace.tabShare'),
         disabled: !onShare,
         action: () => onShare?.(ws.id, ws.name),
       },
@@ -252,13 +257,19 @@
       onfinalize={handleDndFinalize}
     >
       {#each localItems as ws (ws.id)}
-      <div class="rg-no-drag relative shrink-0 flex items-center gap-1 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors border cursor-grab active:cursor-grabbing select-none
+      <div class="rg-workspace-tab rg-no-drag relative shrink-0 flex max-w-60 items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors border cursor-grab active:cursor-grabbing select-none
           {ws.id === activeWorkspaceId
             ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)] border-[var(--rg-accent)]/35'
             : 'text-(--rg-fg-muted) border-transparent hover:bg-white/5 hover:text-(--rg-fg)'}
           {$dragHoverWorkspaceId === ws.id ? 'ring-2 ring-[var(--rg-accent)]/60' : ''}"
         data-ws-tab-id={ws.id}
-        title={editingId === ws.id ? undefined : $t('workspace.tabSwitchTo', { name: getWorkspaceName(ws) })}
+        data-ws-saved={savedWorkspaceIds.includes(ws.id)}
+        title={editingId === ws.id ? undefined : unreadWorkspaceIds.includes(ws.id)
+          ? $t('workspace.tabSwitchToUnread', { name: getWorkspaceName(ws) })
+          : $t('workspace.tabSwitchTo', { name: getWorkspaceName(ws) })}
+        aria-label={unreadWorkspaceIds.includes(ws.id)
+          ? $t('workspace.tabSwitchToUnread', { name: getWorkspaceName(ws) })
+          : $t('workspace.tabSwitchTo', { name: getWorkspaceName(ws) })}
         onclick={() => { if (editingId !== ws.id) onSwitch(ws.id); }}
         onkeydown={(e) => handleSelectKeydown(e, ws)}
         oncontextmenu={(e) => handleContextMenu(e, ws)}
@@ -279,7 +290,17 @@
               onkeydown={(e) => handleRenameKeydown(e, ws.id)}
             />
           {:else}
-        <span class="pointer-events-none">{getWorkspaceName(ws)}</span>
+        <span class="pointer-events-none min-w-0 truncate">{getWorkspaceName(ws)}</span>
+        {/if}
+
+        {#if savedWorkspaceIds.includes(ws.id)}
+          <span class="shrink-0 text-[var(--rg-accent)]" role="img" aria-label={$t('workspace.tabSavedLocally')} title={$t('workspace.tabSavedLocally')} data-testid="workspace-tab-saved">
+            <BookmarkCheck class="h-3 w-3" aria-hidden="true" />
+          </span>
+        {/if}
+
+        {#if unreadWorkspaceIds.includes(ws.id)}
+          <span class="ml-0.5 h-2 w-2 shrink-0 rounded-full bg-[var(--rg-accent)] ring-2 ring-[var(--rg-accent)]/15" aria-hidden="true" data-testid="workspace-agent-unread"></span>
         {/if}
 
         {#if workspaces.length > 1}
@@ -318,6 +339,15 @@
 </div>
 
 <style>
+  .rg-workspace-tab {
+    min-height: 34px;
+    border-radius: 8px;
+    transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+  }
+  .rg-workspace-tab:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--rg-accent) 72%, transparent);
+    outline-offset: 2px;
+  }
   /* svelte-dnd-action 默认会在 dropzone 上加描边/阴影；这里用 scoped 样式
      覆盖，与 Ridge 的 tab 视觉风格保持一致。 */
   :global(.rg-ws-dndzone) {

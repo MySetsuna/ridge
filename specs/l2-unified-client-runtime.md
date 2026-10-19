@@ -2,8 +2,8 @@
 id: L2-UNIFIED-CLIENT-RUNTIME
 level: L2
 title: Desktop presentation client and unified CLI/Remote runtime
-status: DRAFT
-lifecycle: PLANNED
+status: LOCKED
+lifecycle: ACTIVE
 parent: L1-PROJECT-001
 code_targets:
   - Cargo.toml
@@ -201,3 +201,16 @@ Preserve the old native WebView controller public key when moving signing into R
 - With no controller key yet, import the valid legacy seed. If no legacy identity exists, preserve the current Runtime device key for the controller role. If prior Runtime Cloud records already exist, preserve that current identity instead of silently rotating it; conflicting legacy material remains untouched and requires explicit recovery.
 - Publish the key completely before opening Cloud. Concurrent imports serialize; interrupted or failed publication must not produce an ephemeral identity or a successful acknowledgement. Retain the browser original as recovery evidence; future native signing occurs only in Runtime. Browser Remote identity ownership stays unchanged.
 - Acceptance: actual IndexedDB/localStorage read without creation; same legacy public key after Runtime restart; real Rust trust proof accepted by a Host that trusted the legacy browser key; existing Host identity unchanged; malformed/conflicting/denied/interrupted imports preserve bytes and do not connect.
+
+### 工作区恢复与临时运行态
+
+关闭桌面窗口仅断开展示客户端；Kernel Runtime、其持有的 PTY 与仍运行的 Agent 保持活跃，直至用户显式停止 Runtime 或 Runtime 自身退出。不得为维持该运行态而把临时工作区导出成用户保存文件。
+
+桌面启动先连接现存 Runtime 并绑定其工作区与 PTY。恢复文件列表只含已关联、名称非空、文件仍存在且格式有效的本地 `.ridge` 工作区；未保存、无名或临时工作区不得写入用户恢复索引或生成 `session-*.ridge` 文件。Runtime 冷启动不承诺恢复已经终止的 PTY 进程；已保存 `.ridge` 仅恢复工作区布局与元数据，不得冒充重启原终端进程。
+
+验收：关闭桌面后 Kernel 与原 PTY/Agent 仍存活且可由 CLI/Remote继续使用；重开桌面绑定同一运行态而不重复创建 PTY；恢复索引仅含有效的已命名本地保存文件；临时工作区不会创建 session 文件。
+## 工作区通知与品牌视觉
+
+桌面工作区页签以清晰、克制的视觉层级呈现活动工作区、命名本地保存状态及 Agent 新消息提示；临时未命名工作区不暗示已保存或可冷启动恢复。提示按 workspace 隔离，并在用户查看对应 Commune 活动后清除。该层只呈现既有运行态与本地保存事实，不改变恢复、保存或 Agent 生命周期契约。
+
+工作区与 Commune 使用一致的 Ridge 视觉语言：森林绿作单一强调色，表面、边线、文字层级与紧凑数据排版在亮/暗主题中保持可读；交互控件具有明确的悬停、按下、键盘焦点和窄窗状态。不得以视觉状态暗示数据已持久化或操作已成功。

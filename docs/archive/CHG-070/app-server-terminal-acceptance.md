@@ -69,3 +69,29 @@ instances, cross-workspace views and untrusted manual input.
 The user’s running CLI, global shell/profile and installed application remain
 untouched. Historical sessions not supplied by an attached protocol source remain
 outside protocol history. Terminal screen projection does not invent those records.
+
+## Follow-up receipts — 2026-10-16
+
+`C:/Users/12867/AppData/Local/Temp/ridge-terminal-ui-fUAxx0/result.json`
+passes the actual debug desktop with the updated Runtime. Members/history are the
+only top-level tabs, group creation remains within members, and the redesigned
+card sends with Enter while Shift+Enter inserts a newline. Card location switches
+both ways, restores keyboard focus, receives output and resumes visible painting.
+Workspace selection now retains exact keep-alive terminal subscriptions instead
+of deleting the hidden workspace's stream. Both context-menu split directions
+work; splitting a non-first PowerShell pane after `cd` inherits its live directory,
+including spaces. Shell OSC directory observations take precedence over the
+PowerShell process's older OS cwd. This receipt does not test an installed release GUI.
+
+`D:/ridge-070-acceptance/app-server-terminal-MJK8jt/a2a-sdk-result.json`
+uses the official Python `a2a-sdk==1.2.2` to discover a member-bound Agent Card and
+send, query and cancel work in its existing real Codex thread. Independent contexts
+are rejected; turn completion remains `TASK_STATE_INPUT_REQUIRED`, not a claim of
+objective completion. This proves operator-authorized member invocation, not
+member-bound autonomous A→B→A collaboration.
+
+`D:/ridge-070-acceptance/app-server-terminal-TbwDhD/result.json` proves that an
+ordinary real Codex terminal survives termination of the owned debug desktop,
+receives a manual sidebar-bridge reply through the packaged release Runtime, and
+reattaches to a reopened owned desktop without replacing the original PTY child.
+Installation, upgrade and rollback of the user's application remain outside this receipt.

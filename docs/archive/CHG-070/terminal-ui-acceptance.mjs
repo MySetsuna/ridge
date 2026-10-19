@@ -14,6 +14,7 @@ const allowed=join(root,'allowed'),outside=join(root,'outside'),data=join(root,'
 for(const path of [allowed,outside,data,profile])await mkdir(path);
 const kernelBinary=join(root,'fixture-kernel.exe'),desktopBinary=join(root,'fixture-desktop.exe');
 await copyFile(resolve('target/debug/ridge-kernel.exe'),kernelBinary);await copyFile(resolve('target/debug/ridge.exe'),desktopBinary);
+await copyFile(resolve('ridge.theme'),join(root,'ridge.theme'));
 const compiledOrigins=[...new Set((await readFile(desktopBinary)).toString('latin1').match(/http:\/\/127\.0\.0\.1:\d{2,5}/g))];
 assert.equal(compiledOrigins.length,1,'the copied debug desktop needs one unambiguous compiled dev origin');
 const devUrl=new URL(compiledOrigins[0]);
@@ -27,7 +28,7 @@ const delay=ms=>new Promise(done=>setTimeout(done,ms));
 async function until(check,message,ms=30000){const end=Date.now()+ms;while(Date.now()<end){if(await check())return;await delay(100);}throw Error(message);}
 async function launch(binary,args,environment,name){const log=await open(join(root,name+'.log'),'a');const process=spawn(binary,args,{cwd:repo,env:environment,stdio:['ignore',log.fd,log.fd],windowsHide:true});await log.close();return process;}
 const kernel=await launch(kernelBinary,[],env,'kernel');let endpoint,desktop,vite,remoteVite,browser,remoteBrowser,page,remote;
-const report={completeChange:false,checks:[],recoveries:[],root};
+const report={completeChange:false,checks:[],recoveries:[],renderErrors:[],warnings:[],root};
 async function request(path,body,method='POST'){
  const response=await fetch(`http://127.0.0.1:${endpoint.port}${path}`,{method,headers:{'x-ridge-kernel-token':endpoint.token,'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(10000)});
  assert.equal(response.status,200,`${method} ${path}`);return response.json();
@@ -52,7 +53,9 @@ async function openDesktop(){
  const version=await(await fetch(`http://127.0.0.1:${port}/json/version`)).json();assert.ok(version.webSocketDebuggerUrl.startsWith(`ws://127.0.0.1:${port}/`));
  browser=await chromium.connectOverCDP(version.webSocketDebuggerUrl);await until(async()=>{page=browser.contexts().flatMap(context=>context.pages())[0];return Boolean(page);},'owned WebView missing');
  page.on('console',async message=>{if(message.text().startsWith('[ridge-term] terminal stream requires snapshot'))report.recoveries.push(await Promise.all(message.args().map(arg=>arg.jsonValue().catch(()=>null))));});
- await until(async()=>page.locator('[data-rg-pane-id]').count().catch(()=>0),'desktop pane did not mount',60000).catch(async error=>{
+ page.on('console',message=>{if(message.type()==='error'&&message.text().includes('[ridge-term]'))report.renderErrors.push(message.text());});
+ page.on('console',message=>{if(['warning','error'].includes(message.type())&&report.warnings.length<100)report.warnings.push(message.text().slice(0,1000));});
+ await until(async()=>page.locator('[data-rg-pane-id]').count().catch(()=>0),'desktop pane did not mount',120000).catch(async error=>{
   await writeFile(join(root,'startup.json'),JSON.stringify(await page.evaluate(()=>({url:location.href,title:document.title,text:document.body?.innerText?.slice(0,4000),osBridge:Boolean(window.__TAURI_INTERNALS__)})),null,2));
   await page.screenshot({path:join(root,'startup.png')}).catch(()=>{});throw error;
  });
@@ -116,10 +119,21 @@ try{
  await page.evaluate(async workspaceId=>{
   const [{mount,unmount},{default:Panel}]=await Promise.all([import('/node_modules/svelte/src/index-client.js'),import('/src/lib/teammate/AgentCenterPanel.svelte')]);
   const target=document.createElement('div');target.dataset.ownedCommune='true';
-  Object.assign(target.style,{position:'fixed',inset:'0 auto 0 0',width:'340px',zIndex:'100',background:'#171717'});document.body.appendChild(target);
-  const panel=mount(Panel,{target,props:{workspaceId}});window.closeOwnedCommune=async()=>{await unmount(panel);target.remove();};
+  Object.assign(target.style,{position:'fixed',inset:'0 auto 0 0',width:'340px',zIndex:'100',background:'var(--rg-bg)',overflow:'auto'});document.body.appendChild(target);
+  const {fromStore}=await import('/node_modules/svelte/src/store/index-client.js');
+  const {activeWorkspaceId}=await import('/src/lib/stores/paneTree.ts');
+  const scope=fromStore(activeWorkspaceId);
+  const panel=mount(Panel,{target,props:{get workspaceId(){return scope.current;}}});window.closeOwnedCommune=async()=>{await unmount(panel);target.remove();};
  },report.workspace);
  const commune=page.locator('[data-owned-commune="true"]');
+ assert.equal(await commune.getByTestId('commune-tab-groups').count(),0,'independent groups tab must be removed');
+ assert.equal(await commune.locator('[data-testid^="commune-tab-"]').count(),2,'only members and history tabs remain');
+ const memberGroups=commune.getByTestId('commune-member-groups');
+ await memberGroups.locator('summary').click();
+ await memberGroups.getByRole('button',{name:'新建编组',exact:true}).click();
+ await memberGroups.getByText('暂无可编组的成员。',{exact:true}).waitFor();
+ await memberGroups.locator('summary').click();
+ report.checks.push('only members/history top-level tabs; original group creation controls are accessible inside members');
  const firstRow=commune.locator(`[data-testid="commune-terminal-agent"][data-pane-id="${report.pane}"]`);
  const secondRow=commune.locator(`[data-testid="commune-terminal-agent"][data-pane-id="${secondPane}"]`);
  await firstRow.waitFor({timeout:30000});await secondRow.waitFor({timeout:30000});
@@ -127,7 +141,10 @@ try{
  await firstRow.getByRole('button',{name:'展开交互',exact:true}).click();
  const send=firstRow.getByRole('button',{name:'发送并回车',exact:true});
  await firstRow.getByRole('textbox').fill('echo SIDEBAR_FIRST');
- await until(()=>send.isEnabled(),'sidebar view did not become writable');await send.click();
+ await until(()=>send.isEnabled(),'sidebar view did not become writable');
+ await firstRow.getByRole('textbox').press('Shift+Enter');
+ assert.equal(await firstRow.getByRole('textbox').inputValue(),'echo SIDEBAR_FIRST\n');
+ await firstRow.getByRole('textbox').fill('echo SIDEBAR_FIRST');await firstRow.getByRole('textbox').press('Enter');
  await until(async()=>(await rendered())?.text.some(row=>row.trim()==='SIDEBAR_FIRST'),'sidebar text did not reach original terminal');
  await firstRow.getByRole('button',{name:'向原终端发送 ArrowUp',exact:true}).click();
  await firstRow.getByRole('button',{name:'向原终端发送 Enter',exact:true}).click();
@@ -145,6 +162,48 @@ try{
  assert.equal((await command('write_agent_terminal_input',duplicate)).alreadyApplied,true);
  await until(async()=>(await secondView()).text.split('\n').filter(row=>row.trim()==='EXACTLY_ONCE').length===1,'input retry did not retain exactly one terminal write');
  report.checks.push('repeated exact input returns duplicate ACK and executes only once');
+ const firstPane=report.pane;
+ await page.evaluate(async()=>{
+  const {TerminalManager}=await import('/packages/remote/src/shared/terminal/manager.ts');const manager=TerminalManager.instance();
+  window.ownedPaints={};const paint=manager._paintFrameEntry.bind(manager);
+  manager._paintFrameEntry=(entry,...args)=>{paint(entry,...args);window.ownedPaints[entry.paneId]=(window.ownedPaints[entry.paneId]||0)+1;};
+ });
+ for(const [row,pane,workspace,marker] of [[secondRow,secondPane,secondWorkspace,'LOCATE_SECOND'],[firstRow,firstPane,report.workspace,'LOCATE_FIRST']]){
+  await row.getByRole('button',{name:'定位终端',exact:true}).click();report.pane=pane;
+  await until(()=>page.evaluate(async({pane,workspace})=>{
+   const {get}=await import('/node_modules/svelte/src/store/index-client.js');
+   const {activeWorkspaceId}=await import('/src/lib/stores/paneTree.ts');
+   const container=document.querySelector(`.rg-pane-container[data-rg-pane-id="${pane}"]`);
+   return get(activeWorkspaceId)===workspace&&container?.contains(document.activeElement);
+  },{pane,workspace}),'locating terminal did not focus its original input');
+  const paints=await page.evaluate(pane=>window.ownedPaints[pane]||0,pane);
+  await page.keyboard.type(`echo ${marker}`);await page.keyboard.press('Enter');
+  await until(async()=>(await rendered())?.text.some(line=>line.trim()===marker),'terminal stopped updating after cross-workspace locate');
+  await until(()=>page.evaluate(({pane,paints})=>(window.ownedPaints[pane]||0)>paints,{pane,paints}),'visible terminal renderer stopped painting after locate');
+ }
+ assert.deepEqual(report.renderErrors,[]);
+ report.checks.push('card location switches workspace, restores original terminal keyboard focus and displays new output in both directions');
+ await page.screenshot({path:join(root,'commune-redesigned-cards.png')});
+ // Split from a non-first pane after changing its live shell cwd. Use the actual right-click menu.
+ async function menuSplit(pane,direction){
+  const before=(await request('/v1/domain/ptys',undefined,'GET')).ptys.map(pty=>pty.pty_id);
+  const leaf=page.locator('.splitpanes__pane').filter({has:page.locator(`.rg-pane-container[data-rg-pane-id="${pane}"]`)}).last();
+  await leaf.locator('.rg-pane-header').first().click({button:'right',position:{x:50,y:15}});
+  await page.getByRole('menuitem',{name:direction,exact:true}).click();
+  let added;await until(async()=>{added=(await request('/v1/domain/ptys',undefined,'GET')).ptys.find(pty=>pty.workspace_id===report.workspace&&!before.includes(pty.pty_id));return Boolean(added);},'right-click split did not create the new PTY');
+  return added;
+ }
+ const inherited=await menuSplit(firstPane,'水平分割');
+ report.pane=inherited.pty_id;await until(async()=>Boolean((await rendered())?.context),'split terminal did not attach');
+ const nested=join(allowed,'nested cwd');await mkdir(nested);
+ const cwdKey=path=>String(path).toLowerCase().replaceAll('\\','/');
+ await typeCommand(`cd "${nested}"`);
+ await until(async()=>cwdKey(await command('get_pane_cwd',{workspaceId:report.workspace,paneId:report.pane}))===cwdKey(nested),'split source shell cwd did not change');
+ const next=await menuSplit(report.pane,'垂直分割');
+ assert.equal(next.cwd.toLowerCase().replaceAll('\\','/'),nested.toLowerCase().replaceAll('\\','/'));
+ await until(async()=>cwdKey(await command('get_pane_cwd',{workspaceId:report.workspace,paneId:next.pty_id}))===cwdKey(nested),'new terminal did not start in the non-first source pane live cwd');
+ report.pane=firstPane;
+ report.checks.push('both right-click split directions work; splitting a non-first pane inherits its changed live cwd');
  await commune.getByTestId('commune-tab-history').click();
  await commune.getByTestId('commune-history').getByText('此工作区尚未取得已登记会话的协议记录。',{exact:false}).waitFor();
  await page.screenshot({path:join(root,'desktop-fit-and-discovery.png')});

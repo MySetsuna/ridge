@@ -2,8 +2,8 @@
 id: L3-COMMUNE-PROTOCOL-MEMBERSHIP
 level: L3
 title: Protocol-based terminal Agent Commune, groups, history and A2A
-status: DRAFT
-lifecycle: PLANNED
+status: LOCKED
+lifecycle: ACTIVE
 parent: L2-UNIFIED-CLIENT-RUNTIME
 code_targets:
   - packages/ridge-acp/**
@@ -30,6 +30,8 @@ test_targets:
   - packages/ridge-kernel/**
   - src/lib/teammate/**
   - packages/remote/**
+  - tests/e2e/commune.spec.ts
+  - src/remote/lib/SidebarTeamRoster.test.ts
 depends_on:
   - L2-AGENT-COMMUNE-EXACT-BINDING
   - L2-RIDGE-COMMUNION-M53
@@ -37,6 +39,14 @@ depends_on:
 ---
 
 # Agent’s Commune：通用协议成员、编组、历史与 A2A
+
+## 双语文案覆盖 — 组任务与审批
+
+桌面与 Remote 的 Commune 成员、编组任务及审批界面支持系统现有中文、英文语言。状态标签、成员分配与广播控件、确认与取消操作、被截断的目标说明与协议输出详情，以及不确定结果和错误提示，均提供对应语言文案；展开详情仍可读取完整目标与输出。两端对同一状态和动作使用一致、可理解的表达，避免遗漏状态、确认说明或错误信息。
+
+本契约只约束呈现与文案，不改变任务投递、成员选择、审批决策、取消请求、审计记录或执行结果。结果未知须如实呈现并保留原语义，不得因翻译或界面操作自动重试、重复审批或推断成功。
+
+验收：桌面与 Remote 切换中英文，覆盖成员与组任务生命周期、状态、分配、广播、确认、取消、长目标与协议输出详情、未知结果及错误场景；所有可见 Commune 文案均有对应译文，长内容可展开查看全文。对照既有行为验证翻译不改变目标成员、投递、审批次数、取消结果、审计事件和执行状态。
 
 ## 批准边界与现状
 
@@ -46,7 +56,7 @@ depends_on:
 
 已核对：`AgentCenterPanel.svelte` 提供三个页签；历史仍读取 `read_agent_recent_replies`、恢复仍按 provider 启动命令；`agent_profiles.rs` / `agent_catalog.rs` 已有内置与用户覆盖；`acp_bridge.rs` 与 `ridge-acp/provider_adapter.rs` 仍有启动新 Agent 的路径；`src/routes/+layout.svelte:498` 挂载右侧 Communion。`ridge-mcp/a2a.rs` 已有协议客户端，`native_a2a.rs` 已有认证 A2A/Hub 服务入口，可复用，但不据源码存在宣称端到端完成。
 
-## 1. 一套身份与服务，三个投影
+## 1. 一套身份与服务，两个页签与共同编组
 
 ```text
 用户终端里的既有 Agent ── ACP / 已支持通用协议 ── Commune 服务
@@ -58,7 +68,7 @@ depends_on:
 已有 Agent 主动协作 ── 原生 A2A client 或共同 MCP 工具 ── 同一 A2A/任务服务
 ```
 
-服务位于独立 Runtime，桌面/CLI/Remote 均为其客户端。Ridge 不启动新 Agent、不使用模型供应商 API 替代终端 Agent、不将协议/自动协作投递转为 PTY 提示词注入，不采样终端内容冒充协议回复。用户主动的侧栏终端查看与人工输入按本轮批准的“终端 Agent 侧栏基础交互”执行。三页签读取同一登记、会话、任务与事件事实，不能另建三套识别/状态/历史系统。
+服务位于独立 Runtime，桌面/CLI/Remote 均为其客户端。Ridge 不启动新 Agent、不使用模型供应商 API 替代终端 Agent、不将协议/自动协作投递转为 PTY 提示词注入，不采样终端内容冒充协议回复。用户主动的侧栏终端查看与人工输入按本轮批准的“终端 Agent 侧栏基础交互”执行。两个页签读取同一登记、会话、任务与事件事实，不能另建三套识别/状态/历史系统。
 
 ### 协议与配置
 
@@ -98,7 +108,7 @@ depends_on:
 
 审批与流采用官方 `session/request_permission` / `session/update` 等已协商能力；不能把现有 Ridge 私有 `session/approve`、`agent/request_approval` 通知当所有 ACP Agent 的标准。[ACP tool calls](https://agentclientprotocol.com/protocol/v1/tool-calls)、[prompt turn](https://agentclientprotocol.com/protocol/v1/prompt-turn)
 
-## 4. 编组页签：现有成员的协作关系
+## 4. 成员页内的编组协作：现有成员的协作关系
 
 编组持久化于共同服务，以 workspaceId、稳定 groupId、revision 管理；前端只缓存投影。保留现有“一成员至多一编组”的语义，未分组为视图而非独立任务对象。成员引用精确登记身份，改名不影响归属，退出保留失联位置；替换成员须显式操作，不能按品牌/CWD补位。组长由已有成员担任，不创建 Lead/Staff Agent。
 
@@ -192,3 +202,25 @@ ACP/A2A wire 字段引用官方版本 schema，Commune 内部关联字段不伪�
 6. 此前试写的自动包装 Agent 启动入口退出活动产品链路并归档；不要求用户换用共享协议启动。已安装版本不自动修改，验收后仅产出新安装包，由用户手动安装。
 
 验收：至少两个工作区、多个实际终端 Agent/自定义进程同时可见；原终端普通启动可操作；侧栏最新内容更新；同一 PTY 收到文字及选项按键且其他终端不收；读取无写入/无新进程；重复请求不重写，过期 epoch、进程实例及跨 workspace 拒绝；协议历史来源与语义不变。运行相关 Runtime 与 UI 验收、npm test/lint/typecheck、SpecTree verify，未满足完整 070 验收不得标完成。
+
+## 成员页融合编组 — 2026-10-16 用户批准
+
+批准依据：用户明确要求“在成员页签中融合编组的功能，最终只保留成员和历史两个页签”。
+
+顶层仅“成员、历史”两个页签；成员页内提供可展开的编组协作区。保留建组、成员调整、组长、改名、配色、解散、派发、任务状态与取消，不删除编组能力或已保存数据。成员总览继续汇总全部本地工作区；编组区明确当前工作区，并沿用精确成员身份、workspaceId、groupId、revision 与任务快照边界。
+
+验收：不存在独立“编组”页签；成员页可操作原编组功能，历史页保持可切换；重开与工作区切换沿用 Runtime 的原编组数据与权限校验。
+
+### Commune 事件刷新与呈现
+
+成员、编组、审批、消息投递及历史继续由既有 Kernel/Hub 协议与存储提供权威，不改变身份、投递、权限或编组语义。Commune 对事件按 workspaceId 过滤；相关消息与任务事件到达后刷新对应工作区最近回复和历史，避免依赖长轮询窗口或手动刷新。界面按成员、历史及成员页内编组职责组织，状态与通知清晰可读；中文、英文等支持语言均由 i18n 提供文案。
+
+验收：真实 UI 中消息发送及回执、最近回复、历史搜索/翻页、编组任务与取消、审批同步正常；跨工作区事件不污染当前历史或通知；支持语言下 Commune 文案完整，现有协议集成测试保持通过。
+## Commune 视觉与页面可用性
+
+成员、历史、编组任务、审批等现有 Commune 能力均须从可发现的页面入口到达真实 Runtime 执行路径；页面切换不得只更换标题或展示静态占位。以工作区、成员、状态、时间和可执行动作建立清楚层级，长目标与协议输出可展开读取，任务终态、不确定结果及权限提示保持可辨。错误、空态、加载、禁用与键盘焦点均有明确呈现。
+
+Commune 遵循工作区统一的 Ridge 视觉语言与主题，适配桌面和窄屏；紧凑信息不得造成控件拥挤、内容截断或状态难以区分。视觉刷新只调整布局与呈现，不改变成员身份、权限、协议、投递、审批、历史、取消和终端操作语义。
+## Remote Commune 视觉一致性
+
+Remote 的成员、历史、编组及审批沿用与桌面一致的主题感知 Ridge 视觉系统：森林绿强调色、分层表面、清楚状态与数据层级、可见键盘焦点及窄屏适配。成员与历史仍为两个主子页签；编组留在成员页内并可发现、可操作。视觉调整不改协议身份、授权、投递、审计或终端语义。

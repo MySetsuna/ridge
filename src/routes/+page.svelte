@@ -15,6 +15,7 @@
   const loadRemotePanel = () => import('$lib/remote/RemotePanel.svelte');
   const loadAgentCenterPanel = () => import('$lib/teammate/AgentCenterPanel.svelte');
   import AgentPaneHighlightSync from '$lib/teammate/AgentPaneHighlightSync.svelte';
+  import { communeUnreadWorkspaces, isAgentMessageEvent, markCommuneUnread } from '$lib/teammate/communeAttention';
   const loadHostsPanel = () => import('$lib/components/hosts/HostsPanel.svelte');
   const loadSharedWorkspaceSurface = () => import('$lib/components/hosts/SharedWorkspaceSurface.svelte');
   const loadSharedWorkspaceResourcePanel = () => import('$lib/components/hosts/SharedWorkspaceResourcePanel.svelte');
@@ -81,6 +82,7 @@
     syncPaneLayoutFromBackend,
     refreshWorkspaces,
     workspacesList,
+    workspaceSaveInfoStore,
     activeWorkspaceId,
     createWorkspace,
     switchWorkspace,
@@ -1288,6 +1290,18 @@ function expandSidebar(minWidth = 0) {
     // and move the single `await initThemeSystem()` plus all dependent
     // setup into an inner `void (async () => …)()` IIFE.
 
+    let stopCommuneMessageEvents: (() => void) | undefined;
+    let communeMessageListenerDisposed = false;
+    void listen<unknown>('commune-session-update', (event) => {
+      const payload = event.payload as { workspaceId?: unknown };
+      if (typeof payload?.workspaceId === 'string' && isAgentMessageEvent(event.payload)) {
+        markCommuneUnread(payload.workspaceId);
+      }
+    }).then((stop) => {
+      if (communeMessageListenerDisposed) stop();
+      else stopCommuneMessageEvents = stop;
+    }).catch(() => {});
+
     // 全局屏蔽默认右键菜单，显示自定义菜单
     document.addEventListener('contextmenu', handleContextMenu);
     window.addEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
@@ -1341,6 +1355,10 @@ function expandSidebar(minWidth = 0) {
       signalAppReady();
     };
     window.addEventListener('ridge:pane-attached', onFirstPaneAttached, { once: true });
+    // Start the splash fallback before any Runtime RPC or workspace restore.
+    // Those operations can be slow during a cold or concurrent launch; placing
+    // the timer after them made the fallback unreachable while startup waited.
+    appReadyTimeout = setTimeout(signalAppReady, 5000);
 
     void (async () => {
       try {
@@ -1539,12 +1557,6 @@ function expandSidebar(minWidth = 0) {
       void loadSavedWorkspaces().catch((e) => console.warn('load saved workspaces failed', e));
       void refreshWorkspaceSaveInfo().catch((e) => console.warn('refresh workspace save info failed', e));
 
-      // 等待首个终端面板就绪后关闭 loader
-      // 兜底：5秒后无论如何关闭 loader，避免异常阻塞
-      appReadyTimeout = setTimeout(() => {
-        signalAppReady();
-      }, 5000);
-
       // 检查初始最大化状态
       const win = getCurrentWindow();
       isMaximized = await win.isMaximized();
@@ -1578,6 +1590,8 @@ function expandSidebar(minWidth = 0) {
     })();
 
     return () => {
+      communeMessageListenerDisposed = true;
+      stopCommuneMessageEvents?.();
       unlisten?.();
       unlistenResized?.();
       unsubDefaultCwd?.();
@@ -1795,7 +1809,7 @@ function expandSidebar(minWidth = 0) {
             {/await}
           {:else}
             {#await loadAgentCenterPanel() then module}
-              <module.default workspaceId={$activeWorkspaceId} />
+              <module.default workspaceId={$activeWorkspaceId} visible={sidebarTab === 'agents'} />
             {/await}
           {/if}
         </div>
@@ -1915,6 +1929,8 @@ function expandSidebar(minWidth = 0) {
         <!-- 工作区标签区 -->
         <WorkspaceTabs
           workspaces={$workspacesList}
+          savedWorkspaceIds={Object.values($workspaceSaveInfoStore).filter(info => !!info.file_path && !!info.name?.trim()).map(info => info.workspace_id)}
+          unreadWorkspaceIds={Object.keys($communeUnreadWorkspaces)}
           activeWorkspaceId={$activeWorkspaceId}
           onSwitch={switchWorkspace}
           onClose={closeWorkspace}

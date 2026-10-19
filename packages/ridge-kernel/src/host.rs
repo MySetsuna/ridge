@@ -1425,10 +1425,9 @@ fn handle_client_text(
                     return Err("client session expired".into());
                 }
             }
-            subscriptions
-                .lock()
-                .map_err(|_| "client subscriptions unavailable")?
-                .retain(|(workspace, _), _| *workspace == id);
+            // Selection changes visibility, not the lifetime of keep-alive
+            // panes. Their exact subscriptions remain valid until explicitly
+            // unsubscribed, closed, or replaced by a newer activation.
             Ok(json!({"success":true,"workspaceId":id}))
         });
         return reply(result);
@@ -1924,14 +1923,22 @@ fn dispatch(
             Ok(json!({"success":true,"workspaceId":workspace_id,"paneId":pane_id}))
         }
         "split_pane" => {
-            let mut split_args = args.clone();
-            if let Some(object) = split_args.as_object_mut() {
-                object.remove("paneId");
-            }
-            let pane_id = host.create_pane(&split_args, &snapshot)?;
             let workspace_id =
                 host.workspace_id(args.get("workspaceId").and_then(Value::as_str))?;
-            Ok(json!({"success":true,"workspaceId":workspace_id,"paneId":pane_id}))
+            let pane_id = host.pane_id(args, &snapshot)?;
+            let split = request_json(&host.current_endpoint(), "POST",
+                &format!("/v1/domain/workspaces/{workspace_id}/split"),
+                Some(&json!({"pane_id":pane_id,"direction":args["direction"]})))?;
+            if split["ok"] != true {
+                return Err(split["error"].as_str().unwrap_or("pane split rejected").into());
+            }
+            let new_pane = split["pane_id"].as_str().and_then(|id| Uuid::parse_str(id).ok())
+                .ok_or("kernel split response missing pane_id")?;
+            create_domain_pty(&host.current_endpoint(), new_pane,
+                args["shell"].as_str(), split["initial_cwd"].as_str(), Some(workspace_id),
+                "shell", Some("ridge-interactive"))?;
+            Ok(json!({"success":true,"workspaceId":workspace_id,"paneId":new_pane,
+                "pane_id":new_pane,"initial_cwd":split["initial_cwd"]}))
         }
         "close_pane" | "close-pane" => {
             let workspace=host.workspace_id(args["workspaceId"].as_str())?;

@@ -37,12 +37,16 @@ impl KernelMcpHost {
 
     pub fn router(state: AppState, token: Arc<String>) -> axum::Router {
         let mcp_state = state.mcp_state.clone();
+        let base_url=format!("http://127.0.0.1:{}",state.port);
+        let host=Arc::new(Self::new(state));
+        let a2a=ridge_mcp::native_a2a::router(ridge_mcp::native_a2a::NativeA2aCtx::new(
+            host.clone(),token.clone(),env!("CARGO_PKG_VERSION"),mcp_state.clone()).with_base_url(base_url));
         ridge_mcp::transport::mcp_router(ridge_mcp::transport::McpTransportCtx::with_state(
-            Arc::new(Self::new(state)),
+            host,
             token,
             env!("CARGO_PKG_VERSION"),
             mcp_state,
-        ))
+        )).merge(a2a)
     }
 
     fn workspace_id(&self, requested: Option<&str>) -> HostResult<Uuid> {
@@ -528,6 +532,10 @@ impl McpHost for KernelMcpHost {
 
     fn team_profile(&self) -> Value {
         self.team_profile_snapshot(None)
+    }
+
+    fn requires_permission(&self, target: &Value) -> HostResult<bool> {
+        self.state.permissions.is_waiting(target).map_err(HostError::Internal)
     }
 
     fn probe_delivery(&self, _target: &Value) -> HostResult<DeliveryProbe> {

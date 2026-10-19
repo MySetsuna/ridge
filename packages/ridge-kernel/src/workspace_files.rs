@@ -483,45 +483,21 @@ pub(crate) fn handle(state: &AppState, request: Request) -> Result<Value, String
                 graph
                     .workspace_ids()
                     .filter_map(|id| {
-                        graph.workspace(*id).map(|metadata| {
-                            (*id, metadata.file.as_ref().map(|file| file.path.clone()))
+                        graph.workspace(*id).and_then(|metadata| {
+                            let name = metadata.name.as_deref()?.trim();
+                            if name.is_empty() {
+                                return None;
+                            }
+                            metadata.file.as_ref().map(|file| PathBuf::from(&file.path))
                         })
                     })
                     .collect::<Vec<_>>()
             };
-            let mut paths = Vec::new();
-            for (id, path) in pending {
-                if let Some(path) = path {
-                    paths.push(path);
-                    continue;
-                }
-                let path = crate::workspace_history::directory()
-                    .join("session-workspaces")
-                    .join(format!("session-{id}.ridge"));
-                let snapshot = handle(
-                    state,
-                    Request {
-                        operation: "snapshot".into(),
-                        workspace_id: Some(id),
-                        name: None,
-                        path: None,
-                    },
-                )?;
-                if path.exists() {
-                    let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
-                    file::write_atomic(
-                        &path.with_extension(format!("ridge.archive-{}", Uuid::new_v4())),
-                        &bytes,
-                    )
-                    .map_err(|error| error.to_string())?;
-                }
-                file::write_atomic(
-                    &path,
-                    &serde_json::to_vec_pretty(&snapshot).map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
-                paths.push(path.to_string_lossy().to_string());
-            }
+            let paths = pending
+                .into_iter()
+                .filter(|path| path.is_file() && file::read(path).is_ok())
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
             crate::workspace_history::restore_paths(&paths)?;
             Ok(json!(paths))
         }

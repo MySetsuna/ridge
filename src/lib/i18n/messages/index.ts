@@ -11,6 +11,7 @@ import * as workspace from './workspace';
 import * as ui from './ui';
 import * as mobile from './mobile';
 import * as main from './main';
+import * as commune from './commune';
 
 type Dict = Record<string, unknown>;
 
@@ -21,7 +22,8 @@ export const extraZh: Dict = {
   workspace: workspace.zh,
   ui: ui.zh,
   mobile: mobile.zh,
-  main: main.zh
+  main: main.zh,
+  commune: commune.zh
 };
 
 export const extraEn: Dict = {
@@ -31,5 +33,6 @@ export const extraEn: Dict = {
   workspace: workspace.en,
   ui: ui.en,
   mobile: mobile.en,
-  main: main.en
+  main: main.en,
+  commune: commune.en
 };
