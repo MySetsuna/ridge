@@ -1081,6 +1081,14 @@ pub fn is_process_alive(pid: u32) -> bool {
 
 #[cfg(not(windows))]
 pub fn is_process_alive(pid: u32) -> bool {
+    // kill(pid, 0) also succeeds for an exited child awaiting its parent's wait.
+    #[cfg(target_os = "linux")]
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        if matches!(stat.rsplit_once(')').and_then(|(_, fields)| fields.split_whitespace().next()),
+            Some("Z" | "X" | "x")) {
+            return false;
+        }
+    }
     (unsafe { libc::kill(pid as libc::pid_t, 0) == 0 })
         || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
@@ -1201,9 +1209,8 @@ pub fn spawn_detached(binary: &Path, args: &[&str]) -> Result<(), String> {
 
 /// Spawn a process outside the desktop process tree and return its PID.
 ///
-/// The returned child handle is deliberately dropped after the OS has created
-/// the detached process.  Callers use the PID only for liveness/diagnostic
-/// registries; process ownership is not transferred to the Tauri parent.
+/// Callers use the PID for liveness/diagnostic registries. On Unix a waiter
+/// reaps the child after exit; dropping the desktop still leaves it detached.
 pub fn spawn_detached_with_pid(binary: &Path, args: &[&str]) -> Result<u32, String> {
     spawn_detached_with_env(binary, args, &[])
 }
@@ -1220,8 +1227,8 @@ pub fn spawn_detached_with_env(
     command.args(args);
     command.envs(envs.iter().copied());
     configure_detached_with_breakaway(&mut command, true);
-    match command.spawn() {
-        Ok(child) => Ok(child.id()),
+    let child = match command.spawn() {
+        Ok(child) => Ok(child),
         Err(error)
             if error.kind() == std::io::ErrorKind::PermissionDenied
                 && (cfg!(test)
@@ -1238,14 +1245,20 @@ pub fn spawn_detached_with_env(
             configure_detached(&mut retry);
             retry
                 .spawn()
-                .map(|child| child.id())
                 .map_err(|retry_error| format!("spawn detached process: {retry_error}"))
         }
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Err(format!(
             "spawn detached process requires CREATE_BREAKAWAY_FROM_JOB for force-kill survival: {error}"
         )),
         Err(error) => Err(format!("spawn detached process: {error}")),
-    }
+    }?;
+    let pid = child.id();
+    #[cfg(unix)]
+    thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+    });
+    Ok(pid)
 }
 
 pub fn wait_for_running(timeout: Duration) -> Option<KernelEndpoint> {
@@ -2047,6 +2060,48 @@ mod tests {
             "grandchild survived tree kill"
         );
         let _ = fs::remove_file(pid_path);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn liveness_distinguishes_stopped_and_unreaped_children_without_taking_wait_status() {
+        fn wait_state(pid: u32, state: &str) -> bool {
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while std::time::Instant::now() < deadline {
+                if fs::read_to_string(format!("/proc/{pid}/status")).is_ok_and(|text|
+                    text.lines().any(|line| line.starts_with(&format!("State:\t{state}")))) {
+                    return true;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            false
+        }
+        let mut child = Command::new("/bin/sh").args(["-c", "kill -STOP $$; exit 7"]).spawn().unwrap();
+        let pid = child.id();
+        let stopped = wait_state(pid, "T");
+        let stopped_alive = is_process_alive(pid);
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGCONT); }
+        let zombie = wait_state(pid, "Z");
+        let pid_exists = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+        let zombie_alive = is_process_alive(pid);
+        if !zombie { let _ = child.kill(); }
+        let exit = child.wait().unwrap();
+        assert!(stopped && stopped_alive, "stopped children still execute when resumed");
+        assert!(zombie && pid_exists, "the regression must inspect a real unreaped child");
+        assert!(!zombie_alive, "an exited child must not block shutdown");
+        assert_eq!(exit.code(), Some(7), "liveness must preserve the owner's wait status");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detached_launcher_reaps_its_exited_child() {
+        let pid = spawn_detached_with_pid(Path::new("/bin/sh"), &["-c", "exit 0"]).unwrap();
+        let entry = std::path::PathBuf::from(format!("/proc/{pid}"));
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while entry.exists() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!entry.exists(), "owned detached child must not remain a zombie");
     }
     #[test]
     fn font_chunk_json_uses_its_encoded_bound_without_raising_general_limit() {
