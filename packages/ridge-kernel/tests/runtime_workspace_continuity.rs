@@ -65,7 +65,7 @@ async fn editor_reads_survive_http_json_expansion_but_reject_oversized_files() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn powershell_split_inherits_live_cwd_and_keeps_named_topology_current() {
     use serde_json::Value;
-    use std::{path::Path, time::{Duration, Instant}};
+    use std::time::{Duration, Instant};
     async fn wait_until(mut ready: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ready() {
@@ -77,6 +77,9 @@ async fn powershell_split_inherits_live_cwd_and_keeps_named_topology_current() {
     let nested = root.join("nested cwd");
     let moved = nested.join("child cwd");
     fs::create_dir_all(&moved).unwrap();
+    // Windows TEMP may use an 8.3 alias while PowerShell reports the long name.
+    let expected_nested = fs::canonicalize(&nested).unwrap();
+    let expected_moved = fs::canonicalize(&moved).unwrap();
     let owned = start(&root).await;
     let endpoint = &owned.endpoint;
     let workspace = client::request_json(endpoint, "POST", "/v1/domain/workspaces", None).unwrap()["workspace_id"].clone();
@@ -91,13 +94,13 @@ async fn powershell_split_inherits_live_cwd_and_keeps_named_topology_current() {
     let marker = root.join("parent-cwd.txt");
     write(&pane, format!("Set-Location -LiteralPath '{}'; (Get-Location).Path | Set-Content -LiteralPath '{}'\r\n", nested.display(), marker.display()));
     wait_until(|| marker.exists()).await;
-    assert_eq!(Path::new(fs::read_to_string(&marker).unwrap().trim_start_matches('\u{feff}').trim()), nested);
+    assert_eq!(fs::canonicalize(fs::read_to_string(&marker).unwrap().trim_start_matches('\u{feff}').trim()).unwrap(), expected_nested);
     // Wait for the actual prompt's OSC 7 observation, not a manually seeded graph.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let cwd = rpc(&mut socket, 2, "get_pane_cwd", json!({"workspaceId":workspace,"paneId":pane})).await;
         assert!(cwd["error"].is_null(), "{cwd}");
-        if cwd["result"].as_str().is_some_and(|cwd| Path::new(cwd) == nested) { break; }
+        if cwd["result"].as_str().is_some_and(|cwd| fs::canonicalize(cwd).is_ok_and(|cwd| cwd == expected_nested)) { break; }
         assert!(Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
@@ -110,12 +113,12 @@ async fn powershell_split_inherits_live_cwd_and_keeps_named_topology_current() {
     fs::write(&saved_path, serde_json::to_vec(&old).unwrap()).unwrap();
     let split = rpc(&mut socket, 4, "split_pane", json!({"workspaceId":workspace,"paneId":pane,"direction":"horizontal","shell":"powershell.exe"})).await;
     assert!(split["error"].is_null(), "{split}");
-    assert_eq!(Path::new(split["result"]["initial_cwd"].as_str().unwrap()), nested);
+    assert_eq!(fs::canonicalize(split["result"]["initial_cwd"].as_str().unwrap()).unwrap(), expected_nested);
     let child = split["result"]["pane_id"].clone();
     let child_marker = root.join("child-inherited.txt");
     write(&child, format!("(Get-Location).Path | Set-Content -LiteralPath '{}'\r\n", child_marker.display()));
     wait_until(|| child_marker.exists()).await;
-    assert_eq!(Path::new(fs::read_to_string(&child_marker).unwrap().trim_start_matches('\u{feff}').trim()), nested);
+    assert_eq!(fs::canonicalize(fs::read_to_string(&child_marker).unwrap().trim_start_matches('\u{feff}').trim()).unwrap(), expected_nested);
     let file_panes = || -> Value { serde_json::from_slice::<Value>(&fs::read(&saved_path).unwrap()).unwrap()["pane_tree"]["panes"].clone() };
     wait_until(|| file_panes().as_object().unwrap().len() == 2).await;
     // Reproduce the file snapshot that is still pending during debounce.
@@ -127,13 +130,13 @@ async fn powershell_split_inherits_live_cwd_and_keeps_named_topology_current() {
     loop {
         let cwd = rpc(&mut socket, 5, "get_pane_cwd", json!({"workspaceId":workspace,"paneId":child})).await;
         assert!(cwd["error"].is_null(), "stale saved topology must not reject a live child: {cwd}");
-        if cwd["result"].as_str().is_some_and(|cwd| Path::new(cwd) == moved) { break; }
+        if cwd["result"].as_str().is_some_and(|cwd| fs::canonicalize(cwd).is_ok_and(|cwd| cwd == expected_moved)) { break; }
         assert!(Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
     let repeated = rpc(&mut socket, 6, "split_pane", json!({"workspaceId":workspace,"paneId":child,"direction":"vertical","shell":"powershell.exe"})).await;
     assert!(repeated["error"].is_null(), "{repeated}");
-    assert_eq!(Path::new(repeated["result"]["initial_cwd"].as_str().unwrap()), moved);
+    assert_eq!(fs::canonicalize(repeated["result"]["initial_cwd"].as_str().unwrap()).unwrap(), expected_moved);
     wait_until(|| file_panes().as_object().unwrap().len() == 3).await;
     let document: Value = serde_json::from_slice(&fs::read(&saved_path).unwrap()).unwrap();
     assert_eq!(document["legacyUnknown"], old["legacyUnknown"]);
@@ -150,8 +153,8 @@ async fn powershell_split_inherits_live_cwd_and_keeps_named_topology_current() {
     let mcp_result: Value = serde_json::from_str(mcp["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     let mcp_pane = Uuid::parse_str(mcp_result["paneId"].as_str().unwrap()).unwrap();
     let process = client::list_domain_ptys(endpoint).unwrap().into_iter().find(|pty|pty.pty_id == mcp_pane).unwrap();
-    assert_eq!(Path::new(process.cwd.as_deref().unwrap()), moved, "MCP uses the same live cwd contract");
-    assert_eq!(Path::new(&ridge_core::commands::process::get_process_cwd(process.child_pid.unwrap()).unwrap()), moved);
+    assert_eq!(fs::canonicalize(process.cwd.as_deref().unwrap()).unwrap(), expected_moved, "MCP uses the same live cwd contract");
+    assert_eq!(fs::canonicalize(ridge_core::commands::process::get_process_cwd(process.child_pid.unwrap()).unwrap()).unwrap(), expected_moved);
     wait_until(|| file_panes().as_object().unwrap().len() == 3).await;
     assert_eq!(process.launch_profile.as_deref(), Some("ridge-interactive"));
     let mcp_marker = root.join("mcp-moved.txt");
@@ -161,11 +164,11 @@ async fn powershell_split_inherits_live_cwd_and_keeps_named_topology_current() {
     loop {
         let cwd = rpc(&mut socket, 8, "get_pane_cwd", json!({"workspaceId":workspace,"paneId":mcp_result["paneId"]})).await;
         assert!(cwd["error"].is_null(), "{cwd}");
-        if cwd["result"].as_str().is_some_and(|cwd| Path::new(cwd) == nested) { break; }
+        if cwd["result"].as_str().is_some_and(|cwd| fs::canonicalize(cwd).is_ok_and(|cwd| cwd == expected_nested)) { break; }
         assert!(Instant::now() < deadline, "MCP shell must keep producing cwd observations after cd");
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
     let after_cd = rpc(&mut socket, 9, "split_pane", json!({"workspaceId":workspace,"paneId":mcp_result["paneId"],"direction":"horizontal","shell":"powershell.exe"})).await;
     assert!(after_cd["error"].is_null(), "{after_cd}");
-    assert_eq!(Path::new(after_cd["result"]["initial_cwd"].as_str().unwrap()), nested);
+    assert_eq!(fs::canonicalize(after_cd["result"]["initial_cwd"].as_str().unwrap()).unwrap(), expected_nested);
 }

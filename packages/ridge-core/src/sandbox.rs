@@ -41,6 +41,8 @@
 //! does not yet resolve cannot be checked at admission time; defence-in-depth
 //! against symlink escape on *write* targets is left to the host's own FS layer
 //! and is noted for S4/S5. This boundary is documented rather than hidden.
+//! On Windows, absolute path aliases (including 8.3 names) may also prove
+//! containment by resolving both candidate and root to the same physical tree.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -99,8 +101,9 @@ impl RootScope {
     /// Containment is decided on the lexically normalised path; when the
     /// candidate (or its nearest existing ancestor) resolves on disk, a
     /// best-effort `canonicalize` re-check additionally rejects a path that is
-    /// lexically inside a root but symlinks *out* of it. The dispatch guard maps
-    /// a `false` here to
+    /// lexically inside a root but symlinks *out* of it.
+    /// Windows absolute aliases can also prove containment through successful
+    /// resolution of both paths. The dispatch guard maps a `false` here to
     /// [`CoreError::OutsideSandbox`](crate::error::CoreError::OutsideSandbox).
     pub fn is_allowed(&self, candidate: &str) -> bool {
         if self.roots.is_empty() {
@@ -108,6 +111,17 @@ impl RootScope {
         }
         let normalized = lexically_normalize(Path::new(candidate));
         if !self.contains_lexically(&normalized) {
+            // Long and 8.3 names need not share a lexical prefix. Admit only a
+            // proven physical match; unresolved aliases cannot widen the scope.
+            #[cfg(windows)]
+            if normalized.is_absolute() {
+                if let Some(real) = best_effort_canonical(&normalized) {
+                    return self.roots.iter()
+                        .filter(|root| root.is_absolute())
+                        .filter_map(|root| best_effort_canonical(root))
+                        .any(|root| is_within(&real, &root));
+                }
+            }
             return false;
         }
         // Best-effort: if it resolves on disk, make sure the *canonical* form
@@ -242,6 +256,16 @@ mod tests {
         assert!(!scope.is_allowed(&std::fs::canonicalize(&forbidden).unwrap().to_string_lossy()));
         let canonical_scope=super::RootScope::from_roots([std::fs::canonicalize(&inside).unwrap()]);
         assert!(canonical_scope.is_allowed(&file.to_string_lossy()));
+        let real_inside=std::fs::canonicalize(&inside).unwrap();
+        assert!(scope.is_allowed(&real_inside.join("not-created/file.txt").to_string_lossy()));
+        assert!(canonical_scope.is_allowed(&inside.join("not-created/file.txt").to_string_lossy()));
+        assert!(!scope.is_allowed(&std::fs::canonicalize(&outside).unwrap().join("not-created.txt").to_string_lossy()));
+        let link=inside.join("escape");
+        assert!(make_dir_symlink(&outside,&link), "Windows fixture needs a real symlink or junction");
+        for scoped in [&scope,&canonical_scope] {
+            assert!(!scoped.is_allowed(&link.join("secret").to_string_lossy()));
+            assert!(!scoped.is_allowed(&real_inside.join("escape/not-created.txt").to_string_lossy()));
+        }
     }
     use super::*;
 
@@ -359,7 +383,13 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            std::os::windows::fs::symlink_dir(target, link).is_ok()
+            use std::os::windows::process::CommandExt;
+            std::os::windows::fs::symlink_dir(target, link).is_ok() ||
+                std::process::Command::new("powershell.exe")
+                    .args(["-NoProfile", "-NonInteractive", "-Command",
+                        "New-Item -ItemType Junction -Path $env:RIDGE_TEST_LINK -Target $env:RIDGE_TEST_TARGET -ErrorAction Stop | Out-Null"])
+                    .env("RIDGE_TEST_LINK", link).env("RIDGE_TEST_TARGET", target)
+                    .creation_flags(0x08000000).status().is_ok_and(|status| status.success())
         }
         #[cfg(not(any(unix, windows)))]
         {
