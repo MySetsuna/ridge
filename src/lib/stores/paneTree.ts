@@ -451,6 +451,7 @@ export function waitForDesktopKernelReattach(): Promise<void> {
 // Latest-wins guard for rapid tab clicks. Backend IPC remains authoritative,
 // but stale layout replies must never repaint a newer selection.
 let workspaceSwitchGeneration = 0;
+let workspaceRefreshGeneration = 0;
 // Keep backend workspace ownership/switch transitions in order. The generation
 // guard protects the UI from stale replies, but without a queue a delayed first
 // IPC can still complete after a newer click and move the backend window back.
@@ -1366,10 +1367,22 @@ export interface RefreshWorkspacesOptions {
 
 export async function refreshWorkspaces(options: RefreshWorkspacesOptions = {}) {
   if (!isTauri()) return;
+  const generation = ++workspaceRefreshGeneration;
+  const selectionGeneration = workspaceSwitchGeneration;
+  const pendingSwitch = workspaceSwitchQueue;
+  const isCurrent = () => generation === workspaceRefreshGeneration &&
+    selectionGeneration === workspaceSwitchGeneration;
   try {
     const list = await invoke<
       { id: string; index: number; name?: string; displaySeq: number }[]
     >('list_workspaces');
+    if (generation !== workspaceRefreshGeneration) return;
+    workspacesList.set(list);
+    // List events can arrive while a user selection is still committing. Read
+    // that selection only after its queued transition; never queue the refresh
+    // itself, which would hold up later tab clicks behind a slow layout read.
+    await Promise.all([pendingSwitch, refreshWorkspaceSaveInfo()]);
+    if (!isCurrent()) return;
     let active: string;
     if (options.workspaceId) {
       active = options.workspaceId;
@@ -1381,14 +1394,12 @@ export async function refreshWorkspaces(options: RefreshWorkspacesOptions = {}) 
       // replacement workspace event is still in flight.  Keep the list
       // coherent and let the existing startup/ensure path create or select
       // the replacement instead of rejecting the whole refresh.
-      workspacesList.set(list);
-      await refreshWorkspaceSaveInfo();
       return;
     }
     const layout = await invoke<PaneNode>('get_pane_layout_for', {
       workspaceId: active,
     });
-    workspacesList.set(list);
+    if (!isCurrent()) return;
     setActiveTree(active, layout);
     activeWorkspaceId.set(active);
     reconcileActivePaneId(layout, active);
@@ -1398,10 +1409,9 @@ export async function refreshWorkspaces(options: RefreshWorkspacesOptions = {}) 
     // `switchWorkspace` 自行取该区 layout 并写缓存。
     const cwds = extractCwdsFromLayout(layout, active);
     paneCwdStore.update((store) => mergePaneCwds(store, cwds));
-    await setupPaneCwdListeners(active);
-    // Save info changes on workspace add/remove/rename; keep UI badges accurate.
-    await refreshWorkspaceSaveInfo();
+    await setupPaneCwdListeners(active, layout);
   } catch (e) {
+    if (!isCurrent()) return;
     console.error('refreshWorkspaces', e);
     reportDevIssue({
       title: 'Workspace refresh failed',

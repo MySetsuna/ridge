@@ -52,6 +52,71 @@ function mockRefreshCommands(active = 'ws-a') {
 }
 
 describe('paneTree workspace mutation branches', () => {
+  it.each([false, true])('keeps a completed user switch after an obsolete refresh (failure: %s)', async (failure) => {
+    let releaseLayout!: (value: typeof layout) => void;
+    let rejectLayout!: (reason: Error) => void;
+    const oldLayout = new Promise<typeof layout>((resolve, reject) => { releaseLayout = resolve; rejectLayout = reject; });
+    let backendActive = 'ws-a';
+    const nextLayout = { ...layout, id: 'pane-b', cwd: '/next' };
+    core.invoke.mockImplementation(async (command: string, args?: { workspaceId: string }) => {
+      if (command === 'list_workspaces') return [{ id: 'ws-a', index: 0, displaySeq: 0 }];
+      if (command === 'list_workspace_save_info') return [];
+      if (command === 'get_active_workspace_id') return backendActive;
+      if (command === 'switch_workspace') { backendActive = args!.workspaceId; return; }
+      if (command === 'get_pane_layout_for') return args!.workspaceId === 'ws-a' ? oldLayout : nextLayout;
+    });
+    const refresh = paneTree.refreshWorkspaces();
+    await vi.waitFor(() => expect(core.invoke).toHaveBeenCalledWith('get_pane_layout_for', { workspaceId: 'ws-a' }));
+    expect(await paneTree.switchWorkspace('ws-b')).toBe(true);
+    if (failure) rejectLayout(new Error('old workspace was closed'));
+    else releaseLayout(layout);
+    await refresh;
+    expect(backendActive).toBe('ws-b');
+    expect(get(paneTree.activeWorkspaceId)).toBe('ws-b');
+    expect(get(paneTree.paneTreeStore)).toEqual(nextLayout);
+    expect(get(paneTree.activePaneId)).toBe('pane-b');
+    expect(event.listen).not.toHaveBeenCalledWith('pane-cwd-changed-ws-a-pane-a', expect.any(Function));
+  });
+
+  it('waits for an already pending user switch before reading the caller selection', async () => {
+    let releaseSwitch!: () => void;
+    const pendingSwitch = new Promise<void>(resolve => { releaseSwitch = resolve; });
+    let backendActive = 'ws-a';
+    core.invoke.mockImplementation(async (command: string, args?: { workspaceId: string }) => {
+      if (command === 'list_workspaces') return [{ id: 'ws-b', index: 0, displaySeq: 0 }];
+      if (command === 'list_workspace_save_info') return [];
+      if (command === 'get_active_workspace_id') return backendActive;
+      if (command === 'switch_workspace') { await pendingSwitch; backendActive = args!.workspaceId; return; }
+      if (command === 'get_pane_layout_for') return { ...layout, id: args!.workspaceId + '-pane' };
+    });
+    const switching = paneTree.switchWorkspace('ws-b');
+    const refresh = paneTree.refreshWorkspaces();
+    await vi.waitFor(() => expect(core.invoke).toHaveBeenCalledWith('list_workspaces'));
+    const readBeforeSwitch = core.invoke.mock.calls.some(([command]) => command === 'get_active_workspace_id');
+    releaseSwitch();
+    await Promise.all([switching, refresh]);
+    expect(readBeforeSwitch).toBe(false);
+    expect(get(paneTree.activeWorkspaceId)).toBe('ws-b');
+    expect(get(paneTree.paneTreeStore)).toMatchObject({ id: 'ws-b-pane' });
+  });
+
+  it('keeps the newest workspace list when older refreshes return last', async () => {
+    let releaseList!: (value: { id: string; index: number; displaySeq: number }[]) => void;
+    const oldList = new Promise<{ id: string; index: number; displaySeq: number }[]>(resolve => { releaseList = resolve; });
+    const newest = [{ id: 'ws-new', index: 0, displaySeq: 1 }];
+    let reads = 0;
+    core.invoke.mockImplementation(async (command: string) => {
+      if (command === 'list_workspaces') return ++reads === 1 ? oldList : newest;
+      if (command === 'get_active_workspace_id') return '';
+      if (command === 'list_workspace_save_info') return [];
+    });
+    const older = paneTree.refreshWorkspaces();
+    await paneTree.refreshWorkspaces();
+    releaseList([{ id: 'ws-old', index: 0, displaySeq: 0 }]);
+    await older;
+    expect(get(paneTree.workspacesList)).toEqual(newest);
+  });
+
   it('refreshes an explicitly selected workspace and keeps cwd/listener projections aligned', async () => {
     mockRefreshCommands();
     await paneTree.refreshWorkspaces({ workspaceId: 'ws-a' });

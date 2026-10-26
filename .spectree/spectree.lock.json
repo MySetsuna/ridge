@@ -1,8 +1,39 @@
 {
   "version": 1,
-  "changeId": "CHG-078",
-  "specHash": "c5560ffde7f76220550a7b5a2fc2640292c0ba6149282b2efcb9a8488f94acc9",
+  "changeId": "CHG-079",
+  "specHash": "1f985854857cf56698d046e18b2b4fbd0c9b3622ca8e9b3189dee2380aa44d1b",
   "units": [
+    {
+      "id": "L3-RUNTIME-WORKSPACE-CONTINUITY",
+      "level": "L3",
+      "nodeHash": "a003644f8a80e6e40edbfc5a2d664bfa0b4943a7c7ba4ac9aa3b801554995d32",
+      "codeTargets": [
+        "packages/ridge-kernel/src/host.rs",
+        "packages/ridge-kernel/src/client.rs",
+        "packages/ridge-kernel/src/domain.rs",
+        "packages/ridge-kernel/src/kernel_mcp.rs",
+        "packages/ridge-kernel/src/workspace_commands.rs",
+        "packages/ridge-kernel/src/workspace_files.rs",
+        "packages/ridge-kernel/src/workspace_autosave.rs",
+        "packages/ridge-core/src/fs/commands.rs",
+        "src/lib/stores/fileExplorer.ts",
+        "src/lib/components/FileTree.svelte",
+        "src/lib/components/Explorer.svelte",
+        "src/lib/stores/paneTree.ts",
+        "packages/ridge-core/src/workspace/file.rs"
+      ],
+      "testTargets": [
+        "packages/ridge-kernel/tests/runtime_workspace_continuity.rs",
+        "packages/ridge-kernel/tests/common/runtime_fixture.rs",
+        "packages/ridge-kernel/tests/cwd_runtime.rs",
+        "packages/ridge-kernel/tests/terminal_lifecycle_runtime.rs",
+        "src/lib/stores/fileExplorer.test.ts",
+        "src/lib/stores/paneTree.test.ts",
+        "src/lib/stores/paneTree.coverage.test.ts",
+        "packages/ridge-kernel/tests/workspace_file_owner.rs"
+      ],
+      "status": "LOCKED"
+    },
     {
       "id": "L4-OBS-PACKAGE-JSON-7ae45ad1",
       "level": "L4",
@@ -12,18 +43,6 @@
         "Cargo.lock"
       ],
       "testTargets": [],
-      "status": "LOCKED"
-    },
-    {
-      "id": "L4-OBS-PACKAGES-RIDGE-KERNEL-SRC-CLIENT-RS-300a6b67",
-      "level": "L4",
-      "nodeHash": "e0734d39577a029f00c5542c4d6944761f0fb70f8119ba75a5e04cd848dced96",
-      "codeTargets": [
-        "packages/ridge-kernel/src/client.rs"
-      ],
-      "testTargets": [
-        "packages/ridge-kernel/src/client.rs"
-      ],
       "status": "LOCKED"
     },
     {
@@ -51,46 +70,6 @@
       "status": "LOCKED"
     },
     {
-      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-APICLIENT-REFRESH-TEST-TS-ae2beee9",
-      "level": "TEST",
-      "nodeHash": "04908f6937c9b41c420563bfb529e4a42964584e3df97d1ad9f83eda8001ed0d",
-      "codeTargets": [],
-      "testTargets": [
-        "packages/remote/src/shared/cloud/apiClient.refresh.test.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-APICLIENT-TEST-TS-54ddea70",
-      "level": "TEST",
-      "nodeHash": "83d199c2938d7b09ab19629499ebd7eb6d3885aa8127bedf170de544b4059d76",
-      "codeTargets": [],
-      "testTargets": [
-        "packages/remote/src/shared/cloud/apiClient.test.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TRANSPORT-RPCCLIENT-TEST-TS-605f379d",
-      "level": "TEST",
-      "nodeHash": "27e3338706e1f6796aed5dc70b043bcc744e638b5b245ba0df9d06c02c496236",
-      "codeTargets": [],
-      "testTargets": [
-        "packages/remote/src/shared/transport/rpcClient.test.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "TEST-OBS-SRC-LIB-LSP-LSPCLIENT-TEST-TS-bab87361",
-      "level": "TEST",
-      "nodeHash": "b1cafe04534c12b21c45aad0807a284de92a88cb0185c2687efd195048dda045",
-      "codeTargets": [],
-      "testTargets": [
-        "src/lib/lsp/lspClient.test.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
       "id": "TEST-OBS-SRC-TAURI-TESTS-WIN-MANIFEST-BOOT-RS-681c2eff",
       "level": "TEST",
       "nodeHash": "59f92f0c7364499e915b5bf7058fdba332337d4c98349d3fd1a7a39344715342",
@@ -104,14 +83,30 @@
   "allowedPaths": [
     "Cargo.lock",
     "package.json",
-    "packages/remote/src/shared/cloud/apiClient.refresh.test.ts",
-    "packages/remote/src/shared/cloud/apiClient.test.ts",
-    "packages/remote/src/shared/transport/rpcClient.test.ts",
+    "packages/ridge-core/src/fs/commands.rs",
+    "packages/ridge-core/src/workspace/file.rs",
     "packages/ridge-kernel/src/client.rs",
+    "packages/ridge-kernel/src/domain.rs",
+    "packages/ridge-kernel/src/host.rs",
+    "packages/ridge-kernel/src/kernel_mcp.rs",
+    "packages/ridge-kernel/src/workspace_autosave.rs",
+    "packages/ridge-kernel/src/workspace_commands.rs",
+    "packages/ridge-kernel/src/workspace_files.rs",
+    "packages/ridge-kernel/tests/common/runtime_fixture.rs",
+    "packages/ridge-kernel/tests/cwd_runtime.rs",
+    "packages/ridge-kernel/tests/runtime_workspace_continuity.rs",
+    "packages/ridge-kernel/tests/terminal_lifecycle_runtime.rs",
+    "packages/ridge-kernel/tests/workspace_file_owner.rs",
     "src-tauri/Cargo.toml",
     "src-tauri/tauri.conf.json",
     "src-tauri/tests/win_manifest_boot.rs",
-    "src/lib/lsp/lspClient.test.ts"
+    "src/lib/components/Explorer.svelte",
+    "src/lib/components/FileTree.svelte",
+    "src/lib/stores/fileExplorer.test.ts",
+    "src/lib/stores/fileExplorer.ts",
+    "src/lib/stores/paneTree.coverage.test.ts",
+    "src/lib/stores/paneTree.test.ts",
+    "src/lib/stores/paneTree.ts"
   ],
   "testCommand": [
     "npm",
@@ -138,7 +133,7 @@
     ".vscode/extensions.json": "926925a0d7f8b5e0e9e84667ac901095f7ffdb83afb54de65662d6e4cfb78ad1",
     ".vscode/settings.json": "54224dc29195ac0e0ae6a3ce38d5cd7aeb390357259a37c860a28a3f1087ef71",
     "AGENTS.md": "e1d607be3c46e5473c2a7aa6d43c8a8faf25f992aa7a1ce170ab8bfac04d88e9",
-    "Cargo.lock": "b94da16fdf7a380111fcd15d37854f62ad7be849e1c801724b2fd93932504d67",
+    "Cargo.lock": "7c8c7081e2dd939f6e4285ec495a4da24ebc3f267a01b85a6d2e406f7b030309",
     "Cargo.toml": "7ffe18a41f63a8b8c3f59693d3be8e7d6b439db6490afc2f8da838e54b2ed87c",
     "changes/BASELINE-001.md": "89235164085793f6ea8df5140ec032522d2523a7264a4b3c0b3a210745552c06",
     "changes/CHG-001.md": "14b0dcb1c2b91b2b8dfab95e6da4dbdd71ae29d21e6a85e193a4d9e3cb31154c",
@@ -217,6 +212,7 @@
     "changes/CHG-076.md": "e9983589c64e64d33978105e3e1a8a5078297f30ff3ef4129a34b5645be393d5",
     "changes/CHG-077.md": "401e3484222010356af04d47feaad63866a1b96855b588a25acdc4c69f87c4ca",
     "changes/CHG-078.md": "2d6daa855185e3e7821f1456c384a49ddb159ea57caed1005fa4c020b84bd231",
+    "changes/CHG-079.md": "919b7b19fe9abf59468d1915255dcc5d82a3972fa6b23443933206dc77e99f64",
     "docs/architecture/00-overview.md": "d88523e187eac1aef5a85939639722f38b3cbac41a55327cfe1c28a9bb87d682",
     "docs/architecture/10-kernel.md": "80f773ffecdaafac0b64dfb99a3ddb8c05f801d39c9d2533397b4e905bb5e4f9",
     "docs/architecture/20-rtp1-wire.md": "f32223c6d43ccf048f06176cb288baf46156477a72e24f1a4389a88756ca1a1c",
@@ -252,7 +248,7 @@
     "docs/README_CN.md": "8932531370504d2820f207f6cd3f5d92852066c9a5ae696c4a065ae256fa889a",
     "FINAL-REPORT-A8.md": "7f7df82021cea93d3ab23a88e39bda0d60c1df7b531d79972b3556f5e74d6d08",
     "IMPLEMENTATION-ACCEPTANCE.md": "2f37f9b4846693e549620f103776c192b26bc6b5dd5ceda7722403539108fd70",
-    "package.json": "291fcf35cd4c5ff1642f14ee7c9c4b1c28d23c07e266ef7fe105735717213326",
+    "package.json": "2c6254859e429a51218e4deaf14b74a96bbd387b0f62025194274286cfcb583e",
     "packages/remote/package.json": "3c9d355179aefeaf12877e4e44bc5b41ba8812fc23825024f01da3b082f6b1db",
     "packages/remote/src/index.ts": "ae66d492761ce353faab343fe9215ab48235088dee9cd5ce1621392948999c30",
     "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts": "7abb718851c25821146276ac974fbad2aa64e011e142e2623fe2c6a164324b08",
@@ -1050,7 +1046,7 @@
     "specs/l3-ridge-communion-m53-acceptance.md": "1217ba93a9489473e181cb1fadf1e6bfde6fe8b50ee39ca28dad68974e4da443",
     "specs/l3-ridge-communion-m53-product.md": "83b71592f0f2342ff902b68aeea80392c27a90242523217df6cf3167a3ac9e20",
     "specs/l3-ridge-communion-m53-runtime.md": "c06b9af0b7fe9b78d2f101a931f4065a4ee8d6aae813a4daab276dd94108507b",
-    "specs/l3-runtime-workspace-continuity.md": "725656b9ea232b46c27c4adf669a19e5f389700e78c5dd198b1e994577b93c7c",
+    "specs/l3-runtime-workspace-continuity.md": "da17138cd6bfa6e1318fd430c3d75fd4879d94b01a1ae065581e6f2346a3170c",
     "specs/l3-terminal-visual-input-repair.md": "7a5c7aeb833516d5b8b5519442cde7dd703843f81119f5ca65711dda3aa65a96",
     "specs/l4-perf-latency-bench-entry.md": "86935a5eb9927f52620529e323278781fcf871545b9fc9cec4232c01418d798c",
     "specs/l4-ridge-mcp-sidecar-windows-x64.md": "25b8b3a31fb5f1180b1095b977b9127b0c8780aff640d80481c29eab1b946e24",
@@ -2292,10 +2288,10 @@
     "src/lib/stores/imagePreviewVersion.ts": "6e49abcfec8eadb6b92239991f04cba294513b5823c8d293b713f328881ab6d6",
     "src/lib/stores/paneGitStatus.test.ts": "de6486ad5bf5216a275649e02a8b2523f18d1cc1384e907b1ec7469cebf48eed",
     "src/lib/stores/paneGitStatus.ts": "f8301dc06621b19caaf636471b0da8f06390acaaffb84d5654a7ef499ed4659f",
-    "src/lib/stores/paneTree.coverage.test.ts": "08a9fa961ed48c1eaa8e304ffae3035b2c7d0ac4e34fd42d512cdf87c9cbc898",
+    "src/lib/stores/paneTree.coverage.test.ts": "f0a38800f10dfb206a22b0d158dc2d63a4054157475defcff6177b859a4b8b2c",
     "src/lib/stores/paneTree.runtime.test.ts": "1a11a2b87f6605540ba461d266cac66537b7dba78332a72b317f509554a7c059",
     "src/lib/stores/paneTree.test.ts": "ee0fb6a28d6fa3f6fcfdca7fbf4c4957b4274009912081df1890ebef337da40f",
-    "src/lib/stores/paneTree.ts": "1340e4dc44031ac0c68275e3351ecdfd2ed50299e62006e9c800e4642266d0b3",
+    "src/lib/stores/paneTree.ts": "4c187877840b8e9fb6bc298ca71957cefeafe98b263b23cc2ed4741b8252c263",
     "src/lib/stores/processGuardPolicy.test.ts": "b43d7d208ad5e8df2cc20ed9caf5b3eb261900bc89cb97e4bfb6175aa019f452",
     "src/lib/stores/processGuardPolicy.ts": "be3cf73505692d9335de58a9b376fe627fe7b6829b026bc235ed8d8a0e53a03e",
     "src/lib/stores/project.test.ts": "18474a6a6c34322b0fd8f38aa1123e3537253fe81102146307cb4d3fe926ced1",
@@ -2513,7 +2509,7 @@
     "src-tauri/build.rs": "67135ac3b6dfd3c93a0bb047ab339d8926c8fd8289c8d52bce480c083e9ca61c",
     "src-tauri/capabilities/default.json": "0aea69d6e967d9018481608de11dc5a992b38cabee3e825095353cab0cf5d8c2",
     "src-tauri/Cargo.lock": "736528b17382bf99c0cee212647529614b1555c46dea0428e13abeefc49ec44f",
-    "src-tauri/Cargo.toml": "a024146ac331f3ae9a09ed6192d3254498705a41f9ba655692bafd0768bb5cff",
+    "src-tauri/Cargo.toml": "e522cb2eaf031a1c91102d2043c1cf04adcc219e8f9574467f4db1285550248a",
     "src-tauri/gen/schemas/acl-manifests.json": "6e09a8d1446e2640a18c93fdbb0fdabfb913e31af7ca946dd4b171d6796d8283",
     "src-tauri/gen/schemas/capabilities.json": "ee5989f2da424f6247baacb2e93e445a53d9265f2ab5ad453c738e001f02220d",
     "src-tauri/gen/schemas/desktop-schema.json": "1d75d79fc208fd9703b312646c8ac6ead58e9acdf90e0af236eb2aeef928c9de",
@@ -2548,7 +2544,7 @@
     "src-tauri/src/utils/cwd.rs": "e241fc8cb5e92c75f9c2c8a91e8368eef819df86bd1ba1b93e09cd74e12db85f",
     "src-tauri/src/utils/logging.rs": "46f19900bd026d2263c77f606d9d5015849c9af9ade7fa5924ce3f18d5578ade",
     "src-tauri/src/utils/mod.rs": "8cb88ccb081fee74a039088be23f1f1e8b08b50852a28f4b1358ce3a8873b482",
-    "src-tauri/tauri.conf.json": "7dd3120453e1fc3bd4ba7f52064629f0d23c7a44aa3e305bccca6b8a60d2721a",
+    "src-tauri/tauri.conf.json": "be547df0ce422de8e91e4a35b8cde0ad990c2ba745a7bc61ac25ee5f7746e543",
     "src-tauri/tests/win_manifest_boot.rs": "5d6cdc73371fb907cdc5ab03c5e821483275d4f79477045fe35660936115f934",
     "src-tauri/wix/path-env.wxs": "0b4fa57aab8854d864d5ab1bc68a7b2086491485e9b0d3785da17c58aa6faf2c",
     "static/apple-touch-icon.png": "fcf04070e1ae0e72599b39cf3c118a81c57d01dbb98b894b6ba988bda26cc01e",
@@ -2597,6 +2593,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-d5b04e6391d7",
-  "manifestHash": "d5b04e6391d71f55389a6c895d42c4c97dd13bbb994d8150301ab486af85dfda"
+  "buildId": "BUILD-54611f44248e",
+  "manifestHash": "54611f44248e7ef61924e9076ee68a27e4e115cedeccec8f929900d16207c30b"
 }
