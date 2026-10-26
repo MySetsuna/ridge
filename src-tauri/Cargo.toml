@@ -1,6 +1,6 @@
 [package]
 name = "ridge"
-version = "0.1.93"
+version = "0.1.94"
 description = "A Tauri App"
 authors = ["you"]
 license = "MIT"

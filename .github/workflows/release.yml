@@ -83,15 +83,17 @@ jobs:
       - name: Kernel Runtime continuity regressions
         run: cargo test --locked -p ridge-kernel --lib --test runtime_workspace_continuity --test cwd_runtime --test workspace_file_owner -- --test-threads=1
       - name: Build ridge-mcp Linux sidecar (Tauri check prerequisite)
-        run: node scripts/build-ridge-mcp-sidecar.mjs
+        run: node scripts/build-ridge-mcp-sidecar.mjs --require-built
+      - name: Build and verify Kernel Linux sidecar (Tauri check prerequisite)
+        run: node scripts/build-ridge-kernel-sidecar.mjs --debug
+      - name: vite build smoke (unified remote bundle and Tauri resources)
+        run: pnpm build:remote
       - name: Linux native Tauri compile check
         run: cargo check --manifest-path src-tauri/Cargo.toml --lib
       - name: ridge-mcp companion tests and bundle contract
         run: |
           cargo test -p ridge-mcp-bridge
           node scripts/build-ridge-mcp-sidecar.mjs --check
-      - name: vite build smoke (unified remote bundle)
-        run: pnpm build:remote
 
   build:
     needs: test

@@ -6,13 +6,29 @@ vi.mock('node:fs', () => config);
 import { main } from './build-ridge-kernel-sidecar.mjs';
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv('CARGO_BUILD_TARGET', '');
+  vi.stubEnv('TAURI_ENV_TARGET_TRIPLE', '');
   helpers.hostTriple.mockReturnValue('x86_64-pc-windows-msvc');
   helpers.sidecarPaths.mockReturnValue({ windows: true, destination: 'kernel.exe' });
   config.readFileSync.mockReturnValue(JSON.stringify({ version: '0.1.90', bundle: { externalBin: ['../target/runtime-binaries/ridge-kernel'] } }));
   vi.spyOn(console, 'log').mockImplementation(() => {});
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 describe('independent Runtime packaging', () => {
+  it.each([
+    { args: [], cargo: '', expected: 'x86_64-apple-darwin' },
+    { args: [], cargo: 'aarch64-apple-darwin', expected: 'aarch64-apple-darwin' },
+    { args: ['--target', 'x86_64-unknown-linux-gnu'], cargo: 'aarch64-apple-darwin', expected: 'x86_64-unknown-linux-gnu' },
+  ])('resolves the Tauri hook target with explicit overrides: $expected', ({ args, cargo, expected }) => {
+    helpers.hostTriple.mockReturnValue('aarch64-apple-darwin');
+    helpers.sidecarPaths.mockReturnValue({ windows: false, destination: 'kernel' });
+    vi.stubEnv('TAURI_ENV_TARGET_TRIPLE', 'x86_64-apple-darwin');
+    vi.stubEnv('CARGO_BUILD_TARGET', cargo);
+    main(args);
+    expect(helpers.buildSidecar).toHaveBeenCalledWith(expected, 'aarch64-apple-darwin', '0.1.90', expect.any(Object));
+    expect(helpers.verifySidecar).toHaveBeenCalledWith('kernel', false, expected, 'aarch64-apple-darwin', '0.1.90', 'ridge-kernel');
+  });
+
   it('builds and verifies the Runtime matching the desktop package version', () => {
     main(['--debug']);
     expect(helpers.buildSidecar).toHaveBeenCalledWith('x86_64-pc-windows-msvc', 'x86_64-pc-windows-msvc', '0.1.90', {

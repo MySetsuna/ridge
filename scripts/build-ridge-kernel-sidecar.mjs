@@ -11,7 +11,8 @@ export function main(args = process.argv.slice(2)) {
   const explicit = targetIndex < 0 ? '' : args[targetIndex + 1];
   if (targetIndex >= 0 && (!explicit || explicit.startsWith('--'))) throw new Error('--target requires a value');
   const detectedHost = hostTriple();
-  const target = explicit || process.env.CARGO_BUILD_TARGET?.trim() || detectedHost;
+  const target = explicit || process.env.CARGO_BUILD_TARGET?.trim() ||
+    process.env.TAURI_ENV_TARGET_TRIPLE?.trim() || detectedHost;
   const profile = args.includes('--debug') ? 'debug' : 'release';
   const config = JSON.parse(readFileSync(join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'));
   const version = String(config.version || '').trim();
