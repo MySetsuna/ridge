@@ -306,7 +306,7 @@ jobs:
           DST="ridge-${VER}-${ARCH}-${OS}${EXT}"
           cp "$SRC" "$DST"
           gh release upload "$REL_TAG" "$DST" --clobber
-          echo "已上传 $DST（源 $SRC）"
+          printf 'Uploaded %s (source %s)\n' "$DST" "$SRC"
 
       # Linux 免费签名：用自管 GPG 私钥给 .deb / .AppImage 生成 detached 签名（.asc）并
       # 传到同一 Release。未配置 GPG_PRIVATE_KEY 时整步自跳过（现状 = 不签名，零影响）。
