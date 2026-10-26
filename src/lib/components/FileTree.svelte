@@ -192,7 +192,7 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 	async function loadNextChildrenPage(replace = false): Promise<void> {
 		if (!node.is_dir) return;
 		if (!replace && childrenLoading) return;
-		if (!replace && hasLoaded && !childrenHasMore) return;
+		if (!replace && hasLoaded && !childrenHasMore && !childrenError) return;
 		if (childrenError) childrenError = null;
 		childrenLoading = true;
 		try {
@@ -405,7 +405,13 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 		if (!isTauri() || paths.length === 0) return;
 		const cmd = copy ? 'copy_path' : 'move_path';
 		// 需要目标目录的「完整」子列表（不止已展开分页）以便跨页冲突也能命中。
-		const fullChildren = await fileExplorerStore.loadChildren(columnId, targetFolder);
+		let fullChildren: FileNode[];
+		try {
+			fullChildren = await fileExplorerStore.loadChildren(columnId, targetFolder);
+		} catch (error) {
+			await alertDialog({ title: tr('explorer.dndFailed'), message: String(error), danger: true });
+			return;
+		}
 		const existing = new Set<string>(fullChildren.map((c) => c.path));
 		const sep = targetFolder.includes('\\') && !targetFolder.includes('/') ? '\\' : '/';
 		const cleanTarget = targetFolder.replace(/[\\/]+$/, '');

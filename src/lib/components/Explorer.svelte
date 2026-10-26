@@ -562,9 +562,13 @@
 
 		// Nested tree pages live in FileTree component state, so cached children
 		// cannot reliably detect conflicts. Read the destination listing first.
-		const existingInTarget = new Set<string>(
-			(await fileExplorerStore.loadChildren(col.id, targetDir)).map((entry) => entry.path),
-		);
+		let existingInTarget: Set<string>;
+		try {
+			existingInTarget = new Set((await fileExplorerStore.loadChildren(col.id, targetDir)).map((entry) => entry.path));
+		} catch (error) {
+			await alertDialog({ title: tr('explorer.pasteFailed'), message: String(error), danger: true });
+			return;
+		}
 
 		const cmd = clip.mode === 'copy' ? 'copy_path' : 'move_path';
 		const outcomes: ExplorerPasteOutcome[] = [];

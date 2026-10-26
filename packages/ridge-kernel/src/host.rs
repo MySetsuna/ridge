@@ -1190,6 +1190,14 @@ fn is_latency_sensitive_pty_message(value: &Value) -> bool {
 }
 
 fn dispatch_shared_core(host: &KernelHost, method: &str, args: &Value, native: bool, roots: &[PathBuf], connection_id: &str) -> Result<Value, ridge_remote::rpc::RpcError> {
+    let method = match method { "list-files" => "get_directory_children", "search_files" => "text_search", other => other };
+    let mut args = args.clone();
+    if matches!(method, "search" | "text_search") && args.get("root").is_none() {
+        if !args.is_object() && !args.is_null() {
+            return Err(ridge_remote::rpc::RpcError::new(-32602, "search params must be an object"));
+        }
+        args["root"] = args.get("path").cloned().unwrap_or(Value::String(String::new()));
+    }
     let internal = |message: String| ridge_remote::rpc::RpcError::new(ridge_remote::rpc::JSON_RPC_INTERNAL_ERROR, message);
     let response = request_json(&host.current_endpoint(), "POST", "/v1/domain/commands",
         Some(&json!({"method":method,"args":args,"native":native,"roots":roots,"connectionId":connection_id}))).map_err(internal)?;
@@ -1392,6 +1400,7 @@ fn handle_client_text(
             || matches!(
                     method,
                     "set_user_default_cwd" | "get_theme_data" | "set_active_theme" | "detect_available_shells" | "get_file_tree"
+                        | "get_directory_children" | "list-files" | "search" | "search_files"
                         | "read_file"
                         | "text_search"
                         | "load_terminal_font_faces"
@@ -1958,12 +1967,7 @@ fn dispatch(
             Ok(json!({"success":true,"workspaceId":id}))
         }
         "search" | "search_files" | "get_directory_children" | "list-files" | "get_file_tree" | "read_file" | "text_search" | "load_terminal_font_faces" | "read_terminal_font_face_chunk" | "detect_available_shells" => {
-            let method = match method { "list-files" => "get_directory_children", "search_files" => "text_search", other => other };
-            let mut params = args.clone();
-            if matches!(method, "search" | "text_search") && params.get("root").is_none() {
-                params["root"] = args.get("path").cloned().unwrap_or(Value::String(String::new()));
-            }
-            dispatch_shared_core(host, method, &params, false, &host.roots(&snapshot), &Uuid::new_v4().to_string()).map_err(|error|error.message)
+            dispatch_shared_core(host, method, args, false, &host.roots(&snapshot), &Uuid::new_v4().to_string()).map_err(|error|error.message)
         }
         "change_pane_shell" => {
             let pane_id = host.pane_id(args, &snapshot)?;

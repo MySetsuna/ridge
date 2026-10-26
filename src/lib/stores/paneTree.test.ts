@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { get } from 'svelte/store';
+import type { PaneNode } from './paneTree';
 
 // ─── Mock @tauri-apps/api/core ───────────────────────────────────────────────
 vi.mock('@tauri-apps/api/core', () => ({
@@ -1293,7 +1294,7 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
     ]);
   });
 
-  it('splitPane() end-to-end: backend split_pane → layout sync → deferred fit', async () => {
+  it('splitPane store contract: backend split_pane → scoped layout sync → deferred fit', async () => {
     // Mock backend: split_pane returns the new pane id; get_pane_layout
     // returns the post-split tree the frontend uses to update its store.
     const tauri = await import('@tauri-apps/api/core');
@@ -1304,7 +1305,7 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
       if (cmd === 'split_pane') {
         return { pane_id: 'new-pane-uuid', initial_cwd: 'C:/work/nested cwd' };
       }
-      if (cmd === 'get_pane_layout') {
+      if (cmd === 'get_pane_layout_for') {
         return {
           type: 'split',
           id: 'split-1',
@@ -1356,7 +1357,7 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
     mockInvoke.mockReset();
     mockInvoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'dock_pane') return undefined;
-      if (cmd === 'get_pane_layout') {
+      if (cmd === 'get_pane_layout_for') {
         // Post-swap tree: pane-a and pane-b traded slots (center-dock swap).
         return {
           type: 'split',
@@ -1422,7 +1423,7 @@ describe('closeWorkspace runtime cleanup', () => {
         return [{ id: 'ws-keep', index: 0, displaySeq: 0 }];
       }
       if (cmd === 'get_active_workspace_id') return 'ws-keep';
-      if (cmd === 'get_pane_layout') return { type: 'leaf', id: 'keep-pane' };
+      if (cmd === 'get_pane_layout_for') return { type: 'leaf', id: 'keep-pane' };
       if (cmd === 'list_workspace_save_info') return [];
       return null;
     });
@@ -1458,7 +1459,7 @@ describe('closePane bridge ordering', () => {
     invokeMock.mockReset();
     teardownMock.mockReset();
     invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'get_pane_layout') return { type: 'leaf', id: 'pane-keep' };
+      if (cmd === 'get_pane_layout_for') return { type: 'leaf', id: 'pane-keep' };
       if (cmd === 'get_active_workspace_id') return 'ws-close';
       return null;
     });
@@ -1488,6 +1489,36 @@ describe('closePane bridge ordering', () => {
 });
 
 describe('workspace switch responsiveness', () => {
+  it('a delayed A layout cannot overwrite B tree, selection, or cwd after switching', async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const invokeMock = vi.mocked(invoke);
+    let resolveLayout!: (value: PaneNode) => void;
+    invokeMock.mockReset();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'get_pane_layout_for') return new Promise((resolve) => { resolveLayout = resolve; });
+      return Promise.resolve(null);
+    });
+    paneTreeModule.activeWorkspaceId.set('ws-a');
+    const pending = paneTreeModule.syncPaneLayoutFromBackend();
+    const bTree: PaneNode = { type: 'leaf', id: 'pane-b', cwd: '/b' };
+    paneTreeModule.activeWorkspaceId.set('ws-b');
+    paneTreeModule.activePaneId.set('pane-b');
+    paneTreeModule.paneTreeStore.set(bTree);
+    paneTreeModule.workspacePaneTrees.set(new Map([['ws-b', bTree]]));
+    paneTreeModule.paneCwdStore.set({ 'ws-b:pane-b': '/b' });
+    const aTree: PaneNode = { type: 'leaf', id: 'pane-a', cwd: '/a' };
+    resolveLayout(aTree);
+    await pending;
+    expect(invokeMock).toHaveBeenCalledWith('get_pane_layout_for', { workspaceId: 'ws-a' });
+    expect(invokeMock).not.toHaveBeenCalledWith('get_active_workspace_id');
+    expect(get(paneTreeModule.activeWorkspaceId)).toBe('ws-b');
+    expect(get(paneTreeModule.activePaneId)).toBe('pane-b');
+    expect(get(paneTreeModule.paneTreeStore)).toBe(bTree);
+    expect(get(paneTreeModule.workspacePaneTrees).get('ws-b')).toBe(bTree);
+    expect(get(paneTreeModule.workspacePaneTrees).get('ws-a')).toEqual(aTree);
+    expect(get(paneTreeModule.paneCwdStore)['ws-b:pane-b']).toBe('/b');
+  });
+
   beforeEach(() => {
     globalEventListeners.clear();
     paneTreeModule.activeWorkspaceId.set('ws-current');

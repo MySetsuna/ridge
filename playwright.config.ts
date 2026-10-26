@@ -45,7 +45,7 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
   webServer: {
-    command: `pnpm exec vite dev --host 127.0.0.1 --port ${e2ePort} --strictPort`,
+    command: `pnpm exec vite dev --mode e2e --host 127.0.0.1 --port ${e2ePort} --strictPort`,
     // Probe only server readiness. The tests own full-page boot assertions;
     // probing `/` here duplicates the entire cold SSR compile before a page
     // even exists and misreports app failures as webServer timeouts.

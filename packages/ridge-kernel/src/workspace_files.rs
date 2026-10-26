@@ -34,6 +34,28 @@ fn default_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("ridge-workspaces"))
 }
 
+/// Overlay the current topology while retaining unknown fields on surviving panes.
+pub(crate) fn merge_pane_tree(document: &mut Value, current: &Value) -> Result<(), String> {
+    let mut tree = document["pane_tree"].clone();
+    if !tree.is_object() { tree = json!({}); }
+    tree["root"] = current["root"].clone();
+    let mut panes = json!({});
+    for (id, pane) in current["panes"].as_object().ok_or("invalid pane tree")? {
+        let mut merged = tree["panes"][id].clone();
+        if !merged.is_object() { merged = json!({}); }
+        for (key, value) in pane.as_object().ok_or("invalid pane")? {
+            merged[key] = value.clone();
+        }
+        for key in ["cwd", "shell_kind"] {
+            merged[key] = pane.get(key).cloned().unwrap_or(Value::Null);
+        }
+        panes[id] = merged;
+    }
+    tree["panes"] = panes;
+    document["pane_tree"] = tree;
+    Ok(())
+}
+
 fn filename(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -57,14 +79,11 @@ fn target(path: Option<&str>, name: &str) -> Result<PathBuf, String> {
     let value = match path {
         None => default_dir().join(filename(name)),
         Some(path) => {
-            let mut value = PathBuf::from(path);
-            if value.extension().and_then(|value| value.to_str()) == Some("ridge") {
+            let value = PathBuf::from(path);
+            if path.to_ascii_lowercase().ends_with(".ridge") {
                 value
-            } else if value.is_dir() || path.ends_with(std::path::MAIN_SEPARATOR) {
-                value.join(filename(name))
             } else {
-                value.set_extension("ridge");
-                value
+                value.join(filename(name))
             }
         }
     };
@@ -199,33 +218,10 @@ fn save(state: &AppState, request: &Request, explicit: bool) -> Result<Value, St
         .unwrap_or_else(|| json!({}));
     let encoded = serde_json::to_value(&payload).map_err(|error| error.to_string())?;
     // Preserve unknown document and pane fields while replacing current authoritative values.
-    let mut tree = document["pane_tree"].clone();
-    if !tree.is_object() {
-        tree = json!({});
-    }
-    tree["root"] = encoded["pane_tree"]["root"].clone();
-    let mut panes = json!({});
-    for (id, pane) in encoded["pane_tree"]["panes"]
-        .as_object()
-        .ok_or("invalid pane tree")?
-    {
-        let mut merged = tree["panes"][id].clone();
-        if !merged.is_object() {
-            merged = json!({});
-        }
-        for (key, value) in pane.as_object().ok_or("invalid pane")? {
-            merged[key] = value.clone();
-        }
-        for key in ["cwd", "shell_kind"] {
-            merged[key] = pane.get(key).cloned().unwrap_or(Value::Null);
-        }
-        panes[id] = merged;
-    }
-    tree["panes"] = panes;
+    merge_pane_tree(&mut document, &encoded["pane_tree"])?;
     for (key, value) in encoded.as_object().ok_or("invalid workspace")? {
-        document[key] = value.clone();
+        if key != "pane_tree" { document[key] = value.clone(); }
     }
-    document["pane_tree"] = tree;
     document["foreign_panes"]=serde_json::to_value(&payload.foreign_panes).map_err(|error|error.to_string())?;
     // Optional fields are omitted by serde, but must not retain stale known values.
     document["index_path"] = json!(payload.index_path);
@@ -568,7 +564,8 @@ pub(crate) fn handle(state: &AppState, request: Request) -> Result<Value, String
                 let entry = entry.map_err(|error| error.to_string())?;
                 let path = entry.path();
                 if !entry.file_type().map_err(|error| error.to_string())?.is_file()
-                    || path.extension().and_then(|value| value.to_str()) != Some("ridge")
+                    || !path.extension().and_then(|value| value.to_str())
+                        .is_some_and(|value| value.eq_ignore_ascii_case("ridge"))
                     || !state.fs_scope.is_allowed(&path.to_string_lossy())
                 {
                     continue;

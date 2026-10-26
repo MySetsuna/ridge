@@ -12,6 +12,4 @@ code_targets:
   - vite.config.js
 ---
 
-# vite.config.js module
-
-Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+Vite's e2e mode disables the native Runtime-only bootstrap for browser E2E, while leaving normal development, production builds, native desktop, and web-remote modes unchanged.

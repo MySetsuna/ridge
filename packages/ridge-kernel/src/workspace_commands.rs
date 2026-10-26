@@ -69,11 +69,14 @@ pub(crate) fn update_cwd(
         let typed: file::RidgeFile = serde_json::from_slice(&original).map_err(io)?;
         file::validate(&typed).map_err(invalid)?;
         let mut document: Value = serde_json::from_slice(&original).map_err(io)?;
-        if !document["pane_tree"]["panes"][pane.to_string()].is_object() {
-            return Err(invalid("saved workspace does not contain observed pane"));
-        }
-        document["pane_tree"]["panes"][pane.to_string()]["cwd"] = json!(cwd);
+        // A topology autosave may still be debouncing. Merge the current graph,
+        // not a single pane into an older file that cannot yet contain it.
+        crate::workspace_files::merge_pane_tree(
+            &mut document, &serde_json::to_value(&metadata.pane_tree).map_err(io)?
+        ).map_err(invalid)?;
+        document["foreign_panes"] = serde_json::to_value(&metadata.foreign_panes).map_err(io)?;
         document["saved_at"] = json!(chrono::Utc::now().to_rfc3339());
+        file::validate(&serde_json::from_value(document.clone()).map_err(io)?).map_err(invalid)?;
         let archive = path.with_extension(format!("ridge.archive-{}", Uuid::new_v4()));
         file::write_atomic(&archive, &original).map_err(io)?;
         file::write_atomic(&path, &serde_json::to_vec_pretty(&document).map_err(io)?)
@@ -97,6 +100,7 @@ pub(crate) fn update_cwd(
     state.ptys.record_cwd(pane, instance, cwd).map_err(io)?;
     drop(graph);
     drop(retired);
+    crate::workspace_autosave::committed(workspace);
     use ridge_core::EventSink;
     state.business_events.broadcast(
         "pane-meta-changed",

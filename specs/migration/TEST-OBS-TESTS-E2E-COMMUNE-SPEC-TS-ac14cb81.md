@@ -12,6 +12,4 @@ test_targets:
   - tests/e2e/commune.spec.ts
 ---
 
-# commune.spec.ts
-
-Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+Commune E2E uses Playwright's isolated Vite e2e mode and verifies the real rendered Members and History views, with no native Tauri host required.

@@ -221,39 +221,21 @@ impl KernelMcpHost {
 
     fn split_workspace(
         graph: &mut ridge_core::workspace::graph::WorkspaceGraph,
-        request: &SplitPaneRequest,
+        target: Option<(Uuid, Uuid)>,
         direction: ridge_core::workspace::pane_tree::SplitDirection,
     ) -> HostResult<(Uuid, Uuid)> {
-        match request.workspace_id.as_deref() {
-            Some(raw) => {
-                let workspace_id = Uuid::parse_str(raw).map_err(|_| {
-                    HostError::InvalidParams(format!("invalid workspace id: {raw}"))
-                })?;
-                let anchor = graph
-                    .leaves(workspace_id)
-                    .map_err(|error| HostError::InvalidParams(error.to_string()))?
-                    .into_iter()
-                    .last()
-                    .ok_or_else(|| HostError::Internal("workspace has no pane".into()))?;
+        match target {
+            Some((workspace_id, anchor)) => {
+                let cwd = graph.workspace(workspace_id)
+                    .and_then(|meta| meta.pane_tree.panes.get(&anchor))
+                    .and_then(|pane| pane.cwd.clone());
                 let pane_id = graph
                     .split(workspace_id, anchor, direction)
                     .map_err(|error| HostError::Internal(error.to_string()))?;
+                graph.workspace_mut(workspace_id).unwrap().pane_tree.panes.get_mut(&pane_id).unwrap().cwd = cwd;
                 Ok((workspace_id, pane_id))
             }
-            None => match graph.active() {
-                Some(workspace_id) => {
-                    let anchor = graph
-                        .leaves(workspace_id)
-                        .map_err(|error| HostError::Internal(error.to_string()))?
-                        .into_iter()
-                        .last()
-                        .ok_or_else(|| HostError::Internal("workspace has no pane".into()))?;
-                    let pane_id = graph
-                        .split(workspace_id, anchor, direction)
-                        .map_err(|error| HostError::Internal(error.to_string()))?;
-                    Ok((workspace_id, pane_id))
-                }
-                None => {
+            None => {
                     let workspace_id = graph.create_workspace();
                     let pane_id = graph
                         .leaves(workspace_id)
@@ -262,7 +244,6 @@ impl KernelMcpHost {
                         .next()
                         .ok_or_else(|| HostError::Internal("new workspace has no pane".into()))?;
                     Ok((workspace_id, pane_id))
-                }
             },
         }
     }
@@ -322,6 +303,7 @@ impl KernelMcpHost {
         args: &[String],
         launch_profile: Option<&str>,
         replace_id: Option<Uuid>,
+        cwd: Option<&str>,
     ) -> HostResult<()> {
         self.state
             .ptys
@@ -329,10 +311,12 @@ impl KernelMcpHost {
                 id: pane_id,
                 program,
                 args,
-                cwd: None,
+                cwd,
                 workspace_id: Some(workspace_id),
                 role: &request.role,
-                launch_profile,
+                // Ordinary shells need prompt/OSC 7 integration for subsequent
+                // cd observations too; explicit Agent profiles keep their launch plan.
+                launch_profile: launch_profile.or(Some("ridge-interactive")),
                 env: None,
                 initial_size: None,
             })
@@ -447,10 +431,32 @@ impl KernelMcpHost {
         let (program, args, launch_profile) = Self::launch_plan(request)?;
         let direction = Self::split_direction(&request.direction)?;
 
+        // Pin the anchor before observing its real shell cwd, using the same
+        // process-instance-fenced command as GUI splits. Do not hold graph here.
+        let target = {
+            let graph = self.state.workspaces.lock().expect("workspace graph lock");
+            let workspace = request.workspace_id.as_deref().map(Uuid::parse_str)
+                .transpose().map_err(|error| HostError::InvalidParams(error.to_string()))?
+                .or_else(|| graph.active());
+            workspace.map(|id| {
+                let anchor = graph.leaves(id).map_err(|error| HostError::InvalidParams(error.to_string()))?
+                    .into_iter().last().ok_or_else(|| HostError::Internal("workspace has no pane".into()))?;
+                Ok((id, anchor))
+            }).transpose()?
+        };
+        if let Some((workspace, pane)) = target {
+            crate::processes::dispatch(&self.state, "get_pane_cwd",
+                &json!({"workspaceId":workspace,"paneId":pane}),
+                &crate::host_core::runtime_ctx(&[], true)).expect("cwd command is supported")
+                .map_err(|error| HostError::Internal(error.to_string()))?;
+        }
+
         let mut graph = self.state.workspaces.lock().expect("workspace graph lock");
         let previous = graph.clone();
         let mut next = previous.clone();
-        let (workspace_id, pane_id) = Self::split_workspace(&mut next, request, direction)?;
+        let (workspace_id, pane_id) = Self::split_workspace(&mut next, target, direction)?;
+        let cwd = next.workspace(workspace_id).and_then(|meta|meta.pane_tree.panes.get(&pane_id))
+            .and_then(|pane|pane.cwd.as_ref()).map(|path|path.to_string_lossy().into_owned());
 
         let (replace_id, old_bridge) =
             Self::prepare_replacement(self, &mut next, workspace_id, request)?;
@@ -463,6 +469,7 @@ impl KernelMcpHost {
             &args,
             launch_profile.as_deref(),
             replace_id,
+            cwd.as_deref(),
         )?;
         self.write_initial_command(request, pane_id, replace_id)?;
         if let Err(error) = save_workspace_graph_at(&self.state.workspaces_path, &next) {
@@ -490,6 +497,8 @@ impl KernelMcpHost {
         )?;
         *graph = next;
         drop(graph);
+        crate::workspace_autosave::schedule_named(&self.state, workspace_id);
+        self.state.business_events.pane_tree_changed(workspace_id);
         Ok(json!({
             "workspaceId": workspace_id,
             "paneId": pane_id,

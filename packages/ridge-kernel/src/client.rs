@@ -1338,9 +1338,15 @@ pub fn request_json(
     stream
         .write_all(request.as_bytes())
         .map_err(|e| format!("write kernel: {e}"))?;
-    let maximum = if path == "/v1/domain/commands"
-        && body.is_some_and(|request|request["method"] == "read_terminal_font_face_chunk") {
-        ((ridge_core::terminal_font::MAX_FONT_CHUNK_BYTES + 2) / 3) * 4 + 8192
+    let maximum = if path == "/v1/domain/commands" {
+        match body.and_then(|request| request["method"].as_str()) {
+            Some("read_terminal_font_face_chunk") =>
+                ((ridge_core::terminal_font::MAX_FONT_CHUNK_BYTES + 2) / 3) * 4 + 8192,
+            // JSON control escapes cost up to six bytes per source byte;
+            // lossy UTF-8 replacement costs at most three. Keep other RPCs bounded.
+            Some("read_file_for_editor") => ridge_core::fs::commands::EDITOR_MAX_BYTES as usize * 6 + 8192,
+            _ => MAX_KERNEL_RESPONSE_BYTES,
+        }
     } else { MAX_KERNEL_RESPONSE_BYTES };
     let (head, body) = read_http_response_bounded(&mut stream, maximum)?;
     if !head.starts_with("HTTP/1.1 200") {

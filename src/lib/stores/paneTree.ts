@@ -1276,48 +1276,25 @@ function paneLayoutsEquivalent(a: PaneNode, b: PaneNode): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-export async function syncPaneLayoutFromBackend() {
-  if (!isTauri()) return;
+export async function syncPaneLayoutFromBackend(wsId = get(activeWorkspaceId)) {
+  if (!isTauri() || !wsId) return;
   let layout: PaneNode;
   try {
-    // §pane-delete-refresh fix: key the layout write on the HOST's authoritative
-    // active workspace id, NOT the local `activeWorkspaceId` store. The keep-alive
-    // renderer (+page.svelte) mounts each workspace's SplitContainer from
-    // `workspacePaneTrees.get(ws.id)`; if the local store ever diverges from the
-    // host's active id (notably over web-remote, where the store is seeded
-    // asynchronously), `setActiveTree(localId, …)` writes the WRONG key and the
-    // rendered tree stays stale — a closed pane lingers and its title falls back
-    // to the default. Re-deriving the id from the host (mirrors refreshWorkspaces)
-    // guarantees the refresh lands in the rendered key. On desktop the host id
-    // already equals the store, so this is just one extra (cheap) IPC.
-    layout = await invoke<PaneNode>('get_pane_layout');
-    // Prefer the host's authoritative active workspace id for the render key,
-    // but fall back to the local store if the host is unreachable or returns an
-    // unexpected (non-string/empty) value — never clobber the store with a
-    // non-string result (keeps behaviour correct on desktop and in tests).
-    let wsId = get(activeWorkspaceId);
-    try {
-      const hostActive = await invoke<string>('get_active_workspace_id');
-      if (typeof hostActive === 'string' && hostActive) wsId = hostActive;
-    } catch {
-      /* keep local store value */
-    }
-    const cached = (wsId ? get(workspacePaneTrees).get(wsId) : undefined) ?? get(paneTreeStore);
-    if (!paneLayoutsEquivalent(cached, layout)) {
-      setActiveTree(wsId, layout);
-    } else if (wsId && !get(workspacePaneTrees).has(wsId)) {
-      // Layout structure unchanged but the cache lacks an entry (first time we
-      // see this workspace, e.g. after refreshWorkspaces) — seed cache only.
+    // A layout and a later active-id read are not an atomic snapshot. Bind both
+    // the request and cache write to the caller's workspace across tab switches.
+    layout = await invoke<PaneNode>('get_pane_layout_for', { workspaceId: wsId });
+    const cached = get(workspacePaneTrees).get(wsId);
+    if (!cached || !paneLayoutsEquivalent(cached, layout)) {
       workspacePaneTrees.update((m) => {
         const m2 = new Map(m);
         m2.set(wsId, layout);
         return m2;
       });
     }
-    // Keep the local store in lock-step with the host so downstream consumers
-    // (and the cwd-prune block below) operate on the correct workspace.
-    if (wsId && get(activeWorkspaceId) !== wsId) activeWorkspaceId.set(wsId);
-    reconcileActivePaneId(layout, wsId);
+    if (get(activeWorkspaceId) === wsId) {
+      if (!paneLayoutsEquivalent(get(paneTreeStore), layout)) paneTreeStore.set(layout);
+      reconcileActivePaneId(layout, wsId);
+    }
   } catch (e) {
     console.error('syncPaneLayoutFromBackend', e);
     reportDevIssue({
@@ -1330,7 +1307,7 @@ export async function syncPaneLayoutFromBackend() {
   // Refresh cwd listeners so new panes from split/close/dock are wired up.
   // activeWorkspaceId is already set by the time this is called from
   // splitPane / closePane / dockPane / etc.
-  const active = get(activeWorkspaceId);
+  const active = wsId;
   if (active) {
     // Atomically prune stale pane entries AND seed new ones from the layout.
     //
@@ -1378,7 +1355,7 @@ export async function syncPaneLayoutFromBackend() {
       // dock that didn't change pane membership counts).
       return mutated ? next : store;
     });
-    await setupPaneCwdListeners(active);
+    if (get(activeWorkspaceId) === active) await setupPaneCwdListeners(active);
   }
 }
 
@@ -1534,7 +1511,7 @@ export async function splitPane(
       setPaneCwd(workspaceId, result.pane_id, result.initial_cwd);
     }
   }
-  await syncPaneLayoutFromBackend();
+  await syncPaneLayoutFromBackend(workspaceId);
   // §split-fit (2026-05-21): after the layout sync, the source pane has
   // shrunk from filling its parent to ~50 %, and Svelte will mount the
   // new pane on the next microtask. attach() (new pane) and unpark()
@@ -1651,13 +1628,14 @@ export async function dockPane(
   region: DockRegion
 ) {
   if (!isTauri()) return;
+  const workspaceId = get(activeWorkspaceId);
   await invoke('dock_pane', {
     sourcePaneId,
     targetPaneId,
     region,
   });
-  await syncPaneLayoutFromBackend();
-  focusPane(sourcePaneId, get(activeWorkspaceId));
+  await syncPaneLayoutFromBackend(workspaceId);
+  if (get(activeWorkspaceId) === workspaceId) focusPane(sourcePaneId, workspaceId);
   // §dock-swap-scissor (2026-06-26): 终端画面画在「全局共享 canvas」上，每个
   // pane 的绘制位置由缓存 scissor 决定，仅在 resize / 切工作区 / attach-unpark
   // / 容器 ResizeObserver 时由 `_recomputeViewport` 重算。dock 中心区换位（含
@@ -1674,6 +1652,7 @@ export async function dockPane(
 
 /** 拖拽分割条结束后：更新本地树并写回后端（嵌套横纵各自一�?path）�?*/
 export async function persistSplitRatios(splitPath: number[], sizes: number[]) {
+  const workspaceId = get(activeWorkspaceId);
   const norm = normalizeSplitRatios(sizes);
   updateActiveTree(get(activeWorkspaceId), (root) =>
     applyRatiosAtPath(root, splitPath, norm)
@@ -1683,20 +1662,21 @@ export async function persistSplitRatios(splitPath: number[], sizes: number[]) {
     await invoke(
       'set_split_ratios_at_path',
       {
-      workspaceId: get(activeWorkspaceId),
+      workspaceId,
       path: splitPath,
       ratios: norm,
       }
     );
   } catch (e) {
     console.error('persistSplitRatios', e);
-    await syncPaneLayoutFromBackend();
+    await syncPaneLayoutFromBackend(workspaceId);
   }
 }
 
 /** 一次性持久化多个 split �?ratios（用于横纵联动拖拽松手提交）�?*/
 export async function persistSplitRatiosBatch(updates: SplitRatioUpdate[]) {
   if (!updates.length) return;
+  const workspaceId = get(activeWorkspaceId);
   updateActiveTree(get(activeWorkspaceId), (root) =>
     applyRatioUpdates(root, updates)
   );
@@ -1705,13 +1685,13 @@ export async function persistSplitRatiosBatch(updates: SplitRatioUpdate[]) {
     await invoke(
       'set_split_ratios_batch',
       {
-      workspaceId: get(activeWorkspaceId),
+      workspaceId,
       updates,
       }
     );
   } catch (e) {
     console.error('persistSplitRatiosBatch', e);
-    await syncPaneLayoutFromBackend();
+    await syncPaneLayoutFromBackend(workspaceId);
   }
 }
 
@@ -1773,6 +1753,7 @@ export async function closePane(paneId: string) {
   try {
     await invoke('close_pane', {
       paneId,
+      workspaceId: closingWorkspaceId,
     });
   } catch (error) {
     // Backend close can reject (last pane, stale id, or a race). Restore the
@@ -1794,8 +1775,8 @@ export async function closePane(paneId: string) {
   //   2. Manager.detach — frees wasm kernel + render handle.
   //   3. Drop title-store entries so SplitContainer / Explorer don't
   //      keep showing a label for a pane that no longer exists.
-  cleanupPaneRuntime(paneId, get(activeWorkspaceId) || undefined);
-  await syncPaneLayoutFromBackend();
+  cleanupPaneRuntime(paneId, closingWorkspaceId);
+  await syncPaneLayoutFromBackend(closingWorkspaceId);
 }
 
 export async function toggleEditor(paneId: string, filePath?: string) {

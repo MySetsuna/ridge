@@ -204,7 +204,7 @@ pub fn first_in_directory(root:&Path,scopes:&[&crate::sandbox::RootScope])->crat
     for entry in entries {
         let entry=entry.map_err(crate::CoreError::internal)?;
         let path=entry.path();
-        if path.extension().and_then(|value|value.to_str())!=Some("ridge") {continue;}
+        if !path.extension().and_then(|value|value.to_str()).is_some_and(|value|value.eq_ignore_ascii_case("ridge")) {continue;}
         if scopes.iter().any(|scope|!scope.is_allowed(&path.to_string_lossy())) {return Err(crate::CoreError::OutsideSandbox);}
         if entry.file_type().map_err(crate::CoreError::internal)?.is_file() {files.push(path);}
     }

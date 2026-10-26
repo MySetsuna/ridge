@@ -496,6 +496,7 @@ pub async fn domain_workspace_split(
             persist_workspaces(&st, &next)?;
             *graph = next;
     drop(graph);
+    crate::workspace_autosave::schedule_named(&st, workspace_id);
     st.business_events.pane_tree_changed(workspace_id);
             Ok(Json(json!({ "ok": true, "pane_id": new_pane_id, "initial_cwd": cwd })))
         }
@@ -575,6 +576,7 @@ pub async fn domain_workspace_pane_close(
     }
     *graph = next;
     drop(graph);
+    crate::workspace_autosave::schedule_named(&st, workspace_id);
     st.business_events.pane_tree_changed(workspace_id);
     Ok(Json(json!({ "ok": true })))
 }
@@ -840,6 +842,7 @@ pub async fn domain_workspace_topology(
     persist_workspaces(&st, &next)?;
     *graph = next;
     drop(graph);
+    crate::workspace_autosave::schedule_named(&st, workspace_id);
     st.business_events.workspace_list_changed();
     st.business_events.pane_tree_changed(workspace_id);
     Ok(Json(json!({

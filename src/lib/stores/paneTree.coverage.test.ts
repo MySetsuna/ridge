@@ -45,7 +45,7 @@ function mockRefreshCommands(active = 'ws-a') {
   core.invoke.mockImplementation(async (command: string) => {
     if (command === 'list_workspaces') return [{ id: 'ws-a', index: 0, displaySeq: 0 }];
     if (command === 'get_active_workspace_id') return active;
-    if (command === 'get_pane_layout_for' || command === 'get_pane_layout') return layout;
+    if (command === 'get_pane_layout_for') return layout;
     if (command === 'list_workspace_save_info') return [];
     return undefined;
   });
@@ -397,7 +397,7 @@ describe('paneTree workspace mutation branches', () => {
     await paneTree.refreshWorkspaceSaveInfo();
   });
 
-  it('syncs host-authoritative layout, prunes stale cwd entries, and falls back on host id errors', async () => {
+  it('syncs the requested workspace and prunes its stale cwd entries without consulting active host selection', async () => {
     const layoutFromHost = {
       type: 'split' as const,
       id: 'root-host',
@@ -408,7 +408,7 @@ describe('paneTree workspace mutation branches', () => {
         { type: 'leaf' as const, id: 'new', cwd: 'C:\\repo\\new\\' },
       ],
     };
-    paneTree.activeWorkspaceId.set('ws-local');
+    paneTree.activeWorkspaceId.set('ws-host');
     paneTree.activePaneId.set('missing');
     paneTree.workspacePaneTrees.set(new Map([
       ['ws-host', { type: 'leaf', id: 'old' }],
@@ -419,7 +419,7 @@ describe('paneTree workspace mutation branches', () => {
       'ws-other:keep': '/untouched',
     });
     core.invoke.mockImplementation(async (command: string) => {
-      if (command === 'get_pane_layout') return layoutFromHost;
+      if (command === 'get_pane_layout_for') return layoutFromHost;
       if (command === 'get_active_workspace_id') return 'ws-host';
       return undefined;
     });
@@ -439,7 +439,7 @@ describe('paneTree workspace mutation branches', () => {
     expect(event.listen).toHaveBeenCalledWith('pane-cwd-changed-ws-host-new', expect.any(Function));
 
     core.invoke.mockImplementation(async (command: string) => {
-      if (command === 'get_pane_layout') return layoutFromHost;
+      if (command === 'get_pane_layout_for') return layoutFromHost;
       if (command === 'get_active_workspace_id') throw new Error('host id unavailable');
       return undefined;
     });

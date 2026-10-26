@@ -542,7 +542,7 @@ function createFileExplorerStore() {
 			} catch (e) {
 				reportDevIssue({ message: `Failed to load directory children: ${e}` });
 				console.error(`[fileExplorer] loadChildrenPage failed for "${dirPath}":`, e);
-				return { entries: [], total: 0, offset, has_more: false };
+				throw e;
 			}
 		},
 

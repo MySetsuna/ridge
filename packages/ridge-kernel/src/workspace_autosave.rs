@@ -36,6 +36,28 @@ pub(crate) fn error(id: Uuid) -> Option<String> {
         .get(&id)
         .cloned()
 }
+/// Topology is already committed. Surface enqueue errors without reporting the
+/// split as rejected (its caller still needs to create the new PTY).
+pub(crate) fn schedule_named(state: &AppState, id: Uuid) {
+    let result = (|| {
+        let request = {
+            let graph = state.workspaces.lock().map_err(|_| "workspace state unavailable")?;
+            let Some(meta) = graph.workspace(id) else { return Ok(()); };
+            let Some(file) = &meta.file else { return Ok(()); };
+            Request { operation: "auto-save".into(), workspace_id: Some(id),
+                name: meta.name.clone(), path: Some(file.path.clone()) }
+        };
+        schedule(state.clone(), request)
+    })();
+    if let Err(error) = result {
+        tracing::warn!(%id, %error, "Runtime topology autosave enqueue failed");
+        if let Ok(mut pending) = PENDING.get_or_init(Default::default).lock() {
+            if pending.errors.len() < 256 || pending.errors.contains_key(&id) {
+                pending.errors.insert(id, error);
+            }
+        }
+    }
+}
 pub(crate) fn schedule(state: AppState, mut request: Request) -> Result<(), String> {
     let id = request.workspace_id.ok_or("missing workspaceId")?;
     {

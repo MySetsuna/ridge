@@ -353,11 +353,33 @@ async fn legacy_payloads_survive_shared_saves_and_deferred_writer_outlives_its_p
     let directory_path = root.join("Directory save.ridge");
     assert_eq!(directory_save["result"], json!(directory_path), "{directory_save}");
     assert!(directory_path.is_file());
-    let stem = root.join("explicit-stem");
+    let stem = root.join("new.directory");
     let stem_save = rpc(&mut client, 11, "save_workspace_to_file",
         json!({"workspaceId":fresh,"name":"Stem save","path":stem})).await;
-    assert_eq!(stem_save["result"], json!(stem.with_extension("ridge")), "{stem_save}");
-    assert!(!stem.exists(), "normalization must not create an extensionless file");
+    let expected = stem.join("Stem save.ridge");
+    assert_eq!(stem_save["result"], json!(expected), "{stem_save}");
+    assert!(expected.is_file(), "new directories must match the save dialog preview");
+    assert!(!stem.with_extension("ridge").exists(), "must not save to a guessed filename");
+
+    let explicit = root.join("explicit.RIDGE");
+    let explicit_save = rpc(&mut client, 13, "save_workspace_to_file",
+        json!({"workspaceId":fresh,"name":"Explicit save","path":explicit})).await;
+    assert_eq!(explicit_save["result"], json!(explicit), "{explicit_save}");
+    assert!(explicit.is_file());
+    let listed = rpc(&mut client, 15, "list_saved_workspace_files", json!({})).await;
+    assert!(listed["result"].as_array().unwrap().iter().any(|entry| entry["path"] == json!(explicit)), "{listed}");
+    let discovery = root.join("uppercase-discovery");
+    fs::create_dir_all(&discovery).unwrap();
+    let discovered = discovery.join("saved.RIDGE");
+    fs::copy(&explicit, &discovered).unwrap();
+    assert_eq!(ridge_core::workspace::file::first_in_directory(&discovery, &[]).unwrap(), json!(discovered));
+
+    let suffix_dir = format!("{}/directory.ridge/", root.display());
+    let suffix_save = rpc(&mut client, 14, "save_workspace_to_file",
+        json!({"workspaceId":fresh,"name":"Trailing separator","path":suffix_dir})).await;
+    let suffix_path = std::path::Path::new(&suffix_dir).join("Trailing separator.ridge");
+    assert_eq!(suffix_save["result"], json!(suffix_path), "{suffix_save}");
+    assert!(suffix_path.is_file());
 
     let browsed = rpc(&mut client, 12, "browse_directory", json!({"path":root})).await;
     let browsed_path = browsed["result"]["path"].as_str().expect("shared directory response");

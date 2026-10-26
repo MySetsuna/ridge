@@ -16,32 +16,40 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // `@tauri-apps/api/*` import is redirected to the WS-backed shims in
 // src/lib/transport/tauriShim so the desktop code runs untouched outside Tauri.
 // Native desktop always uses shared Runtime business APIs and minimal OS adapters.
-const WEB_REMOTE = !!process.env.RIDGE_WEB_REMOTE;
-const NATIVE_RUNTIME = !WEB_REMOTE;
-const TAURI_DEV_PORT = Number(process.env.RIDGE_DEV_SERVER_PORT || 5173);
-const TAURI_DEV_CDP = !!process.env.RIDGE_DEV_SERVER_PORT;
 /** @param {string} f */
 const shim = (f) => path.resolve(__dirname, 'src/lib/transport/tauriShim', f);
-/** @type {Record<string, string>} */
-const webRemoteAliases = {};
-if (WEB_REMOTE) {
-  webRemoteAliases['@tauri-apps/api/core'] = shim('core.ts');
-  webRemoteAliases['@tauri-apps/api/event'] = shim('event.ts');
-  webRemoteAliases['@tauri-apps/api/window'] = shim('window.ts');
-  webRemoteAliases['@tauri-apps/plugin-dialog'] = shim('dialog.ts');
-  webRemoteAliases['@tauri-apps/plugin-clipboard-manager'] = shim('clipboard.ts');
-  webRemoteAliases['@tauri-apps/plugin-opener'] = shim('opener.ts');
-}
-if (NATIVE_RUNTIME) {
-  webRemoteAliases['@tauri-apps/api/core'] = path.resolve(__dirname, 'src/lib/transport/nativeRuntimeCore.ts');
-  webRemoteAliases['@tauri-apps/api/event'] = path.resolve(__dirname, 'src/lib/transport/nativeRuntimeEvent.ts');
-}
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const WEB_REMOTE = !!process.env.RIDGE_WEB_REMOTE;
+  const NATIVE_RUNTIME = !WEB_REMOTE && mode !== 'e2e';
+  const BROWSER_E2E = mode === 'e2e';
+  const TAURI_DEV_PORT = Number(process.env.RIDGE_DEV_SERVER_PORT || 5173);
+  const TAURI_DEV_CDP = !!process.env.RIDGE_DEV_SERVER_PORT;
+  /** @type {Record<string, string>} */
+  const webRemoteAliases = {};
+  if (WEB_REMOTE) {
+    webRemoteAliases['@tauri-apps/api/core'] = shim('core.ts');
+    webRemoteAliases['@tauri-apps/api/event'] = shim('event.ts');
+    webRemoteAliases['@tauri-apps/api/window'] = shim('window.ts');
+    webRemoteAliases['@tauri-apps/plugin-dialog'] = shim('dialog.ts');
+    webRemoteAliases['@tauri-apps/plugin-clipboard-manager'] = shim('clipboard.ts');
+    webRemoteAliases['@tauri-apps/plugin-opener'] = shim('opener.ts');
+  }
+  if (NATIVE_RUNTIME) {
+    webRemoteAliases['@tauri-apps/api/core'] = path.resolve(__dirname, 'src/lib/transport/nativeRuntimeCore.ts');
+    webRemoteAliases['@tauri-apps/api/event'] = path.resolve(__dirname, 'src/lib/transport/nativeRuntimeEvent.ts');
+  }
+
+  return {
   plugins: [
     sveltekit(),
     {
       name: 'ridge-generated-csp',
+      configResolved(config) {
+        // SvelteKit merges its own watch object after user config. Disable the
+        // resolved watcher only for immutable browser smoke runs.
+        if (BROWSER_E2E) config.server.watch = null;
+      },
       transformIndexHtml: {
         order: 'post',
         handler(html) {
@@ -57,6 +65,7 @@ export default defineConfig({
     // Tauri build lets the whole web-remote branch tree-shake away.
     'import.meta.env.RIDGE_WEB_REMOTE': JSON.stringify(WEB_REMOTE),
     'import.meta.env.RIDGE_NATIVE_RUNTIME': JSON.stringify(NATIVE_RUNTIME),
+    'import.meta.env.RIDGE_E2E_BROWSER': JSON.stringify(BROWSER_E2E),
     // Build-time ridge-cloud base override (apiClient.ts BASE_DOMAIN). Empty in
     // normal builds → client falls back to the production base. The debug build
     // (scripts/tauri-build-debug.mjs) sets RIDGE_CLOUD_BASE_DOMAIN=localhost:5173
@@ -104,7 +113,7 @@ export default defineConfig({
     watch: {
       ignored: [
         '**/target{,-*}/**',
-        '**/{release,remote-dist,build}/**',
+        '**/{release,remote-dist,build,artifacts}/**',
         '**/.webview2-dev-cdp/**',
         '**/.iteration/**',
         '**/.codegraph/**',
@@ -151,10 +160,14 @@ export default defineConfig({
 
   // 优化依赖预构建
   optimizeDeps: {
+    // SvelteKit has no root index.html for Vite's default dependency scan.
+    // Discover the SPA (including lazy panels) before the first browser action.
+    entries: BROWSER_E2E ? ['src/routes/+page.svelte', 'src/routes/+layout.svelte'] : undefined,
     include: [
       'monaco-editor',
       'svelte-splitpanes',
       '@tauri-apps/api',
+      ...(BROWSER_E2E ? ['@tanstack/svelte-query'] : []),
       'qrcode',
     ],
     exclude: ['@ridge/term-wasm', '@ridge/term-font-wasm', '@ridge/term-render-wasm'],
@@ -167,4 +180,5 @@ export default defineConfig({
   worker: {
     format: 'es',
   },
+  };
 });

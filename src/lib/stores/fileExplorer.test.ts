@@ -425,9 +425,7 @@ describe('fileExplorerStore pagination and stale-path boundaries', () => {
     });
 
     mockInvoke.mockRejectedValueOnce(new Error('directory unavailable'));
-    await expect(fileExplorerStore.loadChildrenPage('ws:/r', '/r')).resolves.toEqual({
-      entries: [], total: 0, offset: 0, has_more: false,
-    });
+    await expect(fileExplorerStore.loadChildrenPage('ws:/r', '/r')).rejects.toThrow('directory unavailable');
 
     let page = 0;
     mockInvoke.mockImplementation(async (command: string) => {
@@ -715,18 +713,15 @@ describe('fileExplorer remaining store branches', () => {
     expect(get(fileExplorerStore).columns).toHaveLength(0);
   });
 
-  it('loads paginated children and returns an empty page on IPC failure', async () => {
+  it('loads paginated children and rejects IPC failure so the view can retry', async () => {
     mockInvoke
       .mockResolvedValueOnce({ entries: [{ name: 'a', path: '/r/a', is_dir: false }], has_more: true })
       .mockResolvedValueOnce({ entries: [{ name: 'b', path: '/r/b', is_dir: false }], has_more: false });
     await expect(fileExplorerStore.loadChildren('ws:/r', '/r')).resolves.toHaveLength(2);
     mockInvoke.mockRejectedValueOnce(new Error('offline'));
-    await expect(fileExplorerStore.loadChildrenPage('ws:/r', '/r', 0)).resolves.toEqual({
-      entries: [],
-      total: 0,
-      offset: 0,
-      has_more: false,
-    });
+    await expect(fileExplorerStore.loadChildrenPage('ws:/r', '/r', 0)).rejects.toThrow('offline');
+    mockInvoke.mockRejectedValueOnce(new Error('offline'));
+    await expect(fileExplorerStore.loadChildren('ws:/r', '/r')).rejects.toThrow('offline');
   });
 
   it('prunes only missing deep expanded paths and tolerates probe failure', async () => {

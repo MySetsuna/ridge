@@ -12,6 +12,4 @@ code_targets:
   - playwright.config.ts
 ---
 
-# playwright.config.ts module
-
-Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+Playwright browser E2E tests start the SvelteKit app in an isolated browser mode using Vite's e2e mode. The mode bypasses the native Runtime grant handshake so browser-only tests can exercise rendered UI without Tauri. Normal desktop and web-remote startup remain unchanged.

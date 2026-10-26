@@ -32,7 +32,7 @@ pub const DEFAULT_CHILDREN_PAGE_SIZE: usize = 200;
 
 /// Editor read ceiling — files larger than this are refused. (Matches the
 /// `const MAX` in `project.rs::read_file_for_editor`.)
-const EDITOR_MAX_BYTES: u64 = 5 * 1024 * 1024;
+pub const EDITOR_MAX_BYTES: u64 = 5 * 1024 * 1024;
 
 /// Normalise a frontend-supplied path into the native form, fixing Windows
 /// `C:/a/b\c` slash mixing where `PathBuf::exists()` can spuriously return

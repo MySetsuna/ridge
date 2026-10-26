@@ -8,6 +8,7 @@ const BOOT_TIMEOUT_MS = Number.isFinite(requestedBootTimeout) && requestedBootTi
 
 async function bootSpa(page: Page, teammateEnabled: boolean): Promise<void> {
   await page.addInitScript((enabled) => {
+    localStorage.setItem('ridge.locale', 'zh');
     localStorage.setItem('ridge-settings', JSON.stringify({ teammateEnabled: enabled }));
   }, teammateEnabled);
   try {
@@ -51,7 +52,8 @@ test.describe("Agent's Commune visibility", () => {
 
     const panel = page.getByTestId('commune-panel');
     await expect(panel).toBeVisible();
-    await expect.poll(() => panel.evaluate((element) => element.getBoundingClientRect().width))
+    // The 360px contract includes the sidebar's 1px border.
+    await expect.poll(() => panel.evaluate((element) => element.closest('aside')!.getBoundingClientRect().width))
       .toBeGreaterThanOrEqual(360);
     await expect(panel).toContainText("Agent's Commune");
     await expect(panel).toContainText('暂无成员');
