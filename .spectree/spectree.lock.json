@@ -1,19 +1,36 @@
 {
   "version": 1,
-  "changeId": "CHG-082",
-  "specHash": "02f6cb444890ab45980001f0a7e79bcdc46bf22bc000b3750e23dcc50c204d43",
+  "changeId": "CHG-083",
+  "specHash": "0a0a5662d8b8d4c25a40f33b1ba3e2dbeed3f065dfbc93cfa56cb9a906076fb0",
   "units": [
     {
-      "id": "L4-OBS-GITHUB-WORKFLOWS-RELEASE-YML-87db21a9",
-      "level": "L4",
-      "nodeHash": "0dce40368ff24f50c7ecd1468f12529bd319842fa87a0b6b387a44fd21a618cb",
+      "id": "L3-RUNTIME-WORKSPACE-CONTINUITY",
+      "level": "L3",
+      "nodeHash": "7a81e81988f8642128915c32109225aea996b5401e28b5d4b2803932e34a5e35",
       "codeTargets": [
-        ".github/workflows/release.yml",
-        "scripts/build-ridge-kernel-sidecar.mjs"
+        "packages/ridge-kernel/src/host.rs",
+        "packages/ridge-kernel/src/client.rs",
+        "packages/ridge-kernel/src/domain.rs",
+        "packages/ridge-kernel/src/kernel_mcp.rs",
+        "packages/ridge-kernel/src/workspace_commands.rs",
+        "packages/ridge-kernel/src/workspace_files.rs",
+        "packages/ridge-kernel/src/workspace_autosave.rs",
+        "packages/ridge-core/src/fs/commands.rs",
+        "src/lib/stores/fileExplorer.ts",
+        "src/lib/components/FileTree.svelte",
+        "src/lib/components/Explorer.svelte",
+        "src/lib/stores/paneTree.ts",
+        "packages/ridge-core/src/workspace/file.rs"
       ],
       "testTargets": [
-        "scripts/check-release-version.test.mjs",
-        "scripts/build-ridge-kernel-sidecar.test.mjs"
+        "packages/ridge-kernel/tests/runtime_workspace_continuity.rs",
+        "packages/ridge-kernel/tests/common/runtime_fixture.rs",
+        "packages/ridge-kernel/tests/cwd_runtime.rs",
+        "packages/ridge-kernel/tests/terminal_lifecycle_runtime.rs",
+        "src/lib/stores/fileExplorer.test.ts",
+        "src/lib/stores/paneTree.test.ts",
+        "src/lib/stores/paneTree.coverage.test.ts",
+        "packages/ridge-kernel/tests/workspace_file_owner.rs"
       ],
       "status": "LOCKED"
     },
@@ -53,16 +70,6 @@
       "status": "LOCKED"
     },
     {
-      "id": "TEST-OBS-SCRIPTS-CHECK-RELEASE-VERSION-TEST-MJS-ff79f177",
-      "level": "TEST",
-      "nodeHash": "dbd79c6743130c5a5c40bc7d565ed1c47ca7596b1f7896fb97c4553254a244b1",
-      "codeTargets": [],
-      "testTargets": [
-        "scripts/check-release-version.test.mjs"
-      ],
-      "status": "LOCKED"
-    },
-    {
       "id": "TEST-OBS-SRC-TAURI-TESTS-WIN-MANIFEST-BOOT-RS-681c2eff",
       "level": "TEST",
       "nodeHash": "59f92f0c7364499e915b5bf7058fdba332337d4c98349d3fd1a7a39344715342",
@@ -74,15 +81,32 @@
     }
   ],
   "allowedPaths": [
-    ".github/workflows/release.yml",
     "Cargo.lock",
     "package.json",
-    "scripts/build-ridge-kernel-sidecar.mjs",
-    "scripts/build-ridge-kernel-sidecar.test.mjs",
-    "scripts/check-release-version.test.mjs",
+    "packages/ridge-core/src/fs/commands.rs",
+    "packages/ridge-core/src/workspace/file.rs",
+    "packages/ridge-kernel/src/client.rs",
+    "packages/ridge-kernel/src/domain.rs",
+    "packages/ridge-kernel/src/host.rs",
+    "packages/ridge-kernel/src/kernel_mcp.rs",
+    "packages/ridge-kernel/src/workspace_autosave.rs",
+    "packages/ridge-kernel/src/workspace_commands.rs",
+    "packages/ridge-kernel/src/workspace_files.rs",
+    "packages/ridge-kernel/tests/common/runtime_fixture.rs",
+    "packages/ridge-kernel/tests/cwd_runtime.rs",
+    "packages/ridge-kernel/tests/runtime_workspace_continuity.rs",
+    "packages/ridge-kernel/tests/terminal_lifecycle_runtime.rs",
+    "packages/ridge-kernel/tests/workspace_file_owner.rs",
     "src-tauri/Cargo.toml",
     "src-tauri/tauri.conf.json",
-    "src-tauri/tests/win_manifest_boot.rs"
+    "src-tauri/tests/win_manifest_boot.rs",
+    "src/lib/components/Explorer.svelte",
+    "src/lib/components/FileTree.svelte",
+    "src/lib/stores/fileExplorer.test.ts",
+    "src/lib/stores/fileExplorer.ts",
+    "src/lib/stores/paneTree.coverage.test.ts",
+    "src/lib/stores/paneTree.test.ts",
+    "src/lib/stores/paneTree.ts"
   ],
   "testCommand": [
     "npm",
@@ -109,7 +133,7 @@
     ".vscode/extensions.json": "926925a0d7f8b5e0e9e84667ac901095f7ffdb83afb54de65662d6e4cfb78ad1",
     ".vscode/settings.json": "54224dc29195ac0e0ae6a3ce38d5cd7aeb390357259a37c860a28a3f1087ef71",
     "AGENTS.md": "e1d607be3c46e5473c2a7aa6d43c8a8faf25f992aa7a1ce170ab8bfac04d88e9",
-    "Cargo.lock": "1bfae59da4769a30cda8b0771867c8627d5272eb8e914a054d257040cd9b5d69",
+    "Cargo.lock": "e708ca95d5652cdc83f9835e3bca2853a62fb6790dd0809ef9fdfa32cca14037",
     "Cargo.toml": "7ffe18a41f63a8b8c3f59693d3be8e7d6b439db6490afc2f8da838e54b2ed87c",
     "changes/BASELINE-001.md": "89235164085793f6ea8df5140ec032522d2523a7264a4b3c0b3a210745552c06",
     "changes/CHG-001.md": "14b0dcb1c2b91b2b8dfab95e6da4dbdd71ae29d21e6a85e193a4d9e3cb31154c",
@@ -192,6 +216,7 @@
     "changes/CHG-080.md": "935e77d68420165cd3b92d2009684cbe115aab172f06ea380f1dee8e2858e188",
     "changes/CHG-081.md": "2e46fba5725078ce6d5588ff624487f2658750287ba3aa45c7fd9fc4ce7af191",
     "changes/CHG-082.md": "658ca481d2e91ac26e1120b66a4811d59d867e034f64dcd563d97bff18ac77a5",
+    "changes/CHG-083.md": "4f4df6675e1f0457e91746cf141517312c6810671260b2c4800ba515f618478f",
     "docs/architecture/00-overview.md": "d88523e187eac1aef5a85939639722f38b3cbac41a55327cfe1c28a9bb87d682",
     "docs/architecture/10-kernel.md": "80f773ffecdaafac0b64dfb99a3ddb8c05f801d39c9d2533397b4e905bb5e4f9",
     "docs/architecture/20-rtp1-wire.md": "f32223c6d43ccf048f06176cb288baf46156477a72e24f1a4389a88756ca1a1c",
@@ -227,7 +252,7 @@
     "docs/README_CN.md": "8932531370504d2820f207f6cd3f5d92852066c9a5ae696c4a065ae256fa889a",
     "FINAL-REPORT-A8.md": "7f7df82021cea93d3ab23a88e39bda0d60c1df7b531d79972b3556f5e74d6d08",
     "IMPLEMENTATION-ACCEPTANCE.md": "2f37f9b4846693e549620f103776c192b26bc6b5dd5ceda7722403539108fd70",
-    "package.json": "4216a598e0cd23597d83ed5cac7f0cb3708a1085e2d157d20e39b5246165bebc",
+    "package.json": "b8ed8f33aa1d1c13ddab81bd7fff4aae6eb00e40fe9c4d2817d35d8d1c9574f0",
     "packages/remote/package.json": "3c9d355179aefeaf12877e4e44bc5b41ba8812fc23825024f01da3b082f6b1db",
     "packages/remote/src/index.ts": "ae66d492761ce353faab343fe9215ab48235088dee9cd5ce1621392948999c30",
     "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts": "7abb718851c25821146276ac974fbad2aa64e011e142e2623fe2c6a164324b08",
@@ -720,7 +745,7 @@
     "packages/ridge-kernel/tests/terminal_ops_runtime.rs": "5eda0cad7fdb6704dfe35254a355c4706dc63d33cb2c47899bfbc4800adade19",
     "packages/ridge-kernel/tests/theme_runtime.rs": "9a081cac834903d7097635e5ffa7c682ecb71c09a7ee9b0be27e99f331c8b4c8",
     "packages/ridge-kernel/tests/workspace_checkpoint_runtime.rs": "e936dd33d2795f60a016d3898f44fe8d28c72f1bf34c411b185022c553ca810b",
-    "packages/ridge-kernel/tests/workspace_file_owner.rs": "1007a842dc846966323a2a0cf6ce4fd80f7b9ea5a8a8c695bf713c1cf13c2378",
+    "packages/ridge-kernel/tests/workspace_file_owner.rs": "452d622aeb32ebd4a5361d3b83c81c66cd18e7b4bb585dc29d321d42095687bd",
     "packages/ridge-kernel/tests/workspace_memory_runtime.rs": "31038c2f6d5c09c92645b24b0ad7e3d31f2380746717772d7bb301eb0392891d",
     "packages/ridge-mcp/Cargo.toml": "b73549275b0b487a78a1f95a0009158a04772f88bcf392836f8b7038b7b82135",
     "packages/ridge-mcp/src/a2a.rs": "425cc305f165b0c5b9ebcf88553fe7863a78bf85dc0fdcb146edd691e5bce057",
@@ -1025,7 +1050,7 @@
     "specs/l3-ridge-communion-m53-acceptance.md": "1217ba93a9489473e181cb1fadf1e6bfde6fe8b50ee39ca28dad68974e4da443",
     "specs/l3-ridge-communion-m53-product.md": "83b71592f0f2342ff902b68aeea80392c27a90242523217df6cf3167a3ac9e20",
     "specs/l3-ridge-communion-m53-runtime.md": "c06b9af0b7fe9b78d2f101a931f4065a4ee8d6aae813a4daab276dd94108507b",
-    "specs/l3-runtime-workspace-continuity.md": "d3c53eb6072a31f22f4d42b085dad67c51fc927a9a91c76c776e422c6e95de4c",
+    "specs/l3-runtime-workspace-continuity.md": "350703f12b771ad46d34aae4fa5b46d2fdadb9d4dda13290c527e144a70c7e6d",
     "specs/l3-terminal-visual-input-repair.md": "7a5c7aeb833516d5b8b5519442cde7dd703843f81119f5ca65711dda3aa65a96",
     "specs/l4-perf-latency-bench-entry.md": "86935a5eb9927f52620529e323278781fcf871545b9fc9cec4232c01418d798c",
     "specs/l4-ridge-mcp-sidecar-windows-x64.md": "25b8b3a31fb5f1180b1095b977b9127b0c8780aff640d80481c29eab1b946e24",
@@ -2488,7 +2513,7 @@
     "src-tauri/build.rs": "67135ac3b6dfd3c93a0bb047ab339d8926c8fd8289c8d52bce480c083e9ca61c",
     "src-tauri/capabilities/default.json": "0aea69d6e967d9018481608de11dc5a992b38cabee3e825095353cab0cf5d8c2",
     "src-tauri/Cargo.lock": "736528b17382bf99c0cee212647529614b1555c46dea0428e13abeefc49ec44f",
-    "src-tauri/Cargo.toml": "0f6f976e5516f4db599e8ab5e56e6afbec825343c67a233a4c9aef968fec04c4",
+    "src-tauri/Cargo.toml": "f1bcca169a6e788b1cfb33071a840f983442e84ed12fe0dbc2820e91b59da1e0",
     "src-tauri/gen/schemas/acl-manifests.json": "6e09a8d1446e2640a18c93fdbb0fdabfb913e31af7ca946dd4b171d6796d8283",
     "src-tauri/gen/schemas/capabilities.json": "ee5989f2da424f6247baacb2e93e445a53d9265f2ab5ad453c738e001f02220d",
     "src-tauri/gen/schemas/desktop-schema.json": "1d75d79fc208fd9703b312646c8ac6ead58e9acdf90e0af236eb2aeef928c9de",
@@ -2523,7 +2548,7 @@
     "src-tauri/src/utils/cwd.rs": "e241fc8cb5e92c75f9c2c8a91e8368eef819df86bd1ba1b93e09cd74e12db85f",
     "src-tauri/src/utils/logging.rs": "46f19900bd026d2263c77f606d9d5015849c9af9ade7fa5924ce3f18d5578ade",
     "src-tauri/src/utils/mod.rs": "8cb88ccb081fee74a039088be23f1f1e8b08b50852a28f4b1358ce3a8873b482",
-    "src-tauri/tauri.conf.json": "d4972a5347a0ad46ac08d4846974eae6cca59dd0232ef0e697b36f9074bdf388",
+    "src-tauri/tauri.conf.json": "4f38974d2789ac1c1d6a221bd6ba7847c67f0baef56853e36541ab3467f3079e",
     "src-tauri/tests/win_manifest_boot.rs": "5d6cdc73371fb907cdc5ab03c5e821483275d4f79477045fe35660936115f934",
     "src-tauri/wix/path-env.wxs": "0b4fa57aab8854d864d5ab1bc68a7b2086491485e9b0d3785da17c58aa6faf2c",
     "static/apple-touch-icon.png": "fcf04070e1ae0e72599b39cf3c118a81c57d01dbb98b894b6ba988bda26cc01e",
@@ -2572,6 +2597,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-3106a0c0a624",
-  "manifestHash": "3106a0c0a6248238e3741e383f001734fdde6af5781a7c515fb2883e7cf5964a"
+  "buildId": "BUILD-cdf9740cb598",
+  "manifestHash": "cdf9740cb5988ee3321d08274855c979400fb736102c9c8704147ddec5f84006"
 }

@@ -133,6 +133,12 @@ async fn legacy_payloads_survive_shared_saves_and_deferred_writer_outlives_its_p
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    // An archive precedes file replacement and graph commit. Read through the
+    // writer's graph lock before taking a committed baseline or injecting faults.
+    let info = file_op(&owned.endpoint, json!({"operation":"info","workspaceId":workspace}));
+    assert_eq!(info["ok"], true, "{info}");
+    assert_eq!(info["value"]["file_path"], json!(second));
+    assert_eq!(info["value"]["name"], "Latest name");
     assert_eq!(
         fs::read(&path).unwrap(),
         old_bytes,
