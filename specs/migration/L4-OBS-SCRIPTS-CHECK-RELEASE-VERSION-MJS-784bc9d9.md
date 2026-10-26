@@ -33,8 +33,8 @@ test_targets:
   - scripts/tauri-dev-cdp-env.test.mjs
   - scripts/validate-remote-smoke-evidence.test.mjs
 public_interface:
-  - export function main(rootDir = root)
-  - export function validateVersions(versions)
+  - export function main(rootDir = root, expectedTag)
+  - export function validateVersions(versions, expectedTag)
   - export function versionSet(rootDir = root)
 verified_by:
   - TEST-OBS-SCRIPTS-APP-CSP-TEST-MJS-8c76d58b
@@ -60,6 +60,6 @@ verified_by:
   - TEST-OBS-SCRIPTS-VALIDATE-REMOTE-SMOKE-EVIDENCE-TEST-MJS-a68aae34
 ---
 
-# check-release-version.mjs
+# Release version validation
 
-Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+Read the root package, desktop Cargo manifest, Tauri bundle manifest and Cargo.lock Ridge entry without modifying them. Reject missing values or disagreement. When a release tag is supplied, reject any tag other than v plus the agreed version. Local validation may omit a tag; release CI must supply its actual trigger tag. Tests cover consistent versions, each mismatch, matching tag and mismatched tag.

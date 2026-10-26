@@ -13,6 +13,6 @@ code_targets:
   - Cargo.lock
 ---
 
-# package.json
+# Product release version
 
-The root package version is the release source of truth. Release v0.1.86 requires Cargo.lock to record the same Ridge package version before tag creation.
+package.json supplies the product release version. The Ridge desktop entry in Cargo.lock, desktop Cargo.toml, Tauri bundle version and v-prefixed release tag must match exactly before packaging. Do not rewrite independent crate versions. The release version checker must reject missing or divergent values.

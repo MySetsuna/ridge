@@ -32,17 +32,20 @@ export function versionSet(rootDir = root) {
   ]);
 }
 
-export function validateVersions(versions) {
+export function validateVersions(versions, expectedTag) {
   const expected = versions.get('package.json');
   const mismatches = [...versions].filter(([, version]) => version !== expected);
+  if (expectedTag !== undefined && expectedTag !== `v${expected}`) {
+    mismatches.push(['release tag', expectedTag]);
+  }
   return { expected, mismatches, ok: Boolean(expected) && mismatches.length === 0 };
 }
 
-export function main(rootDir = root) {
+export function main(rootDir = root, expectedTag) {
   const versions = versionSet(rootDir);
-  const result = validateVersions(versions);
+  const result = validateVersions(versions, expectedTag);
   if (!result.ok) {
-    console.error('release version mismatch:', Object.fromEntries(versions));
+    console.error('release version mismatch:', Object.fromEntries([...versions, ['release tag', expectedTag]]));
     return false;
   }
   console.log(`release version contract OK: ${result.expected}`);
@@ -50,5 +53,5 @@ export function main(rootDir = root) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  process.exitCode = main() ? 0 : 1;
+  process.exitCode = main(root, process.env.RELEASE_TAG) ? 0 : 1;
 }

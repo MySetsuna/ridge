@@ -12,6 +12,6 @@ test_targets:
   - scripts/check-release-version.test.mjs
 ---
 
-# check-release-version.test.mjs
+# Release version regression tests
 
-Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+Exercise real manifest parsing and rejection of missing or inconsistent versions across the four release inputs. Verify exact v-prefixed tag matching and rejection of a different release tag; no tag remains valid for local pre-release checks.

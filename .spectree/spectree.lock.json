@@ -1,62 +1,342 @@
 {
   "version": 1,
-  "changeId": "CHG-076",
-  "specHash": "6c0fd1345a3e3e2e8cc0e8eba378e21e1b7fe1f847345c588cf70021c9a1b5c0",
+  "changeId": "CHG-077",
+  "specHash": "da27d71bb27de2c798d9b99a9199f36468c28f966f44e61a2a7b8aacc26bb7fe",
   "units": [
     {
-      "id": "L3-RUNTIME-WORKSPACE-CONTINUITY",
-      "level": "L3",
-      "nodeHash": "ec122fa21cf36ded67da1dbbeea945ad93d39ae1a8a47822f71c5b0105ab9c0b",
+      "id": "L4-OBS-GITHUB-WORKFLOWS-RELEASE-YML-87db21a9",
+      "level": "L4",
+      "nodeHash": "9212740f07201fdda81106c6901c49d7d7afeea05b6b08dcc53410a3941a1484",
       "codeTargets": [
-        "packages/ridge-kernel/src/host.rs",
-        "packages/ridge-kernel/src/client.rs",
-        "packages/ridge-kernel/src/domain.rs",
-        "packages/ridge-kernel/src/kernel_mcp.rs",
-        "packages/ridge-kernel/src/workspace_commands.rs",
-        "packages/ridge-kernel/src/workspace_files.rs",
-        "packages/ridge-kernel/src/workspace_autosave.rs",
-        "packages/ridge-core/src/fs/commands.rs",
-        "src/lib/stores/fileExplorer.ts",
-        "src/lib/components/FileTree.svelte",
-        "src/lib/components/Explorer.svelte",
-        "src/lib/stores/paneTree.ts",
-        "packages/ridge-core/src/workspace/file.rs"
+        ".github/workflows/release.yml"
       ],
       "testTargets": [
-        "packages/ridge-kernel/tests/runtime_workspace_continuity.rs",
-        "packages/ridge-kernel/tests/common/runtime_fixture.rs",
-        "packages/ridge-kernel/tests/cwd_runtime.rs",
-        "packages/ridge-kernel/tests/terminal_lifecycle_runtime.rs",
-        "src/lib/stores/fileExplorer.test.ts",
-        "src/lib/stores/paneTree.test.ts",
-        "src/lib/stores/paneTree.coverage.test.ts",
-        "packages/ridge-kernel/tests/workspace_file_owner.rs"
+        "scripts/check-release-version.test.mjs"
       ],
-      "status": "DRAFT"
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-PACKAGE-JSON-7ae45ad1",
+      "level": "L4",
+      "nodeHash": "17806ae10b62a850adac64b7b2add8941c7f360b9f9fcc0bb6e6b397ec5f8263",
+      "codeTargets": [
+        "package.json",
+        "Cargo.lock"
+      ],
+      "testTargets": [],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-SCRIPTS-CHECK-RELEASE-VERSION-MJS-784bc9d9",
+      "level": "L4",
+      "nodeHash": "3a0ed48669d14b8aab8788d07cbb2012d3974ab88925c4d1943f1e0a1af710e2",
+      "codeTargets": [
+        "scripts/check-release-version.mjs"
+      ],
+      "testTargets": [
+        "scripts/app-csp.test.mjs",
+        "scripts/build-ridge-mcp-sidecar.test.mjs",
+        "scripts/build-ridge.test.mjs",
+        "scripts/cdp-port.test.mjs",
+        "scripts/cdp-pty-state.test.mjs",
+        "scripts/cdp-reap-test.mjs",
+        "scripts/check-release-version.test.mjs",
+        "scripts/cloud-protocol-ssot.test.ts",
+        "scripts/lib/cdpModuleUrl.test.mjs",
+        "scripts/lib/cdpTarget.test.mjs",
+        "scripts/lib/remoteArtifactBundle.test.mjs",
+        "scripts/lib/toolPath.test.mjs",
+        "scripts/lib/weakNetMetrics.test.mjs",
+        "scripts/quality-helpers.test.mjs",
+        "scripts/rdg-remote-e2e.test.ts",
+        "scripts/remote-createws-test.mjs",
+        "scripts/remote-runtime-last-error-attribution.test.ts",
+        "scripts/start-vite-dev.test.mjs",
+        "scripts/sync-generated-csp.test.mjs",
+        "scripts/tauri-dev-cdp-env.test.mjs",
+        "scripts/validate-remote-smoke-evidence.test.mjs"
+      ],
+      "status": "LOCKED",
+      "interfaceSignatures": [
+        "export function main(rootDir = root, expectedTag)",
+        "export function validateVersions(versions, expectedTag)",
+        "export function versionSet(rootDir = root)"
+      ]
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-CARGO-TOML-fe4c6a80",
+      "level": "L4",
+      "nodeHash": "dce0fc0c4e32741ee90142ea17193d92a249315aeccb41b87bbf7185495503fe",
+      "codeTargets": [
+        "src-tauri/Cargo.toml"
+      ],
+      "testTargets": [
+        "src-tauri/tests/win_manifest_boot.rs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-TAURI-CONF-JSON-fa09f1da",
+      "level": "L4",
+      "nodeHash": "630afd6c6903f7dc99cd1f2ea58d0c2ca709fe4506128f533485e6bad2e8bc72",
+      "codeTargets": [
+        "src-tauri/tauri.conf.json"
+      ],
+      "testTargets": [
+        "src-tauri/tests/win_manifest_boot.rs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-APP-CSP-TEST-MJS-8c76d58b",
+      "level": "TEST",
+      "nodeHash": "129ea88dd96641bebc44d70611f30fa7371c84ba746e15c909dacb5af5211229",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/app-csp.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-BUILD-RIDGE-MCP-SIDECAR-TEST-MJS-a86f29b5",
+      "level": "TEST",
+      "nodeHash": "aab713b46c45e0afff776092feb405b2d04f0de8c4ecdcf032ed22054c0a61ae",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/build-ridge-mcp-sidecar.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-BUILD-RIDGE-TEST-MJS-86e854f4",
+      "level": "TEST",
+      "nodeHash": "782e028a8521f8c38c733ff6f79dd520b09b1c727342d2524f1ec19f1586c8cb",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/build-ridge.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-CDP-PORT-TEST-MJS-857ddaea",
+      "level": "TEST",
+      "nodeHash": "37275f4c2fe84b33890ef17911b9f7f84d3297d968c423a641bccff60c6fbd12",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/cdp-port.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-CDP-PTY-STATE-TEST-MJS-462b9d95",
+      "level": "TEST",
+      "nodeHash": "fed2a13491c28ad536215ddf5d832fa5f49c342c7493a11eb0f264c5b892d2fb",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/cdp-pty-state.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-CDP-REAP-TEST-MJS-cff56471",
+      "level": "TEST",
+      "nodeHash": "ddeba9386f720a7932f246bbbf742ca6e019ae7b6f62dd036480d7a863740cf9",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/cdp-reap-test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-CHECK-RELEASE-VERSION-TEST-MJS-ff79f177",
+      "level": "TEST",
+      "nodeHash": "dbd79c6743130c5a5c40bc7d565ed1c47ca7596b1f7896fb97c4553254a244b1",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/check-release-version.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-CLOUD-PROTOCOL-SSOT-TEST-TS-00c3d7f0",
+      "level": "TEST",
+      "nodeHash": "6345d635e6f3e39b6ddeec5979925ea0fc434bcbffbc664e0f8f67b6b7ed70d1",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/cloud-protocol-ssot.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-LIB-CDPMODULEURL-TEST-MJS-2cfe59e9",
+      "level": "TEST",
+      "nodeHash": "8326224200c067d2cb8ad1e8c5339f41356f4e928cdbd4458191c227396f681b",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/lib/cdpModuleUrl.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-LIB-CDPTARGET-TEST-MJS-1120ba97",
+      "level": "TEST",
+      "nodeHash": "944f80fd28a11ffbcac2768c0bf7e98de1d3cb883e02356f0cc386357e1588d5",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/lib/cdpTarget.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-LIB-REMOTEARTIFACTBUNDLE-TEST-MJS-75c40031",
+      "level": "TEST",
+      "nodeHash": "cdba0051c0360cc57098e59d07d1e6eaae2ce97bda01e4bf42abbe2f83532d81",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/lib/remoteArtifactBundle.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-LIB-TOOLPATH-TEST-MJS-e11cd513",
+      "level": "TEST",
+      "nodeHash": "9cedcf741244b0c45b278565acaf52930fc69a8d0fccc77253af99d0b86fd228",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/lib/toolPath.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-LIB-WEAKNETMETRICS-TEST-MJS-6b840696",
+      "level": "TEST",
+      "nodeHash": "d7da0b293ce4c50b705ae8a0995eb61f06888651f422d63ecd448d92ce514469",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/lib/weakNetMetrics.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-QUALITY-HELPERS-TEST-MJS-5d2356c4",
+      "level": "TEST",
+      "nodeHash": "b742e83dafad2590edba9732ea5444f8e03b6ed22837179d3549df2fa6a683a7",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/quality-helpers.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-RDG-REMOTE-E2E-TEST-TS-2c9bc9e5",
+      "level": "TEST",
+      "nodeHash": "906485fee7a3a4fa8f8807c989a1a3c5e5ba2b53f22668d1036e2753a9e660f0",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/rdg-remote-e2e.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-REMOTE-CREATEWS-TEST-MJS-e9b94290",
+      "level": "TEST",
+      "nodeHash": "d707585abd0692a37ea6b31d1b2f2e6555c89a31922d4fcef060cec1a6db410b",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/remote-createws-test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-REMOTE-RUNTIME-LAST-ERROR-ATTRIBUTION-TEST-TS-812bdc3e",
+      "level": "TEST",
+      "nodeHash": "0d8dbbf5cd12beaaef7f2cd2a4f085ed9ec733df7cfdd292527a25387942e9f4",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/remote-runtime-last-error-attribution.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-START-VITE-DEV-TEST-MJS-0823d5ca",
+      "level": "TEST",
+      "nodeHash": "a13d454aac94e7867fd3a428ac0064a1bd1203113d6ebe822086d7b865164318",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/start-vite-dev.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-SYNC-GENERATED-CSP-TEST-MJS-d2aa62c5",
+      "level": "TEST",
+      "nodeHash": "ee89448fcdf6afa4b8741d7fe31232fdcf95895a2583947da3a29f3c63e02ff5",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/sync-generated-csp.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-TAURI-DEV-CDP-ENV-TEST-MJS-f0b53c0d",
+      "level": "TEST",
+      "nodeHash": "0a70cd7aa6eda010860b5d107301e7fbc358b77bbbdcdba3db09489287e1b448",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/tauri-dev-cdp-env.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SCRIPTS-VALIDATE-REMOTE-SMOKE-EVIDENCE-TEST-MJS-a68aae34",
+      "level": "TEST",
+      "nodeHash": "16509697b42f752b088f5dee354130fae0c53117f734c451dfec48fa547a564e",
+      "codeTargets": [],
+      "testTargets": [
+        "scripts/validate-remote-smoke-evidence.test.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-TAURI-TESTS-WIN-MANIFEST-BOOT-RS-681c2eff",
+      "level": "TEST",
+      "nodeHash": "59f92f0c7364499e915b5bf7058fdba332337d4c98349d3fd1a7a39344715342",
+      "codeTargets": [],
+      "testTargets": [
+        "src-tauri/tests/win_manifest_boot.rs"
+      ],
+      "status": "LOCKED"
     }
   ],
   "allowedPaths": [
-    "packages/ridge-core/src/fs/commands.rs",
-    "packages/ridge-core/src/workspace/file.rs",
-    "packages/ridge-kernel/src/client.rs",
-    "packages/ridge-kernel/src/domain.rs",
-    "packages/ridge-kernel/src/host.rs",
-    "packages/ridge-kernel/src/kernel_mcp.rs",
-    "packages/ridge-kernel/src/workspace_autosave.rs",
-    "packages/ridge-kernel/src/workspace_commands.rs",
-    "packages/ridge-kernel/src/workspace_files.rs",
-    "packages/ridge-kernel/tests/common/runtime_fixture.rs",
-    "packages/ridge-kernel/tests/cwd_runtime.rs",
-    "packages/ridge-kernel/tests/runtime_workspace_continuity.rs",
-    "packages/ridge-kernel/tests/terminal_lifecycle_runtime.rs",
-    "packages/ridge-kernel/tests/workspace_file_owner.rs",
-    "src/lib/components/Explorer.svelte",
-    "src/lib/components/FileTree.svelte",
-    "src/lib/stores/fileExplorer.test.ts",
-    "src/lib/stores/fileExplorer.ts",
-    "src/lib/stores/paneTree.coverage.test.ts",
-    "src/lib/stores/paneTree.test.ts",
-    "src/lib/stores/paneTree.ts"
+    ".github/workflows/release.yml",
+    "Cargo.lock",
+    "package.json",
+    "scripts/app-csp.test.mjs",
+    "scripts/build-ridge-mcp-sidecar.test.mjs",
+    "scripts/build-ridge.test.mjs",
+    "scripts/cdp-port.test.mjs",
+    "scripts/cdp-pty-state.test.mjs",
+    "scripts/cdp-reap-test.mjs",
+    "scripts/check-release-version.mjs",
+    "scripts/check-release-version.test.mjs",
+    "scripts/cloud-protocol-ssot.test.ts",
+    "scripts/lib/cdpModuleUrl.test.mjs",
+    "scripts/lib/cdpTarget.test.mjs",
+    "scripts/lib/remoteArtifactBundle.test.mjs",
+    "scripts/lib/toolPath.test.mjs",
+    "scripts/lib/weakNetMetrics.test.mjs",
+    "scripts/quality-helpers.test.mjs",
+    "scripts/rdg-remote-e2e.test.ts",
+    "scripts/remote-createws-test.mjs",
+    "scripts/remote-runtime-last-error-attribution.test.ts",
+    "scripts/start-vite-dev.test.mjs",
+    "scripts/sync-generated-csp.test.mjs",
+    "scripts/tauri-dev-cdp-env.test.mjs",
+    "scripts/validate-remote-smoke-evidence.test.mjs",
+    "src-tauri/Cargo.toml",
+    "src-tauri/tauri.conf.json",
+    "src-tauri/tests/win_manifest_boot.rs"
   ],
   "testCommand": [
     "npm",
@@ -71,7 +351,7 @@
     ".gitattributes": "7856b9924aef4bf6efb1caf15176a2a25683d42fc3d6bf3c4c79a84fcc222fd4",
     ".github/workflows/deploy-pages.yml": "68c4c2a838c45ec4927f108a20e46db9cd79543049566530307d5fe556c1d8cb",
     ".github/workflows/publish-remote.yml": "68aa2f6f3a2d57c14d39e657e10c06717e0e2de6f6b4d1b845e706108ca395f0",
-    ".github/workflows/release.yml": "648782f4f17fe1c412159c3f67ea42e7c2870cd22715612e6ae8df9d70743f6b",
+    ".github/workflows/release.yml": "9a8d371d0365248922c049d9f223c5ca421aee40e7df979a45bcfe733c09a239",
     ".github/workflows/rtp1-kernel-e2e.yml": "2f4a7a2047a8fc0450a3fd2067435c8dfc8d953a345acaa2f7e92d9f81afbc69",
     ".gitignore": "c208e50c2b238ee01dff629848344f3ff0026784af1107174fa42832e8d2276e",
     ".mcp.json": "9094342c1182357eebb9e98dedaa94efc96fffdecd2b31e92b84ecba09c9ea01",
@@ -83,7 +363,7 @@
     ".vscode/extensions.json": "926925a0d7f8b5e0e9e84667ac901095f7ffdb83afb54de65662d6e4cfb78ad1",
     ".vscode/settings.json": "54224dc29195ac0e0ae6a3ce38d5cd7aeb390357259a37c860a28a3f1087ef71",
     "AGENTS.md": "e1d607be3c46e5473c2a7aa6d43c8a8faf25f992aa7a1ce170ab8bfac04d88e9",
-    "Cargo.lock": "dabc3b56096ba1a6e56f489904df06298794b85a6cb54e9ff97cd5e061053a55",
+    "Cargo.lock": "66af5a7640af594d46d37ec3dd8ff8c6294b3919235e7076993a9d6c3a7345a1",
     "Cargo.toml": "7ffe18a41f63a8b8c3f59693d3be8e7d6b439db6490afc2f8da838e54b2ed87c",
     "changes/BASELINE-001.md": "89235164085793f6ea8df5140ec032522d2523a7264a4b3c0b3a210745552c06",
     "changes/CHG-001.md": "14b0dcb1c2b91b2b8dfab95e6da4dbdd71ae29d21e6a85e193a4d9e3cb31154c",
@@ -160,7 +440,7 @@
     "changes/CHG-074.md": "6be9b2579795eead248af1a573685c3c0f48c605789b8f0eedcbf761b341a736",
     "changes/CHG-075.md": "b715d7c2e55c23a307600177e91e664f54f28d583c07a18b3da715d8cde0ab44",
     "changes/CHG-076.md": "e9983589c64e64d33978105e3e1a8a5078297f30ff3ef4129a34b5645be393d5",
-    "changes/CHG-077.md": "2c0fcbe206207af93b980cd58bb56cb60499d5a1bd8314c1bfbc3bf650cfe65b",
+    "changes/CHG-077.md": "401e3484222010356af04d47feaad63866a1b96855b588a25acdc4c69f87c4ca",
     "docs/architecture/00-overview.md": "d88523e187eac1aef5a85939639722f38b3cbac41a55327cfe1c28a9bb87d682",
     "docs/architecture/10-kernel.md": "80f773ffecdaafac0b64dfb99a3ddb8c05f801d39c9d2533397b4e905bb5e4f9",
     "docs/architecture/20-rtp1-wire.md": "f32223c6d43ccf048f06176cb288baf46156477a72e24f1a4389a88756ca1a1c",
@@ -196,7 +476,7 @@
     "docs/README_CN.md": "8932531370504d2820f207f6cd3f5d92852066c9a5ae696c4a065ae256fa889a",
     "FINAL-REPORT-A8.md": "7f7df82021cea93d3ab23a88e39bda0d60c1df7b531d79972b3556f5e74d6d08",
     "IMPLEMENTATION-ACCEPTANCE.md": "2f37f9b4846693e549620f103776c192b26bc6b5dd5ceda7722403539108fd70",
-    "package.json": "b28bed4ff2ccddb1a122689370cf03d51b57118393b22dd6cea6a3a4a84b7083",
+    "package.json": "8f2501d1ec73ae8ddcf5c52fa723bc09549d6bc7e31a24b828b16a5904212314",
     "packages/remote/package.json": "3c9d355179aefeaf12877e4e44bc5b41ba8812fc23825024f01da3b082f6b1db",
     "packages/remote/src/index.ts": "ae66d492761ce353faab343fe9215ab48235088dee9cd5ce1621392948999c30",
     "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts": "7abb718851c25821146276ac974fbad2aa64e011e142e2623fe2c6a164324b08",
@@ -853,8 +1133,8 @@
     "scripts/check-capability-matrix.mjs": "bd3bdbaf6f752e040f204ffc673a1814c6ec920eefec0a9f25dab701d2d6c28e",
     "scripts/check-desktop-only-hosts.mjs": "c7083988aba4fce97cb65a7ca5cda7f75bdfb9fefc17fcbf1bbbd3a72953acc6",
     "scripts/check-prod-status.mjs": "a22ad3d32389b063ebe69091e95ff07d0cdb6c5680b4cdf1db97bb93ef6d70e7",
-    "scripts/check-release-version.mjs": "75ed9354a2fe365aef5c765a2e7170e80b3ef2620ac96874ca144173ba8b67bf",
-    "scripts/check-release-version.test.mjs": "26adc9e5494c6a5beb19bcbbe4299be50722a5c08f66de3e04141cdd8df6c00c",
+    "scripts/check-release-version.mjs": "0f8e3763bce9f5b2d4842158b4b49292f45298a077a6bb3aeb5042df00cff997",
+    "scripts/check-release-version.test.mjs": "99075dbb4cc7b4c0ee62f19d593484ba4349bf1bfc934ac908bac750778d915b",
     "scripts/check-user-rail-gates.mjs": "e136aa7489d5970d7986da38701b8b0320255315d25458487f11347826c567d1",
     "scripts/cli-lan-reconnect-acceptance.mjs": "09a56bc407749bbfd775f958d5fa0ebc35f84b49ec0dd031662f3fd1a6a42174",
     "scripts/cloud-protocol-ssot.test.ts": "d564421099a7d448d811a6e6fb9f5582f84e1ede4d291cd009c9089e94c02c83",
@@ -1144,11 +1424,11 @@
     "specs/migration/L4-OBS-DRIFT-BASELINE-001-UNCLAIMED-a1b2c3d4.md": "4f916bb7c0f095a06ca636e22d8a16f47d938eb87763ccab456156efddd03feb",
     "specs/migration/L4-OBS-GITHUB-WORKFLOWS-DEPLOY-PAGES-YML-0f132b09.md": "bff2591c39b0ae6409433f5c343249d17498672d995ff629cf09b9e5d9c387de",
     "specs/migration/L4-OBS-GITHUB-WORKFLOWS-PUBLISH-REMOTE-YML-17999a17.md": "715a83b724f891d8ca99829a84e6e12d562b588aae1fbac2737449dd3a42ad36",
-    "specs/migration/L4-OBS-GITHUB-WORKFLOWS-RELEASE-YML-87db21a9.md": "a298d9d35c4722d6a781c2e5d982b00d9da483e46d92fac9d6cc745cabdef892",
+    "specs/migration/L4-OBS-GITHUB-WORKFLOWS-RELEASE-YML-87db21a9.md": "fb363806b40bf173b2f006919c867bc5d8f3f625bd9d5a82b062a4224f8691b3",
     "specs/migration/L4-OBS-MCP-JSON-d5d3368a.md": "ef6ac9d1fae51c17d63de4cc73cdc0be0e03af63056acd21df91fdfb6eadf0f4",
     "specs/migration/L4-OBS-OPENCODE-OPENCODE-JSON-ba0786d2.md": "73e84fe3eec5eb6bd4869554ba87f023d719f5b6c9880dfa2b2ad568ceae1095",
     "specs/migration/L4-OBS-OPENCODE-PACKAGE-JSON-047992d6.md": "bed931b294965e288238aa2a4bdc5c50ad2c2eb76f4c1c0e93bbed08129bf4d5",
-    "specs/migration/L4-OBS-PACKAGE-JSON-7ae45ad1.md": "d0ce67f2b81178e7c37cfc398b4b94739ec9ddd92f07175094871d90d828bcab",
+    "specs/migration/L4-OBS-PACKAGE-JSON-7ae45ad1.md": "239a57bca8dcf5d45b9dd7b6a1b9c3fbf5d6c092c598a264124053f3006f0509",
     "specs/migration/L4-OBS-PACKAGES-REMOTE-PACKAGE-JSON-dfdc6c85.md": "7dfa7fd8920d1aae2f0a7d1975aed324f65bc334e1447276e71198a1685386c9",
     "specs/migration/L4-OBS-PACKAGES-REMOTE-SRC-INDEX-TS-71c2de24.md": "5211588d9a41aaf264d27af2fe42e838ffcf7e356ce94fb395b7124d6f61c3be",
     "specs/migration/L4-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-APICLIENT-TS-3a5d37d5.md": "d6e6f5c9f086792bdf6420d800092683e5a49eb087ce71b9c5490370ed8ff9c8",
@@ -1486,7 +1766,7 @@
     "specs/migration/L4-OBS-SCRIPTS-CHECK-CAPABILITY-MATRIX-MJS-61614419.md": "063c34ea21a7c8ac195c615ca0c7040ad0628efa2554e720e3ca23afbe200fd1",
     "specs/migration/L4-OBS-SCRIPTS-CHECK-DESKTOP-ONLY-HOSTS-MJS-54c0459c.md": "a97554395985bfaacb366df06835e8ea49bb998c08465ca06955b081560a677b",
     "specs/migration/L4-OBS-SCRIPTS-CHECK-PROD-STATUS-MJS-d07e70da.md": "b8ba2c4566df3f07a530a3627d12f98a7ca25b32764a5098ed528ad83800b48a",
-    "specs/migration/L4-OBS-SCRIPTS-CHECK-RELEASE-VERSION-MJS-784bc9d9.md": "c41df65291d2d69191063774698f10bc0b082b025e596d0bd28293aab5a04d78",
+    "specs/migration/L4-OBS-SCRIPTS-CHECK-RELEASE-VERSION-MJS-784bc9d9.md": "2301b56ac69c1e36cb2a21f2cdf485f47d41be4b771be9ca7bcd69b0a30dbf5b",
     "specs/migration/L4-OBS-SCRIPTS-CHECK-USER-RAIL-GATES-MJS-db8b8580.md": "f578bb779d1cbfbb8b06b9c71f085a386c63662101aedd7780392922d3ce9051",
     "specs/migration/L4-OBS-SCRIPTS-COPY-TEAMMATE-SHIM-MJS-ee4dd428.md": "805c388ad289a678885f2c26dc4fda442ab19e5dbb986121b4e00c82caa326cc",
     "specs/migration/L4-OBS-SCRIPTS-DEV-CLI-SH-70fd5f5d.md": "13f9d1dcffabafc9f9908e4a0c87bb9cd43ab86e789158d41b49dc204896f6f2",
@@ -1748,7 +2028,7 @@
     "specs/migration/L4-OBS-SRC-TAURI-BUILD-RS-7d1ef5b0.md": "c3c44c9ee541f6f79796ef7928a339b4d233e1361075a99acbb36ac2e360180e",
     "specs/migration/L4-OBS-SRC-TAURI-CAPABILITIES-DEFAULT-JSON-8fe2bbfe.md": "1020fe60853bcf92ceccdc2eaa537afc615cae514f530358f272c229a0999f97",
     "specs/migration/L4-OBS-SRC-TAURI-CARGO-TOML-c1d2e3f4.md": "b8ddbb07cabe9f3654f7591691b4c6dbc932c74a30ab6704ec0082b402291415",
-    "specs/migration/L4-OBS-SRC-TAURI-CARGO-TOML-fe4c6a80.md": "da9493cf7e433754f99ffca7b4e3776704333d1255363c99fb6efc587445f3ff",
+    "specs/migration/L4-OBS-SRC-TAURI-CARGO-TOML-fe4c6a80.md": "fd7eb7c52f6901669f75d438839656cf6d2eda56c0f7c4eb49cac09cf414a728",
     "specs/migration/L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09.md": "cd00bc9d9fc00838a8214e3a1519975084ddbb26f67a4211f372eb511764b6c8",
     "specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d.md": "d13d42e7859144afbe816304a4429ea517851660649cf55cb57a19962b5af4ba",
     "specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58.md": "68a4e69c8afc4ab6021791159d5e4304278db875dfc3cc73d53754b92b0d0456",
@@ -1833,7 +2113,7 @@
     "specs/migration/L4-OBS-SRC-TAURI-SRC-UTILS-MOD-RS-d9ca22c8.md": "99d42f2b10320869a64c9edfb9f5772c3c6efeeb42f74a1f400aa506f158a2c3",
     "specs/migration/L4-OBS-SRC-TAURI-SRC-UTILS-PANE-ID-RS-c5e7302c.md": "0d2b35690ef423deb60ba212be3eeb0bec564204c1db80ea986e767a38909715",
     "specs/migration/L4-OBS-SRC-TAURI-SRC-UTILS-PTY-LOG-RS-cfe4a773.md": "3d91e48abe4452d993d7e84e561d9bef9e96bc5300eef319b994b166deca8e1b",
-    "specs/migration/L4-OBS-SRC-TAURI-TAURI-CONF-JSON-fa09f1da.md": "c3315835a1346da14a2f53acf8bd829e07920107df6d2a204d9b8b83ae101bf7",
+    "specs/migration/L4-OBS-SRC-TAURI-TAURI-CONF-JSON-fa09f1da.md": "43396ced5fbbb1566c681ad843c937076148268082afd7d83200d3c46f91f2ae",
     "specs/migration/L4-OBS-SVELTE-CONFIG-JS-6317e218.md": "ea45860ce403acf7f23312a8535c2aacfe3188bc850f5d24f23d92ae58072a05",
     "specs/migration/L4-OBS-TESTS-COMMON-MOD-RS.md": "6a2f51d235afb72e5309824a8386afab947bd199ec56d601440ddc309cb2946a",
     "specs/migration/L4-OBS-TESTS-M21-LIFECYCLE-ACCEPTANCE-RS.md": "01acefebb799731af301ffc576d2c2f1671dec61172427541802f59cafc0473e",
@@ -1935,7 +2215,7 @@
     "specs/migration/TEST-OBS-SCRIPTS-CDP-PORT-TEST-MJS-857ddaea.md": "8843c03461d4ea05ff97a4852cb063385fe8443ed86bc71b35c9f115c8996dcf",
     "specs/migration/TEST-OBS-SCRIPTS-CDP-PTY-STATE-TEST-MJS-462b9d95.md": "57b8ebbe7cf4a3ca8d9ba9f8bce150c0624454796137ce0318024264b2bd2704",
     "specs/migration/TEST-OBS-SCRIPTS-CDP-REAP-TEST-MJS-cff56471.md": "a2063dbda1cad653e1ea8400e14532a4d4ecf69187e9bf7110c8c065184a0e6a",
-    "specs/migration/TEST-OBS-SCRIPTS-CHECK-RELEASE-VERSION-TEST-MJS-ff79f177.md": "241a54ffba9570957b3ac7eecb736b468865bdd9f2b3092e9195aef0643f0a04",
+    "specs/migration/TEST-OBS-SCRIPTS-CHECK-RELEASE-VERSION-TEST-MJS-ff79f177.md": "eb1aaed9b8a9b49ebdfc1c3a2d2d5963cfc4eb1ca3baa47b2f3cec693a2df5f3",
     "specs/migration/TEST-OBS-SCRIPTS-CLOUD-PROTOCOL-SSOT-TEST-TS-00c3d7f0.md": "e37f88fcc892b1057ee28bff6c97fe3f9587be0b64e92c20bcc0481a891ab76b",
     "specs/migration/TEST-OBS-SCRIPTS-LIB-CDPMODULEURL-TEST-MJS-2cfe59e9.md": "98785847fe6d91c99cb90d08084221e8c8515704e7180eccab42f626c98d0393",
     "specs/migration/TEST-OBS-SCRIPTS-LIB-CDPTARGET-TEST-MJS-1120ba97.md": "29b2c1e2587f1a7becabe6918166cefdbf113ce32a4514f20c0a93a4bff39088",
@@ -2457,7 +2737,7 @@
     "src-tauri/build.rs": "67135ac3b6dfd3c93a0bb047ab339d8926c8fd8289c8d52bce480c083e9ca61c",
     "src-tauri/capabilities/default.json": "0aea69d6e967d9018481608de11dc5a992b38cabee3e825095353cab0cf5d8c2",
     "src-tauri/Cargo.lock": "736528b17382bf99c0cee212647529614b1555c46dea0428e13abeefc49ec44f",
-    "src-tauri/Cargo.toml": "275728f6847d1279a17487ea2f3a2437d54ada4b0a910f945361711144810945",
+    "src-tauri/Cargo.toml": "fa13244f4a03962584a79bbc46862851840e43d52ef28e3b0ce80e7e8838ab7b",
     "src-tauri/gen/schemas/acl-manifests.json": "6e09a8d1446e2640a18c93fdbb0fdabfb913e31af7ca946dd4b171d6796d8283",
     "src-tauri/gen/schemas/capabilities.json": "ee5989f2da424f6247baacb2e93e445a53d9265f2ab5ad453c738e001f02220d",
     "src-tauri/gen/schemas/desktop-schema.json": "1d75d79fc208fd9703b312646c8ac6ead58e9acdf90e0af236eb2aeef928c9de",
@@ -2492,7 +2772,7 @@
     "src-tauri/src/utils/cwd.rs": "e241fc8cb5e92c75f9c2c8a91e8368eef819df86bd1ba1b93e09cd74e12db85f",
     "src-tauri/src/utils/logging.rs": "46f19900bd026d2263c77f606d9d5015849c9af9ade7fa5924ce3f18d5578ade",
     "src-tauri/src/utils/mod.rs": "8cb88ccb081fee74a039088be23f1f1e8b08b50852a28f4b1358ce3a8873b482",
-    "src-tauri/tauri.conf.json": "152959eeb36805b87bfe325bbb26b69d2fcbbfcd68422a69c0a6a379ee676b66",
+    "src-tauri/tauri.conf.json": "c70eb501b0c4f6bb6edb6213e99dfd8f097169d6792b37d7ba32de4e3e5bfa2d",
     "src-tauri/tests/win_manifest_boot.rs": "5d6cdc73371fb907cdc5ab03c5e821483275d4f79477045fe35660936115f934",
     "src-tauri/wix/path-env.wxs": "0b4fa57aab8854d864d5ab1bc68a7b2086491485e9b0d3785da17c58aa6faf2c",
     "static/apple-touch-icon.png": "fcf04070e1ae0e72599b39cf3c118a81c57d01dbb98b894b6ba988bda26cc01e",
@@ -2541,6 +2821,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-3021a7d94139",
-  "manifestHash": "3021a7d94139837ecbea0005a94503175c6677b2094962e1736af80da3e4c1e4"
+  "buildId": "BUILD-f4e310d9cb25",
+  "manifestHash": "f4e310d9cb25ad6c89371468db7c1b8ccb355d800560177ab6c660038dff9942"
 }

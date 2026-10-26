@@ -16,6 +16,6 @@ verified_by:
   - TEST-OBS-SRC-TAURI-TESTS-WIN-MANIFEST-BOOT-RS-681c2eff
 ---
 
-# Cargo.toml
+# Desktop crate version
 
-The desktop Ridge crate version is v0.1.86 and matches the root release version exactly before the release tag is created.
+The desktop Ridge crate version must equal the root product version and Tauri bundle version before tagging. Cargo.lock must reflect that exact version. Preserve dependency and platform boot behavior; independent package versions do not change implicitly.

@@ -16,6 +16,6 @@ verified_by:
   - TEST-OBS-SRC-TAURI-TESTS-WIN-MANIFEST-BOOT-RS-681c2eff
 ---
 
-# tauri.conf.json
+# Bundle version
 
-Tauri bundle metadata carries v0.1.86, matching package.json, the Ridge crate, Cargo.lock, and the Git tag.
+Tauri bundle metadata must equal the root product version, desktop crate, Cargo.lock Ridge entry and release tag. Bundle version checks must pass before creating installers; preserve the existing Windows manifest boot contract.

@@ -52,4 +52,15 @@ describe('release version contract', () => {
     expect(main('C:/repo')).toBe(false);
     expect(console.error).toHaveBeenCalledWith('release version mismatch:', expect.any(Object));
   });
+
+  it('requires the exact version tag when supplied by release CI', () => {
+    const versions = versionSet('C:/repo');
+    expect(validateVersions(versions, 'v1.2.3').ok).toBe(true);
+    for (const tag of ['v1.2.4', '1.2.3', '', 'v1.2.3-rc.1']) {
+      expect(validateVersions(versions, tag)).toMatchObject({ ok: false, mismatches: [['release tag', tag]] });
+      expect(main('C:/repo', tag)).toBe(false);
+    }
+    expect(main('C:/repo', 'v1.2.3')).toBe(true);
+    expect(main('C:/repo')).toBe(true);
+  });
 });
