@@ -529,8 +529,9 @@ impl McpHost for KernelMcpHost {
         }
         let workspace = target["workspaceId"].as_str().ok_or_else(|| HostError::InvalidParams("missing target workspace".into()))?;
         let store = self.state.groups.lock().map_err(|_| HostError::Internal("group authority unavailable".into()))?;
-        let snapshot = store.snapshot(workspace);
-        let group = snapshot.groups.iter().find(|group| group.id == id).ok_or_else(|| HostError::InvalidParams("group not found in target workspace".into()))?;
+        let global = store.snapshot(crate::commune_groups::HOST_GROUP_SCOPE);
+        let legacy = if store.host_authoritative() {Default::default()} else {store.snapshot(workspace)};
+        let group = global.groups.iter().chain(&legacy.groups).find(|group| group.id == id).ok_or_else(|| HostError::InvalidParams("group not found in target scope".into()))?;
         if group.revision != revision { return Err(HostError::InvalidParams("group revision changed; refresh before dispatch".into())); }
         if group.leader_agent_id.as_deref() != target["agentId"].as_str() {
             return Err(HostError::InvalidParams("group objective must target its existing leader".into()));
@@ -688,7 +689,7 @@ impl McpHost for KernelMcpHost {
             && agent_id.is_none_or(|id| member.agent_id == id)
             && pane.is_none_or(|pane| member.pane_id == pane.to_string()))
             .ok_or_else(|| HostError::InvalidParams("join_group requires an exact registered member".into()))?;
-        let snapshot = self.state.groups.lock().map_err(|_| HostError::Internal("group authority unavailable".into()))?.snapshot(&member.workspace_id);
+        let snapshot = self.state.groups.lock().map_err(|_| HostError::Internal("group authority unavailable".into()))?.snapshot(crate::commune_groups::HOST_GROUP_SCOPE);
         let matches = snapshot.groups.iter().filter(|group| group.id == group_name || group.name == group_name).collect::<Vec<_>>();
         if matches.len() != 1 { return Err(HostError::InvalidParams("specify one existing group ID; name is missing or ambiguous".into())); }
         let id = matches[0].id.clone();
@@ -696,7 +697,7 @@ impl McpHost for KernelMcpHost {
         let group = groups.iter_mut().find(|group| group.id == id).unwrap();
         if group.member_agent_ids.contains(&member.agent_id) { return Ok(()); }
         group.member_agent_ids.push(member.agent_id.clone());
-        crate::commune_groups::replace(&self.state,&json!({"workspaceId":member.workspace_id,"expectedRevision":snapshot.revision,"groups":groups}),false)
+        crate::commune_groups::replace(&self.state,&json!({"groupScope":"host","expectedRevision":snapshot.revision,"groups":groups}),false)
             .map_err(HostError::InvalidParams)?;
         Ok(())
     }

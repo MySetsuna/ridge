@@ -3,6 +3,8 @@
   import { t } from '$lib/i18n';
   import type { PaneInfo, RemoteLink, TeammateTopology, WorkspaceInfo } from '@ridge/remote';
   import CommuneHistory from '$lib/teammate/CommuneHistory.svelte';
+  import HostCommuneGroups from '$lib/teammate/HostCommuneGroups.svelte';
+  import { teammateGroupStore } from '$lib/teammate/teammateGroups.svelte';
   import CommuneWorkspaceRoster from './CommuneWorkspaceRoster.svelte';
   import { remoteSessionId, type RemoteQueryClientLike } from './remoteQueries';
 
@@ -19,7 +21,8 @@
   let failed = $state(false);
   const scopes = $derived(workspaces ?? discoveredScopes);
   const scopeKey = $derived(scopes.map(scope => scope.id).sort().join(','));
-  const memberCount = $derived(scopes.reduce((count, scope) => count + (snapshots[scope.id]?.roster.length ?? 0), 0));
+  const memberCount = $derived(scopes.reduce((count, scope) => count + (snapshots[scope.id]?.roster.length ?? 0)
+    + (snapshots[scope.id]?.discovered?.filter(candidate => candidate.workspaceId === scope.id && !candidate.protocolConnected).length ?? 0), 0));
   const memberFor = (row: {workspaceId?: string; memberId?: string; sessionId: string}) =>
     row.workspaceId ? snapshots[row.workspaceId]?.roster.find(member => member.id === row.memberId && member.sessionId === row.sessionId) : undefined;
   $effect(() => { const ids = scopeKey.split(','); untrack(() => {
@@ -33,7 +36,7 @@
       catch { if (alive && version === generation) failed = true; }
     };
     void refreshScopes();
-    const stops = [ws.onReconnect(() => { void refreshScopes(); }), ws.onMessage(message => {
+    const stops = [ws.onReconnect(() => { void refreshScopes(); void teammateGroupStore().refresh(); }), ws.onMessage(message => {
       if (message.type === 'workspaces') discoveredScopes = message.workspaces;
     })];
     return () => { alive = false; generation++; stops.forEach(stop => stop()); };
@@ -56,6 +59,7 @@
           onAttentionChange={paneIds => onAttentionChange?.(paneIds, scope.id)} />
       {/each}
     {/key}
+    <HostCommuneGroups members={scopes.flatMap(scope => snapshots[scope.id]?.roster ?? [])} identity={ws} />
     {#if memberCount === 0}<p class="global-empty">{$t('commune.allWorkspacesEmpty')}</p>{/if}
   </div>
   {#if tab === 'history'}

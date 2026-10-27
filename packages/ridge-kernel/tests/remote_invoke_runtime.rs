@@ -40,11 +40,13 @@ async fn native_unsubscribe_retires_only_its_own_activation_and_can_resubscribe(
     std::fs::create_dir_all(&root).unwrap();
     let owned=start(&root).await;
     let mut first=attach(&owned.endpoint).await;
-    assert!(rpc(&mut first,1,"set_user_default_cwd",json!({"path":root})).await["error"].is_null());
-    let workspace=rpc(&mut first,2,"create_workspace",json!({"name":"Subscriptions"})).await["result"].clone();
-    let pane=rpc(&mut first,3,"create_pane",json!({"workspaceId":workspace,"cwd":root,"shell":if cfg!(windows){"cmd.exe"}else{"/bin/sh"}})).await;
-    assert!(pane["error"].is_null(),"{pane}");
-    let target=json!({"workspaceId":workspace,"paneId":pane["result"]["paneId"],"activationId":1});
+    // Subscription fencing does not depend on the interactive PowerShell profile
+    // reaching its final cwd. Bind an owned shell inside the narrow fixture root.
+    let workspace=client::request_json(&owned.endpoint,"POST","/v1/domain/workspaces",None).unwrap()["workspace_id"].clone();
+    let pane=client::request_json(&owned.endpoint,"GET",&format!("/v1/domain/workspaces/{}",workspace.as_str().unwrap()),None).unwrap()["panes"][0].clone();
+    let created=client::request_json(&owned.endpoint,"POST","/v1/domain/ptys",Some(&json!({"workspace_id":workspace,"pty_id":pane,"program":if cfg!(windows){"cmd.exe"}else{"/bin/sh"},"args":[],"cwd":root,"env":{},"role":"shell","cols":80,"rows":24}))).unwrap();
+    assert_eq!(created["ok"],true,"{created}");
+    let target=json!({"workspaceId":workspace,"paneId":pane,"activationId":1});
     let mut second=attach(&owned.endpoint).await;
     for socket in [&mut first,&mut second] {
         socket.send(Message::Text(json!({"jsonrpc":"2.0","method":"subscribe-pane","params":target}).to_string())).await.unwrap();

@@ -64,6 +64,7 @@
   // bursts. Agent history remains independently throttled to five minutes.
   let liveRefreshTimer: ReturnType<typeof setTimeout> | undefined;
   let topo = $state<TeammateTopology>({ roster: [], leaderId: null, edges: [] });
+  const terminalCandidates = $derived((topo.discovered ?? []).filter(candidate => candidate.workspaceId === workspaceId && !candidate.protocolConnected));
   $effect(() => { const snapshot = topo; untrack(() => onSnapshot?.(snapshot)); });
   let pending = $state<HitlPendingItem[]>([]);
   let health = $state<OrchestrationHealth>({ suspendedAgents: 0, pendingHitl: 0 });
@@ -429,7 +430,7 @@
   });
 </script>
 
-{#if !globalView || topo.roster.length > 0 || groups.length > 0 || failed}
+{#if !globalView || topo.roster.length > 0 || terminalCandidates.length > 0 || groups.length > 0 || failed}
 <div class="rg-commune roster">
   {#if failed}<p role="alert">{$t('commune.healthSnapshotFailed')} <button onclick={() => void invalidateRosterQuery().then(() => startRefresh(true))}>{$t('commune.refresh')}</button></p>{/if}
   {#if !globalView && (health.suspendedAgents > 0 || health.pendingHitl > 0 || pending.length > 0)}
@@ -463,7 +464,7 @@
   <!-- 成员（含编组协作）/ 历史 -->
   {#if !globalView}<div class="subtabs" data-testid="remote-team-subtabs">
     <button class:active={subTab === 'members'} onclick={() => (subTab = 'members')}>
-      {tr('commune.membersCount', { count: topo.roster.length })}
+      {tr('commune.membersCount', { count: topo.roster.length + terminalCandidates.length })}
     </button>
     <button class:active={subTab === 'history'} onclick={() => (subTab = 'history')}>
       {tr('commune.historyCount', { count: history.length })}
@@ -473,14 +474,24 @@
   {/if}
   {#if subTab === 'members'}
     <!-- 成员列表：与桌面同构的监控 + 干预（状态 / 最近回复 / 单独发消息）。 -->
-    {#if topo.roster.length === 0}
+    {#each terminalCandidates as candidate, index (candidate.paneId + ':' + candidate.name + ':' + index)}
+      <div class="member-card" data-testid="remote-terminal-agent" data-workspace-id={candidate.workspaceId} data-pane-id={candidate.paneId}>
+        <div class="member-head">
+          <span class="name">{candidate.name}</span><span class="tag">{$t('commune.autoDetected')}</span>
+          <button class="act" onclick={() => onSelectPane?.(candidate.paneId)}>{$t('commune.locateTerminal')}</button>
+        </div>
+        <p class="note">{$t('commune.connectAcpFirst')}</p>
+        <pre class="reply">{candidate.recentOutput || $t('commune.terminalWaitingOutput')}</pre>
+      </div>
+    {/each}
+    {#if topo.roster.length === 0 && terminalCandidates.length === 0}
       <p class="empty">{failed ? '—' : $t('commune.noMembers')}</p>
     {:else}
       {#each sortedRosterMembers() as m (m.id)}
         {@render memberCard(m, topo.leaderId === m.id)}
       {/each}
     {/if}
-    <details data-testid="remote-member-groups">
+    {#if !globalView}<details data-testid="remote-member-groups">
     <summary class="section">{tr('commune.groupsCount', { count: groups.length })}</summary>
     <div class="group-create">
       <input
@@ -577,7 +588,7 @@
         </div>
       {/each}
     {/if}
-    </details>
+    </details>{/if}
   {:else}
     <CommuneHistory {workspaceId}
       load={request => ws.listAgentHistory(request.workspaceId, request.limit, request.cursor, request.query, request.textCursor)}

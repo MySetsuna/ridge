@@ -19,7 +19,10 @@ pub struct TargetRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    group_scope: Option<String>,
     group_id: String,
     group_revision: u64,
     group_action: String,
@@ -28,6 +31,16 @@ pub struct Request {
     targets: Vec<TargetRequest>,
     #[serde(rename = "idempotency_key")]
     idempotency_key: String,
+}
+impl Request {
+    fn scope(&self) -> &str { if self.group_scope.as_deref()==Some("host") {crate::commune_groups::HOST_GROUP_SCOPE} else {&self.workspace_id} }
+}
+fn scope(args:&Value)->Result<&str,String> {
+    if args["groupScope"]=="host" {
+        if !args["workspaceId"].is_null(){return Err("Host group task cannot have a workspace owner".into());}
+        Ok(crate::commune_groups::HOST_GROUP_SCOPE)
+    } else if !args["groupScope"].is_null(){Err("unsupported group scope".into())}
+    else {let workspace=args["workspaceId"].as_str().ok_or("missing workspaceId or Host group scope")?;Uuid::parse_str(workspace).map_err(|_|"invalid workspaceId")?;Ok(workspace)}
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -122,7 +135,7 @@ pub fn project(state: &AppState, task: &Dispatch, native: bool) -> Result<Value,
             "artifacts":outputs["items"],"artifactsHasMore":outputs["hasMore"],"artifactCoverage":"协议报告的内容；仅关联观察区间，未核验目标完成。无内容时覆盖未知。"}));
     }
     Ok(
-        json!({"groupTaskId":task.id,"workspaceId":task.request.workspace_id,"groupId":task.group.id,
+        json!({"groupTaskId":task.id,"workspaceId":if task.request.workspace_id.is_empty(){Value::Null}else{json!(task.request.workspace_id)},"groupScope":task.request.group_scope,"groupId":task.group.id,
         "groupRevision":task.group.revision,"groupName":task.group.name,"action":task.request.group_action,
         "createdAt":task.created_at,"cancellationRequested":task.cancellation_requested,"children":children,"counts":counts,
         "objectiveVerified":false,"source":"Runtime frozen dispatch + actual Hub receipts"}),
@@ -193,7 +206,7 @@ impl Drop for Coordinating<'_> {
 pub fn status(state: &AppState, args: &Value) -> Result<Value, String> {
     let task = task(
         state,
-        args["workspaceId"].as_str().ok_or("missing workspaceId")?,
+        scope(args)?,
         args["groupTaskId"].as_str().ok_or("missing groupTaskId")?,
     )?;
     let mut result = project(state, &task, true)?;
@@ -210,7 +223,7 @@ pub fn status(state: &AppState, args: &Value) -> Result<Value, String> {
             .map_err(|_| "invalid objective cursor")?;
         let cursor: Value =
             serde_json::from_slice(&decoded).map_err(|_| "invalid objective cursor")?;
-        if cursor["workspaceId"] != task.request.workspace_id || cursor["groupTaskId"] != task.id {
+        if cursor["workspaceId"] != task.request.scope() || cursor["groupTaskId"] != task.id {
             return Err("objective cursor scope mismatch".into());
         }
         Some((
@@ -239,7 +252,7 @@ pub fn status(state: &AppState, args: &Value) -> Result<Value, String> {
             return Err("invalid objective offset".into());
         }
         let cursor = |offset| {
-            format!("tasktext1:{}",URL_SAFE_NO_PAD.encode(json!({"workspaceId":task.request.workspace_id,"groupTaskId":task.id,"memberId":member,"offset":offset}).to_string()))
+            format!("tasktext1:{}",URL_SAFE_NO_PAD.encode(json!({"workspaceId":task.request.scope(),"groupTaskId":task.id,"memberId":member,"offset":offset}).to_string()))
         };
         result["objectiveDetail"] = json!({"memberId":member,"text":child.objective.chars().skip(offset).take(4096).collect::<String>(),"offset":offset,"length":length,
             "next":if offset+4096<length {Some(cursor(offset+4096))}else{None},"previous":if offset>0 {Some(cursor(offset.saturating_sub(4096)))}else{None}});
@@ -277,7 +290,7 @@ fn cancel_child(state: &AppState, child: &Child) -> Result<(), String> {
     Ok(())
 }
 pub fn cancel(state: &AppState, args: &Value) -> Result<Value, String> {
-    let workspace = args["workspaceId"].as_str().ok_or("missing workspaceId")?;
+    let workspace = scope(args)?;
     let id = args["groupTaskId"].as_str().ok_or("missing groupTaskId")?;
     let task = update(state, workspace, id, |task| {
         task.cancellation_requested = true
@@ -319,20 +332,15 @@ pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
     if request.group_action == "broadcast" {
         valid_objective(&request.message)?;
     }
-    let id = Uuid::parse_str(&request.workspace_id).map_err(|_| "invalid workspaceId")?;
+    let host_scope=request.group_scope.as_deref()==Some("host");
+    if request.group_scope.as_deref().is_some_and(|scope|scope!="host") || (host_scope && !request.workspace_id.is_empty()) {return Err("invalid group scope".into());}
+    let id = if host_scope {None} else {Some(Uuid::parse_str(&request.workspace_id).map_err(|_| "invalid workspaceId")?)};
     let retired = state
         .retired_workspaces
         .lock()
         .map_err(|_| "workspace lifecycle unavailable")?;
-    if retired.contains(&id)
-        || state
-            .workspaces
-            .lock()
-            .map_err(|_| "workspace state unavailable")?
-            .workspace(id)
-            .is_none()
-    {
-        return Err("workspace not found".into());
+    if let Some(id)=id {
+        if retired.contains(&id) || state.workspaces.lock().map_err(|_|"workspace state unavailable")?.workspace(id).is_none() {return Err("workspace not found".into());}
     }
     let identities = state
         .roster
@@ -349,7 +357,7 @@ pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
     if let Some(record) =
         state
             .mcp_state
-            .group_task(&request.workspace_id, &request.idempotency_key, true)?
+            .group_task(request.scope(), &request.idempotency_key, true)?
     {
         let previous = serde_json::from_value::<Dispatch>(record).map_err(|e| e.to_string())?;
         if previous.request != request {
@@ -361,8 +369,9 @@ pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
         drop(retired);
         return project(state, &previous, true);
     }
+    if !host_scope && store.host_authoritative() {return Err("legacy group scope cannot create new tasks; use Host-global groups".into());}
     let group = store
-        .snapshot(&request.workspace_id)
+        .snapshot(request.scope())
         .groups
         .into_iter()
         .find(|group| group.id == request.group_id)
@@ -382,7 +391,8 @@ pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
             .iter()
             .find(|member| {
                 member.agent_id == requested.agent_id
-                    && member.workspace_id == request.workspace_id
+                    && (host_scope || member.workspace_id == request.workspace_id)
+                    && Uuid::parse_str(&member.workspace_id).is_ok_and(|id|!retired.contains(&id))
                     && member.protocol_binding.is_some()
             })
             .ok_or("registered member not found in workspace")?;
@@ -417,7 +427,7 @@ pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
         coordinating: true,
     };
     let (record, created) = state.mcp_state.prepare_group_task(
-        &dispatch.request.workspace_id,
+        dispatch.request.scope(),
         &dispatch.request.idempotency_key,
         serde_json::to_value(&dispatch).map_err(|e| e.to_string())?,
     )?;
@@ -432,12 +442,12 @@ pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
     }
     let coordinator = Coordinating {
         state,
-        workspace: dispatch.request.workspace_id.clone(),
+        workspace: dispatch.request.scope().to_owned(),
         id: dispatch.id.clone(),
         finished: false,
     };
     for child in &dispatch.children {
-        let current = task(state, &dispatch.request.workspace_id, &dispatch.id)?;
+        let current = task(state, dispatch.request.scope(), &dispatch.id)?;
         let outcome = if current.cancellation_requested {
             Ok(None)
         } else {
@@ -451,7 +461,7 @@ pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
         };
         let current = update(
             state,
-            &dispatch.request.workspace_id,
+            dispatch.request.scope(),
             &dispatch.id,
             |task| {
                 if let Some(target) = task
@@ -477,7 +487,7 @@ pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
     );
     project(
         state,
-        &task(state, &dispatch.request.workspace_id, &dispatch.id)?,
+        &task(state, dispatch.request.scope(), &dispatch.id)?,
         true,
     )
 }
@@ -489,13 +499,9 @@ pub fn frozen_context(
     binding: &Value,
     args: &Value,
 ) -> Result<Value, String> {
-    let dispatch = task(
-        state,
-        binding["workspaceId"].as_str().ok_or("missing workspace")?,
-        args["group_task_id"]
-            .as_str()
-            .ok_or("missing group_task_id")?,
-    )?;
+    let task_id=args["group_task_id"].as_str().ok_or("missing group_task_id")?;
+    let dispatch=task(state,crate::commune_groups::HOST_GROUP_SCOPE,task_id)
+        .or_else(|_|task(state,binding["workspaceId"].as_str().ok_or("missing workspace")?,task_id))?;
     if dispatch.group.id != group || dispatch.group.revision != revision {
         return Err("group task snapshot mismatch".into());
     }

@@ -277,6 +277,46 @@ describe('TerminalManager attach lifecycle', () => {
 		expect(handle.applyDefaultTheme).toHaveBeenCalledOnce();
 	});
 
+
+    it('rebuilds lost GPU resources without replacing the terminal or replaying input', async () => {
+        const manager=TerminalManager.instance({fontFamily:'monospace',fontSizePx:14,scrollbackLines:200});
+        const internal=manager as any;internal.wasmReady=true;
+        const canvas=new FakeCanvas();canvas.parentElement=makeContainer();
+        await manager.attachHost(canvas as unknown as HTMLCanvasElement);
+        await manager.attach('pane-a',makeContainer() as unknown as HTMLElement,'workspace-a');
+        const entry=internal.panes.get('pane-a'), kernel=entry.kernel, oldHandle=entry.handle;
+        const status=vi.fn();const stop=manager.onHostRecoveryError(status);
+        const prevented=vi.fn();canvas.emit('webglcontextlost',{preventDefault:prevented});
+        expect(prevented).toHaveBeenCalledOnce();expect(oldHandle.free).toHaveBeenCalledOnce();
+        expect(entry.handle).toBeNull();expect(kernel.free).not.toHaveBeenCalled();
+        manager.feed('pane-a',new Uint8Array([65]));expect(kernel.feed).toHaveBeenCalledOnce();
+        canvas.emit('webglcontextrestored');await internal.hostRecoveryWork;
+        expect(entry.kernel).toBe(kernel);expect(entry.handle).not.toBe(oldHandle);
+        expect(kernel.free).not.toHaveBeenCalled();expect(kernel.feed).toHaveBeenCalledOnce();
+        expect(status).toHaveBeenLastCalledWith(null);stop();manager.detach('pane-a');manager.detachHost();
+    });
+    it('keeps failed recovery retryable and fences a closed pane during GPU initialization', async () => {
+        const manager=TerminalManager.instance({fontFamily:'monospace',fontSizePx:14,scrollbackLines:200});
+        const internal=manager as any;internal.wasmReady=true;
+        const canvas=new FakeCanvas();canvas.parentElement=makeContainer();
+        await manager.attachHost(canvas as unknown as HTMLCanvasElement);
+        await manager.attach('pane-a',makeContainer() as unknown as HTMLElement,'workspace-a');
+        const status=vi.fn();const stop=manager.onHostRecoveryError(status);
+        const ctor=wasm.SurfaceHostHandle, original=ctor.init;
+        try {
+            canvas.emit('webglcontextlost',{preventDefault:vi.fn()});
+            ctor.init=vi.fn(async()=>{throw Error('GPU unavailable')});
+            canvas.emit('webglcontextrestored');await internal.hostRecoveryWork;
+            expect(status.mock.calls.at(-1)?.[0]).toContain('GPU unavailable');
+            let finish!:(host:typeof wasm.host)=>void;
+            ctor.init=vi.fn(()=>new Promise(resolve=>{finish=resolve}));
+            const retry=manager.recoverHost();await Promise.resolve();
+            manager.detach('pane-a');finish(wasm.host);await retry;
+            expect(internal.panes.has('pane-a')).toBe(false);
+            expect(status).toHaveBeenLastCalledWith(null);
+        } finally {ctor.init=original;stop();manager.detachHost();}
+    });
+
 	it('requires ready, attaches a configured pane, and fences duplicate ids', async () => {
 		const manager = TerminalManager.instance({
 			fontFamily: 'monospace',

@@ -1130,8 +1130,9 @@ describe('CloudRemoteConnection bounded parity guards', () => {
     });
 
     await expect(conn.listWorkspaces()).resolves.toEqual({ workspaces: [] });
-    await expect(conn.sendAgentMessage({ ...PANE, generation: 2, lease: 'lease' }, 'hello'))
+    await expect(conn.sendAgentMessage({ ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease' }, 'hello'))
       .resolves.toMatchObject({ messageId: 'm' });
+    expect(invokeMock).toHaveBeenCalledWith('send_agent_message', expect.objectContaining({ ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease', message: 'hello' }));
     await expect(conn.setTeammateGroups('ws1', [], 3)).resolves.toEqual({groups:[],groupsRevision:4});
     expect(invokeMock).toHaveBeenCalledWith('set_teammate_groups',{workspaceId:'ws1',groups:[],expectedRevision:3});
     await expect(conn.resumeAgentSession('ws1', 'Codex', 's', '/repo')).rejects.toThrow('Restore the Agent in its terminal');

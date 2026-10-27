@@ -300,8 +300,10 @@
   // via `manager.attachHost(canvas)`, observe its parent for resize so
   // the swap chain stays in sync. Cleans up on app teardown only —
   // the canvas is mounted once for the app's lifetime.
+  let gpuRecoveryError = $state<string | null>(null);
   function globalHostCanvas(node: HTMLCanvasElement) {
     const manager = TerminalManager.instance();
+    const stopHostError = manager.onHostRecoveryError(error => { gpuRecoveryError = error; });
     // §shared-remote: the desktop-in-browser controller shares one PTY (one grid)
     // with the host and other viewers. Live resize frames letterbox the current
     // shared grid; the manager's bounded trailing fit claims the settled browser
@@ -344,6 +346,7 @@
     }
     return {
       destroy() {
+        stopHostError();
         unsubWallpaper?.();
         observer?.disconnect();
         manager.detachHost();
@@ -2206,6 +2209,11 @@ function expandSidebar(minWidth = 0) {
           aria-hidden="true"
           style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:0; display:block;"
         ></canvas>
+        {#if gpuRecoveryError}
+          <div role="alert" class="absolute left-4 top-4 z-50 rounded-lg border border-[var(--rg-border)] bg-[var(--rg-bg)] p-3 text-sm">
+            <p>{gpuRecoveryError}</p><button class="mt-2 text-[var(--rg-accent)]" onclick={() => TerminalManager.instance().recoverHost()}>{$t('commune.refresh')}</button>
+          </div>
+        {/if}
       </div>
       <!-- 文件编辑器：嵌入模式时为右侧 flex 列；抽屉/悬浮模式时 position:fixed 脱离流。
            懒挂载：首次打开文件后才加载（见上方 $effect），未打开时不在 DOM —— 与

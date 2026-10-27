@@ -29,6 +29,9 @@ use crate::protocol as proto;
 use crate::registry::ToolRegistry;
 use crate::resource::{RidgeUri, StashStore};
 
+/// Group-parent scope, distinct from every UUID workspace and child delivery scope.
+pub const HOST_GROUP_SCOPE: &str = "host";
+
 // ─── 宿主接口 ────────────────────────────────────────────────────────────────
 
 /// 工具执行失败的语义分类（映射到 JSON-RPC 错误码）。
@@ -837,7 +840,8 @@ impl McpSessionState {
     }
     /// Reserve the complete frozen relation before handing any child to an adapter.
     pub fn prepare_group_task(&self, workspace: &str, key: &str, record: Value) -> Result<(Value,bool), String> {
-        if record["request"]["workspaceId"] != workspace || record["request"]["idempotency_key"] != key || record["coordinating"] != true {
+        let matches_scope=if record["request"]["groupScope"]=="host" {workspace==HOST_GROUP_SCOPE && record["request"]["workspaceId"].is_null()} else {record["request"]["workspaceId"]==workspace};
+        if !matches_scope || record["request"]["idempotency_key"] != key || record["coordinating"] != true {
             return Err("group dispatch reservation scope mismatch".into());
         }
         let mut connection = self.group_persistence()?.connection.lock().map_err(|_| "Hub database lock poisoned")?;

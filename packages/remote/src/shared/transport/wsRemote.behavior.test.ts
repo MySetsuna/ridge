@@ -201,6 +201,7 @@ describe('RemoteConnection public communication contract', () => {
 		invoke(ws, 'get_teammate_topology', { roster: [], leaderId: null, edges: [] });
 		await expect(topology).resolves.toEqual({ roster: [], leaderId: null, edges: [] });
 		const receipt = conn.sendAgentMessage({ ...pane, agentId: 'agent-1', generation: 2, lease: 'lease-2' }, 'hello');
+		expect(ws.sent.at(-1)).toMatchObject({ args: { ...pane, agentId: 'agent-1', generation: 2, lease: 'lease-2', message: 'hello' } });
 		invoke(ws, 'send_agent_message', {
 			messageId: 'm1', deliveryId: 'd1', targetKey: 'workspace-a:pane-a', status: 'accepted',
 			deliveryAdapter: 'hub', deliveryReliability: 'durable', terminalAccepted: false, agentAcknowledged: true,

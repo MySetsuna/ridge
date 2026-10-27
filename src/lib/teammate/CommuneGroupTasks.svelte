@@ -6,16 +6,17 @@
   interface Member {id:string;name:string;generation?:number;lease?:string;online?:boolean;canSend?:boolean}
   interface Props {
     workspaceId?: string;
+    groupScope?: 'host';
     group: {id:string;revision?:number;memberAgentIds:readonly string[]};
     members: readonly Member[];
     tasks?: readonly CommuneGroupTask[];
     submit?: (request:CommuneGroupDispatchRequest) => Promise<CommuneGroupTask>;
     cancel?: (id:string) => Promise<CommuneGroupTask>;
-    read?: (request:{workspaceId:string;groupTaskId:string;objectiveMemberId?:string;objectiveCursor?:string}) => Promise<CommuneGroupTask>;
+    read?: (request:{workspaceId?:string;groupScope?:'host';groupTaskId:string;objectiveMemberId?:string;objectiveCursor?:string}) => Promise<CommuneGroupTask>;
     readEvent?: (request:{workspaceId:string;textCursor:string}) => Promise<AgentHistoryReply[]>;
     onRefresh?: () => void | Promise<void>;
   }
-  let {workspaceId,group,members,tasks=[],submit,cancel,read,readEvent,onRefresh}: Props = $props();
+  let {workspaceId,groupScope,group,members,tasks=[],submit,cancel,read,readEvent,onRefresh}: Props = $props();
   let mode = $state<'broadcast'|'assign'>('broadcast');
   let selected = $state<Record<string,{generation:number;lease:string}>>({});
   let selectedRevision = $state<number>();
@@ -40,7 +41,7 @@
   })));
   const ready = $derived(!stale && selectedIds.length > 0 && selectedIds.length <= 32 && (mode === 'broadcast' ? !!message.trim() : selectedIds.every(id => !!objectives[id]?.trim())));
   const displayed = $derived([...tasks, ...(received && !tasks.some(task => task.groupTaskId === received?.groupTaskId) ? [received] : [])]
-    .filter(task => task.workspaceId === workspaceId && task.groupId === group.id));
+    .filter(task => (groupScope === 'host' ? task.groupScope === 'host' : task.workspaceId === workspaceId) && task.groupId === group.id));
   const ct = (key: CommuneUiTextKey, vars?: Record<string, string | number>) => communeText($locale, key, vars);
   const stateKeys: Record<string, CommuneUiTextKey> = {
     prepared:'taskPrepared', submitted:'taskSubmitted', queued:'taskQueued', dispatching:'taskDispatching', running:'taskRunning',
@@ -56,10 +57,10 @@
     }
   }
   async function send(request?:CommuneGroupDispatchRequest) {
-    if (!submit || !workspaceId || busy || (!request && !ready)) return;
+    if (!submit || (!workspaceId && groupScope !== 'host') || busy || (!request && !ready)) return;
     const scope = workspaceId;
     const token = ++version;
-    attempt = request ?? {workspaceId,groupId:group.id,groupRevision:selectedRevision!,groupAction:mode,
+    attempt = request ?? {...(groupScope === 'host' ? {groupScope} : {workspaceId}),groupId:group.id,groupRevision:selectedRevision!,groupAction:mode,
       message:mode === 'broadcast' ? message.trim() : '',idempotency_key:crypto.randomUUID(),
       targets:selectedIds.map(agentId => ({agentId,...selected[agentId],...(mode === 'assign' ? {objective:objectives[agentId].trim()} : {})}))};
     busy = true; error = '';
@@ -84,25 +85,25 @@
     finally { if (token === version) busy = false; }
   }
   async function readObjective(groupTaskId:string, member:string, cursor?:string) {
-    if (!read || !workspaceId || busy) return;
+    if (!read || (!workspaceId && groupScope !== 'host') || busy) return;
     const token=++version; busy=true; error='';
     try {
-      const result=await read({workspaceId,groupTaskId,...(cursor?{objectiveCursor:cursor}:{objectiveMemberId:member})});
+      const result=await read({...(groupScope === 'host' ? {groupScope} : {workspaceId}),groupTaskId,...(cursor?{objectiveCursor:cursor}:{objectiveMemberId:member})});
       if (token===version) {detail=result.objectiveDetail;detailTask=groupTaskId;}
     } catch (failure) {if (token===version) error=ct('operationFailed', {error:String(failure)});}
     finally {if (token===version) busy=false;}
   }
-  async function readOutput(id:string,cursor:string) {
-    if (!readEvent || !workspaceId || busy) return;
+  async function readOutput(id:string,cursor:string, sourceWorkspaceId=workspaceId) {
+    if (!readEvent || !sourceWorkspaceId || busy) return;
     const token=++version;busy=true;error='';
     try {
-      const page=await readEvent({workspaceId,textCursor:cursor});
+      const page=await readEvent({workspaceId:sourceWorkspaceId,textCursor:cursor});
       if (token===version) {protocolDetail=page[0];protocolOutput=id;}
     } catch (failure) {if (token===version) error=ct('operationFailed', {error:String(failure)});}
     finally {if (token===version) busy=false;}
   }
   $effect(() => {
-    const scope = `${workspaceId}:${group.id}`;
+    const scope = `${groupScope ?? workspaceId}:${group.id}`;
     if (scope === currentScope) return;
     currentScope = scope; version++; selected = {}; selectedRevision = undefined; received = undefined;
     message = ''; objectives = {}; busy = false; error = ''; attempt = undefined;
@@ -172,11 +173,11 @@
                   {#if output.name || output.uri}<p class="break-all">{output.name} {output.uri}</p>{/if}
                   {#if output.preview}<pre class="whitespace-pre-wrap break-all">{output.preview}</pre>{/if}
                   <p class="text-[10px] text-[var(--rg-fg-muted)]">{output.source} · event {output.sequence}</p>
-                  {#if readEvent && output.textCursor}<button disabled={busy} onclick={() => readOutput(output.id,output.textCursor!)} class="underline">{ct('rawProtocol')}</button>{/if}
+                  {#if readEvent && output.textCursor}<button disabled={busy} onclick={() => readOutput(output.id,output.textCursor!,child.member.workspaceId)} class="underline">{ct('rawProtocol')}</button>{/if}
                   {#if protocolDetail && protocolOutput===output.id}
                     <pre class="whitespace-pre-wrap break-all">{protocolDetail.text}</pre>
-                    {#if protocolDetail.previousTextCursor}<button disabled={busy} onclick={() => readOutput(output.id,protocolDetail!.previousTextCursor!)} class="mr-2 underline">{ct('previous')}</button>{/if}
-                    {#if protocolDetail.textCursor}<button disabled={busy} onclick={() => readOutput(output.id,protocolDetail!.textCursor!)} class="underline">{ct('next')}</button>{/if}
+                    {#if protocolDetail.previousTextCursor}<button disabled={busy} onclick={() => readOutput(output.id,protocolDetail!.previousTextCursor!,child.member.workspaceId)} class="mr-2 underline">{ct('previous')}</button>{/if}
+                    {#if protocolDetail.textCursor}<button disabled={busy} onclick={() => readOutput(output.id,protocolDetail!.textCursor!,child.member.workspaceId)} class="underline">{ct('next')}</button>{/if}
                   {/if}
                 </li>
               {/each}

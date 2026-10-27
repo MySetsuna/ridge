@@ -983,9 +983,9 @@ export class CloudRemoteConnection implements RemoteLink {
     message: string,
   ): Promise<AgentMessageReceipt> {
     return this.bridge.invoke<AgentMessageReceipt>('send_agent_message', {
-      target_pane_id: target.paneId,
-      workspace_id: target.workspaceId,
-      agent_id: target.agentId,
+      paneId: target.paneId,
+      workspaceId: target.workspaceId,
+      agentId: target.agentId,
       generation: target.generation,
       lease: target.lease,
       message,

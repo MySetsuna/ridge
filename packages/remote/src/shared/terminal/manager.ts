@@ -721,6 +721,17 @@ export class TerminalManager {
 	 *  canvas/host pair is reused for the app lifetime. `detachHost()` is
 	 *  only meaningful at shutdown / SSR teardown. */
 	private globalHost: { canvas: HTMLCanvasElement; host: SurfaceHostHandle } | null = null;
+	private hostCanvas: HTMLCanvasElement | null = null;
+	private hostGeneration = 0;
+	private hostSuspended = false;
+	private hostResume: Promise<void> | null = null;
+	private resumeHost: (() => void) | null = null;
+	private hostRecoveryWork: Promise<void> | null = null;
+	private hostRecoveryWanted = false;
+	private hostRecoveryError: string | null = null;
+	private hostContextCleanup: (() => void) | null = null;
+	private hostErrorListeners = new Set<(error: string | null) => void>();
+	private latestWallpaper: ActiveWallpaperGpu | null = null;
 	/** True between an `_invalidateHost()` call and the next RAF tick that
 	 *  consumes it. That tick performs one atlas-preserving full repaint of
 	 *  every visible pane into the newly-seeded compositor backing store. */
@@ -1093,6 +1104,8 @@ export class TerminalManager {
 			);
 			return Promise.resolve();
 		}
+		if (this.hostCanvas !== canvas) this._bindHostContext(canvas);
+		const generation = this.hostGeneration;
 		const promise = (async () => {
 			if (!this.wasmReady) await this.ready();
 			const SHHCtor = SurfaceHostHandle as unknown as
@@ -1109,13 +1122,19 @@ export class TerminalManager {
 					? error
 					: new Error(`WEBGPU_INIT_FAILED: ${unknownText(error)}`);
 				console.error('[ridge-term] terminal WebGPU host initialization failed', failure);
+				if (generation === this.hostGeneration) { this.hostSuspended = true; this._setHostRecoveryError(failure.message); }
 				throw failure;
+			}
+			if (generation !== this.hostGeneration || this.hostCanvas !== canvas) {
+				host.free?.();
+				throw new Error('GPU host lifecycle changed during initialization');
 			}
 			this.globalHost = { canvas, host };
 			try {
 				this.resizeHost(); // initial swap-chain configure
 			} catch (error) {
 				this.globalHost = null;
+				host.free?.();
 				const failure = error instanceof Error
 					? error
 					: new Error(`WEBGPU_INIT_FAILED: ${unknownText(error)}`);
@@ -1127,10 +1146,83 @@ export class TerminalManager {
 		return promise;
 	}
 
+	private _bindHostContext(canvas: HTMLCanvasElement): void {
+		this.hostContextCleanup?.(); this.hostCanvas = canvas; this.hostGeneration++;
+		const lost = (event: Event) => {
+			event.preventDefault(); this.hostGeneration++; this.hostSuspended = true;
+			this.hostResume ??= new Promise(resolve => { this.resumeHost = resolve; });
+			for (const entry of this.panes.values()) if (entry.canvas === canvas && entry.handle) this._releaseRenderer(entry);
+			this._setHostRecoveryError('GPU context lost; waiting for restoration');
+		};
+		const restored = () => { void this.recoverHost(); };
+		canvas.addEventListener('webglcontextlost', lost);
+		canvas.addEventListener('webglcontextrestored', restored);
+		this.hostContextCleanup = () => {
+			canvas.removeEventListener('webglcontextlost', lost);
+			canvas.removeEventListener('webglcontextrestored', restored);
+		};
+	}
+
+	public onHostRecoveryError(listener: (error: string | null) => void): () => void {
+		this.hostErrorListeners.add(listener); listener(this.hostRecoveryError);
+		return () => { this.hostErrorListeners.delete(listener); };
+	}
+	private _setHostRecoveryError(error: string | null): void {
+		this.hostRecoveryError = error;
+		for (const listener of this.hostErrorListeners) listener(error);
+	}
+
+	/** Rebuild GPU resources only; kernels, transport handlers and input ledgers survive. */
+	public recoverHost(): Promise<void> {
+		if (!this.hostCanvas || (!this.hostSuspended && !this.hostRecoveryError)) return Promise.resolve();
+		this.hostRecoveryWanted = true;
+		if (this.hostRecoveryWork) return this.hostRecoveryWork;
+		const work = (async () => {
+			while (this.hostRecoveryWanted && this.hostCanvas) {
+				this.hostRecoveryWanted = false;
+				const canvas = this.hostCanvas, generation = this.hostGeneration;
+				try {
+					for (const entry of this.panes.values()) if (entry.canvas === canvas && entry.handle) this._releaseRenderer(entry);
+					const old = this.globalHost; this.globalHost = null; this.attachHostPromise = null;
+					old?.host.free?.();
+					await this.attachHost(canvas);
+					if (generation !== this.hostGeneration || this.hostCanvas !== canvas) continue;
+					this.hostSuspended = false; this.resizeHost();
+					for (const entry of [...this.panes.values()]) {
+						if (entry.parked || entry.container.isConnected === false) continue;
+						const resources = await this._createAttachRenderState(canvas, this.globalHost!.host);
+						if (generation !== this.hostGeneration || this.panes.get(entry.paneId) !== entry || entry.parked || !entry.container.isConnected) { resources.handle?.free(); continue; }
+						entry.canvas = canvas; entry.handle = resources.handle; entry.rendererRetained = false;
+						entry.cellW = resources.cellW; entry.cellH = resources.cellH; entry.lastConfiguredDpr = resources.dpr;
+						this._applyAttachTheme(entry.paneId, entry.handle);
+						entry.handle?.setFocused(this._focusedPaneByWorkspace.get(entry.workspaceId) === entry.paneId);
+						this.forceFullRedraw(entry.paneId); this.fitPaneNow(entry.paneId);
+					}
+					if (generation !== this.hostGeneration || this.hostCanvas !== canvas) continue;
+					this.applyWallpaperGpu(this.latestWallpaper); this._invalidateHost(); this.frameFailureCount = 0;
+					this.resumeHost?.(); this.resumeHost = null; this.hostResume = null;
+					this._setHostRecoveryError(null); this.wake();
+				} catch (error) {
+					if (generation === this.hostGeneration && this.hostCanvas === canvas) {
+						this.hostSuspended = true;
+						this._setHostRecoveryError(`GPU recovery failed: ${unknownText(error)}`);
+					}
+				}
+			}
+		})();
+		this.hostRecoveryWork = work;
+		void work.finally(() => { if (this.hostRecoveryWork === work) this.hostRecoveryWork = null; });
+		return work;
+	}
+
 	/** §A.9 — release the global SurfaceHost (only meaningful at app
 	 *  shutdown / SSR teardown). All panes must be detached first;
 	 *  surviving handles will no-op on render after the Rc drops. */
 	public detachHost(): void {
+		this.hostGeneration++; this.hostContextCleanup?.(); this.hostContextCleanup = null;
+		this.hostCanvas = null; this.hostRecoveryWanted = false; this.hostSuspended = false;
+		this.resumeHost?.(); this.resumeHost = null; this.hostResume = null;
+		this.globalHost?.host.free?.(); this._setHostRecoveryError(null);
 		this.globalHost = null;
 		this.attachHostPromise = null;
 	}
@@ -1140,6 +1232,7 @@ export class TerminalManager {
 	 *  gpu=null 时调用 clearWallpaper 回退纯色；host 未就绪时 no-op（信号晚到
 	 *  不丢失——host 就绪后 attachHost 调用方须补一次 applyWallpaperGpu）。 */
 	public applyWallpaperGpu(gpu: ActiveWallpaperGpu | null): void {
+		this.latestWallpaper = gpu;
 		const host = this._globalHostHandle();
 		if (!host) return;
 		if (gpu) {
@@ -1153,7 +1246,7 @@ export class TerminalManager {
 	 *  per-workspace `_hostFor(wsId)` API is gone; every pane shares
 	 *  the same host now, so the wsId argument is meaningless. */
 	private _globalHostHandle(): SurfaceHostHandle | null {
-		return this.globalHost?.host ?? null;
+		return this.hostSuspended ? null : this.globalHost?.host ?? null;
 	}
 
 	/**
@@ -1220,6 +1313,7 @@ export class TerminalManager {
 	 * No-op when the shared WebGPU host is not attached.
 	 */
 	public resizeHost(dims?: { wCss: number; hCss: number }): void {
+		if (this.hostSuspended) return;
 		const entry = this.globalHost;
 		if (!entry) return;
 		const { canvas, host } = entry;
@@ -2355,6 +2449,7 @@ export class TerminalManager {
 	}
 
 	private async _awaitAttachHost(): Promise<void> {
+		if (this.hostResume) await this.hostResume;
 		await this._ensureDomHostStarted();
 		if (this.attachHostPromise === null) return;
 		await this.attachHostPromise;
@@ -2368,7 +2463,9 @@ export class TerminalManager {
 	}
 
 	private async _createAttachRenderState(canvas: HTMLCanvasElement, hostHandle: SurfaceHostHandle): Promise<AttachRenderState> {
+		const generation = this.hostGeneration;
 		const handle = await this._makeHandleSerialized(canvas, hostHandle);
+		if (generation !== this.hostGeneration || this.hostSuspended) { handle.free(); throw new Error('GPU host changed while creating renderer'); }
 		const dpr = window.devicePixelRatio || 1;
 		const [cellW, cellH] = handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as [number, number] | Float32Array;
 		return { handle, dpr, cellW: Number(cellW), cellH: Number(cellH) };
@@ -2741,6 +2838,7 @@ export class TerminalManager {
 	}
 
 	private async _waitForHostAttach(): Promise<void> {
+		if (this.hostResume) await this.hostResume;
 		if (this.attachHostPromise === null) return;
 		await this.attachHostPromise;
 	}
@@ -2758,6 +2856,7 @@ export class TerminalManager {
 		container: HTMLElement,
 		entry: PaneEntry,
 	): Promise<{ canvas: HTMLCanvasElement; hostHandle: SurfaceHostHandle; handle: RenderHandle | null; dpr: number }> {
+		const generation = this.hostGeneration;
 		const selected = this._selectUnparkCanvas(container);
 		if (this.opts.paddingPx && this.opts.paddingPx > 0) container.style.padding = `${this.opts.paddingPx}px`;
 		const retained = selected.canvas === entry.canvas && entry.rendererRetained === true && entry.handle !== null;
@@ -2768,6 +2867,7 @@ export class TerminalManager {
 			entry.rendererRetained = false;
 		}
 		const handle = retained ? entry.handle : await this._makeHandleSerialized(selected.canvas, selected.hostHandle);
+		if (generation !== this.hostGeneration || this.hostSuspended) { handle?.free(); throw new Error('GPU host changed while restoring renderer'); }
 		return { ...selected, handle, dpr: window.devicePixelRatio || 1 };
 	}
 

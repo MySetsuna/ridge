@@ -589,12 +589,14 @@
     let observer: ResizeObserver | undefined;
     let torndown = false;
     let mgr: import('@ridge/remote/shared/terminal/manager').TerminalManager | null = null;
+    let stopHostError: (() => void) | undefined;
     hostCanvasError = null;
     void (async () => {
       try {
         const { TerminalManager } = await import('@ridge/remote/shared/terminal/manager');
         if (torndown) return;
         mgr = TerminalManager.instance();
+        stopHostError = mgr.onHostRecoveryError(error => { if (!torndown) hostCanvasError = error; });
         if (sharedGrid) mgr.setSharedRemoteMode(true);
         await mgr.attachHost(node);
         const parent = node.parentElement;
@@ -616,6 +618,7 @@
         torndown = true;
         hostCanvasError = null;
         observer?.disconnect();
+        stopHostError?.();
         if (sharedGrid) mgr?.setSharedRemoteMode(false);
         mgr?.detachHost();
       },

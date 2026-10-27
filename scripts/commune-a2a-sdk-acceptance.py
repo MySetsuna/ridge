@@ -1,4 +1,4 @@
-"""Official a2a-sdk 1.2.2 against an owned Runtime and an existing real Agent."""
+"""Official SDK against a supplied existing peer; record fixtures separately."""
 import asyncio
 import importlib.metadata
 import json
@@ -18,7 +18,7 @@ async def main():
         catalog = await http.get(config["baseUrl"] + "/api/v1/a2a/members")
         catalog.raise_for_status()
         cards = catalog.json()["agentCards"]
-        assert len(cards) == 1, "owned Runtime must expose its one registered member"
+        assert len(cards) == config.get("expectedMembers", 1), "registered member count mismatch"
         base = cards[0].removesuffix("/.well-known/agent-card.json")
         assert base.startswith(config["baseUrl"] + "/api/v1/a2a/members/")
         client = await ClientFactory(ClientConfig(streaming=False, polling=False, httpx_client=http)).create_from_url(base)
@@ -39,7 +39,7 @@ async def main():
                 await asyncio.sleep(0.1)
             raise AssertionError("real Agent task did not reach " + p.TaskState.Name(state))
 
-        task = await send("SIDEBAR_MARKER")
+        task = await send(config.get("message", "SIDEBAR_MARKER"))
         ended = await poll(task.id, p.TASK_STATE_INPUT_REQUIRED)
         assert ended.metadata.fields["ridge"].struct_value.fields["execution"].struct_value.fields["state"].string_value == "turn_ended"
         rejected = False
@@ -48,11 +48,11 @@ async def main():
         except Exception:
             rejected = True
         assert rejected, "unsupported independent context must fail explicitly"
-        pending = await send("CANCEL_WAIT")
+        pending = await send(config.get("cancelMessage", "CANCEL_WAIT"))
         await poll(pending.id, p.TASK_STATE_WORKING)
         await client.cancel_task(p.CancelTaskRequest(id=pending.id))
         await poll(pending.id, p.TASK_STATE_CANCELED)
-        result = {"sdk": importlib.metadata.version("a2a-sdk"), "pass": True, "taskId": task.id, "cancelTaskId": pending.id,
+        result = {"sdk": importlib.metadata.version("a2a-sdk"), "peerType":config.get("peerType", "unverified-existing-peer"), "pass": True, "taskId": task.id, "cancelTaskId": pending.id,
                   "checks": ["official SDK discovers member card without private target metadata", "same existing Agent receives message and real prompt terminal state", "independent context rejected", "actual protocol cancellation settles as canceled"]}
         config_path.with_name("a2a-sdk-result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         print(json.dumps({"pass": True, "sdk": result["sdk"], "checks": result["checks"]}))

@@ -182,6 +182,13 @@ pub async fn dispatch(
             retire_member(state,args).await
         }
         "get_teammate_topology" => {
+            if args["groupScope"]=="host" {
+                if !args["workspaceId"].is_null(){return Err("Host groups do not have a workspace owner".into());}
+                let mut projection=crate::commune_groups::projection(state,crate::commune_groups::HOST_GROUP_SCOPE)?;
+                projection["groupScope"]=json!("host");projection["roster"]=json!([]);projection["leaderId"]=Value::Null;projection["edges"]=json!([]);
+                projection["groupTasks"]=crate::commune_tasks::list(state,crate::commune_groups::HOST_GROUP_SCOPE,native)?;
+                return Ok(projection);
+            }
             let mut profile = crate::kernel_mcp::KernelMcpHost::new(state.clone())
                 .team_profile_for(args["workspaceId"].as_str())
                 .map_err(|error| match error {
@@ -239,10 +246,9 @@ pub async fn dispatch(
                 }
             }
             drop(connections);
-            profile["discovered"] = if native {
-                let state=state.clone();let workspace=workspace.to_owned();
-                tokio::task::spawn_blocking(move ||crate::agent_discovery::read(&state,&workspace)).await.map_err(|error|error.to_string())??
-            } else { json!([]) };
+            let state=state.clone();let workspace=workspace.to_owned();
+            let discovered=tokio::task::spawn_blocking(move ||crate::agent_discovery::read(&state,&workspace)).await.map_err(|error|error.to_string())??;
+            profile["discovered"] = if native {discovered} else {crate::agent_discovery::public_projection(discovered)};
             Ok(profile)
         }
         "list_hitl_pending" => pending_snapshot(state,false),

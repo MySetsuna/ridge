@@ -364,12 +364,10 @@ function loadPersisted(storageKey: string): PersistShape {
 
 // ── 响应式 store（Svelte 5 runes；仅供组件消费） ──
 
-/**
- * 按工作区切换的编组 store。runes（`$state`）字段使指挥部组件天然响应组定义/任务历史变化；
- * 所有写操作走上面的纯函数并立即落盘。**惰性单例**（见 {@link teammateGroupStore}），
- * 故 `$state` 仅在真实 svelte 运行时执行，node 单测不触碰。
- */
+/** Host group projection cache. Legacy source stores remain for compatibility. */
 class TeammateGroupStore {
+  private hostIdentity: unknown;
+  private global = false;
   private runtimeWorkspaceId: string | undefined;
   private storageKey = '';
   private requestVersion = 0;
@@ -383,9 +381,18 @@ class TeammateGroupStore {
   /** Historical local records are read-only; new execution lives in the Hub ledger. */
   tasks = $state<GroupTask[]>([]);
 
+  setGlobal(identity: unknown = 'native'): void {
+    if (this.global && this.hostIdentity === identity) return;
+    this.global = true; this.hostIdentity = identity; this.runtimeWorkspaceId = undefined;
+    this.requestVersion++; this.groups = []; this.dispatches = []; this.revision = 0;
+    this.busy = false; this.error = ''; this.notice = ''; this.tasks = [];
+    void this.refresh();
+  }
+
   setWorkspace(workspaceId: string | undefined, filePath: string | null | undefined): void {
     const storageKey = groupsStorageKey(stableWorkspaceKey(workspaceId, filePath));
-    if (workspaceId === this.runtimeWorkspaceId && storageKey === this.storageKey) return;
+    if (!this.global && workspaceId === this.runtimeWorkspaceId && storageKey === this.storageKey) return;
+    this.global = false;
     this.runtimeWorkspaceId = workspaceId;
     this.storageKey = storageKey;
     this.requestVersion++;
@@ -395,15 +402,16 @@ class TeammateGroupStore {
   }
   async refresh(importLegacy = false): Promise<void> {
     const workspaceId = this.runtimeWorkspaceId;
-    if (!workspaceId) return;
+    if (!workspaceId && !this.global) return;
+    const scope = this.global ? {groupScope:'host' as const} : {workspaceId};
     if (this.busy) { this.refreshRequested = true; return; }
     const version = ++this.requestVersion;
     this.busy = true;
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      let projection = await invoke<{groups: TeammateGroup[]; groupsRevision: number}>('get_teammate_topology', {workspaceId});
+      let projection = await invoke<{groups: TeammateGroup[]; groupsRevision: number}>('get_teammate_topology', scope);
       if (version !== this.requestVersion) return;
-      if (importLegacy && projection.groupsRevision === 0) {
+      if (!this.global && importLegacy && projection.groupsRevision === 0) {
         // Retain the old browser value untouched; the Runtime archives every supplied row.
         let legacyGroups: unknown[] = [];
         const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(this.storageKey);
@@ -423,7 +431,7 @@ class TeammateGroupStore {
           }
         }
       }
-      if (version === this.requestVersion) this.apply(projection);
+      if (version === this.requestVersion) { this.apply(projection); this.error = ''; }
     } catch (failure) {
       if (version === this.requestVersion) this.error = String(failure);
     } finally { this.finish(version); }
@@ -434,15 +442,16 @@ class TeammateGroupStore {
     if (Array.isArray(projection.groupTasks)) this.dispatches = projection.groupTasks;
   }
   private async change(update: (groups: readonly TeammateGroup[]) => TeammateGroup[]): Promise<boolean> {
-    if (!this.runtimeWorkspaceId || this.busy) { this.error = '编组同步中，请稍候再改。'; return false; }
+    if ((!this.runtimeWorkspaceId && !this.global) || this.busy) { this.error = '编组同步中，请稍候再改。'; return false; }
     const workspaceId = this.runtimeWorkspaceId;
+    const scope = this.global ? {groupScope:'host' as const} : {workspaceId};
     const version = ++this.requestVersion;
     const groups = update(this.groups);
     const expectedRevision = this.revision;
     this.busy = true; this.error = '';
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      const projection = await invoke<{groups: TeammateGroup[]; groupsRevision: number}>('set_teammate_groups', {workspaceId, groups, expectedRevision});
+      const projection = await invoke<{groups: TeammateGroup[]; groupsRevision: number}>('set_teammate_groups', {...scope, groups, expectedRevision});
       if (version === this.requestVersion) this.apply(projection);
       return true;
     } catch (failure) {
@@ -450,7 +459,7 @@ class TeammateGroupStore {
         this.error = String(failure);
         const { invoke } = await import('@tauri-apps/api/core');
         try {
-          const projection = await invoke<{groups: TeammateGroup[]; groupsRevision: number}>('get_teammate_topology', {workspaceId});
+          const projection = await invoke<{groups: TeammateGroup[]; groupsRevision: number}>('get_teammate_topology', scope);
           if (version === this.requestVersion) this.apply(projection);
         } catch { /* Retain the last confirmed projection and visible error. */ }
       }

@@ -85,6 +85,15 @@ pub(crate) fn read(state: &AppState, workspace: &str) -> Result<Value,String> {
     Ok(json!(candidates))
 }
 
+/// Remote may already view these terminals; discovery adds no process/control grant.
+pub(crate) fn public_projection(rows: Value) -> Value {
+    json!(rows.as_array().into_iter().flatten().map(|row| json!({
+        "workspaceId":row["workspaceId"],"paneId":row["paneId"],"name":row["name"],
+        "connectionState":"discovered","protocolConnected":row["protocolConnected"]==true,
+        "recentOutput":row["recentOutput"].as_str().unwrap_or("").chars().take(4096).collect::<String>()
+    })).collect::<Vec<_>>())
+}
+
 /// Explicit catalog opt-in authorizes attaching a running party's descriptor.
 /// Discovery never invents session ids, probes arbitrary ports, or launches a CLI.
 pub(crate) fn supervise(state:AppState){tokio::spawn(async move {

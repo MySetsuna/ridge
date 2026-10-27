@@ -435,22 +435,19 @@
       });
     };
     const el = containerEl;
-    const onContextLost = (e: Event) => { e.preventDefault(); };
-    const onContextRestored = () => {
+    const onForeground = () => {
       if (!alive || !attached) return;
       manager.forceFullRedraw(paneId);
       manager.fitPaneNow(paneId);
     };
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') onContextRestored();
+      if (document.visibilityState === 'visible') onForeground();
     };
     if (el) {
       el.addEventListener('pointerdown', stopPointer, true);
       el.addEventListener('pointermove', stopPointer, true);
       el.addEventListener('pointerup', stopPointer, true);
       el.addEventListener('pointercancel', stopPointer, true);
-      el.addEventListener('webglcontextlost', onContextLost, true);
-      el.addEventListener('webglcontextrestored', onContextRestored, true);
     }
     document.addEventListener('visibilitychange', onVisibility);
 
@@ -467,8 +464,6 @@
         el.removeEventListener('pointermove', stopPointer, true);
         el.removeEventListener('pointerup', stopPointer, true);
         el.removeEventListener('pointercancel', stopPointer, true);
-        el.removeEventListener('webglcontextlost', onContextLost, true);
-        el.removeEventListener('webglcontextrestored', onContextRestored, true);
       }
       document.removeEventListener('visibilitychange', onVisibility);
     };
@@ -1466,6 +1461,7 @@
   {#if webgpuError}
     <div class="webgpu-error" role="alert" aria-live="assertive">
       <span>{webgpuError}</span>
+      <button onclick={async () => { await manager.recoverHost(); if (!attached) void attachTerminal(); }}>{$t('commune.refresh')}</button>
     </div>
   {/if}
   {#if resizeError && !terminalStopped}

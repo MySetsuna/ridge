@@ -3,6 +3,7 @@ use ridge_kernel::{client, registry::KernelEndpoint};
 use serde_json::{json, Value};
 use std::{
     fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -345,4 +346,60 @@ fn frozen_multi_member_dispatch_is_durable_exact_and_never_replayed() {
         fs::read_to_string(second_log).unwrap(),
         "wait-for-cancel\nbroadcast-once\n"
     );
+}
+
+
+#[test]
+fn host_groups_migrate_without_read_writes_and_dispatch_across_exact_sources() {
+    let root=std::env::temp_dir().join(format!("ridge-host-groups-{}",Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let kernel=Kernel::start(&root);let endpoint=&kernel.endpoint;
+    let a=client::request_json(endpoint,"POST","/v1/domain/workspaces",None).unwrap()["workspace_id"].clone();
+    let b=client::request_json(endpoint,"POST","/v1/domain/workspaces",None).unwrap()["workspace_id"].clone();
+    let (first,_)=attach(endpoint,&a,&root.join("a"));let(second,_)=attach(endpoint,&b,&root.join("b"));
+    for (workspace,member) in [(&a,&first),(&b,&second)] {
+        command(endpoint,"set_teammate_groups",json!({"workspaceId":workspace,"expectedRevision":0,"groups":[{"id":"same-legacy-id","name":"same name","color":"#60a5fa","memberAgentIds":[member["agentId"]]}]}));
+    }
+    let authority=root.join("commune-groups.json");
+    let before=fs::read(&authority).unwrap();
+    let projected=remote_command(endpoint,"get_teammate_topology",json!({"groupScope":"host"}));
+    assert_eq!(fs::read(&authority).unwrap(),before,"read must not migrate or rewrite authority");
+    assert_eq!(projected["groups"].as_array().unwrap().len(),2);
+    assert_ne!(projected["groups"][0]["id"],projected["groups"][1]["id"],"colliding source IDs cannot alias");
+    let group=json!({"id":"host-pair","name":"pair","color":"#60a5fa","memberAgentIds":[first["agentId"]]});
+    let saved=remote_command(endpoint,"set_teammate_groups",json!({"groupScope":"host","expectedRevision":0,"groups":[group]}));
+    assert_eq!(saved["groupsRevision"],1);
+    assert!(reply(endpoint,"set_teammate_groups",json!({"groupScope":"host","expectedRevision":0,"groups":[]}))["ok"]==false);
+    assert!(reply(endpoint,"set_teammate_groups",json!({"workspaceId":a,"expectedRevision":1,"groups":[]}))["ok"]==false,"legacy authority stays read-only after migration");
+    let archives=fs::read_dir(&root).unwrap().filter_map(Result::ok).filter(|entry|entry.file_name().to_string_lossy().ends_with(".archive.json")).collect::<Vec<_>>();
+    assert_eq!(archives.len(),1);assert_eq!(fs::read(archives[0].path()).unwrap(),before);
+    let body=json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ridge_join_group","arguments":{"group_name":"host-pair","agent_id":second["agentId"]}}}).to_string();
+    let mut socket=std::net::TcpStream::connect(("127.0.0.1",endpoint.port)).unwrap();
+    socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(socket,"POST /api/v1/mcp HTTP/1.1\r\nHost: localhost\r\nx-ridge-token: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",endpoint.token,body.len(),body).unwrap();
+    let mut response=String::new();socket.read_to_string(&mut response).unwrap();assert!(response.starts_with("HTTP/1.1 200"));
+    let rpc:Value=serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert!(rpc["error"].is_null(),"{rpc}");assert_ne!(rpc["result"]["isError"],true,"{rpc}");
+    let joined=remote_command(endpoint,"get_teammate_topology",json!({"groupScope":"host"}));
+    assert_eq!(joined["groups"][0]["memberAgentIds"],json!([first["agentId"],second["agentId"]]));
+    let request=json!({"groupScope":"host","groupId":"host-pair","groupRevision":2,"groupAction":"assign","idempotency_key":"cross-source-once","targets":[target(&first,"wait-for-cancel"),target(&second,"cancel-permission")]});
+    let accepted=remote_command(endpoint,"send_agent_message",request.clone());
+    assert_eq!(accepted["groupScope"],"host");assert!(accepted["workspaceId"].is_null());
+    assert_eq!(accepted["children"][0]["member"]["workspaceId"],a);
+    assert_eq!(accepted["children"][1]["member"]["workspaceId"],b);
+    let scope=json!({"groupScope":"host","groupTaskId":accepted["groupTaskId"]});
+    wait(endpoint,&scope,|state|state["children"][0]["state"]=="running"&&state["children"][1]["state"]=="waiting_permission");
+    assert_eq!(remote_command(endpoint,"send_agent_message",request.clone())["groupTaskId"],accepted["groupTaskId"]);
+    let mut conflict=request.clone();conflict["targets"][0]["objective"]=json!("different");
+    assert_eq!(reply(endpoint,"send_agent_message",conflict)["ok"],false);
+    assert_eq!(reply(endpoint,"get_agent_message_delivery_status",json!({"workspaceId":a,"groupTaskId":accepted["groupTaskId"]}))["ok"],false);
+    assert_eq!(reply(endpoint,"get_agent_message_delivery_status",json!({"workspaceId":"host","groupTaskId":accepted["groupTaskId"]}))["ok"],false,"internal Host scope cannot masquerade as a workspace ID");
+    remote_command(endpoint,"cancel_agent_message",scope.clone());
+    wait(endpoint,&scope,|state|state["children"].as_array().unwrap().iter().all(|child|child["state"]=="cancelled"));
+    let current=remote_command(endpoint,"get_teammate_topology",json!({"groupScope":"host"}));
+    drop(kernel);
+    let reopened=Kernel::start(&root);
+    let recovered=remote_command(&reopened.endpoint,"get_teammate_topology",json!({"groupScope":"host"}));
+    assert_eq!(recovered["groups"],current["groups"]);
+    assert_eq!(remote_command(&reopened.endpoint,"get_agent_message_delivery_status",scope)["groupTaskId"],accepted["groupTaskId"]);
 }

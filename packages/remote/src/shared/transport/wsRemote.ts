@@ -421,15 +421,15 @@ export interface TeammateGroup {
 }
 export interface TeammateGroupSnapshot { groups: TeammateGroup[]; groupsRevision: number }
 export interface CommuneGroupDispatchRequest {
-  workspaceId: string; groupId: string; groupRevision: number; groupAction: 'broadcast' | 'assign';
+  workspaceId?: string; groupScope?: 'host'; groupId: string; groupRevision: number; groupAction: 'broadcast' | 'assign';
   message?: string; idempotency_key: string;
   targets: {agentId: string; generation: number; lease: string; objective?: string}[];
 }
 export interface CommuneGroupTask {
-  groupTaskId: string; workspaceId: string; groupId: string; groupRevision: number; groupName: string;
+  groupTaskId: string; workspaceId?: string; groupScope?: 'host'; groupId: string; groupRevision: number; groupName: string;
   action: string; createdAt: number; cancellationRequested: boolean; counts: Record<string,number>;
   objectiveVerified: boolean;
-  children: {member: {agentId: string; sessionId: string; paneId: string; generation: number; lease: string};
+  children: {member: {workspaceId?:string; agentId: string; sessionId: string; paneId: string; generation: number; lease: string};
     objective: string; objectiveTruncated?: boolean; state: string; taskId?: string; deliveryId?: string; submissionError?: string; deliveryError?: string;
     artifacts: CommuneProtocolOutput[]; artifactsHasMore?: boolean; artifactCoverage: string}[];
   cancellationErrors?: {memberId:string;error:string}[];
@@ -449,6 +449,8 @@ export interface TeammateTopology {
   groups?: TeammateGroup[];
   groupsRevision?: number;
   groupTasks?: CommuneGroupTask[];
+  /** Read-only terminal observations; never protocol membership or process details. */
+  discovered?: { workspaceId:string; paneId:string; name:string; connectionState:'discovered'; protocolConnected:boolean; recentOutput:string }[];
 }
 
 /** P2：待裁决高危动作的脱敏快照——绝不含 action 命令全文。 */
@@ -1666,9 +1668,9 @@ export class RemoteConnection implements RemoteLink {
         type: 'invoke-request',
         cmd: 'send_agent_message',
         args: {
-          target_pane_id: target.paneId,
-          workspace_id: target.workspaceId,
-          agent_id: target.agentId,
+          paneId: target.paneId,
+          workspaceId: target.workspaceId,
+          agentId: target.agentId,
           generation: target.generation,
           lease: target.lease,
           message,

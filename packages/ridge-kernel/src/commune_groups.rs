@@ -8,6 +8,8 @@ use std::{
     path::PathBuf,
 };
 use uuid::Uuid;
+use sha2::{Digest, Sha256};
+pub use ridge_mcp::server::HOST_GROUP_SCOPE;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -38,13 +40,17 @@ pub struct Snapshot {
 struct Document {
     version: u8,
     workspaces: BTreeMap<String, Snapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host: Option<Snapshot>,
 }
 pub struct Store {
     path: PathBuf,
     document: Document,
 }
 impl Store {
+    pub fn host_authoritative(&self) -> bool { self.document.host.is_some() }
     pub fn member_count(&self) -> usize {
+        if let Some(snapshot)=&self.document.host {return snapshot.groups.iter().map(|group|group.member_agent_ids.len()).sum();}
         self.document
             .workspaces
             .values()
@@ -63,20 +69,36 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Document {
                 version: 1,
                 workspaces: BTreeMap::new(),
+                host: None,
             },
             Err(e) => return Err(e.to_string()),
         };
-        if document.version != 1 {
+        if !matches!(document.version, 1 | 2) {
             return Err("unsupported group authority version".into());
         }
         Ok(Self { path, document })
     }
     pub fn snapshot(&self, workspace: &str) -> Snapshot {
+        if workspace == HOST_GROUP_SCOPE { return self.host_snapshot(); }
         self.document
             .workspaces
             .get(workspace)
             .cloned()
             .unwrap_or_default()
+    }
+    fn host_snapshot(&self) -> Snapshot {
+        if let Some(snapshot)=&self.document.host {return snapshot.clone();}
+        let mut snapshot=Snapshot::default();
+        for (workspace, legacy) in &self.document.workspaces {
+            for (original, archived) in legacy.groups.iter().map(|group|(group,false)).chain(legacy.archived.iter().map(|group|(group,true))) {
+                let mut group=original.clone();
+                if self.document.workspaces.values().filter(|source|source.groups.iter().chain(&source.archived).any(|other|other.id==original.id)).count()>1 {
+                    group.id=format!("legacy-{:x}",Sha256::digest(format!("{workspace}\0{}",original.id).as_bytes()));
+                }
+                if archived {snapshot.archived.push(group);} else {snapshot.groups.push(group);}
+            }
+        }
+        snapshot
     }
     fn replace(
         &mut self,
@@ -86,6 +108,7 @@ impl Store {
         members: &HashSet<String>,
         legacy: Option<Value>,
     ) -> Result<Snapshot, String> {
+        if workspace != HOST_GROUP_SCOPE && self.document.host.is_some() {return Err("legacy group scope is read-only; refresh the Host-global groups".into());}
         let mut snapshot = self.snapshot(workspace);
         if snapshot.revision != expected {
             return Err(format!(
@@ -128,7 +151,17 @@ impl Store {
             snapshot.legacy = legacy;
         }
         let mut next = self.document.clone();
-        next.workspaces.insert(workspace.into(), snapshot.clone());
+        if workspace == HOST_GROUP_SCOPE {
+            if self.document.host.is_none() {
+                let original=match std::fs::read(&self.path) {Ok(bytes)=>Some(bytes),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>None,Err(error)=>return Err(format!("group authority read failed; migration aborted: {error}"))};
+                if let Some(original)=original {
+                    let archive=self.path.with_file_name(format!("commune-groups-v1-{:x}.archive.json",Sha256::digest(&original)));
+                    if !archive.exists() {write_atomic(&archive,&original).map_err(|e|format!("group archive failed; previous authority retained: {e}"))?;}
+                    else if std::fs::read(&archive).map_err(|e|e.to_string())?!=original {return Err("group archive integrity mismatch".into());}
+                }
+            }
+            next.version=2;next.host=Some(snapshot.clone());
+        } else {next.workspaces.insert(workspace.into(), snapshot.clone());}
         write_atomic(
             &self.path,
             &serde_json::to_vec_pretty(&next).map_err(|e| e.to_string())?,
@@ -164,7 +197,7 @@ fn validate(groups: &mut [Group], members: &HashSet<String>) -> Result<(), Strin
         for member in &group.member_agent_ids {
             if !members.contains(member) {
                 return Err(
-                    "group member is not an exact registered identity in this workspace".into(),
+                    "group member is not an exact registered identity in this scope".into(),
                 );
             }
             if !assigned.insert(member.clone()) {
@@ -190,6 +223,20 @@ pub fn projection(state: &AppState, workspace: &str) -> Result<Value, String> {
     Ok(json!({"groups":snapshot.groups,"groupsRevision":snapshot.revision}))
 }
 pub fn replace(state: &AppState, args: &Value, native: bool) -> Result<Value, String> {
+    if args["groupScope"] == "host" {
+        if !args["workspaceId"].is_null() || args.get("legacyGroups").is_some() {return Err("Host groups do not accept a workspace owner or browser legacy import".into());}
+        let retired=state.retired_workspaces.lock().map_err(|_|"workspace lifecycle unavailable")?;
+        let mut members=state.roster.lock().map_err(|_|"roster unavailable")?.agent_identities().into_iter()
+            .filter(|member|member.protocol_binding.is_some() && Uuid::parse_str(&member.workspace_id).is_ok_and(|id|!retired.contains(&id)))
+            .map(|member|member.agent_id.clone()).collect::<HashSet<_>>();
+        members.extend(state.groups.lock().map_err(|_|"group authority unavailable")?.snapshot(HOST_GROUP_SCOPE).groups.iter().flat_map(|group|group.member_agent_ids.iter().cloned()));
+        let expected=args["expectedRevision"].as_u64().ok_or("group edits require expectedRevision")?;
+        let groups=serde_json::from_value(args["groups"].clone()).map_err(|e|e.to_string())?;
+        let snapshot=state.groups.lock().map_err(|_|"group authority unavailable")?.replace(HOST_GROUP_SCOPE,expected,groups,&members,None)?;
+        drop(retired);
+        state.business_events.broadcast("commune-groups-changed",json!({"groupScope":"host","revision":snapshot.revision}));
+        return Ok(json!({"groupScope":"host","groups":snapshot.groups,"groupsRevision":snapshot.revision}));
+    }
     let workspace = args["workspaceId"].as_str().ok_or("missing workspaceId")?;
     let id = Uuid::parse_str(workspace).map_err(|_| "invalid workspaceId")?;
     // Keep retirement serialized until persistence; lock order matches workspace close.
@@ -352,6 +399,20 @@ mod tests {
                 None
             )
             .is_err());
+    }
+    #[test]
+    fn host_migration_retains_archived_ids_and_failed_commit_keeps_legacy_authority() {
+        let root=std::env::temp_dir().join(format!("ridge-host-migration-{}",Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();let path=root.join("groups.json");
+        let mut store=Store::open(path.clone()).unwrap();let members=HashSet::from(["member".into()]);
+        store.replace("workspace",0,vec![group("retired","member")],&members,None).unwrap();
+        store.replace("workspace",1,vec![],&members,None).unwrap();
+        let original=std::fs::read(&path).unwrap();
+        assert!(store.replace(HOST_GROUP_SCOPE,0,vec![group("retired","member")],&members,None).is_err());
+        std::fs::rename(&path,root.join("preserved.json")).unwrap();std::fs::create_dir(&path).unwrap();
+        assert!(store.replace(HOST_GROUP_SCOPE,0,vec![],&members,None).is_err());
+        assert!(!store.host_authoritative());assert_eq!(store.snapshot("workspace").revision,2);
+        assert_eq!(std::fs::read(root.join("preserved.json")).unwrap(),original);
     }
     #[test]
     fn foreign_members_duplicate_membership_and_nonmember_leaders_reject() {

@@ -1239,6 +1239,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		};
 		ctor.init = vi.fn(async () => host);
 		try {
+			Object.assign(fixture.pane.canvas, {addEventListener:vi.fn(),removeEventListener:vi.fn()});
 			await manager.attachHost(fixture.pane.canvas);
 			await manager.attachHost(fixture.pane.canvas);
 			await manager.attachHost({} as HTMLCanvasElement);

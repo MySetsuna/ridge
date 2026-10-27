@@ -37,7 +37,7 @@
   import { alertDialog } from '$lib/components/RidgeDialog.svelte';
   import { showToast } from '$lib/stores/toast';
   import { hitlSync, setTeammateHitlEnabled } from './teammateSettings';
-  import TeammateGroups from './TeammateGroupsSection.svelte';
+  import HostCommuneGroups from './HostCommuneGroups.svelte';
   import { teammateGroupStore, groupOfAgent } from './teammateGroups.svelte';
   import {
     EMPTY_TOPOLOGY,
@@ -220,8 +220,7 @@
   // 编组协作并入成员页；顶层只保留成员与历史。
   let teamTab = $state<'members' | 'history'>('members');
   // 编组 store（单例，与 TeammateGroups 共用）：成员聚合列表据此标注每人组归属。
-  const groupStores = $derived($workspacesList.map(workspace => ({ workspace, store: teammateGroupStore(workspace.id) })));
-  const groupCount = $derived(groupStores.reduce((count, entry) => count + entry.store.groups.length, 0));
+  const groups = teammateGroupStore();
 
   // iter-61：成员级监控/干预（用户需求：监控每个 agent 状态与任务进度，可干预）。
   interface HitlPendingItem {
@@ -579,7 +578,7 @@
           {/each}
           {#each protocolOnlyMembers as member (member.workspaceId + ':' + member.profile.id)}
             {@const m = member.profile}
-            {@const grp = groupOfAgent(teammateGroupStore(member.workspaceId).groups, m.id)}
+            {@const grp = groupOfAgent(groups.groups, m.id)}
             <AgentMemberRow
               profile={m}
               agentId={m.id}
@@ -599,17 +598,7 @@
             </li>
           {/if}
         </ul>
-        <details class="rounded-lg border border-[var(--rg-border)] p-3" data-testid="commune-member-groups">
-          <summary class="cursor-pointer text-[12px] font-medium">
-            {$t('commune.groups')} <span class="font-mono text-[11px] text-[var(--rg-fg-muted)]">{groupCount}</span>
-          </summary>
-          {#each groupStores as entry (entry.workspace.id)}
-            <TeammateGroups roster={$agentTopologyStore[entry.workspace.id]?.roster ?? []}
-              workspaceId={entry.workspace.id} filePath={$workspaceSaveInfoStore[entry.workspace.id]?.file_path ?? null}
-              hitlPending={hitlPending.filter(item => item.workspaceId === entry.workspace.id)}
-              recentReplyFor={profile => recentReplyFor(profile, entry.workspace.id)} onRefresh={() => void refreshSharedState()} />
-          {/each}
-        </details>
+        <HostCommuneGroups members={allMembers.map(member => ({...member.profile,workspaceId:member.workspaceId}))} />
         </div>
       {:else}
         <div id="commune-panel-history" role="tabpanel" aria-labelledby="commune-tab-history">

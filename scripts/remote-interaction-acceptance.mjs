@@ -253,6 +253,55 @@ try {
     const resetWrites = () => page.evaluate(() => { window.__interactionWrites = []; });
     const writes = () => page.evaluate(() => new TextDecoder().decode(new Uint8Array(window.__interactionWrites.flat())));
     const waitWrites = () => page.waitForFunction(() => window.__interactionWrites.length > 0, undefined, { timeout: 3_000 });
+    if (process.argv.includes('--gpu-recovery')) await check(`${mobile ? 'mobile' : 'desktop'} real shared WebGL context loss rebuilds resources and preserves terminal input`, async () => {
+      const alternateName=`Owned GPU switch ${process.pid} ${mobile?'mobile':'desktop'}`;
+      const alternate=await invoke('create_workspace',{name:alternateName});
+      let originalIndex;
+      try {
+      for (let cycle=0;cycle<2;cycle++) {
+        await page.evaluate(async key => {
+          const url=performance.getEntriesByType('resource').map(entry=>entry.name).find(url=>/\/manager-[^/]+\.js/.test(url));
+          const module=await import(url), Manager=Object.values(module).find(value=>typeof value==='function'&&typeof value.tryInstance==='function');
+          const manager=Manager.tryInstance(), entry=manager.panes.get(key), canvas=manager.globalHost.canvas;
+          if(entry.handle.backendName()!=='WebGL2')throw Error('WebGL2 backend required for actual context-loss injection');
+          const extension=canvas.getContext('webgl2').getExtension('WEBGL_lose_context');
+          if(!extension)throw Error('WEBGL_lose_context unavailable');
+          window.__gpuRecoveryState={manager,kernel:entry.kernel,inputContext:JSON.stringify(entry.kernel.terminalInputContext()),oldHandle:entry.handle,canvas,extension,key};
+          extension.loseContext();
+        },paneKey);
+        await page.locator('.webgpu-error').waitFor({timeout:10000});
+        if(cycle===1){
+          await page.locator('.tree-trigger').click();
+          originalIndex=await page.locator('.ws-row').evaluateAll(rows=>rows.findIndex(row=>row.classList.contains('active')));
+          assert.ok(originalIndex>=0);
+          await page.locator('.ws-row').filter({has:page.locator('.ws-name',{hasText:alternateName})}).click();
+          await page.waitForFunction(()=>window.__gpuRecoveryState.manager.panes.get(window.__gpuRecoveryState.key)?.parked===true);
+          await page.locator('.tree-backdrop').click({position:{x:5,y:5}});
+        }
+        await page.evaluate(()=>window.__gpuRecoveryState.extension.restoreContext());
+        if(cycle===1){
+          await page.waitForFunction(()=>!window.__gpuRecoveryState.manager.hostRecoveryError);
+          await page.locator('.tree-trigger').click();await page.locator('.ws-row').nth(originalIndex).click();
+          await page.locator('.tree-backdrop').click({position:{x:5,y:5}});
+        }
+        await page.waitForFunction(()=>{
+          const s=window.__gpuRecoveryState,entry=s.manager.panes.get(s.key);
+          const before=JSON.parse(s.inputContext),after=entry?.kernel.terminalInputContext();
+          return entry?.kernel===s.kernel && before[1]===after?.[1] && entry.handle && entry.handle!==s.oldHandle && !entry.parked && !s.manager.hostRecoveryError;
+        },undefined,{timeout:30000});
+        if(cycle===0)assert.equal(await page.evaluate(()=>JSON.stringify(window.__gpuRecoveryState.kernel.terminalInputContext())),await page.evaluate(()=>window.__gpuRecoveryState.inputContext));
+        await page.locator('.webgpu-error').waitFor({state:'detached',timeout:10000});
+        const key=String.fromCharCode(120+cycle), hex=Buffer.from(key).toString('hex');
+        // Remounting may legitimately report focus; settle it before measuring this key.
+        await page.locator('.hidden-input:not([disabled])').focus();
+        await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+        await resetWrites();await page.locator('.hidden-input').press(key);await waitWrites();
+        assert.equal(await writes(),key,'recovery must neither replay nor duplicate a keystroke');
+        await page.waitForFunction(({key,marker})=>window.__windE2E.visibleText(key).join('\n').includes(marker),{key:paneKey,marker:`${ready}:${hex}`});
+      }
+      evidence.gpuRecovery={cycles:2,backend:'WebGL2',actualLossExtension:true,workspaceSwitchDuringLoss:true,kernelPreserved:true,epochPreserved:true,activationPreservedWithoutSwitch:true,inputRoundTrip:true};
+      } finally {await invoke('switch_workspace',{workspaceId:activePane.workspaceId});await invoke('close_workspace',{workspaceId:typeof alternate==='string'?alternate:alternate.workspaceId??alternate.id});}
+    });
     await check(`${mobile ? 'mobile' : 'desktop'} Ctrl+Enter kernel LF and real Host echo`, async () => {
       await resetWrites();
       await page.locator('.hidden-input').press('Control+Enter');
@@ -299,6 +348,17 @@ try {
     if (!mobile) await check(process.platform === 'win32'
       ? 'desktop legacy X10 transport bytes retained; Windows console child UTF-8 limitation recorded'
       : 'desktop legacy X10 non-UTF8 mouse reaches the real Host unchanged', async () => {
+      try {
+      // A workspace switch lets the native viewer reclaim the shared grid.
+      // Explicitly claim this wide viewport before requiring a column above 95.
+      await evaluate(`(async()=>{const url=performance.getEntriesByType('resource').map(item=>item.name).filter(url=>url.includes('/shared/terminal/manager.ts')).at(-1);const {TerminalManager}=await import(url);for(let count=0;count<100;count++){const entry=TerminalManager.tryInstance()?.panes.get(${JSON.stringify(activePane.paneId)});if(!entry || (entry.initialFitTimer===null && entry.pendingFitTimer===null))return;await new Promise(resolve=>setTimeout(resolve,50));}throw Error('Native workspace layout did not settle');})()`);
+      await page.locator('.ctrl-btn').nth(1).click();
+      await page.waitForFunction(async key=>{
+        const url=performance.getEntriesByType('resource').map(entry=>entry.name).find(url=>/\/manager-[^/]+\.js/.test(url));
+        const module=await import(url),Manager=Object.values(module).find(value=>typeof value==='function'&&typeof value.tryInstance==='function');
+        window.__classicEntry=Manager.tryInstance().panes.get(key);
+        return window.__classicEntry?.kernel.cols()>100;
+      },paneKey);
       await invoke('write_to_pty', { ...activePane, data: '\x03' });
       const legacyReady = `${ready}_X10`;
       await invoke('write_to_pty', { ...activePane, data: `node "${fixturePath}" ${legacyReady} legacy\r` });
@@ -306,8 +366,8 @@ try {
       await resetWrites();
       const bounds = await page.locator('.term-stage .container').boundingBox();
       await page.mouse.move(bounds.x + bounds.width - 24, bounds.y + 40);
-      await waitWrites();
-      const bytes = await page.evaluate(() => window.__interactionWrites.flat());
+      await page.waitForFunction(()=>window.__interactionWrites.some(bytes=>bytes[0]===27&&bytes[1]===91&&bytes[2]===77&&bytes.some(byte=>byte>=128)));
+      const bytes = await page.evaluate(() => window.__interactionWrites.find(bytes=>bytes[0]===27&&bytes[1]===91&&bytes[2]===77&&bytes.some(byte=>byte>=128)));
       assert.deepEqual(bytes.slice(0, 3), [27, 91, 77]);
       assert.ok(bytes.some(byte => byte >= 128), 'fixture must exercise a non-UTF8 mouse coordinate');
       // Windows ConPTY + Node ReadConsole is a Unicode channel, not a raw byte
@@ -324,6 +384,7 @@ try {
       } finally {
         evidence.classicEcho = await page.evaluate(({ key, marker }) => window.__windE2E.visibleText(key).filter(line => line.includes(marker)), { key: paneKey, marker: legacyReady });
       }
+      } finally {evidence.classicProbe=await page.evaluate(()=>({cols:window.__classicEntry?.kernel.cols(),geometry:window.__classicEntry?.geometry,viewport:window.__classicEntry?.viewport,mouse:window.__classicEntry?.lastMouseSent,writes:window.__interactionWrites.slice(-8)}));}
     });
     await check(`${mobile ? 'mobile' : 'desktop'} current host default simple UI and explicit desktop`, async () => {
       const url = `https://127.0.0.1:${host.port}`;

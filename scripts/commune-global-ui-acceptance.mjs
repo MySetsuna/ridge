@@ -8,7 +8,8 @@ import { spawn } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ridge-global-commune-'));
-const output = path.resolve('artifacts/commune084/global-ui.json');
+const evidenceDir=process.env.RIDGE_COMMUNE_EVIDENCE_DIR ?? 'artifacts/commune084';
+const output = path.resolve(evidenceDir,'global-ui.json');
 fs.mkdirSync(path.dirname(output), { recursive: true });
 const fixture = fs.readdirSync('target/debug/deps').filter(name => /^commune_registration-[a-f0-9]+\.exe$/.test(name))
   .map(name => path.resolve('target/debug/deps', name)).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
@@ -46,6 +47,19 @@ try {
       endpointOwner: descriptor.process, endpoint: descriptor.endpoint, sessionId: descriptor.sessionId, cwd });
     assert.equal(registered.ok, true, registered.error); workspaces.push({ id: workspaceId, name });
   }
+  const terminalWorkspace=(await call('POST','/v1/domain/workspaces')).workspace_id;
+  const candidateScript=path.join(root,'candidate.cjs');fs.writeFileSync(candidateScript,"process.stdout.write('OWNED_TERMINAL_CANDIDATE\\r\\n');setInterval(()=>{},1000)");
+  const terminalPane=(await call('GET',`/v1/domain/workspaces/${terminalWorkspace}`)).panes[0];
+  await call('POST','/v1/domain/ptys',{workspace_id:terminalWorkspace,pty_id:terminalPane,program:process.execPath,args:[candidateScript],cwd:root,env:{},role:'shell',cols:80,rows:24});
+  const command=async(method,args,native=true)=>{const reply=await call('POST','/v1/domain/commands',{method,args,native,roots:[],connectionId:crypto.randomUUID()});assert.equal(reply.ok,true,JSON.stringify(reply));return reply.value;};
+  await command('save_agent_profile_overrides',{overrides:[{id:'owned-unregistered',processNames:[path.basename(process.execPath)],executable:'node',resumeArgv:[],yoloArgs:[]}]});
+  workspaces.push({id:terminalWorkspace,name:'Global terminal'});
+  await until(async()=>{const topology=await command('get_teammate_topology',{workspaceId:terminalWorkspace},false);return topology.discovered?.length===1;});
+  const observation=(await command('get_teammate_topology',{workspaceId:terminalWorkspace},false)).discovered[0];
+  assert.deepEqual(Object.keys(observation).sort(),['connectionState','name','paneId','protocolConnected','recentOutput','workspaceId']);
+  assert.equal(observation.paneId,terminalPane);assert.equal(observation.protocolConnected,false);
+  const denied=await call('POST','/v1/domain/commands',{method:'get_agent_terminal_view',args:{workspaceId:terminalWorkspace,paneId:terminalPane},native:false,roots:[],connectionId:crypto.randomUUID()});
+  assert.equal(denied.ok,false);evidence.checks.push('Non-native real process discovery is read-only and redacted; native-only terminal interaction still denied');
   const grant = await call('POST', '/v1/local/clients', { deviceId: 'owned-global-commune', origin: devUrl });
   browser = await chromium.launch({ headless: true }); const page = await browser.newPage({ viewport: { width: 1100, height: 950 } });
   const pageErrors = []; page.on('pageerror', error => pageErrors.push(error.message));
@@ -80,10 +94,24 @@ try {
   await expect(page.locator('#commune-panel-members > ul').getByText('existing history', { exact: true })).toHaveCount(2, { timeout: 20000 });
   await page.evaluate(() => window.globalCommune.app.$set({ workspaceId: window.globalCommune.workspaces[1].id }));
   await expect(page.locator('#commune-panel-members > ul').getByText('existing history', { exact: true })).toHaveCount(2);
+  await expect(page.getByTestId('commune-terminal-agent')).toHaveCount(1);
+  const globalGroups=page.getByTestId('host-commune-groups');await expect(globalGroups).toHaveCount(1);
+  await globalGroups.locator('summary').first().click();await globalGroups.getByTestId('commune-create-group').click();
+  await globalGroups.getByRole('textbox',{name:/组名|Group name/i}).fill('Cross-source pair');
+  await expect(globalGroups.getByRole('checkbox')).toHaveCount(2);
+  for(const checkbox of await globalGroups.getByRole('checkbox').all())await checkbox.check();
+  await globalGroups.getByRole('button',{name:/^(Confirm|确认)$/}).click();
+  await expect(globalGroups.getByTestId('host-commune-group')).toHaveCount(1);
+  const dispatch=globalGroups.getByTestId('commune-group-tasks');await dispatch.locator('summary').click();
+  for(const checkbox of await dispatch.getByRole('checkbox').all())await checkbox.check();
+  await dispatch.locator('textarea').fill('ui-cross-source-once');
+  await dispatch.getByRole('button').filter({hasText:/2/}).click();
+  await expect(dispatch.locator('[data-group-task-id]')).toHaveCount(1);
+  evidence.checks.push('One desktop builder selects members from both sources and submits a real frozen cross-source protocol task');
   await page.getByTestId('commune-tab-history').click();
   await expect(page.locator('[data-history-kind="agent_message_chunk"]')).toHaveCount(2);
   evidence.checks.push('Desktop members/replies/history aggregate two existing sessions and survive active-workspace prop switching');
-  await page.screenshot({ path: path.resolve('artifacts/commune084/global-desktop.png') });
+  await page.screenshot({ path: path.resolve(evidenceDir,'global-desktop.png') });
   await page.evaluate(async () => {
     const current = window.globalCommune; current.app.$destroy();
     const [{ CloudRemoteConnection }, { default: Panel }] = await Promise.all([import('/src/remote/lib/cloudRemote.ts'), import('/src/remote/lib/SidebarTeamRoster.svelte')]);
@@ -99,6 +127,17 @@ try {
   await expect(page.getByText('existing history', { exact: true })).toHaveCount(2, { timeout: 20000 });
   await page.evaluate(() => window.globalCommune.app.$set({ workspaceId: window.globalCommune.workspaces[1].id }));
   await expect(page.getByText('existing history', { exact: true })).toHaveCount(2);
+  await expect(page.getByTestId('remote-terminal-agent')).toHaveCount(1);
+  await expect(page.getByTestId('host-commune-groups')).toHaveCount(1);
+  await page.getByTestId('host-commune-groups').locator('summary').first().click();
+  await expect(page.getByTestId('host-commune-group')).toHaveCount(1);
+  evidence.checks.push('Narrow Remote includes ordinary terminal candidate and the same one global group authority');
+  await page.locator('.member-card .msg-input').first().fill('mobile-individual-once');
+  await page.locator('.member-card .msg-row .send').first().click();
+  const individualLog=path.join(root,workspaces[0].id,'prompt-log');
+  await until(()=>fs.existsSync(individualLog)&&fs.readFileSync(individualLog,'utf8').includes('mobile-individual-once'));
+  assert.equal(fs.readFileSync(individualLog,'utf8').split('mobile-individual-once').length-1,1);
+  evidence.checks.push('Remote individual message reaches the original ACP process once through the production connection and Kernel command parser');
   await page.getByRole('button', { name: /^(History|历史)$/ }).click();
   await expect(page.locator('[data-history-kind="agent_message_chunk"]')).toHaveCount(2);
   await page.evaluate(async () => {
@@ -119,7 +158,7 @@ try {
   await expect(page.getByRole('alert')).toHaveCount(0);
   evidence.checks.push('Injected one-source read failure retains its confirmed history while a real healthy ACP prompt adds replies; retry recovers');
   assert.deepEqual(pageErrors, []); evidence.checks.push('Narrow mobile production Commune aggregates the same two source sessions through the real Runtime facade; not a Cloud-network test');
-  await page.screenshot({ path: path.resolve('artifacts/commune084/global-mobile.png') });
+  await page.screenshot({ path: path.resolve(evidenceDir,'global-mobile.png') });
   evidence.result = 'PASS';
 } catch (error) { evidence.result = 'FAIL'; evidence.error = String(error); process.exitCode = 1; }
 finally {
