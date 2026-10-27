@@ -1402,7 +1402,7 @@ fn get_scm_status_sync_with_numstat(
         }
 
         Ok(ScmRepoStatus {
-            repo_root,
+            repo_root: repo_path.to_string_lossy().into_owned(),
             is_git_repo: true,
             current_branch: branch,
             ahead,
@@ -3404,6 +3404,10 @@ mod guard_tests {
         assert!(peak_ok);
         assert_eq!(fast_root, repo_root);
         assert_eq!(fast_branch, branch);
+        let nested = dir.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let nested_status = get_scm_status_fast_sync(nested.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(std::path::Path::new(&nested_status.repo_root), dir.as_path(), "SCM paths are relative to the actual repository, not the requested nested CWD");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

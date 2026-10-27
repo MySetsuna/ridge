@@ -11,12 +11,14 @@
   import type { DataProvider } from '$lib/transport';
   import { useQueryClient } from '@tanstack/svelte-query';
 
-  let { tab = 'files', cwd = '', workspaceId = '', paneId = '', initialDirectory = '', available, ws, workspaces = [], panes = [], attentionPaneIds = [], attentionPaneKeys, dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane, onAttentionChange }: {
+  let { tab = 'files', cwd = '', workspaceId = '', paneId = '', initialDirectory = '', directoryPath = $bindable(''), searchQuery = $bindable(''), available, ws, workspaces = [], panes = [], attentionPaneIds = [], attentionPaneKeys, dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane, onAttentionChange }: {
     tab?: RemotePanel;
     cwd?: string;
     workspaceId?: string;
     paneId?: string;
     initialDirectory?: string;
+    directoryPath?: string;
+    searchQuery?: string;
     available: Readonly<Record<RemotePanel, boolean>>;
     /** P1 roster：team 面板取数用（capability `teammate` 协商后 tab 才可见）。 */
     ws?: RemoteLink;
@@ -32,7 +34,7 @@
     /** Open a file in the read-only viewer (file tree row / search hit). */
     onOpenFile?: (path: string, line?: number) => void;
     /** Open a changed file's git diff in the viewer (git panel row). */
-    onOpenDiff?: (path: string) => void;
+    onOpenDiff?: (path: string, cached?: boolean) => void;
     /** P1 roster：点击成员切到其 pane。 */
     onSelectPane?: (paneId: string, workspaceId: string) => void;
     /** Pending HITL pane keys only; normal Agent state is not a border signal. */
@@ -88,12 +90,12 @@
     {:else}
     {#key `${ws ? remoteSessionId(ws) : 0}:${workspaceId}:${paneId}:${cwd}`}
       {#if tab === 'files'}
-        <SidebarFileTree {provider} {onOpenFile} initialPath={initialDirectory} />
+        <SidebarFileTree {provider} {onOpenFile} initialPath={directoryPath || initialDirectory} onDirectoryChange={path => directoryPath = path} />
       {:else if tab === 'git'}
-        <RemoteGitPanel {provider} {onOpenDiff} />
+        <RemoteGitPanel {provider} {onOpenDiff} {onOpenFile} />
 
       {:else}
-        <SidebarSearch {provider} {onOpenFile} />
+        <SidebarSearch {provider} {onOpenFile} bind:query={searchQuery} />
       {/if}
     {/key}
     {/if}

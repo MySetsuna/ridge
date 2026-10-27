@@ -22,7 +22,7 @@ import {
   type RemoteSidebarScope,
   type RemoteQueryClientLike,
 } from './remoteQueries';
-import { trimTrailingSeparators } from '$lib/utils/path';
+import { trimTrailingSeparators, joinPath, isWindowsAbsolute, isPosixAbsolute } from '$lib/utils/path';
 
 export interface WsSidebarProviderOptions {
   /** TanStack Query client supplied by the Remote app. */
@@ -40,8 +40,8 @@ export interface WsSidebarProviderOptions {
 }
 
 /**
- * A confirmed non-Git root is negative for the lifetime of the remote
- * transport session.  Keeping this outside the provider instance matters:
+ * A confirmed non-Git root stays negative until explicit refresh or a root
+ * change. Keeping this outside the provider instance matters:
  * the drawer deliberately remounts its panel on tab/pane changes, and a
  * component-local flag would make every remount run git discovery again.
  * Session ids isolate hosts and the cap prevents a long-lived mobile session
@@ -194,7 +194,18 @@ export function createWsSidebarProvider(
     };
   };
 
-  return {
+  const repositoryRoot = async (signal?: AbortSignal): Promise<string> => (await provider.gitStatus(signal)).repoRoot ?? root;
+  const absolutePath = (path: string): string => isWindowsAbsolute(path) || isPosixAbsolute(path) ? path : joinPath(root, path);
+  const gitPaths = async (paths: string[], signal?: AbortSignal): Promise<string[]> => {
+    const repoRoot = await repositoryRoot(signal);
+    // Resolving a Git-relative row must not promote the ancestor into a grant.
+    return paths.map(path => normalizeRemotePath(repoRoot) === normalizeRemotePath(root) || isWindowsAbsolute(path) || isPosixAbsolute(path) ? path : joinPath(repoRoot, path));
+  };
+  const readSearch = async (query: string, signal?: AbortSignal): Promise<SearchHit[]> => {
+    const hits = await dp.searchFiles(query, root, signal);
+    return hits.map(h => ({ file: h.path, line: h.line ?? 0, column: h.column ?? 0, content: h.snippet ?? '' }));
+  };
+  const provider: SidebarProvider = {
     async listDir(path: string, signal?: AbortSignal): Promise<DirListing> {
       const target = path || root;
       return run(remoteQueryKeys.sidebarFiles(sessionId, root, target, 1, scope), async (signal) => {
@@ -246,6 +257,7 @@ export function createWsSidebarProvider(
       if (nonGitRepoConfirmed) return emptyGitInfo();
       return run(remoteQueryKeys.sidebarGit(sessionId, root, scope), async (querySignal) => {
         let s: {
+          repo_root?: string;
           is_git_repo?: boolean;
           staged?: Array<{ name: string; status: string }>;
           unstaged?: Array<{ name: string; status: string }>;
@@ -292,6 +304,7 @@ export function createWsSidebarProvider(
             refs: c.refs,
           }));
           const info: GitInfo = {
+            repoRoot: s.repo_root ?? root,
             // A clean repository has no files/commits to count. Successful
             // git_status already proves repository detection; newer hosts
             // send the explicit flag and older hosts safely default to true.
@@ -314,9 +327,12 @@ export function createWsSidebarProvider(
     },
 
     async refreshGit(signal?: AbortSignal): Promise<GitInfo> {
-      if (nonGitRepoConfirmed) return emptyGitInfo();
+      nonGitRepoConfirmed = false;
+      nonGitRemoteRoots.delete(nonGitKey);
+      await invalidate(diffPrefix());
       return runFresh(remoteQueryKeys.sidebarGit(sessionId, root, scope), async (querySignal) => {
         let s: {
+          repo_root?: string;
           is_git_repo?: boolean;
           staged?: Array<{ name: string; status: string }>;
           unstaged?: Array<{ name: string; status: string }>;
@@ -331,6 +347,7 @@ export function createWsSidebarProvider(
         } catch (error) {
           if (!isNotGitRepositoryError(error)) throw error;
           nonGitRepoConfirmed = true;
+          if (hasPersistentSessionScope) rememberNonGitRoot(nonGitKey);
           return emptyGitInfo();
         }
         const staged = (s.staged ?? []).map((f) => ({ path: f.name, additions: 0, deletions: 0, status: f.status }));
@@ -350,6 +367,7 @@ export function createWsSidebarProvider(
           refs: c.refs,
         }));
         const info: GitInfo = {
+          repoRoot: s.repo_root ?? root,
           isGitRepo: s.is_git_repo ?? true,
           currentBranch: s.current_branch ?? null,
           hasUpstream: s.has_upstream ?? false,
@@ -360,7 +378,7 @@ export function createWsSidebarProvider(
           untracked,
           commits,
         };
-        if (!info.isGitRepo) nonGitRepoConfirmed = true;
+        if (!info.isGitRepo) { nonGitRepoConfirmed = true; if (hasPersistentSessionScope) rememberNonGitRoot(nonGitKey); }
         return info;
       }, signal);
     },
@@ -374,19 +392,17 @@ export function createWsSidebarProvider(
     },
 
     async search(query: string, signal?: AbortSignal): Promise<SearchHit[]> {
-      return run(remoteQueryKeys.sidebarSearch(sessionId, root, query, scope), async (signal) => {
-        const hits = (await dp.searchFiles(query, root, signal)) as Array<{
-          path: string;
-          line?: number;
-          column?: number;
-          snippet?: string;
-        }>;
-        return hits.map((h) => ({ file: h.path, line: h.line ?? 0, column: h.column ?? 0, content: h.snippet ?? '' }));
-      }, signal);
+      return run(remoteQueryKeys.sidebarSearch(sessionId, root, query, scope), querySignal => readSearch(query, querySignal), signal);
+    },
+    async refreshSearch(query: string, signal?: AbortSignal): Promise<SearchHit[]> {
+      return runFresh(remoteQueryKeys.sidebarSearch(sessionId, root, query, scope), querySignal => readSearch(query, querySignal), signal);
     },
 
     async readFile(path: string, signal?: AbortSignal): Promise<string> {
       return run(remoteQueryKeys.sidebarFile(sessionId, root, path, scope), (querySignal) => dp.readFile(path, querySignal), signal);
+    },
+    async refreshFile(path: string, signal?: AbortSignal): Promise<string> {
+      return runFresh(remoteQueryKeys.sidebarFile(sessionId, root, path, scope), querySignal => dp.readFile(path, querySignal), signal);
     },
 
     async writeFile(path: string, content: string): Promise<void> {
@@ -403,15 +419,17 @@ export function createWsSidebarProvider(
     },
 
     async gitStage(paths: string[], signal?: AbortSignal): Promise<void> {
-      if (signal) await dp.gitStage(root, paths, signal);
-      else await dp.gitStage(root, paths);
-      await invalidate(remoteQueryKeys.sidebarGit(sessionId, root, scope));
+      const targets = await gitPaths(paths, signal);
+      if (signal) await dp.gitStage(root, targets, signal);
+      else await dp.gitStage(root, targets);
+      await invalidate(remoteQueryKeys.sidebarGit(sessionId, root, scope), diffPrefix());
     },
 
     async gitUnstage(paths: string[], signal?: AbortSignal): Promise<void> {
-      if (signal) await dp.gitUnstage(root, paths, signal);
-      else await dp.gitUnstage(root, paths);
-      await invalidate(remoteQueryKeys.sidebarGit(sessionId, root, scope));
+      const targets = await gitPaths(paths, signal);
+      if (signal) await dp.gitUnstage(root, targets, signal);
+      else await dp.gitUnstage(root, targets);
+      await invalidate(remoteQueryKeys.sidebarGit(sessionId, root, scope), diffPrefix());
     },
 
     async gitCommit(message: string, amend = false, signal?: AbortSignal): Promise<void> {
@@ -437,9 +455,14 @@ export function createWsSidebarProvider(
       );
     },
 
-    async gitDiff(path: string, signal?: AbortSignal): Promise<string> {
-      // Working-tree diff vs HEAD (uncached), rooted at the pane cwd.
-      return run(remoteQueryKeys.sidebarDiff(sessionId, root, path, scope), (querySignal) => dp.gitDiffFile(root, path, false, querySignal), signal);
+    async gitDiff(path: string, signal?: AbortSignal, cached = false): Promise<string> {
+      const [target] = await gitPaths([path], signal);
+      return run(remoteQueryKeys.sidebarDiff(sessionId, root, absolutePath(target), scope, cached), querySignal => dp.gitDiffFile(root, target, cached, querySignal), signal);
+    },
+    async refreshDiff(path: string, signal?: AbortSignal, cached = false): Promise<string> {
+      const [target] = await gitPaths([path], signal);
+      return runFresh(remoteQueryKeys.sidebarDiff(sessionId, root, absolutePath(target), scope, cached), querySignal => dp.gitDiffFile(root, target, cached, querySignal), signal);
     },
   };
+  return provider;
 }

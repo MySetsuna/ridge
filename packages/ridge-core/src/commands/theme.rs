@@ -815,6 +815,11 @@ struct SetEnvGuard {
 impl SetEnvGuard {
     fn new(key: &str, val: &str) -> Self {
         let lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        // app_data_dir prioritizes this override on every platform; keep the
+        // existing tmp/ridge layout without ever falling through to real HOME.
+        let (key, val) = if key == "LOCALAPPDATA" {
+            ("RIDGE_KERNEL_DATA_DIR", Path::new(val).join("ridge").to_string_lossy().into_owned())
+        } else { (key, val.to_owned()) };
         let old = std::env::var(key).ok();
         // Safety: called only inside tests; ENV_MUTEX serializes all callers so
         // no two threads touch env vars concurrently.

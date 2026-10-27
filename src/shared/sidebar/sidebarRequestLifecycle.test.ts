@@ -12,7 +12,7 @@ describe('shared sidebar request lifecycle guards', () => {
     expect(fileTree).toContain('generation !== requestGeneration');
     expect(fileTree).toContain('onDestroy');
     expect(fileTree).toContain('provider.refreshDir(target, controller.signal)');
-    expect(fileTree).toContain('load(path, true)');
+    expect(fileTree).toContain('error ? attemptedPath : path');
   });
 
   it('cancels and fences search responses', () => {
@@ -23,7 +23,7 @@ describe('shared sidebar request lifecycle guards', () => {
   });
 
   it('cancels and fences file and diff viewer responses', () => {
-    expect(viewer).toContain('provider.gitDiff(path, controller.signal)');
+    expect(viewer).toContain('provider.gitDiff(path, controller.signal, cached)');
     expect(viewer).toContain('provider.readFile(path, controller.signal)');
     expect(viewer).toContain('generation !== loadGeneration');
     expect(viewer).toContain('onDestroy');

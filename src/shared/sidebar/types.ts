@@ -44,6 +44,7 @@ export interface GitCommit {
 }
 
 export interface GitInfo {
+  repoRoot?: string;
   isGitRepo: boolean;
   currentBranch?: string | null;
   hasUpstream?: boolean;
@@ -94,12 +95,15 @@ export interface SidebarProvider {
   /** Optional explicit Graph refresh, retaining the same Query key. */
   refreshGitGraph?(signal?: AbortSignal): Promise<GitGraph>;
   search(query: string, signal?: AbortSignal): Promise<SearchHit[]>;
+  refreshSearch?(query: string, signal?: AbortSignal): Promise<SearchHit[]>;
   /** Read a file's text content (viewer). `path` is absolute. */
   readFile(path: string, signal?: AbortSignal): Promise<string>;
+  refreshFile?(path: string, signal?: AbortSignal): Promise<string>;
   /** Overwrite a file's text content (editor save). `path` is absolute. */
   writeFile(path: string, content: string): Promise<void>;
   /** Unified diff of a working-tree file vs HEAD. `path` is repo-relative. */
-  gitDiff(path: string, signal?: AbortSignal): Promise<string>;
+  gitDiff(path: string, signal?: AbortSignal, cached?: boolean): Promise<string>;
+  refreshDiff?(path: string, signal?: AbortSignal, cached?: boolean): Promise<string>;
   /** Optional Git mutations. Desktop's full Source Control owns these today;
    *  Remote exposes them through its compact mobile Git panel. */
   gitStage?(paths: string[], signal?: AbortSignal): Promise<void>;

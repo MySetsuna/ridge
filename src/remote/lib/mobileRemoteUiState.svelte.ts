@@ -5,6 +5,7 @@ export type RemoteViewer = {
   kind: 'file' | 'diff';
   path: string;
   line?: number;
+  cached?: boolean;
 };
 
 /** Pure browser/UI state. Remote snapshots and terminal kernels live elsewhere. */

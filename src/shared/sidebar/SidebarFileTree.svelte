@@ -1,12 +1,13 @@
 <script lang="ts">
   import { Folder, File as FileIcon, ChevronUp, RefreshCw } from 'lucide-svelte';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { t } from '$lib/i18n';
   import type { SidebarProvider, FileEntry } from './types';
 
-  let { provider, onOpenFile, initialPath = '' }: {
+  let { provider, onOpenFile, onDirectoryChange, initialPath = '' }: {
     provider: SidebarProvider;
     onOpenFile?: (path: string) => void;
+    onDirectoryChange?: (path: string) => void;
     initialPath?: string;
   } = $props();
 
@@ -17,8 +18,10 @@
   let error = $state<string | null>(null);
   let requestGeneration = 0;
   let requestController: AbortController | null = null;
+  let attemptedPath = $state('');
 
   async function load(target: string, force = false) {
+    attemptedPath = target;
     requestController?.abort();
     const controller = new AbortController();
     requestController = controller;
@@ -33,6 +36,7 @@
       path = listing.path;
       parent = listing.parent ?? null;
       entries = listing.entries;
+      onDirectoryChange?.(listing.path);
     } catch (e) {
       if (controller.signal.aborted || generation !== requestGeneration) return;
       error = e instanceof Error ? e.message : String(e);
@@ -55,7 +59,8 @@
   // Terminal directory links may supply an origin-validated absolute path;
   // ordinary mounts keep the provider's pane-cwd root.
   $effect(() => {
-    void load(initialPath);
+    const target = initialPath;
+    untrack(() => { if (target !== path || !path) void load(target); });
   });
 </script>
 
@@ -65,24 +70,26 @@
       <ChevronUp class="w-4 h-4" />
     </button>
     <span class="ft-path" title={path}>{path || '/'}</span>
-    <button class="icon-btn" onclick={() => void load(path, true)} title={$t('mobile.refresh')}>
+    <button class="icon-btn" disabled={loading} onclick={() => void load(error ? attemptedPath : path, true)} title={$t('mobile.refresh')}>
       <RefreshCw class="w-4 h-4" />
     </button>
   </div>
 
   <div class="ft-list" role="list">
     {#if error}
-      <span class="ft-msg err">{error}</span>
-    {:else if loading && entries.length === 0}
+      <span class="ft-msg err" role="alert">{error}<button onclick={() => load(attemptedPath, true)} disabled={loading}>{$t('mobile.refresh')}</button></span>
+    {/if}
+    {#if loading && entries.length === 0}
       <span class="ft-msg">{$t('mobile.loading')}</span>
     {:else if entries.length === 0}
-      <span class="ft-msg">{$t('mobile.emptyDir')}</span>
+      {#if !error}<span class="ft-msg">{$t('mobile.emptyDir')}</span>{/if}
     {:else}
       {#each entries as entry (entry.path)}
         <button
           class="ft-entry"
           class:dir={entry.is_dir}
           class:ignored={entry.is_ignored === true}
+          disabled={loading}
           onclick={() => onEntry(entry)}
         >
           {#if entry.is_dir}
@@ -115,4 +122,5 @@
   .ft-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ft-msg { color: var(--rg-fg-muted); font-size: 12px; padding: 10px; }
   .ft-msg.err { color: var(--rg-ansi-red); }
+  .ft-msg button { margin-left:8px;min-height:32px;padding:4px 10px;border:1px solid var(--rg-border-bright);border-radius:6px;background:var(--rg-surface);color:var(--rg-fg);cursor:pointer; }
 </style>

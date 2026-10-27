@@ -20,6 +20,7 @@ const shim = (f) => path.resolve(__dirname, 'src/lib/transport/tauriShim', f);
 const lanDevHost = process.env.RIDGE_REMOTE_DEV_HOST_URL || 'https://127.0.0.1:9527';
 const lanDevProxy = { target: lanDevHost, secure: false };
 const lanDevWsHost = lanDevHost.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
+const lanDevPort = Number(process.env.RIDGE_REMOTE_DEV_PORT || 5174);
 
 export default defineConfig({
   root: path.resolve(__dirname, 'src/remote'),
@@ -174,7 +175,7 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: 5174,
+    port: lanDevPort,
     strictPort: true,
     // Keep the browser's HMR client on the same fixed port as this server.
     // Without an explicit clientPort, a page that was first opened through a
@@ -182,7 +183,7 @@ export default defineConfig({
     // example 7734) and request old `/@fs/...` modules after Remote reloads.
     hmr: {
       protocol: 'ws',
-      clientPort: 5174,
+      clientPort: lanDevPort,
     },
     proxy: {
       '/ws': {
@@ -192,6 +193,8 @@ export default defineConfig({
       },
       '/info': lanDevProxy,
       '/verify': lanDevProxy,
+      '/session': lanDevProxy,
+      '/file': lanDevProxy,
       '/health': lanDevProxy,
       '/status': lanDevProxy,
       '/workspace': lanDevProxy,

@@ -87,6 +87,7 @@ export class TauriDataProvider implements DataProvider {
       // A successful get_scm_status call only comes from a detected repo;
       // preserve the explicit flag when newer hosts provide it.
       is_git_repo: scm.is_git_repo ?? true,
+      repo_root: scm.repo_root,
       current_branch: scm.current_branch ?? info.current_branch,
       has_upstream: scm.has_upstream ?? false,
       branches: info.branches ?? [],
@@ -171,7 +172,7 @@ export class TauriDataProvider implements DataProvider {
     // Empty path → fall back to the active project (mirrors the remote server).
     const root = path?.trim() || (await this.call<string | null>('get_current_project')) || '.';
     const hits = await this.call<RawSearchHit[]>('text_search', {
-      request: { root, query, maxResults: 500 },
+      root, query, maxResults: 500,
     });
     return hits.map((h) => ({ path: h.file, line: h.line, column: h.column, snippet: h.content }));
   }

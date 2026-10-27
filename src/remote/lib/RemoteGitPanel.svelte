@@ -6,10 +6,12 @@
   import type { GraphCommit } from '../../lib/components/gitGraphLayout';
   import type { SidebarProvider, GitDiffFile, GitGraph as GitGraphData, GitInfo } from '../../shared/sidebar/types';
   import { hasRemoteGitWriteCapability, runRemoteGitAction, type RemoteGitAction } from './remoteGitActions';
+  import { joinPath } from '$lib/utils/path';
 
-  let { provider, onOpenDiff }: {
+  let { provider, onOpenDiff, onOpenFile }: {
     provider: SidebarProvider;
-    onOpenDiff?: (path: string) => void;
+    onOpenDiff?: (path: string, cached?: boolean) => void;
+    onOpenFile?: (path: string) => void;
   } = $props();
 
   let info = $state<GitInfo>({
@@ -336,6 +338,7 @@
         <div class="write-box">
           <div class="write-actions">
             <button type="button" onclick={stageAll} disabled={!!action || unstagedFiles.length === 0}><Check class="w-4 h-4" /> {$t('scm.stageAll')}</button>
+            <button type="button" onclick={() => runAction('unstage', { paths: stagedFiles.map(file => file.path) })} disabled={!!action || stagedFiles.length === 0}><XCircle class="w-4 h-4" /> {$t('scm.unstageAll')}</button>
             <button type="button" onclick={push} disabled={!!action}><Upload class="w-4 h-4" /> Push</button>
           </div>
           <textarea bind:value={commitMessage} rows="2" placeholder={$t('scm.commitMessagePlaceholder')} aria-label={$t('scm.commitMessagePlaceholder')}></textarea>
@@ -349,7 +352,7 @@
         <span class="msg">{$t('scm.commitDisabledTooltip')}</span>
       {:else}
         {#each fileRows(stagedFiles) as file (file.path)}
-          <button type="button" class="file-row tappable" onclick={() => onOpenDiff?.(file.path)}>
+          <button type="button" class="file-row tappable" onclick={() => onOpenDiff?.(file.path, true)}>
             <span class="badge {statusClass(file.status)}">{file.status.trim() || 'M'}</span>
             <span class="fpath" title={file.path}>{file.path}</span>
           </button>
@@ -360,7 +363,7 @@
         <span class="msg">{$t('scm.workingTreeClean')}</span>
       {:else}
         {#each fileRows(unstagedFiles) as file (file.path)}
-          <button type="button" class="file-row tappable" onclick={() => onOpenDiff?.(file.path)}>
+          <button type="button" class="file-row tappable" onclick={() => file.status === '??' && info.repoRoot ? onOpenFile?.(joinPath(info.repoRoot, file.path)) : onOpenDiff?.(file.path, false)}>
             <span class="badge {statusClass(file.status)}">{file.status.trim() || 'M'}</span>
             <span class="fpath" title={file.path}>{file.path}</span>
           </button>

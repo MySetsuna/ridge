@@ -16,6 +16,7 @@ export class WsDataProvider implements DataProvider {
   private readonly pending = new Map<number, PendingRequest>();
   private offMessage: (() => void) | null = null;
   private offState: (() => void) | null = null;
+  private disposed = false;
 
   private handleMessage(msg: unknown): void {
     if (typeof msg !== 'object' || msg === null) return;
@@ -47,6 +48,7 @@ export class WsDataProvider implements DataProvider {
   /** Transport teardown is terminal for data requests; never leave Query promises
    * waiting for the ten-second timeout after a socket has already gone away. */
   dispose(): void {
+    this.disposed = true;
     this.offMessage?.();
     this.offState?.();
     this.offMessage = null;
@@ -71,6 +73,8 @@ export class WsDataProvider implements DataProvider {
     signal?: AbortSignal,
   ): Promise<T> {
     if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+    if (this.disposed) throw new Error('WS data provider disposed');
+    if (this.conn.state() !== 'connected') throw new Error('Remote transport is not connected');
     const id = ++this.reqId;
     const payload: Record<string, unknown> = { type: 'data-request', method, _reqId: id, ...params };
     return new Promise<T>((resolve, reject) => {
@@ -164,6 +168,7 @@ export class WsDataProvider implements DataProvider {
     // or branch enumeration.
     const scm = await this.request<ScmRepoStatusRaw>('get_scm_status', { repoRoot }, signal);
     return {
+      repo_root: scm.repo_root,
       is_git_repo: scm.is_git_repo ?? true, current_branch: scm.current_branch,
       has_upstream: scm.has_upstream ?? false, branches: [], commits: [],
       staged: scm.staged.map(file => ({ name: file.path, status: file.status })),
@@ -249,6 +254,7 @@ export class WsDataProvider implements DataProvider {
 
   // ── Search ──
   async searchFiles(query: string, path?: string, signal?: AbortSignal): Promise<SearchResult[]> {
-    return this.request<SearchResult[]>('search_files', { query, path: path ?? '' }, signal);
+    const hits = await this.request<Array<SearchResult | {file: string; line: number; column: number; content: string}>>('search_files', { query, path: path ?? '' }, signal);
+    return hits.map(hit => 'file' in hit ? {path:hit.file,line:hit.line,column:hit.column,snippet:hit.content} : hit);
   }
 }

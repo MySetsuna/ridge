@@ -1,22 +1,26 @@
 <script lang="ts">
-  import { X, FileText, GitBranch, Image as ImageIcon, Copy, Pencil, Eye, Save } from 'lucide-svelte';
+  import { X, FileText, GitBranch, Image as ImageIcon, Copy, Pencil, Eye, Save, RefreshCw } from 'lucide-svelte';
   import { convertFileSrc } from '@tauri-apps/api/core';
   import { onDestroy } from 'svelte';
   import { t, tr } from '$lib/i18n';
   import type { SidebarProvider } from '../../shared/sidebar/types';
   import { writeClipboard } from './clipboard';
 
-  let { provider, kind, path, line, onClose }: {
+  let { provider, kind, path, line, cached = false, onClose }: {
     provider: SidebarProvider;
     kind: 'file' | 'diff';
     path: string;
     line?: number;
+    cached?: boolean;
     onClose: () => void;
   } = $props();
 
   // Cap how many lines we render in the read view — a viewer should never lock
   // the mobile tab turning a huge file/diff into tens of thousands of DOM rows.
   const MAX_LINES = 5000;
+  const PAGE_LINES = 200;
+  let renderedLines = $state(PAGE_LINES);
+  let imageRevision = $state(0);
 
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -32,9 +36,14 @@
   let saveError = $state<string | null>(null);
   let loadGeneration = 0;
   let loadController: AbortController | null = null;
+  let saveGeneration = 0;
 
   const imagePreview = $derived(kind === 'file' && /\.(?:png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(path));
-  const imageUrl = $derived(imagePreview ? convertFileSrc(path) : '');
+  const imageUrl = $derived.by(() => {
+    if (!imagePreview) return '';
+    const url = convertFileSrc(path);
+    return imageRevision ? `${url}${url.includes('?') ? '&' : '?'}ridgeRefresh=${imageRevision}` : url;
+  });
   const canEdit = $derived(kind === 'file' && !imagePreview && !loading && !error);
 
   function basename(p: string): string {
@@ -53,7 +62,7 @@
   }
 
   function splitLines(text: string): { rows: string[]; truncated: boolean } {
-    let arr = text.split('\n');
+    let arr = text.split('\n', MAX_LINES + 1);
     if (arr.length > 1 && arr[arr.length - 1] === '') arr = arr.slice(0, -1);
     if (arr.length > MAX_LINES) return { rows: arr.slice(0, MAX_LINES), truncated: true };
     return { rows: arr, truncated: false };
@@ -74,11 +83,15 @@
     }
   }
 
-  async function load() {
+  async function load(force = false) {
+    if (force && (saving || (dirty && !confirm(tr('mobile.viewerUnsavedConfirm'))))) return;
     loadController?.abort();
     const controller = new AbortController();
     loadController = controller;
     const generation = ++loadGeneration;
+    saveGeneration++; saving = false;
+    renderedLines = Math.min(MAX_LINES, Math.max(PAGE_LINES, line ?? 0));
+    if (force) imageRevision++;
     loading = true;
     error = null;
     truncated = false;
@@ -93,8 +106,8 @@
         return;
       }
       const text = kind === 'diff'
-        ? await provider.gitDiff(path, controller.signal)
-        : await provider.readFile(path, controller.signal);
+        ? await (force && provider.refreshDiff ? provider.refreshDiff(path, controller.signal, cached) : provider.gitDiff(path, controller.signal, cached))
+        : await (force && provider.refreshFile ? provider.refreshFile(path, controller.signal) : provider.readFile(path, controller.signal));
       if (controller.signal.aborted || generation !== loadGeneration) return;
       content = text;
       const { rows, truncated: tr2 } = splitLines(text);
@@ -112,6 +125,7 @@
     loadController?.abort();
     loadController = null;
     loadGeneration += 1;
+    saveGeneration++;
     if (copyResetTimer) clearTimeout(copyResetTimer);
   });
 
@@ -119,17 +133,20 @@
     if (saving || !dirty) return;
     saving = true;
     saveError = null;
+    const generation = ++saveGeneration;
+    const targetProvider = provider, targetPath = path, submitted = content;
     try {
-      await provider.writeFile(path, content);
-      dirty = false;
+      await targetProvider.writeFile(targetPath, submitted);
+      if (generation !== saveGeneration) return;
+      dirty = content !== submitted;
       // Refresh the read view from the saved content.
       const { rows, truncated: tr2 } = splitLines(content);
       lines = rows;
       truncated = tr2;
     } catch (e) {
-      saveError = e instanceof Error ? e.message : String(e);
+      if (generation === saveGeneration) saveError = e instanceof Error ? e.message : String(e);
     } finally {
-      saving = false;
+      if (generation === saveGeneration) saving = false;
     }
   }
 
@@ -148,13 +165,14 @@
   }
 
   function requestClose() {
+    if (saving) return;
     if (dirty && !confirm(tr('mobile.viewerUnsavedConfirm'))) return;
     onClose();
   }
 
   $effect(() => {
     // Reload whenever the target file/kind changes.
-    void path; void kind;
+    void path; void kind; void cached;
     void load();
   });
 
@@ -181,10 +199,11 @@
       {/if}
     {/if}
     <button class="v-btn" class:armed={copied} onclick={copyContent} disabled={loading || !!error || !content} title={tr('mobile.viewerCopyContent')} tabindex="-1"><Copy class="w-4 h-4" /></button>
-    <button class="v-btn" onclick={requestClose} aria-label={tr('mobile.sidebarClose')} tabindex="-1"><X class="w-5 h-5" /></button>
+    <button class="v-btn" onclick={() => load(true)} disabled={loading || saving} title={$t('mobile.refresh')} tabindex="-1"><RefreshCw class="w-4 h-4" /></button>
+    <button class="v-btn" onclick={requestClose} disabled={saving} aria-label={tr('mobile.sidebarClose')} tabindex="-1"><X class="w-5 h-5" /></button>
   </div>
 
-  {#if saveError}<div class="v-saveerr">{saveError}</div>{/if}
+  {#if saveError}<div class="v-saveerr" role="alert">{saveError}</div>{/if}
 
   {#if editing}
     <textarea
@@ -194,13 +213,14 @@
       spellcheck="false"
       autocapitalize="off"
       autocomplete="off"
+      aria-label={basename(path)}
     ></textarea>
   {:else}
     <div class="v-body" bind:this={bodyEl} class:diff={kind === 'diff'}>
       {#if loading}
         <div class="v-msg">{$t('mobile.loading')}</div>
       {:else if error}
-        <div class="v-msg err">{error}</div>
+        <div class="v-msg err" role="alert">{error}<button onclick={() => load(true)}>{$t('mobile.refresh')}</button></div>
       {:else if imagePreview}
         <div class="image-body">
           <img
@@ -215,16 +235,19 @@
       {:else if lines.length === 0}
         <div class="v-msg">{kind === 'diff' ? $t('mobile.viewerNoChanges') : $t('mobile.viewerEmpty')}</div>
       {:else if kind === 'diff'}
-        <pre class="diff-pre">{#each lines as l, i (i)}<span class="d-line {diffClass(l)}">{l || ' '}</span>{/each}</pre>
+        <pre class="diff-pre">{#each lines.slice(0, renderedLines) as l, i (i)}<span class="d-line {diffClass(l)}">{l || ' '}</span>{/each}</pre>
       {:else}
         <div class="code">
-          {#each lines as l, i (i)}
+          {#each lines.slice(0, renderedLines) as l, i (i)}
             <div class="code-row" data-ln={i + 1} class:hit={line === i + 1}>
               <span class="ln">{i + 1}</span>
               <span class="lc">{l || ' '}</span>
             </div>
           {/each}
         </div>
+      {/if}
+      {#if !loading && !error && renderedLines < lines.length}
+        <button class="v-more" onclick={() => renderedLines += PAGE_LINES}>{$t('explorer.loadMore', { remaining: lines.length - renderedLines })}</button>
       {/if}
       {#if truncated}
         <div class="v-trunc">{$t('mobile.viewerTruncated', { max: MAX_LINES })}</div>
@@ -251,6 +274,8 @@
   .v-msg { color: var(--rg-fg-muted); font-size: 12px; padding: 16px; }
   .v-msg.err { color: var(--rg-ansi-red); white-space: pre-wrap; word-break: break-word; }
   .v-trunc { color: var(--rg-fg-muted); font-size: 10px; padding: 10px 14px; border-top: 1px dashed var(--rg-border-bright); }
+  .v-more,.v-msg button { min-height:32px;padding:6px 12px;border:1px solid var(--rg-border-bright);border-radius:6px;background:var(--rg-surface);color:var(--rg-fg);cursor:pointer; }
+  .v-more { display:block;margin:8px auto; }.v-msg button { margin-left:8px; }
   .image-body { display: flex; align-items: center; justify-content: center; min-height: 100%; width: 100%; box-sizing: border-box; padding: 8px; overflow: hidden; }
   .image-preview { display: block; max-width: min(100%, calc(100vw - 16px)); max-height: calc(100dvh - 112px); width: auto; height: auto; object-fit: contain; border-radius: 6px; }
 

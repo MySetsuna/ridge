@@ -86,7 +86,7 @@ describe('TauriDataProvider injected invocation', () => {
 			{ path: 'src/a.ts', line: 3, column: 5, snippet: 'hit' },
 		]);
 		expect(call).toHaveBeenCalledWith('text_search', {
-			request: { root: '/repo', query: 'needle', maxResults: 500 },
+			root: '/repo', query: 'needle', maxResults: 500,
 		});
 	});
 

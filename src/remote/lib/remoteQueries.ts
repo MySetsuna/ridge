@@ -56,8 +56,8 @@ export const remoteQueryKeys = {
     ['remote', sessionId, 'sidebar', scopePart(scope?.workspaceId), scopePart(scope?.paneId), scopePart(scope?.branch), 'search', normalizeRemotePath(cwd), query] as const,
   sidebarFile: (sessionId: number, cwd: string, path: string, scope?: RemoteSidebarScope) =>
     ['remote', sessionId, 'sidebar', scopePart(scope?.workspaceId), scopePart(scope?.paneId), scopePart(scope?.branch), 'file', normalizeRemotePath(cwd), normalizeRemotePath(path)] as const,
-  sidebarDiff: (sessionId: number, cwd: string, path: string, scope?: RemoteSidebarScope) =>
-    ['remote', sessionId, 'sidebar', scopePart(scope?.workspaceId), scopePart(scope?.paneId), scopePart(scope?.branch), 'diff', normalizeRemotePath(cwd), normalizeRemotePath(path)] as const,
+  sidebarDiff: (sessionId: number, cwd: string, path: string, scope?: RemoteSidebarScope, cached = false) =>
+    ['remote', sessionId, 'sidebar', scopePart(scope?.workspaceId), scopePart(scope?.paneId), scopePart(scope?.branch), 'diff', normalizeRemotePath(cwd), normalizeRemotePath(path), cached] as const,
 };
 
 export const remoteSidebarQueryPrefix = (sessionId: number, scope?: RemoteSidebarScope) =>

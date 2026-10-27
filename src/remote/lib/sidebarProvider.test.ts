@@ -44,7 +44,7 @@ function makeProvider(overrides: Partial<DataProvider> = {}): DataProvider {
 
 /** Small QueryClient-shaped test double; production uses TanStack Query. */
 class TestQueryClient {
-  private readonly cache = new Map<string, { promise: Promise<unknown>; expiresAt: number; staleTime: number }>();
+  private readonly cache = new Map<string, { promise: Promise<unknown>; updatedAt: number }>();
   readonly invalidations: unknown[][] = [];
 
   fetchQuery<T>({
@@ -61,9 +61,9 @@ class TestQueryClient {
     // TanStack Query evaluates the current fetch's staleTime, not only the
     // value used by the request that populated the cache. An explicit refresh
     // passes staleTime=0 and must therefore bypass a previously fresh entry.
-    if (hit && staleTime > 0 && hit.expiresAt > Date.now()) return hit.promise as Promise<T>;
+    if (hit && staleTime > 0 && hit.updatedAt + staleTime > Date.now()) return hit.promise as Promise<T>;
     const promise = Promise.resolve().then(queryFn);
-    this.cache.set(key, { promise, expiresAt: Date.now() + staleTime, staleTime });
+    this.cache.set(key, { promise, updatedAt: Date.now() });
     void promise.catch(() => {
       if (this.cache.get(key)?.promise === promise) this.cache.delete(key);
     });
@@ -72,6 +72,7 @@ class TestQueryClient {
 
   invalidateQueries({ queryKey }: { queryKey: readonly unknown[] }): void {
     this.invalidations.push([...queryKey]);
+    for (const key of this.cache.keys()) if (queryKey.every((part,index)=>JSON.parse(key)[index]===part)) this.cache.delete(key);
   }
 }
 
@@ -358,7 +359,7 @@ describe('remote sidebar query contract', () => {
 
     expect(client.invalidations).toEqual([
       ['remote', 10, 'sidebar', 'ws-1', 'pane-1', 'main', 'file', '/repo', '/repo/src/app.ts'],
-      ['remote', 10, 'sidebar', 'ws-1', 'pane-1', 'main', 'diff', '/repo', '/repo/src/app.ts'],
+      ['remote', 10, 'sidebar', 'ws-1', 'pane-1', 'main', 'diff', '/repo', '/repo/src/app.ts', false],
       ['remote', 10, 'sidebar', 'ws-1', 'pane-1', 'main', 'git', '/repo'],
       ['remote', 10, 'sidebar', 'ws-1', 'pane-1', 'main', 'search', '/repo'],
     ]);
@@ -434,5 +435,46 @@ describe('remote sidebar query contract', () => {
     expect(dp.gitCommit).toHaveBeenCalledWith('/repo', 'message', true);
     expect(dp.gitPush).toHaveBeenCalledWith('/repo', true);
     expect(dp.gitDiffFile).toHaveBeenCalledWith('/repo', 'src/a.ts', false, undefined);
+  });
+
+  it('rechecks an explicit non-Git result on refresh without repeating ordinary probes', async () => {
+    const gitStatus = vi.fn().mockResolvedValueOnce({is_git_repo:false}).mockResolvedValue({repo_root:'/repo',is_git_repo:true,staged:[],unstaged:[],untracked:[],commits:[]});
+    const options={queryClient:new TestQueryClient(),sessionId:93};
+    const sidebar=createWsSidebarProvider('/repo/src',makeProvider({gitStatus}),options);
+    await expect(sidebar.gitStatus()).resolves.toMatchObject({isGitRepo:false});
+    await sidebar.gitStatus();expect(gitStatus).toHaveBeenCalledOnce();
+    await expect(sidebar.refreshGit?.()).resolves.toMatchObject({isGitRepo:true,repoRoot:'/repo'});
+    await expect(createWsSidebarProvider('/repo/src',makeProvider({gitStatus}),options).gitStatus()).resolves.toMatchObject({isGitRepo:true});
+    expect(gitStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves the repository root and separates index and working previews across remounts', async () => {
+    const dp=makeProvider({gitStatus:vi.fn(async()=>({repo_root:'/repo',staged:[],unstaged:[],untracked:[],commits:[]})),gitDiffFile:vi.fn(async(_root,_path,cached)=>cached?'INDEX':'WORKING')});
+    const options={queryClient:new TestQueryClient(),sessionId:94};
+    await createWsSidebarProvider('/repo/src',dp,options).gitStatus();
+    const sidebar=createWsSidebarProvider('/repo/src',dp,options);
+    await expect(sidebar.gitDiff('src/a',undefined,true)).resolves.toBe('INDEX');
+    await expect(sidebar.gitDiff('src/a')).resolves.toBe('WORKING');
+    await sidebar.gitDiff('src/a',undefined,true);
+    expect(dp.gitDiffFile).toHaveBeenCalledTimes(2);
+    await sidebar.gitStage?.(['src/a']);expect(dp.gitStage).toHaveBeenCalledWith('/repo/src',['/repo/src/a']);
+    await sidebar.refreshDiff?.('src/a',undefined,true);expect(dp.gitDiffFile).toHaveBeenLastCalledWith('/repo/src','/repo/src/a',true,undefined);
+  });
+
+  it('explicit file/search refresh bypasses fresh snapshots and leaves normal reads warm', async () => {
+    const dp=makeProvider();const sidebar=createWsSidebarProvider('/repo',dp,{queryClient:new TestQueryClient(),sessionId:95});
+    await sidebar.readFile('/repo/a');await sidebar.readFile('/repo/a');expect(dp.readFile).toHaveBeenCalledOnce();
+    await sidebar.refreshFile?.('/repo/a');expect(dp.readFile).toHaveBeenCalledTimes(2);
+    await sidebar.search('needle');await sidebar.search('needle');expect(dp.searchFiles).toHaveBeenCalledOnce();
+    await sidebar.refreshSearch?.('needle');expect(dp.searchFiles).toHaveBeenCalledTimes(2);
+  });
+
+  it('file save refreshes the same working comparison regardless of relative/absolute spelling', async () => {
+    let working='OLD';const dp=makeProvider({gitDiffFile:vi.fn(async(_root,_path,cached)=>cached?'INDEX':working),writeFile:vi.fn(async()=>{working='NEW';})});
+    const sidebar=createWsSidebarProvider('/repo',dp,{queryClient:new TestQueryClient(),sessionId:96});
+    await expect(sidebar.gitDiff('src/a')).resolves.toBe('OLD');await expect(sidebar.gitDiff('src/a',undefined,true)).resolves.toBe('INDEX');
+    await sidebar.writeFile('/repo/src/a','NEW');
+    await expect(sidebar.gitDiff('src/a')).resolves.toBe('NEW');await expect(sidebar.gitDiff('src/a',undefined,true)).resolves.toBe('INDEX');
+    expect(dp.gitDiffFile).toHaveBeenCalledTimes(3);
   });
 });

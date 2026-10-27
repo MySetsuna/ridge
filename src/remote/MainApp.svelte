@@ -48,6 +48,7 @@
     remotePerfStart,
   } from '@ridge/remote/shared/transport/remotePerfTrace';
   import { getTransport, type DataProvider } from '$lib/transport';
+  import type { SidebarProvider } from '../shared/sidebar/types';
   import type { TerminalLinkOpenRequest, TerminalLinkValidationResult } from '@ridge/remote/shared/terminal/ports';
   import { looksOutsideWorkspace, probePathWithCache } from '@ridge/remote/shared/terminal/linkOpenHost';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
@@ -215,6 +216,13 @@
   // file in the tree / a search hit → 'file'; tap a changed file in git → 'diff').
   // Active pane's working dir — roots the sidebar at the same place ridge shows.
   let activeCwd = $state('');
+  let sidebarDirectory = $state('');
+  let sidebarSearchQuery = $state('');
+  let viewerProvider = $state.raw<SidebarProvider | null>(null);
+  const sidebarScope = $derived(`${sessionId()}:${ui.activeWorkspaceId}:${ui.activePaneId}:${activeCwd}`);
+  $effect(() => {
+    void sidebarScope; sidebarDirectory = ''; sidebarSearchQuery = '';
+  });
   // Provider rooted at the active cwd — backs the file/diff viewer (the sidebar
   // builds its own internally). Recreated when the cwd changes.
   const sidebarProvider = $derived(
@@ -236,17 +244,20 @@
   function openFileViewer(path: string, line?: number) {
     if (!panelAvailability.files) return;
     viewerReturnTab = ui.sidebarTab;
+    viewerProvider = sidebarProvider;
     ui.viewer = { kind: 'file', path, line };
     ui.sidebarTab = null; // close the sidebar so the viewer takes the screen
   }
-  function openDiffViewer(path: string) {
+  function openDiffViewer(path: string, cached = false) {
     if (!panelAvailability.git) return;
     viewerReturnTab = ui.sidebarTab;
-    ui.viewer = { kind: 'diff', path };
+    viewerProvider = sidebarProvider;
+    ui.viewer = { kind: 'diff', path, cached };
     ui.sidebarTab = null;
   }
   function closeViewer() {
     ui.viewer = null;
+    viewerProvider = null;
     ui.sidebarTab = viewerReturnTab;
     viewerReturnTab = null;
   }
@@ -1531,6 +1542,8 @@
           attentionPaneIds={activeAttentionPaneIds()}
           {attentionPaneKeys}
           {dataProvider}
+          bind:directoryPath={sidebarDirectory}
+          bind:searchQuery={sidebarSearchQuery}
           onClose={() => ui.sidebarTab = null}
           onTabChange={selectSidebarTab}
           onOpenFile={openFileViewer}
@@ -1579,10 +1592,11 @@
     {#if fileViewerPromise}
       {#await fileViewerPromise then module}
         <module.default
-          provider={sidebarProvider}
+          provider={viewerProvider ?? sidebarProvider}
           kind={v.kind}
           path={v.path}
           line={v.line}
+          cached={v.cached}
           onClose={closeViewer}
         />
       {:catch}

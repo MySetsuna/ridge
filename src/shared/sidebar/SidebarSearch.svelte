@@ -4,12 +4,12 @@
   import type { SidebarProvider, SearchHit } from './types';
   import { t } from '$lib/i18n';
 
-  let { provider, onOpenFile }: {
+  let { provider, onOpenFile, query = $bindable('') }: {
     provider: SidebarProvider;
     onOpenFile?: (path: string, line?: number) => void;
+    query?: string;
   } = $props();
 
-  let query = $state('');
   let results = $state<SearchHit[]>([]);
   let loading = $state(false);
   let error = $state<string | null>(null);
@@ -22,7 +22,7 @@
     return i >= 0 ? p.slice(i + 1) : p;
   }
 
-  async function run(q: string) {
+  async function run(q: string, force = false) {
     requestController?.abort();
     const controller = new AbortController();
     requestController = controller;
@@ -36,8 +36,8 @@
     loading = true;
     error = null;
     try {
-      const next = await provider.search(q, controller.signal);
-      if (controller.signal.aborted || generation !== requestGeneration) return;
+      const next = force && provider.refreshSearch ? await provider.refreshSearch(q, controller.signal) : await provider.search(q, controller.signal);
+      if (controller.signal.aborted || generation !== requestGeneration || q !== query) return;
       results = next;
     } catch (e) {
       if (controller.signal.aborted || generation !== requestGeneration) return;
@@ -47,11 +47,15 @@
     }
   }
 
-  function onInput(e: Event) {
-    query = (e.target as HTMLInputElement).value;
+  $effect(() => {
+    const q = query;
+    const eligible = q.trim().length >= 2;
+    requestController?.abort(); requestGeneration++;
+    results = []; error = null; loading = eligible;
     if (debounce) clearTimeout(debounce);
-    debounce = setTimeout(() => run(query), 250);
-  }
+    if (eligible) debounce = setTimeout(() => run(q), 250);
+    return () => { if (debounce) clearTimeout(debounce); requestController?.abort(); requestGeneration++; };
+  });
 
   onDestroy(() => {
     if (debounce) clearTimeout(debounce);
@@ -69,13 +73,13 @@
       type="search"
       placeholder={$t('ui.sidebarSearchPlaceholder')}
       value={query}
-      oninput={onInput}
+      oninput={event => query = event.currentTarget.value}
     />
   </div>
 
   <div class="search-body">
     {#if error}
-      <span class="msg err">{error}</span>
+      <span class="msg err" role="alert">{error}<button onclick={() => run(query, true)}>{$t('mobile.refresh')}</button></span>
     {:else if loading}
       <span class="msg">{$t('ui.sidebarSearching')}</span>
     {:else if query.trim().length >= 2 && results.length === 0}
@@ -104,6 +108,7 @@
   .search-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px; -webkit-overflow-scrolling: touch; display: flex; flex-direction: column; gap: 1px; }
   .msg { color: var(--rg-fg-muted); font-size: 12px; padding: 10px; }
   .msg.err { color: var(--rg-ansi-red); }
+  .msg button { margin-left:8px;min-height:32px;padding:4px 10px;border:1px solid var(--rg-border-bright);border-radius:6px;background:var(--rg-surface);color:var(--rg-fg);cursor:pointer; }
 
   .hit { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; background: none; border: none; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
   .hit:active { background: var(--rg-surface-2); }

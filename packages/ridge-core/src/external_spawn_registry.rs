@@ -173,7 +173,7 @@ mod tests {
         rust_files_below(&workspace.join("src-tauri"), &mut files);
         let mut offenders = Vec::new();
         for file in files {
-            if file == gate || file == this_file {
+            if file == gate || file == this_file || is_integration_test(&file) {
                 continue;
             }
             let Ok(source) = std::fs::read_to_string(&file) else {
@@ -193,5 +193,21 @@ mod tests {
             offenders.is_empty(),
             "git spawns must use commands::git::run_git_guarded: {offenders:?}"
         );
+    }
+
+    fn is_integration_test(path: &Path) -> bool {
+        path.ancestors().any(|parent| parent.file_name().and_then(|name| name.to_str()) == Some("tests")
+            && parent.parent().is_some_and(|crate_root| crate_root.join("Cargo.toml").is_file()))
+    }
+
+    #[test]
+    fn test_fixture_exemption_does_not_hide_production_modules_named_tests() {
+        let root=std::env::temp_dir().join(format!("ridge-spawn-audit-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src/tests")).unwrap();std::fs::create_dir_all(root.join("tests/common")).unwrap();
+        std::fs::write(root.join("Cargo.toml"),"").unwrap();
+        assert!(is_integration_test(&root.join("tests/common/fixture.rs")));
+        assert!(!is_integration_test(&root.join("src/tests/production.rs")));
+        assert!(!is_integration_test(&root.join("src/production.rs")));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

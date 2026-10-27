@@ -5,6 +5,7 @@ import { WsDataProvider } from './ws';
 function fakeConnection() {
   let onMessage: ((message: unknown) => void) | undefined;
   let onState: ((state: 'connecting' | 'connected' | 'disconnected' | 'error') => void) | undefined;
+  let state: 'connecting' | 'connected' | 'disconnected' | 'error' = 'connected';
   const connection = {
     onMessage: vi.fn((fn: (message: unknown) => void) => {
       onMessage = fn;
@@ -15,13 +16,26 @@ function fakeConnection() {
       return () => { onState = undefined; };
     }),
     send: vi.fn(),
+    state: () => state,
     emitMessage(message: unknown) { onMessage?.(message); },
-    emitState(state: 'connecting' | 'connected' | 'disconnected' | 'error') { onState?.(state); },
+    emitState(next: typeof state) { state=next; onState?.(next); },
   };
   return connection;
 }
 
 describe('WsDataProvider lifecycle', () => {
+  it('rejects a new offline read/write immediately without queueing or replaying it', async () => {
+    const connection=fakeConnection();const provider=new WsDataProvider(connection as unknown as RemoteConnection);
+    connection.emitState('disconnected');await expect(provider.writeFile('/repo/a','unsaved')).rejects.toThrow('not connected');
+    expect(connection.send).not.toHaveBeenCalled();connection.emitState('connected');expect(connection.send).not.toHaveBeenCalled();provider.dispose();
+    await expect(provider.readFile('/repo/a')).rejects.toThrow('provider disposed');expect(connection.send).not.toHaveBeenCalled();
+  });
+  it('maps real Kernel search hits and keeps legacy response compatibility', async () => {
+    const connection=fakeConnection();
+    connection.send.mockImplementation((payload:{_reqId:number})=>queueMicrotask(()=>connection.emitMessage({_reqId:payload._reqId,_result:[{file:'/repo/a',line:3,column:5,content:'needle'},{path:'/repo/legacy',line:1,snippet:'old'}]})));
+    const provider=new WsDataProvider(connection as unknown as RemoteConnection);
+    await expect(provider.searchFiles('needle','/repo')).resolves.toEqual([{path:'/repo/a',line:3,column:5,snippet:'needle'},{path:'/repo/legacy',line:1,snippet:'old'}]);provider.dispose();
+  });
   it('loads shared SCM status and sends exact reset and cleanup targets', async () => {
     const connection = fakeConnection();
     let untracked = [{ path: 'new.txt', status: '?' }];
@@ -29,12 +43,12 @@ describe('WsDataProvider lifecycle', () => {
       if (payload.type !== 'data-request') return;
       queueMicrotask(() => connection.emitMessage({ type: 'data-result', _reqId: payload._reqId,
         _result: payload.method === 'get_scm_status'
-          ? { current_branch: 'main', has_upstream: true, staged: [{ path: 'staged.txt', status: 'A' }], changes: [], untracked }
+          ? { repo_root:'/repo', current_branch: 'main', has_upstream: true, staged: [{ path: 'staged.txt', status: 'A' }], changes: [], untracked }
           : null }));
     });
     const provider = new WsDataProvider(connection as unknown as RemoteConnection);
     await expect(provider.gitStatus('/repo')).resolves.toMatchObject({
-      is_git_repo: true, current_branch: 'main', staged: [{ name: 'staged.txt', status: 'A' }],
+      repo_root:'/repo', is_git_repo: true, current_branch: 'main', staged: [{ name: 'staged.txt', status: 'A' }],
       unstaged: [], untracked: ['new.txt'], commits: [], branches: [],
     });
     await provider.gitReset('/repo', 'mixed', 'head');

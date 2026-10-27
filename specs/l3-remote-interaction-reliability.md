@@ -94,6 +94,21 @@ code_targets:
   - packages/remote/src/shared/cloud/remoteAllowlist.ts
   - .github/workflows/release.yml
   - .github/workflows/rtp1-kernel-e2e.yml
+  - src/remote/lib/RemoteSidebar.svelte
+  - src/remote/lib/RemoteGitPanel.svelte
+  - src/remote/lib/sidebarProvider.ts
+  - src/remote/lib/remoteQueries.ts
+  - src/remote/lib/mobileRemoteUiState.svelte.ts
+  - src/remote/lib/FileViewer.svelte
+  - src/shared/sidebar/SidebarFileTree.svelte
+  - src/shared/sidebar/SidebarSearch.svelte
+  - src/shared/sidebar/types.ts
+  - src/lib/transport/types.ts
+  - src/lib/transport/ws.ts
+  - src/lib/transport/tauri.ts
+  - packages/ridge-core/src/commands/git.rs
+  - packages/ridge-core/src/external_spawn_registry.rs
+  - packages/ridge-core/src/commands/theme.rs
 test_targets:
   - src/remote/lib/TerminalCanvas.test.ts
   - src/remote/lib/remoteInput.test.ts
@@ -134,6 +149,15 @@ test_targets:
   - scripts/cloud-terminal-system-acceptance.mjs
   - packages/remote/src/shared/cloud/remoteAllowlist.test.ts
   - packages/ridge-kernel/tests/remote_invoke_runtime.rs
+  - src/remote/lib/sidebarProvider.test.ts
+  - src/remote/lib/RemoteGitPanel.test.ts
+  - src/shared/sidebar/sidebarRequestLifecycle.test.ts
+  - src/lib/transport/ws.test.ts
+  - src/lib/transport/tauri.test.ts
+  - scripts/remote-tabs-acceptance.mjs
+  - packages/ridge-core/src/commands/git.rs
+  - packages/ridge-core/src/external_spawn_registry.rs
+  - packages/ridge-core/src/commands/theme.rs
 ---
 
 # Remote interaction and runtime reliability
@@ -229,3 +253,15 @@ The shared terminal manager owns loss/recovery events at the actual host canvas.
 Serialize recovery by canvas/host generation. A late recovery cannot replace a newer host or resurrect a detached/closed pane. Hidden/parked panes restore on their next valid mount; mount/unmount during recovery stays bounded and fenced. Failed renderer recovery shows a retryable error; a retry creates fresh GPU resources while preserving confirmed terminal state. Foreground without context loss may request a redraw without rebuilding healthy resources.
 
 Acceptance injects actual WEBGL_lose_context on the shared canvas in a GPU-backed production browser, restores it repeatedly, changes panes/workspaces during the loss and verifies fresh rendering plus real PTY input/output. Assert kernel and terminal epoch continuity, no input replay, no stale handle resurrection, cleanup after close and bounded live resource counts. Unit/lifecycle tests also exercise deferred initialization, restoration failure/retry and cancellation; WebGL injection is not evidence of WebGPU device-loss or physical-phone coverage. Compare performance only with matching binaries/routes/workloads and record hardware/network limits.
+
+## Remote tab workflows (CHG-086)
+
+Files, search, Git and viewer use the same authorized Runtime data provider and scoped Query cache. Keep successful directory and search navigation in temporary UI state across tab/viewer round trips; reset on connection, workspace, pane or CWD change. Never persist drafts or widen filesystem/Git capabilities implicitly. Failed directory navigation retries the attempted target and preserves the last confirmed listing. Search invalidates obsolete results immediately when text changes, debounces requests, cancels/fences late responses, and provides a retry without retyping. Explicit refresh bypasses a fresh cache while normal revisits share cached reads. A confirmed non-Git result suppresses ordinary repeat probes; explicit refresh must recheck, allowing a newly initialized repository to appear.
+
+Git status reports the actual repository root even when invoked from a nested CWD. Consumers preserve it to resolve repository-relative file paths. Commands retain their existing authorized CWD; discovery of an ancestor repository does not expand filesystem grants. Nested-CWD previews and file mutations use exact checked paths while graph, commit and push retain their authorized command context. Staged previews read the index diff; working previews read the working-tree diff; untracked items open their actual file. Index/working diff cache keys are distinct, with targeted invalidation. Preview selection never stages, commits or pushes. Existing mutation capability checks and user confirmations remain.
+
+A file viewer pins its source provider when opened; later background CWD/source changes cannot redirect its read or save. A save captures the exact target and submitted text. Successful completion only clears dirty state if current text still equals submitted text; edits made during the save remain unsaved. Late completions cannot alter a different target or a destroyed view. Errors retain text and permit deliberate retry, without automatic write retries. Closing while a save is unresolved is disabled; dirty close keeps the existing confirmation. Read/refresh/image failures have visible retry. Explicit reload confirms before discarding edits.
+
+Read views initially render at most 200 lines and extend on demand up to the existing 5000-line display cap, with search-hit positioning and truncation made visible. Preserve complete loaded text for copy/edit/save; browsing causes no write. Exercise real files, nested Git repository/index/worktree/untracked previews, navigation return, refresh/failure recovery, delayed search/save races and forbidden paths against an isolated Kernel and browser UI. Test cancellation and cache isolation; measure repeated warm tab request counts and fixed-file render rows/time against the previous implementation. Report local software-browser conditions separately from phone/WAN guarantees.
+
+Validation helpers must isolate theme state through an explicit temporary app-data root on every platform. They must never corrupt an actual user store. The Git spawn audit governs production sources; Cargo integration-test fixtures may use owned test Git processes, while production modules merely named tests remain audited. Exercise the scope discriminator itself and preserve all deterministic production gates.
