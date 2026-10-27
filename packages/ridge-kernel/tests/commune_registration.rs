@@ -306,6 +306,10 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
     assert_eq!(members["roster"].as_array().unwrap().len(), 1);
     assert_eq!(members["roster"][0]["name"], "unknown-protocol-process");
     assert_eq!(members["roster"][0]["sessionId"], "fixture-existing");
+    let remote_members = command(&endpoint, "get_teammate_topology", json!({"workspaceId":workspace}), false);
+    assert_eq!(remote_members["roster"][0]["canSend"], true);
+    assert_eq!(remote_members["roster"][0]["canCancel"], true);
+    assert_eq!(remote_members["discovered"], json!([]), "remote method grants do not confer native process discovery");
     assert_eq!(
         command_reply(
             &endpoint,
@@ -522,6 +526,15 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
         .as_str()
         .unwrap()
         .to_owned();
+    let assistants=command(&endpoint,"read_agent_recent_replies",json!({"workspaceId":workspace,"limit":200,"assistantOnly":true}),true);
+    let assistants=assistants.as_array().unwrap();
+    assert!(!assistants.is_empty());
+    assert!(assistants.iter().all(|row|matches!(row["kind"].as_str(),Some("agent_message_chunk"|"agentMessage"))));
+    assert_eq!(command_reply(&endpoint,"read_agent_recent_replies",json!({"workspaceId":workspace,"cursor":history_cursor,"assistantOnly":true}),true)["ok"],false,"unfiltered cursors cannot change their source filter");
+    let filtered=command(&endpoint,"read_agent_recent_replies",json!({"workspaceId":workspace,"limit":1,"assistantOnly":true}),true);
+    if let Some(cursor)=filtered.as_array().unwrap().last().and_then(|row|row["cursor"].as_str()) {
+        assert_eq!(command_reply(&endpoint,"read_agent_recent_replies",json!({"workspaceId":workspace,"cursor":cursor}),true)["ok"],false,"assistant cursors cannot become unfiltered");
+    }
     let other_workspace =
         client::request_json(&endpoint, "POST", "/v1/domain/workspaces", None).unwrap()
             ["workspace_id"]

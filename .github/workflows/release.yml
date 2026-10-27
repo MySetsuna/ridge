@@ -81,7 +81,7 @@ jobs:
       - name: ridge-core unit tests (git guard / supersede)
         run: cargo test -p ridge-core --lib -- commands::git process_guard
       - name: Kernel Runtime continuity regressions
-        run: cargo test --locked -p ridge-kernel --lib --test runtime_workspace_continuity --test cwd_runtime --test workspace_file_owner -- --test-threads=1
+        run: cargo test --locked -p ridge-kernel --lib --test runtime_workspace_continuity --test cwd_runtime --test workspace_file_owner --test commune_registration --test commune_group_tasks --test remote_invoke_runtime -- --test-threads=1
       - name: Build ridge-mcp Linux sidecar (Tauri check prerequisite)
         run: node scripts/build-ridge-mcp-sidecar.mjs --require-built
       - name: Build and verify Kernel Linux sidecar (Tauri check prerequisite)
@@ -210,7 +210,7 @@ jobs:
 
       - name: Windows Runtime continuity regressions
         if: matrix.label == 'windows-x64'
-        run: cargo test --locked --release -p ridge-kernel --lib --test runtime_workspace_continuity --test cwd_runtime --test workspace_file_owner -- --test-threads=1
+        run: cargo test --locked --release -p ridge-kernel --lib --test runtime_workspace_continuity --test cwd_runtime --test workspace_file_owner --test commune_registration --test commune_group_tasks --test remote_invoke_runtime -- --test-threads=1
 
       - name: Build & publish (Tauri)
         uses: tauri-apps/tauri-action@v0

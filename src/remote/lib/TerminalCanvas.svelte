@@ -449,8 +449,8 @@
       el.addEventListener('pointermove', stopPointer, true);
       el.addEventListener('pointerup', stopPointer, true);
       el.addEventListener('pointercancel', stopPointer, true);
-      el.addEventListener('webglcontextlost', onContextLost);
-      el.addEventListener('webglcontextrestored', onContextRestored);
+      el.addEventListener('webglcontextlost', onContextLost, true);
+      el.addEventListener('webglcontextrestored', onContextRestored, true);
     }
     document.addEventListener('visibilitychange', onVisibility);
 
@@ -467,8 +467,8 @@
         el.removeEventListener('pointermove', stopPointer, true);
         el.removeEventListener('pointerup', stopPointer, true);
         el.removeEventListener('pointercancel', stopPointer, true);
-        el.removeEventListener('webglcontextlost', onContextLost);
-        el.removeEventListener('webglcontextrestored', onContextRestored);
+        el.removeEventListener('webglcontextlost', onContextLost, true);
+        el.removeEventListener('webglcontextrestored', onContextRestored, true);
       }
       document.removeEventListener('visibilitychange', onVisibility);
     };

@@ -89,7 +89,7 @@ import {
   //
   // 修法是**收敛所有权**：store 是全局单例，只能由**活动**工作区驱动，非活动
   // 工作区（display:none，看不见）不参与。这样任一时刻只有一个 key 写入，循环消失。
-  const teammateGroups = teammateGroupStore();
+  const teammateGroups = $derived(teammateGroupStore(workspaceId));
   $effect(() => {
     if (workspaceId !== $activeWorkspaceId) return;
     teammateGroups.setWorkspace(

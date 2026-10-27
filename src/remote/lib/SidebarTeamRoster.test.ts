@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const source = readFileSync(new URL('./SidebarTeamRoster.svelte', import.meta.url), 'utf8');
+const source = readFileSync(new URL('./CommuneWorkspaceRoster.svelte', import.meta.url), 'utf8');
 
 describe('remote Agent drawer alignment contract', () => {
   it('uses one centered inline-flex baseline for labels and icons', () => {
@@ -43,7 +43,7 @@ describe('remote Agent drawer alignment contract', () => {
   it('raises pane attention on completion/approval edges and projects sticky card state', () => {
     expect(source).toContain('function attentionEvents(');
     expect(source).toContain('agentAttentionForTransition(previous, current, hasPending, member.status)');
-    expect(source).toContain('onAttentionChange?.(attentionEvents(t.roster, p))');
+    expect(source).toContain('onAttentionChange?.(attentionEvents(t.roster, pending))');
     expect(source).toContain('class:agent-attention={attentionPaneIds.includes(m.paneId)}');
     expect(source).toContain('data-agent-attention={attentionPaneIds.includes(m.paneId) ? \'true\' : \'\'}');
   });

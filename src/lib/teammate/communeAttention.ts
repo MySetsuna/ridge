@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { isAgentReplyKind } from './agentCommuneModel';
 
 export const communeUnreadWorkspaces = writable<Record<string, true>>({});
 
@@ -6,7 +7,7 @@ export function isAgentMessageEvent(payload: unknown): boolean {
   if (!payload || typeof payload !== 'object') return false;
   const record = payload as Record<string, unknown>;
   if (record.phase === 'replay') return false;
-  if (record.kind === 'agent_message_chunk' || record.kind === 'agentMessage') return true;
+  if (isAgentReplyKind(record.kind)) return true;
   const params = record.params as { update?: { sessionUpdate?: unknown; item?: { type?: unknown } } } | undefined;
   const update = params?.update;
   return update?.sessionUpdate === 'agent_message_chunk'

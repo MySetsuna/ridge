@@ -6,19 +6,23 @@
   import { markCommuneRead } from './communeAttention';
   import { t } from '$lib/i18n';
   import { locale } from '$lib/i18n/locale';
+  import { CommuneHistoryPages, compareCommuneHistory, type CommuneHistoryRequest as Request } from './communeHistoryPages';
 
-  interface Request { workspaceId: string; limit?: number; query?: string; cursor?: string; textCursor?: string }
   interface Props {
     workspaceId?: string;
+    workspaceIds?: readonly string[];
     visible?: boolean;
     load?: (request: Request) => Promise<AgentHistoryReply[]>;
     canLocate?: (row: AgentHistoryReply) => boolean;
     onLocate?: (row: AgentHistoryReply) => void;
   }
-  let { workspaceId, visible = false, load = request => invoke<AgentHistoryReply[]>('read_agent_recent_replies', { ...request }), canLocate = () => false, onLocate }: Props = $props();
+  let { workspaceId, workspaceIds, visible = false, load = request => invoke<AgentHistoryReply[]>('read_agent_recent_replies', { ...request }), canLocate = () => false, onLocate }: Props = $props();
+  const scopeKey = $derived([...new Set(workspaceIds ?? (workspaceId ? [workspaceId] : []))].filter(Boolean).sort().join(','));
   let rows = $state<AgentHistoryReply[]>([]);
   let query = $state('');
-  let cursor = $state<string | undefined>();
+  let hasMore = $state(false);
+  let pages: CommuneHistoryPages | null = null;
+  let loadedQuery = '';
   let busy = $state(false);
   let error = $state('');
   let newEvents = $state(false);
@@ -26,33 +30,40 @@
   let requestVersion = 0;
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
   let eventRefreshTimer: ReturnType<typeof setTimeout> | undefined;
-  const key = (row: AgentHistoryReply) => row.id ?? `${row.memberId}:${row.sequence}`;
+  const key = (row: AgentHistoryReply) => `${row.workspaceId}:${row.id ?? `${row.memberId}:${row.sequence}`}`;
 
   async function refresh(more = false) {
-    if (!workspaceId || (more && (!cursor || busy))) return;
-    const scope = workspaceId;
+    if (!scopeKey || (more && (!hasMore || busy))) return;
+    const scope = scopeKey;
+    const requestedQuery = query.trim();
     const version = ++requestVersion;
     busy = true;
     error = '';
     try {
-      const page = await load({ workspaceId: scope, limit: 100, query: query.trim(), cursor: more ? cursor : undefined });
-      if (version !== requestVersion || scope !== workspaceId) return;
-      const existing = new Set(more ? rows.map(key) : []);
-      rows = [...(more ? rows : []), ...page.filter(row => !existing.has(key(row)))].slice(-300);
-      cursor = page.at(-1)?.cursor ?? undefined;
-      if (!more) { expanded = {}; newEvents = false; if (visible) markCommuneRead(scope); }
+      const candidate = more && pages ? pages.fork() : new CommuneHistoryPages(scope.split(','), load, requestedQuery);
+      const page = await candidate.next();
+      if (version !== requestVersion || scope !== scopeKey) return;
+      const retained = more ? rows : loadedQuery === requestedQuery ? rows.filter(row => candidate.failures.has(row.workspaceId ?? '')) : [];
+      const merged = new Map(retained.map(row => [key(row), row]));
+      for (const row of page) merged.set(key(row), row);
+      const ordered = [...merged.values()].sort(compareCommuneHistory);
+      rows = more ? ordered.slice(-300) : ordered.slice(0, 300);
+      loadedQuery = requestedQuery;
+      error = [...candidate.failures].map(([source, failure]) => `${source}: ${failure}`).join('; ');
+      pages = candidate; hasMore = candidate.hasMore;
+      if (!more) { expanded = {}; newEvents = candidate.failures.size > 0; if (visible) scope.split(',').filter(id => !candidate.failures.has(id)).forEach(markCommuneRead); }
     } catch (failure) {
       if (version === requestVersion) error = failure instanceof Error ? failure.message : String(failure);
     } finally { if (version === requestVersion) busy = false; }
   }
   async function textPage(row: AgentHistoryReply, textCursor: string) {
-    if (!workspaceId || busy) return;
-    const scope = workspaceId;
+    if (!row.workspaceId || !scopeKey.split(',').includes(row.workspaceId) || busy) return;
+    const scope = scopeKey;
     const version = ++requestVersion;
     busy = true;
     try {
-      const page = await load({ workspaceId: scope, textCursor });
-      if (version === requestVersion && scope === workspaceId && page[0]) rows = rows.map(item => key(item) === key(row) ? { ...page[0], cursor: item.cursor } : item);
+      const page = await load({ workspaceId: row.workspaceId, textCursor });
+      if (version === requestVersion && scope === scopeKey && page[0]) rows = rows.map(item => key(item) === key(row) ? { ...page[0], cursor: item.cursor } : item);
     } catch (failure) { if (version === requestVersion) error = failure instanceof Error ? failure.message : String(failure); }
     finally { if (version === requestVersion) busy = false; }
   }
@@ -61,16 +72,16 @@
     searchTimer = setTimeout(() => { searchTimer = undefined; void refresh(); }, 250);
   }
   $effect(() => {
-    const scope = workspaceId;
+    const scope = scopeKey;
     requestVersion++;
-    rows = []; cursor = undefined; error = ''; busy = false; expanded = {};
+    rows = []; pages = null; hasMore = false; error = ''; busy = false; expanded = {};
     if (scope) untrack(() => { void refresh(); });
   });
   onMount(() => {
     const changed = (eventWorkspaceId?: string) => {
-      if (!workspaceId || eventWorkspaceId !== workspaceId) return;
+      if (!eventWorkspaceId || !scopeKey.split(',').includes(eventWorkspaceId)) return;
       newEvents = true;
-      if (eventRefreshTimer) clearTimeout(eventRefreshTimer);
+      if (eventRefreshTimer) return;
       eventRefreshTimer = setTimeout(() => { eventRefreshTimer = undefined; void refresh(); }, 160);
     };
     const stops = [
@@ -90,7 +101,7 @@
   <div class="flex items-center gap-2">
     <input type="search" bind:value={query} oninput={search} aria-label={$t('commune.historySearchLabel')}
       placeholder={$t('commune.historySearch')} class="min-w-0 flex-1 rounded-md border border-[var(--rg-border)] bg-[var(--rg-bg)] px-2.5 py-2 text-[13px]" />
-    <button onclick={() => refresh()} disabled={busy || !workspaceId} class="shrink-0 rounded-md border border-[var(--rg-border)] px-2.5 py-2 text-[12px] transition-colors hover:bg-[var(--rg-surface)] disabled:opacity-40">{newEvents ? $t('commune.refreshNew') : $t('commune.refresh')}</button>
+    <button onclick={() => refresh()} disabled={busy || !scopeKey} class="shrink-0 rounded-md border border-[var(--rg-border)] px-2.5 py-2 text-[12px] transition-colors hover:bg-[var(--rg-surface)] disabled:opacity-40">{newEvents ? $t('commune.refreshNew') : $t('commune.refresh')}</button>
   </div>
   <p class="text-[12px] leading-5 text-[var(--rg-fg-muted)]">{$t('commune.historyLedger')}</p>
   {#if error}<p role="alert" class="text-[13px] text-red-300">{$t('commune.historyError', { error })}</p>{/if}
@@ -117,5 +128,5 @@
       </li>
     {/each}
   </ul>
-  {#if cursor}<button onclick={() => refresh(true)} disabled={busy} class="self-center rounded-md border border-[var(--rg-border)] px-3 py-1.5 text-[12px] disabled:opacity-40">{$t('commune.earlier')}</button>{/if}
+  {#if hasMore}<button onclick={() => refresh(true)} disabled={busy} class="self-center rounded-md border border-[var(--rg-border)] px-3 py-1.5 text-[12px] disabled:opacity-40">{$t('commune.earlier')}</button>{/if}
 </section>

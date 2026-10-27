@@ -24,6 +24,8 @@ code_targets:
   - src-tauri/src/state.rs
   - src-tauri/src/lib.rs
   - docs/archive/**
+  - src/lib/i18n/**
+  - src/lib/components/SplitContainer.svelte
 test_targets:
   - packages/ridge-acp/**
   - packages/ridge-mcp/**
@@ -32,6 +34,10 @@ test_targets:
   - packages/remote/**
   - tests/e2e/commune.spec.ts
   - src/remote/lib/SidebarTeamRoster.test.ts
+  - scripts/commune-permission-ui-acceptance.mjs
+  - scripts/commune-permission-ui-client.mjs
+  - src/lib/components/interactionContracts.test.ts
+  - scripts/commune-global-ui-acceptance.mjs
 depends_on:
   - L2-AGENT-COMMUNE-EXACT-BINDING
   - L2-RIDGE-COMMUNION-M53
@@ -224,3 +230,11 @@ Commune 遵循工作区统一的 Ridge 视觉语言与主题，适配桌面和�
 ## Remote Commune 视觉一致性
 
 Remote 的成员、历史、编组及审批沿用与桌面一致的主题感知 Ridge 视觉系统：森林绿强调色、分层表面、清楚状态与数据层级、可见键盘焦点及窄屏适配。成员与历史仍为两个主子页签；编组留在成员页内并可发现、可操作。视觉调整不改协议身份、授权、投递、审计或终端语义。
+
+## 全局 Commune 聚合 — 2026-10-26 用户明确
+
+Commune 是已授权 Host 的全局 Agent 总览。成员、最近协议回复、历史和既有编组不随当前终端工作区切换而缩减，也不要求用户先切换工作区才能找到 Agent。工作区仅保留为内部来源与权限身份，不是 Commune 的页面筛选或所有者概念。桌面聚合所有本地工作区，Remote 聚合当前连接实际获准的全部工作区；不能越过连接授权集合。各既有编组按其原记录身份聚合呈现，写操作仍由原服务验证，聚合不迁移或合并存储权限。
+
+最近回复接受 ACP assistant chunks 和 app-server 正式 assistant items，排除用户消息、思考及隐藏 delta。任何成员动作与历史定位均携带原 workspace/pane/member/session/运行代际，跨来源同名成员不可串线。全局历史分页保持各来源独立 cursor，合并去重并有界呈现；关闭或撤销来源后停止新读取，旧响应不得复活已移除数据。读失败保留最后确认的成员与审批并显示刷新错误，不将未知当作空集合或已无审批。
+
+验收：至少两个工作区和相同名称/会话字段的不同成员同时可见；切换当前工作区不改变全局成员、回复和历史；源工作区事件可刷新各自回复；实际人工输入及协议/审批只作用于原目标。注入一来源失败及延迟响应，其他来源继续更新且原有效成员/待审批不消失；恢复后投影收敛。旧编组和权限执行语义保持。

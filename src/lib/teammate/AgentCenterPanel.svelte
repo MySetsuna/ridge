@@ -6,7 +6,7 @@
   // 后端未接线时优雅显示空态（不报错）。顶部带一个「审批」快捷开关（HITL），
   // 完整开关在设置面板「智能体」分区。
 
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { t, tr } from '$lib/i18n';
   import { listen } from '@tauri-apps/api/event';
   import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -67,6 +67,7 @@
   import {
     agentHitlPendingStore,
     agentTopologyStore,
+    agentRefreshFailuresStore,
     refreshAgentPaneHighlight,
   } from './agentPaneHighlightSync';
 
@@ -77,9 +78,8 @@
   }
   let { workspaceId, visible = false }: Props = $props();
 
-  const topology = $derived(
-    workspaceId ? ($agentTopologyStore[workspaceId] ?? EMPTY_TOPOLOGY) : EMPTY_TOPOLOGY
-  );
+  const globalWorkspaceIds = $derived($workspacesList.map(workspace => workspace.id));
+  const globalScopeKey = $derived([...globalWorkspaceIds].sort().join(','));
   const terminalAgents = $derived(collectTerminalAgents($workspacesList, $agentTopologyStore));
   let expandedTerminal = $state('');
 
@@ -110,20 +110,21 @@
   let gitGuard = $state<GitGuardStats | null>(null);
   let hitlAuditItems = $state<HitlAuditItem[]>([]);
   type AgentRecentReply = AgentHistoryReply;
-  let recentReplies = $state<AgentRecentReply[]>([]);
-  let historyLoadedAt = 0;
-  let historyRefreshInFlight: Promise<void> | null = null;
+  let repliesBySource = $state<Record<string, AgentRecentReply[]>>({});
+  const recentReplies = $derived(Object.values(repliesBySource).flat());
+  const historyLoadedAt = new Map<string, number>();
+  const historyRefreshInFlight = new Map<string, Promise<void>>();
+  let historyErrors = $state<Record<string, string>>({});
+  const historyError = $derived(Object.values(historyErrors).filter(Boolean).join('; '));
+  const historyRefreshQueued = new Set<string>();
+  const dirtyHistoryScopes = new Set<string>();
+  let historyScopeGeneration = 0;
+  let alive = true;
   let refreshInFlight: Promise<void> | null = null;
   let refreshQueued = false;
   let refreshQueuedHeavy = false;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let historyRefreshTimer: ReturnType<typeof setTimeout> | undefined;
-  /** Saved workspaces have an explicit transcript root.  An unsaved workspace
-   * may use a root only when its pane CWDs prove one; never union arbitrary
-   * pane directories into a host-wide history query. */
-  const filePath = $derived(
-    (workspaceId ? $workspaceSaveInfoStore[workspaceId]?.file_path : null) ?? null
-  );
   /** Same live title projection as PaneHeader; identity/name remains stable for actions. */
   const livePaneTitles = $derived.by(() => {
     const titles = new Map<string, string>();
@@ -148,7 +149,7 @@
     const paneCwd = profile.paneId
       ? $paneCwdStore[`${profile.workspaceId ?? ownerWorkspaceId ?? ''}:${profile.paneId}`]
       : undefined;
-    return latestReplyForProfile(recentReplies, { ...profile, cwd: profile.cwd ?? paneCwd })?.text;
+    return latestReplyForProfile(recentReplies, { ...profile, workspaceId: profile.workspaceId ?? ownerWorkspaceId, cwd: profile.cwd ?? paneCwd })?.text;
   }
 
   function lookupProfileFor(member: { workspaceId: string; profile: TeammateProfile }) {
@@ -158,19 +159,43 @@
     return { ...member.profile, cwd: member.profile.cwd ?? paneCwd };
   }
 
-  async function refreshRecentReplies(force = false): Promise<void> {
-    if (!workspaceId || (!force && !shouldRefreshAgentHistory(historyLoadedAt))) return;
-    if (historyRefreshInFlight) return historyRefreshInFlight;
-    const scope = workspaceId;
-    historyRefreshInFlight = (async () => {
-      try {
-        const page = await invoke<AgentRecentReply[]>('read_agent_recent_replies', { workspaceId: scope, limit: 100, query: 'agent_message_chunk' });
-        if (workspaceId === scope) { recentReplies = page; historyLoadedAt = Date.now(); }
-      } catch { /* Preserve the last confirmed protocol projection. */ }
-      finally { historyRefreshInFlight = null; }
-    })();
-    return historyRefreshInFlight;
+  async function refreshRecentReplies(force = false, requestedScopes: readonly string[] = globalWorkspaceIds): Promise<void> {
+    if (!isTauri()) return;
+    const scopes = requestedScopes.filter(id => globalWorkspaceIds.includes(id));
+    const scopeVersion = historyScopeGeneration;
+    for (let i = 0; i < scopes.length; i += 4) await Promise.all(scopes.slice(i, i + 4).map(async scope => {
+      if (!force && !shouldRefreshAgentHistory(historyLoadedAt.get(scope) ?? 0)) return;
+      if (historyRefreshInFlight.has(scope)) { if (force) historyRefreshQueued.add(scope); return historyRefreshInFlight.get(scope); }
+      const request = (async () => {
+        try {
+          const page = await Promise.resolve().then(() => invoke<AgentRecentReply[]>('read_agent_recent_replies', { workspaceId: scope, limit: 100, assistantOnly: true }));
+          if (page.some(row => row.workspaceId !== scope)) throw Error('Commune reply source mismatch');
+          if (alive && scopeVersion === historyScopeGeneration && globalWorkspaceIds.includes(scope)) {
+            repliesBySource = { ...repliesBySource, [scope]: page }; historyLoadedAt.set(scope, Date.now());
+            historyErrors = { ...historyErrors, [scope]: '' };
+          }
+        } catch (failure) {
+          if (alive && scopeVersion === historyScopeGeneration && globalWorkspaceIds.includes(scope)) historyErrors = { ...historyErrors, [scope]: String(failure) };
+        } finally {
+          historyRefreshInFlight.delete(scope);
+          if ((historyRefreshQueued.delete(scope) || scopeVersion !== historyScopeGeneration) && alive && globalWorkspaceIds.includes(scope)) void refreshRecentReplies(true, [scope]);
+        }
+      })();
+      historyRefreshInFlight.set(scope, request);
+      return request;
+    }));
+
   }
+  $effect(() => {
+    const scopes = globalScopeKey.split(',').filter(Boolean);
+    historyScopeGeneration++;
+    untrack(() => {
+      historyErrors = Object.fromEntries(Object.entries(historyErrors).filter(([id]) => scopes.includes(id)));
+      for (const id of historyLoadedAt.keys()) if (!scopes.includes(id)) historyLoadedAt.delete(id);
+      repliesBySource = Object.fromEntries(Object.entries(repliesBySource).filter(([id]) => scopes.includes(id)));
+      void refreshRecentReplies();
+    });
+  });
 
   function historyMember(row: AgentRecentReply) {
     return allMembers.find(member => member.profile.id === row.memberId && member.profile.sessionId === row.sessionId && member.workspaceId === row.workspaceId);
@@ -195,19 +220,8 @@
   // 编组协作并入成员页；顶层只保留成员与历史。
   let teamTab = $state<'members' | 'history'>('members');
   // 编组 store（单例，与 TeammateGroups 共用）：成员聚合列表据此标注每人组归属。
-  const groupStore = teammateGroupStore();
-  $effect(() => { groupStore.setWorkspace(workspaceId, filePath); });
-
-  // M1 切片二：裁决审计历史（环形 ≤50；条目无命令全文）。
-  interface HitlDecisionEntry {
-    ts: number;
-    source: string;
-    initiator: string;
-    verdict: string;
-    reasonSummary: string;
-    outcome: string;
-  }
-  let decisions = $state<HitlDecisionEntry[]>([]);
+  const groupStores = $derived($workspacesList.map(workspace => ({ workspace, store: teammateGroupStore(workspace.id) })));
+  const groupCount = $derived(groupStores.reduce((count, entry) => count + entry.store.groups.length, 0));
 
   // iter-61：成员级监控/干预（用户需求：监控每个 agent 状态与任务进度，可干预）。
   interface HitlPendingItem {
@@ -308,14 +322,6 @@
     // Heavy: decisions / memory / git / audit — only on initial/layout refresh.
     if (doHeavy) {
       try {
-        const list = workspaceId
-          ? await invoke<HitlDecisionEntry[]>('list_hitl_decisions', { workspaceId })
-          : [];
-        decisions = Array.isArray(list) ? list : [];
-      } catch {
-        decisions = [];
-      }
-      try {
         gitGuard = await refreshGitGuardStats();
       } catch {
         gitGuard = null;
@@ -341,11 +347,13 @@
   }
 
   // 随应用打包的 MCP 接入引导文档（见 tauri.conf.json bundle.resources）。
-  function scheduleHistoryRefresh(): void {
-    if (historyRefreshTimer) clearTimeout(historyRefreshTimer);
+  function scheduleHistoryRefresh(scope: string): void {
+    dirtyHistoryScopes.add(scope);
+    if (historyRefreshTimer) return;
     historyRefreshTimer = setTimeout(() => {
       historyRefreshTimer = undefined;
-      void refreshRecentReplies(true);
+      const scopes = [...dirtyHistoryScopes]; dirtyHistoryScopes.clear();
+      void refreshRecentReplies(true, scopes);
     }, 350);
   }
 
@@ -386,12 +394,14 @@
     const unCommune = ['commune-members-changed', 'commune-task-changed', 'teammate://hitl-pending-changed']
       .map(name => listen(name, () => scheduleRefresh({ heavy: true })));
     const unConversation = listen<{workspaceId?: string}>('commune-session-update', (event) => {
-      if (event.payload?.workspaceId === workspaceId) scheduleHistoryRefresh();
+      if (event.payload?.workspaceId && globalWorkspaceIds.includes(event.payload.workspaceId)) scheduleHistoryRefresh(event.payload.workspaceId);
     });
     const unGroups = listen('commune-groups-changed', e => {
-      if ((e.payload as {workspaceId?: string}).workspaceId === workspaceId) void groupStore.refresh();
+      const scope = (e.payload as {workspaceId?: string}).workspaceId;
+      if (scope && globalWorkspaceIds.includes(scope)) void teammateGroupStore(scope).refresh();
     });
     return () => {
+      alive = false;
       if (refreshTimer) clearTimeout(refreshTimer);
       if (historyRefreshTimer) clearTimeout(historyRefreshTimer);
       unGroups.then((f) => f()).catch(() => {});
@@ -413,6 +423,9 @@
   </header>
 
   <div class="rg-scroll flex flex-1 flex-col gap-5 overflow-y-auto px-4 py-4">
+    {#if $agentRefreshFailuresStore.length || historyError}
+      <p role="alert" class="text-[12px] text-red-300">{$t('commune.healthSnapshotFailed')}{historyError ? ': ' + historyError : ''}</p>
+    {/if}
     {#snippet bottomControls()}
     {#if healthError}
       <p role="alert" data-testid="orchestration-health-error" class="text-[11px] text-amber-400">{healthError}</p>
@@ -497,32 +510,10 @@
         {/if}
       </section>
     {/if}
-    <!-- M1 切片二：审批历史（最近在上，最多显示 10；来源=workspace-memory decisions 节） -->
-    {#if decisions.length > 0}
-      <section>
-        <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-          <ShieldCheck class="h-3 w-3 text-[var(--rg-accent)]/70" /> {$t('commune.approvalHistory')}
-          <span class="ml-auto font-mono">{decisions.length}</span>
-        </h3>
-        <ul class="mt-1 space-y-0.5">
-          {#each decisions.slice(-10).reverse() as d (d.ts + d.initiator + d.outcome)}
-            <li class="flex items-center gap-2 rounded px-1.5 py-1 text-[11px]">
-              <span
-                class="shrink-0 font-mono {d.verdict === 'approve' && d.outcome === 'consumed'
-                  ? 'text-emerald-400'
-                  : 'text-red-300'}">{d.verdict}</span>
-              <span class="min-w-0 flex-1 truncate" title={d.reasonSummary}>{d.reasonSummary}</span>
-              <span class="shrink-0 text-[var(--rg-fg-muted)]">{d.initiator}</span>
-              <span class="shrink-0 text-[var(--rg-fg-muted)]/70">{d.source}</span>
-            </li>
-          {/each}
-        </ul>
-      </section>
-    {/if}
     {/snippet}
 
     {#snippet historyContent()}
-      <CommuneHistory {workspaceId} visible={visible && teamTab === 'history'}
+      <CommuneHistory workspaceIds={globalWorkspaceIds} visible={visible && teamTab === 'history'}
         canLocate={row => historyMember(row)?.profile.online === true}
         onLocate={row => { const member = historyMember(row); if (member?.profile.paneId) void locateTerminal(member.workspaceId, member.profile.paneId).catch(error => showToast(String(error), 'error')); }} />
     {/snippet}
@@ -551,14 +542,14 @@
           aria-selected={teamTab === 'history'}
           aria-controls="commune-panel-history"
           data-testid="commune-tab-history"
-          onclick={() => { teamTab = 'history'; if (workspaceId) markCommuneRead(workspaceId); }}
+          onclick={() => { teamTab = 'history'; globalWorkspaceIds.forEach(markCommuneRead); }}
           class="flex flex-1 items-center justify-center gap-1.5 border-b-2 px-2 py-2.5 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60 {teamTab ===
           'history'
             ? 'border-[var(--rg-accent)] text-[var(--rg-fg)]'
             : 'border-transparent text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
         >
           {$t('commune.history')}
-          {#if $communeUnreadWorkspaces[workspaceId ?? '']}
+          {#if globalWorkspaceIds.some(id => $communeUnreadWorkspaces[id])}
             <span class="h-1.5 w-1.5 rounded-full bg-[var(--rg-accent)]" aria-label={$t('commune.historyTabUnread')}></span>
           {/if}
         </button>
@@ -588,9 +579,7 @@
           {/each}
           {#each protocolOnlyMembers as member (member.workspaceId + ':' + member.profile.id)}
             {@const m = member.profile}
-            {@const grp = member.workspaceId === workspaceId
-              ? groupOfAgent(groupStore.groups, m.id)
-              : undefined}
+            {@const grp = groupOfAgent(teammateGroupStore(member.workspaceId).groups, m.id)}
             <AgentMemberRow
               profile={m}
               agentId={m.id}
@@ -612,17 +601,14 @@
         </ul>
         <details class="rounded-lg border border-[var(--rg-border)] p-3" data-testid="commune-member-groups">
           <summary class="cursor-pointer text-[12px] font-medium">
-            {$t('commune.groups')} <span class="font-mono text-[11px] text-[var(--rg-fg-muted)]">{groupStore.groups.length}</span>
+            {$t('commune.groups')} <span class="font-mono text-[11px] text-[var(--rg-fg-muted)]">{groupCount}</span>
           </summary>
-          <p class="my-2 text-[12px] text-[var(--rg-fg-muted)]">{$t('commune.currentWorkspace')}: {$workspacesList.find(workspace => workspace.id === workspaceId)?.name?.trim() || workspaceId}</p>
-          <TeammateGroups
-            roster={topology.roster}
-            {workspaceId}
-            {filePath}
-            hitlPending={hitlPending.filter(item => item.workspaceId === workspaceId)}
-            {recentReplyFor}
-            onRefresh={() => void refreshSharedState()}
-          />
+          {#each groupStores as entry (entry.workspace.id)}
+            <TeammateGroups roster={$agentTopologyStore[entry.workspace.id]?.roster ?? []}
+              workspaceId={entry.workspace.id} filePath={$workspaceSaveInfoStore[entry.workspace.id]?.file_path ?? null}
+              hitlPending={hitlPending.filter(item => item.workspaceId === entry.workspace.id)}
+              recentReplyFor={profile => recentReplyFor(profile, entry.workspace.id)} onRefresh={() => void refreshSharedState()} />
+          {/each}
         </details>
         </div>
       {:else}

@@ -125,7 +125,7 @@ try {
     }});
     await new Promise(resolve=>requestAnimationFrame(()=>resolve()));
     if(workspaceTabTarget.querySelectorAll('[data-testid="workspace-tab-saved"]').length!==1 || workspaceTabTarget.querySelectorAll('[data-testid="workspace-agent-unread"]').length!==1) throw Error('workspace tab does not distinguish the saved workspace from the unread temporary workspace');
-    window.ownedGroups = teammateGroupStore();
+    window.ownedGroups = teammateGroupStore(target.workspaceId);
     window.ownedApproval = { invoke, target, osCalls,
       pause: () => { bridge.detach({ preserveListeners: true }); connection.disconnect(); },
       reconnect: async () => { connection = await connectPresentationRuntime(); bridge.attach(connection.transport, { useGlobalWorkspace: false }); },

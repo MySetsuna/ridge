@@ -4,6 +4,10 @@ use ridge_remote::{access::{RemoteBlacklist,RemoteClientRegistry,BlacklistEntry}
 use serde_json::{json,Value};
 use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
 
+fn bind_listener<T,E>(port:u16,fallback:bool,mut bind:impl FnMut(u16)->Result<T,E>)->Result<T,E> {
+    match bind(port) {Err(_) if fallback=>bind(0),result=>result}
+}
+
 pub struct Access {
     pub clients: RemoteClientRegistry,
     pub blacklist: RemoteBlacklist,
@@ -43,13 +47,13 @@ impl Lan {
             if tokio::time::timeout(std::time::Duration::from_secs(5),&mut task).await.is_err() {task.abort();let _=task.await;}
         }
     }
-    async fn enable(&self,state:&AppState,port:u16)->Result<(),String> {
+    async fn enable(&self,state:&AppState,port:u16,fallback:bool)->Result<(),String> {
         let mut slot=self.listener.lock().await;
         if let Some(listener)=slot.as_ref() {
             if !listener.task.is_finished() {return Ok(());}
             return Err("LAN listener exited; disable it before restarting".into());
         }
-        let (listener,actual)=ridge_remote::server::bind_tcp(port).map_err(|e|e.to_string())?;
+        let (listener,actual)=bind_listener(port,fallback,ridge_remote::server::bind_tcp).map_err(|e|e.to_string())?;
         let lan_ip=ridge_remote::net::detect_lan_ip();
         let machine_name=sysinfo::System::host_name().unwrap_or_else(||"unknown".into());
         let tls=ridge_remote::tls::resolve_config_multi(&ridge_remote::net::detect_lan_ips(),&machine_name).await;
@@ -78,7 +82,7 @@ impl Lan {
                     if enabled {
                         let port=match args.get("port") {None=>9527,Some(port)=>u16::try_from(port.as_u64().ok_or("invalid LAN port")?).map_err(|_|"invalid LAN port")?};
                         if port>65526 {return Err("LAN port outside probe range".into());}
-                        self.enable(state,port).await?;
+                        self.enable(state,port,args.get("port").is_none()).await?;
                     } else {self.stop().await;}
                     Ok(Value::Null)
                 }
@@ -117,5 +121,22 @@ impl Lan {
                 }
             }
         }.await)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bind_listener;
+    #[test]
+    fn exhausted_default_range_uses_a_system_assigned_port() {
+        let mut attempted=Vec::new();
+        let result=bind_listener(9527,true,|port|{attempted.push(port);if port==0 {Ok(23456)}else{Err("reserved range")}});
+        assert_eq!(result,Ok(23456));assert_eq!(attempted,vec![9527,0]);
+    }
+    #[test]
+    fn explicit_range_failure_is_not_silently_redirected() {
+        let mut attempted=Vec::new();
+        let result:Result<(),_>=bind_listener(9527,false,|port|{attempted.push(port);Err("reserved range")});
+        assert_eq!(result,Err("reserved range"));assert_eq!(attempted,vec![9527]);
     }
 }

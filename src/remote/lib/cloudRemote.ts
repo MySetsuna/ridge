@@ -178,6 +178,8 @@ export class CloudRemoteConnection implements RemoteLink {
   private _verifiedCode: string | null = null;
   // Guards against overlapping reconnect handling on a flapping link.
   private _reconnecting = false;
+  private connectionGeneration = 0;
+  private pendingReconnect: number | null = null;
 
   constructor(
     handle: CloudControllerHandle,
@@ -426,6 +428,8 @@ export class CloudRemoteConnection implements RemoteLink {
     else if (providerState === 'error') mapped = 'error';
     else if (providerState === 'disconnected') mapped = 'disconnected';
     const wasDown = this._state !== 'connected';
+    if (mapped !== this._state) this.connectionGeneration++;
+    if (mapped !== 'connected') this.pendingReconnect = null;
     // 进入 'error' 但未带分级（provider 仅报状态、没有先经 notifyError 给出 code）→
     // 视为通道异常（网络/信令/WebRTC），UI 显示「通道异常」并允许重试，而非无限 pending。
     if (mapped === 'error' && !this._failure) {
@@ -433,6 +437,7 @@ export class CloudRemoteConnection implements RemoteLink {
     }
     this.setState(mapped);
     if (mapped === 'connected' && wasDown && this._everConnected) {
+      this.pendingReconnect = this.connectionGeneration;
       void this._handleReconnect();
     }
     if (mapped === 'connected') this._everConnected = true;
@@ -446,6 +451,8 @@ export class CloudRemoteConnection implements RemoteLink {
    */
   notifyError(message: string, code?: string): void {
     if (this.disposed) return;
+    this.connectionGeneration++;
+    this.pendingReconnect = null;
     const failure = classifyFailure(code);
     if (message) failure.message = message;
     this._failure = failure;
@@ -474,17 +481,22 @@ export class CloudRemoteConnection implements RemoteLink {
     if (this.disposed || this._reconnecting) return;
     this._reconnecting = true;
     try {
+      while (!this.disposed && this._state === 'connected' && this.pendingReconnect !== null) {
+      const generation = this.pendingReconnect;
+      this.pendingReconnect = null;
+      const current = () => !this.disposed && generation === this.connectionGeneration && this._state === 'connected';
       // Re-authorize. Prefer the signed 24h controller grant so a full reconnect
       // never depends on replaying an expired six-digit code. The in-memory code
       // remains only as a compatibility fallback for older hosts.
       let ok = this.fixedAuthorized;
       if (!this.fixedAuthorized) {
         ok = await this.handle.tryTrustGrant().catch(() => false);
+        if (!current()) continue;
         if (!ok && this._verifiedCode) {
           ok = await this.handle.verifyTotp(this._verifiedCode).catch(() => false);
         }
       }
-      if (this.disposed) return;
+      if (!current()) continue;
       if (!ok) {
         // Trust expired/revoked and compatibility OTP also failed: keep the gate
         // closed and surface a recoverable channel error.
@@ -500,10 +512,11 @@ export class CloudRemoteConnection implements RemoteLink {
       // register_pane_delta_channel → scrollback 从缓存重绘、但实时渲染不恢复。
       // 先清掉旧订阅状态，后续 subscribePane 才会在新传输上真正重跑 _subscribe。
       this._teardownSubscriptions();
-      queueMicrotask(() => this.paneScheduler.resumeAll());
+      queueMicrotask(() => { if (current()) this.paneScheduler.resumeAll(); });
       this.reconnectListeners.forEach((fn) => {
         try { fn(); } catch { /* listener owns its errors */ }
       });
+      }
     } finally {
       this._reconnecting = false;
     }
@@ -981,12 +994,13 @@ export class CloudRemoteConnection implements RemoteLink {
     });
   }
 
-  async listAgentHistory(workspaceId: string, limit = 24, cursor?: string, query = '', textCursor?: string): Promise<AgentHistoryReply[]> {
+  async listAgentHistory(workspaceId: string, limit = 24, cursor?: string, query = '', textCursor?: string, assistantOnly = false): Promise<AgentHistoryReply[]> {
     const result = await this.bridge.invoke<unknown>('read_agent_recent_replies', {
       workspaceId,
       limit: Math.max(1, Math.min(100, Math.floor(limit))),
       cursor,
       textCursor,
+      assistantOnly,
       query: query.trim(),
     });
     return Array.isArray(result) ? result as AgentHistoryReply[] : [];

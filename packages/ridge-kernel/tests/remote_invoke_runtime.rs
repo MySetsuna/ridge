@@ -9,12 +9,73 @@ use tokio_tungstenite::tungstenite::Message;
 use base64::Engine;
 
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn notification_hello_negotiates_and_rejects_incompatible_terminal_versions() {
+    let root=std::env::temp_dir().join(format!("ridge-notification-hello-{}",Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let owned=start(&root).await;
+    let mut socket=attach(&owned.endpoint).await;
+    for (version, expected) in [(ridge_term::terminal_protocol::PROTOCOL_VERSION as u64,"$/hello"),(0,"$/bye")] {
+        socket.send(Message::Text(json!({"jsonrpc":"2.0","method":"$/hello","params":{
+            "protocolVersion":ridge_remote::rpc::HOST_PROTOCOL_VERSION,"terminalProtocolVersion":version,
+            "capabilities":["pane","fs","unsupported"]
+        }}).to_string())).await.unwrap();
+        let response=tokio::time::timeout(std::time::Duration::from_secs(2),async {
+            loop {
+                if let Message::Text(text)=socket.next().await.unwrap().unwrap() {
+                    let value:serde_json::Value=serde_json::from_str(&text).unwrap();
+                    if value["method"]=="$/hello"||value["method"]=="$/bye" {break value;}
+                }
+            }
+        }).await.expect("Kernel must answer an id-less hello notification");
+        assert_eq!(response["method"],expected,"{response}");
+        assert!(response.get("id").is_none());
+        if expected=="$/hello" {assert_eq!(response["params"]["capabilities"],json!(["pane","fs"]));}
+        else {assert_eq!(response["params"]["reason"],"terminal-protocol-upgrade-required");}
+    }
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn native_unsubscribe_retires_only_its_own_activation_and_can_resubscribe() {
+    let root=std::env::temp_dir().join(format!("ridge-native-unsubscribe-{}",Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let owned=start(&root).await;
+    let mut first=attach(&owned.endpoint).await;
+    assert!(rpc(&mut first,1,"set_user_default_cwd",json!({"path":root})).await["error"].is_null());
+    let workspace=rpc(&mut first,2,"create_workspace",json!({"name":"Subscriptions"})).await["result"].clone();
+    let pane=rpc(&mut first,3,"create_pane",json!({"workspaceId":workspace,"cwd":root,"shell":if cfg!(windows){"cmd.exe"}else{"/bin/sh"}})).await;
+    assert!(pane["error"].is_null(),"{pane}");
+    let target=json!({"workspaceId":workspace,"paneId":pane["result"]["paneId"],"activationId":1});
+    let mut second=attach(&owned.endpoint).await;
+    for socket in [&mut first,&mut second] {
+        socket.send(Message::Text(json!({"jsonrpc":"2.0","method":"subscribe-pane","params":target}).to_string())).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3),async {
+            loop {if matches!(socket.next().await.unwrap().unwrap(),Message::Binary(_)){break;}}
+        }).await.expect("subscription must produce its authoritative snapshot");
+    }
+    first.send(Message::Text(json!({"jsonrpc":"2.0","method":"unsubscribe-pane","params":target}).to_string())).await.unwrap();
+    assert!(rpc(&mut first,4,"get_terminal_snapshot",target.clone()).await["error"].is_object(),"unsubscribed activation must be rejected");
+    assert!(rpc(&mut second,4,"get_terminal_snapshot",target.clone()).await["error"].is_null(),"another connection retains its own subscription");
+    let mut next=target.clone();next["activationId"]=json!(2);
+    first.send(Message::Text(json!({"jsonrpc":"2.0","method":"subscribe-pane","params":next}).to_string())).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3),async {
+        loop {if let Message::Binary(bytes)=first.next().await.unwrap().unwrap() {
+            if ridge_term::terminal_protocol::decode_frame(&bytes).unwrap().activation_id==2 {break;}
+        }}
+    }).await.expect("new activation must produce a snapshot before reading it");
+    assert!(rpc(&mut first,5,"get_terminal_snapshot",next).await["error"].is_null());
+    assert!(rpc(&mut first,6,"get_terminal_snapshot",target).await["error"].is_object());
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
 async fn cloud_transport_reuses_host_domain_state_and_seals_remote_role() {
     let root=std::env::temp_dir().join(format!("ridge-cloud-dispatch-{}",Uuid::new_v4()));
     std::fs::create_dir_all(&root).unwrap();
     let file=root.join("shared.txt");std::fs::write(&file,"same Runtime filesystem").unwrap();
     let owned=start(&root).await;
     let mut presentation=attach(&owned.endpoint).await;
+    // Seed PTYs must start inside this fixture's deliberately narrow filesystem grant.
+    let configured=rpc(&mut presentation,1000,"set_user_default_cwd",json!({"path":root})).await;
+    assert!(configured["error"].is_null(),"{configured}");
     let invoke=|client,method,args|json!({"clientId":client,"method":method,"args":args});
     let first=rpc(&mut presentation,1,"dispatch_remote_invoke",invoke("controller-one","create_workspace",json!({"name":"Cloud one"}))).await;
     assert!(first["error"].is_null(),"{first}");
@@ -41,8 +102,15 @@ async fn cloud_transport_reuses_host_domain_state_and_seals_remote_role() {
     assert!(client::connect_terminal_stream(owned.endpoint.clone(),Uuid::new_v4(),terminal,17).await.is_err());
     let mut stream=client::connect_terminal_stream(owned.endpoint.clone(),workspace,terminal,17).await.unwrap();
     let initial=tokio::time::timeout(std::time::Duration::from_secs(3),stream.next()).await.unwrap().unwrap().unwrap();
-    let Message::Binary(bytes)=initial else {panic!("canonical source must start with a binary snapshot")};
+    let Message::Text(metadata)=initial else {panic!("canonical source must start with fenced pane metadata")};
+    let metadata:serde_json::Value=serde_json::from_str(&metadata).unwrap();
+    assert_eq!(metadata["type"],"event");assert_eq!(metadata["name"],"pane-meta-changed");
+    assert_eq!(metadata["payload"]["workspaceId"],first_id);assert_eq!(metadata["payload"]["paneId"],pane_id);
+    assert_eq!(metadata["payload"]["activationId"],17);
+    let initial=tokio::time::timeout(std::time::Duration::from_secs(3),stream.next()).await.unwrap().unwrap().unwrap();
+    let Message::Binary(bytes)=initial else {panic!("metadata must be followed by a canonical binary snapshot")};
     let packet=ridge_term::terminal_protocol::decode_frame(&bytes).unwrap();
+    assert_eq!(metadata["payload"]["terminalEpoch"],packet.terminal_epoch.to_string());
     let saved_packet=base64::engine::general_purpose::STANDARD.decode(snapshot["result"].as_str().unwrap()).unwrap();
     let saved_packet=ridge_term::terminal_protocol::decode_frame(&saved_packet).unwrap();
     assert_eq!(packet.terminal_epoch,saved_packet.terminal_epoch);assert_eq!(packet.pane,saved_packet.pane);assert_eq!(packet.activation_id,17);

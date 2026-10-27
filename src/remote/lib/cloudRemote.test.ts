@@ -780,6 +780,41 @@ describe('CloudRemoteConnection theme', () => {
 });
 
 describe('CloudRemoteConnection reconnect', () => {
+  it.each([false, true])('recovers the latest connected generation after stale authorization resolves %s', async staleResult => {
+    const handle = fakeHandle();
+    let finish!: (ok: boolean) => void;
+    const trust = vi.fn().mockImplementationOnce(() => new Promise<boolean>(resolve => { finish = resolve; }))
+      .mockResolvedValue(true);
+    handle.tryTrustGrant = trust;
+    const conn = new CloudRemoteConnection(handle as never);
+    await conn.init();
+    const restored = vi.fn();
+    conn.onReconnect(restored);
+    conn.notifyState('disconnected'); conn.notifyState('connected');
+    conn.notifyState('disconnected'); conn.notifyState('connected');
+    finish(staleResult);
+    await flush();
+    expect(trust).toHaveBeenCalledTimes(2);
+    expect(restored).toHaveBeenCalledTimes(1);
+    expect(conn.state()).toBe('connected');
+    conn.disconnect();
+  });
+
+  it('ignores authorization that finishes after the link drops again', async () => {
+    const handle = fakeHandle();
+    let finish!: (ok: boolean) => void;
+    handle.tryTrustGrant = vi.fn(() => new Promise<boolean>(resolve => { finish = resolve; }));
+    const conn = new CloudRemoteConnection(handle as never);
+    await conn.init();
+    const restored = vi.fn(); conn.onReconnect(restored);
+    conn.notifyState('disconnected'); conn.notifyState('connected');
+    conn.notifyState('disconnected'); finish(true);
+    await flush();
+    expect(restored).not.toHaveBeenCalled();
+    expect(conn.state()).toBe('disconnected');
+    conn.disconnect();
+  });
+
   it('surfaces a drop then re-auths + fires onReconnect on recovery', async () => {
     const conn = await connected();
     conn.setVerifiedCode('123456');

@@ -57,6 +57,16 @@ describe('agent commune view model', () => {
     expect(latestReplyForProfile(replies, { id: 'Codex', name: 'Codex' })).toBeUndefined();
   });
 
+  it('includes completed app-server assistant items while preserving exact source identity', () => {
+    const profile = { id: 'same-member', name: 'Agent', sessionId: 'same-session', workspaceId: 'a' };
+    const replies = [
+      { memberId: 'same-member', agent: 'Agent', sessionId: 'same-session', workspaceId: 'a', kind: 'agentMessage', timestamp: 2, text: 'assistant' },
+      { memberId: 'same-member', agent: 'Agent', sessionId: 'same-session', workspaceId: 'b', kind: 'agentMessage', timestamp: 9, text: 'other source' },
+      { memberId: 'same-member', agent: 'Agent', sessionId: 'same-session', workspaceId: 'a', kind: 'userMessage', timestamp: 10, text: 'user' },
+    ];
+    expect(latestReplyForProfile(replies, profile)?.text).toBe('assistant');
+  });
+
   it('does not bind a synthetic Ridge runtime id by agent type or cwd', () => {
     const replies = [
       { agent: 'Codex', sessionId: 'native-a', timestamp: 2, cwd: 'C:/repo', text: 'right' },

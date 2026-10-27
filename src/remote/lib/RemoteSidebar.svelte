@@ -7,11 +7,11 @@
   import SidebarTeamRoster from './SidebarTeamRoster.svelte';
   import { createWsSidebarProvider } from './sidebarProvider';
   import { remoteSessionId } from './remoteQueries';
-  import type { PaneInfo, RemoteLink, RemotePanel } from '@ridge/remote';
+  import type { PaneInfo, RemoteLink, RemotePanel, WorkspaceInfo } from '@ridge/remote';
   import type { DataProvider } from '$lib/transport';
   import { useQueryClient } from '@tanstack/svelte-query';
 
-  let { tab = 'files', cwd = '', workspaceId = '', paneId = '', initialDirectory = '', available, ws, panes = [], attentionPaneIds = [], dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane, onAttentionChange }: {
+  let { tab = 'files', cwd = '', workspaceId = '', paneId = '', initialDirectory = '', available, ws, workspaces = [], panes = [], attentionPaneIds = [], attentionPaneKeys, dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane, onAttentionChange }: {
     tab?: RemotePanel;
     cwd?: string;
     workspaceId?: string;
@@ -20,10 +20,12 @@
     available: Readonly<Record<RemotePanel, boolean>>;
     /** P1 roster：team 面板取数用（capability `teammate` 协商后 tab 才可见）。 */
     ws?: RemoteLink;
+    workspaces?: readonly WorkspaceInfo[];
     /** Active workspace pane snapshot; maps Agent cards to their live CWD. */
     panes?: PaneInfo[];
     /** Sticky Agent attention projection used by the card rail. */
     attentionPaneIds?: readonly string[];
+    attentionPaneKeys?: readonly string[];
     dataProvider?: DataProvider;
     onClose: () => void;
     onTabChange?: (t: RemotePanel) => void;
@@ -32,9 +34,9 @@
     /** Open a changed file's git diff in the viewer (git panel row). */
     onOpenDiff?: (path: string) => void;
     /** P1 roster：点击成员切到其 pane。 */
-    onSelectPane?: (paneId: string) => void;
+    onSelectPane?: (paneId: string, workspaceId: string) => void;
     /** Pending HITL pane keys only; normal Agent state is not a border signal. */
-    onAttentionChange?: (paneIds: string[]) => void;
+    onAttentionChange?: (paneIds: string[], workspaceId: string) => void;
   } = $props();
 
   // Rooted at the active pane's cwd — the same source the desktop ridge shows.
@@ -76,22 +78,25 @@
         </button>
       {/if}
     </div>
-    <span class="cwd" title={cwd}>{cwd || '/'}</span>
+    <span class="cwd" title={tab === 'team' ? "Agent's Commune" : cwd}>{tab === 'team' ? "Agent's Commune" : cwd || '/'}</span>
     <button class="close" onclick={onClose} aria-label={$t('mobile.sidebarClose')} tabindex="-1"><X class="w-5 h-5" /></button>
   </div>
 
   <div class="sb-body">
+    {#if tab === 'team' && ws}
+      <SidebarTeamRoster {ws} {workspaces} {workspaceId} {attentionPaneKeys} {queryClient} {panes} {attentionPaneIds} {onSelectPane} {onAttentionChange} />
+    {:else}
     {#key `${ws ? remoteSessionId(ws) : 0}:${workspaceId}:${paneId}:${cwd}`}
       {#if tab === 'files'}
         <SidebarFileTree {provider} {onOpenFile} initialPath={initialDirectory} />
       {:else if tab === 'git'}
         <RemoteGitPanel {provider} {onOpenDiff} />
-      {:else if tab === 'team' && ws}
-        <SidebarTeamRoster {ws} {workspaceId} {queryClient} {panes} {attentionPaneIds} {onSelectPane} {onAttentionChange} />
+
       {:else}
         <SidebarSearch {provider} {onOpenFile} />
       {/if}
     {/key}
+    {/if}
   </div>
 </div>
 

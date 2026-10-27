@@ -53,7 +53,7 @@ describe('cross-surface interaction contracts', () => {
   });
 
   it('keeps Remote Agent controls touch-sized and narrow-safe', () => {
-    const remote = read('../../remote/lib/SidebarTeamRoster.svelte');
+    const remote = read('../../remote/lib/CommuneWorkspaceRoster.svelte');
     expect(remote).toContain('min-height:32px');
     expect(remote).toContain('min-height:40px');
     expect(remote).toContain('white-space:nowrap');
@@ -61,7 +61,7 @@ describe('cross-surface interaction contracts', () => {
 
   it('keeps Agent history tabs icon-free and CWD-visible on desktop and Remote', () => {
     const desktop = read('../teammate/AgentCenterPanel.svelte');
-    const remote = read('../../remote/lib/SidebarTeamRoster.svelte');
+    const remote = read('../../remote/lib/CommuneWorkspaceRoster.svelte');
     expect(desktop).toContain('历史');
     expect(remote).toContain("tr('commune.historyCount', { count: history.length })");
     expect(read('../i18n/messages/commune.ts')).toContain("historyCount: 'History {count}'");

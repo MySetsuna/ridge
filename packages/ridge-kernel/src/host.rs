@@ -575,6 +575,9 @@ impl KernelHost {
             &format!("/v1/domain/workspaces/{workspace_id}/split"),
             Some(&json!({ "pane_id": target, "direction": direction })),
         )?;
+        if value["ok"] != true {
+            return Err(value["error"].as_str().unwrap_or("pane split rejected").to_owned());
+        }
         let pane_id = value
             .get("pane_id")
             .and_then(Value::as_str)
@@ -1543,18 +1546,22 @@ fn handle_text(
                 &params,
                 KERNEL_HOST_CAPABILITIES,
             );
-            return id.map(|id| {
+            return Some(if let Some(id) = id {
                 ridge_remote::rpc::result_response(
                     &id,
                     hello.get("params").cloned().unwrap_or(hello),
                 )
                 .to_string()
-            });
+            } else { hello.to_string() });
         }
         if id.is_none() {
             if matches!(method, "subscribe-pane" | "subscribe_pane_raw") {
                 let snapshot = host.snapshot();
                 start_subscription(&params, host, &snapshot, runtime, out_tx, subscriptions);
+            } else if method == "unsubscribe-pane" {
+                if let Some(target) = subscription_target(&params, &host.snapshot()) {
+                    if let Ok(mut active) = subscriptions.lock() { active.remove(&target); }
+                }
             }
             return None;
         }
@@ -2049,6 +2056,7 @@ fn is_kernel_host_method(method: &str) -> bool {
             | "resize_pane"
             | "resize_pty"
             | "subscribe-pane"
+            | "unsubscribe-pane"
             | "subscribe_pane_raw"
             | "register_pane_delta_channel"
             | "create_pane"

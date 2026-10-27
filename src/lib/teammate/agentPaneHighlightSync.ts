@@ -1,4 +1,5 @@
 import { get, writable } from 'svelte/store';
+import { pruneTeammateGroupStores } from './teammateGroups.svelte';
 import {
   agentPaneAttentionStore,
   agentPaneAttentionPollingStoppedStore,
@@ -22,6 +23,7 @@ import {
 export const AGENT_ACTIVITY_EXPIRY_MS = 12_500;
 export const agentTopologyStore = writable<Record<string, TopologySnapshot>>({});
 export const agentHitlPendingStore = writable<unknown>([]);
+export const agentRefreshFailuresStore = writable<readonly string[]>([]);
 
 export type HighlightMember = {
   workspaceId: string;
@@ -36,12 +38,15 @@ export type AgentPaneHighlightRefresh = {
 
 const observedSignals = new Map<string, AgentPaneAttention | null>();
 const observedStatuses = new Map<string, AgentPaneStatus | null>();
+let refreshGeneration = 0;
 
 export function resetAgentPaneHighlightSync(): void {
+  refreshGeneration++;
   observedSignals.clear();
   observedStatuses.clear();
   agentTopologyStore.set({});
   agentHitlPendingStore.set([]);
+  agentRefreshFailuresStore.set([]);
 }
 
 function prunePaneRecord<T>(current: Record<string, T>, live: Set<string>): Record<string, T> {
@@ -56,6 +61,8 @@ function prunePaneRecord<T>(current: Record<string, T>, live: Set<string>): Reco
 }
 
 export function pruneAgentPaneHighlightWorkspaces(workspaceIds: readonly string[]): void {
+  refreshGeneration++;
+  pruneTeammateGroupStores(workspaceIds);
   const live = new Set(workspaceIds);
   for (const key of observedSignals.keys()) {
     const separator = key.indexOf(':');
@@ -81,15 +88,15 @@ function pendingMatches(
   initiator: string,
   profile: Pick<TeammateProfile, 'paneId' | 'id' | 'name'>,
 ): boolean {
-  return initiator === profile.paneId || initiator === profile.name || initiator === profile.id;
+  return initiator === profile.paneId || initiator === profile.id;
 }
 
-export function parseHitlPendingList(raw: unknown): { initiator: string }[] {
+export function parseHitlPendingList(raw: unknown): { initiator: string; workspaceId?: string }[] {
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((value) => {
     const rec = value as Record<string, unknown> | null;
     if (!rec || typeof rec.id !== 'string') return [];
-    return [{ initiator: typeof rec.initiator === 'string' ? rec.initiator : '' }];
+    return [{ initiator: typeof rec.initiator === 'string' ? rec.initiator : '', workspaceId: typeof rec.workspaceId === 'string' ? rec.workspaceId : undefined }];
   });
 }
 
@@ -161,6 +168,8 @@ export async function refreshAgentPaneHighlight(input: {
   workspaceIds: readonly string[];
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
 }): Promise<AgentPaneHighlightRefresh> {
+  const version = ++refreshGeneration;
+  const failures: string[] = [];
   const snapshots = await Promise.all(
     input.workspaceIds.map(async (workspaceId) => {
       try {
@@ -169,7 +178,8 @@ export async function refreshAgentPaneHighlight(input: {
           parseTopologySnapshot(await input.invoke('get_teammate_topology', { workspaceId })),
         ] as const;
       } catch {
-        return [workspaceId, EMPTY_TOPOLOGY] as const;
+        failures.push(workspaceId);
+        return [workspaceId, get(agentTopologyStore)[workspaceId] ?? EMPTY_TOPOLOGY] as const;
       }
     }),
   );
@@ -177,8 +187,11 @@ export async function refreshAgentPaneHighlight(input: {
   try {
     pendingRaw = await input.invoke('list_hitl_pending');
   } catch {
-    pendingRaw = [];
+    failures.push('approvals');
+    pendingRaw = get(agentHitlPendingStore);
   }
+  if (version !== refreshGeneration) return { completionDetected: false, pending: get(agentHitlPendingStore), rosterChanged: false };
+  agentRefreshFailuresStore.set(failures);
   const pending = parseHitlPendingList(pendingRaw);
   agentHitlPendingStore.set(pendingRaw);
   const members = snapshots.flatMap(([workspaceId, snapshot]) =>
@@ -192,7 +205,7 @@ export async function refreshAgentPaneHighlight(input: {
   return {
     completionDetected: syncAgentPaneHighlight(
       members,
-      (member) => pending.some((item) => pendingMatches(item.initiator, member.profile)),
+      (member) => pending.some((item) => (!item.workspaceId || item.workspaceId === member.workspaceId) && pendingMatches(item.initiator, member.profile)),
       input.workspaceIds,
     ),
     pending: pendingRaw,

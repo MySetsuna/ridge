@@ -134,12 +134,16 @@ export function historyReplyMatchesProfile<T extends AgentHistoryReplyLike>(
 }
 
 /** Bind a live card to history only by its native conversation session id. */
+export function isAgentReplyKind(kind: unknown): boolean {
+  return kind === 'agent_message_chunk' || kind === 'agentMessage';
+}
+
 export function latestReplyForProfile<T extends AgentHistoryReplyLike>(
   replies: readonly T[],
   profile: AgentReplyLookupProfile,
 ): T | undefined {
   return replies
-    .filter((reply) => (!reply.kind || reply.kind === 'agent_message_chunk') && historyReplyMatchesProfile(reply, profile))
+    .filter((reply) => (!reply.kind || isAgentReplyKind(reply.kind)) && historyReplyMatchesProfile(reply, profile))
     .sort((a, b) => b.timestamp - a.timestamp)[0];
 }
 

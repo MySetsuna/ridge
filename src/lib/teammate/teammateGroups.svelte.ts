@@ -384,9 +384,10 @@ class TeammateGroupStore {
   tasks = $state<GroupTask[]>([]);
 
   setWorkspace(workspaceId: string | undefined, filePath: string | null | undefined): void {
-    if (workspaceId === this.runtimeWorkspaceId) return;
+    const storageKey = groupsStorageKey(stableWorkspaceKey(workspaceId, filePath));
+    if (workspaceId === this.runtimeWorkspaceId && storageKey === this.storageKey) return;
     this.runtimeWorkspaceId = workspaceId;
-    this.storageKey = groupsStorageKey(stableWorkspaceKey(workspaceId, filePath));
+    this.storageKey = storageKey;
     this.requestVersion++;
     this.groups = []; this.dispatches = []; this.revision = 0; this.busy = false; this.error = ''; this.notice = '';
     this.tasks = loadPersisted(this.storageKey).tasks;
@@ -475,9 +476,22 @@ class TeammateGroupStore {
 }
 
 let singleton: TeammateGroupStore | null = null;
+const scopedStores = new Map<string, TeammateGroupStore>();
+export function pruneTeammateGroupStores(workspaceIds: readonly string[]): void {
+  const live = new Set(workspaceIds);
+  for (const [id, store] of scopedStores) if (!live.has(id)) {
+    store.setWorkspace(undefined, null);
+    scopedStores.delete(id);
+  }
+}
 
 /** 惰性单例访问器（仅在真实 svelte 运行时由组件调用）。 */
-export function teammateGroupStore(): TeammateGroupStore {
+export function teammateGroupStore(workspaceId?: string): TeammateGroupStore {
+  if (workspaceId) {
+    let store = scopedStores.get(workspaceId);
+    if (!store) { store = new TeammateGroupStore(); scopedStores.set(workspaceId, store); }
+    return store;
+  }
   singleton ??= new TeammateGroupStore();
   return singleton;
 }

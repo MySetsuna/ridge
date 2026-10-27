@@ -51,6 +51,7 @@
   import type { TerminalLinkOpenRequest, TerminalLinkValidationResult } from '@ridge/remote/shared/terminal/ports';
   import { looksOutsideWorkspace, probePathWithCache } from '@ridge/remote/shared/terminal/linkOpenHost';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
+  import { createAgentNavigator } from './lib/agentNavigation';
   import { MobileRemoteUiState } from './lib/mobileRemoteUiState.svelte';
   import { applyPwaUpdate, pwaUpdateReady } from './lib/pwaUpdate';
   import {
@@ -148,9 +149,9 @@
   // RPC or a stale resize must never hide an intervention request.
   let attentionPaneKeys = $state<string[]>([]);
   const acknowledgedAttention = new Set<string>();
-  function updateAgentAttention(paneIds: string[]): void {
+  function updateAgentAttention(paneIds: string[], ownerWorkspaceId = ui.activeWorkspaceId): void {
     const incoming = new Set(paneIds.filter(Boolean).map((paneId) => paneRefKey({
-      workspaceId: ui.activeWorkspaceId,
+      workspaceId: ownerWorkspaceId,
       paneId,
     })));
     const sticky = new Set(attentionPaneKeys);
@@ -158,7 +159,7 @@
       if (!acknowledgedAttention.has(key)) sticky.add(key);
     }
     for (const key of acknowledgedAttention) {
-      if (!incoming.has(key)) acknowledgedAttention.delete(key);
+      if (key.startsWith(ownerWorkspaceId + ':') && !incoming.has(key)) acknowledgedAttention.delete(key);
     }
     attentionPaneKeys = [...sticky].filter((key) => !acknowledgedAttention.has(key));
   }
@@ -174,9 +175,16 @@
       paneId: pane.id,
     }));
   }
-  function selectAgentPane(paneId: string): void {
-    ui.navigate(ui.activeWorkspaceId, paneId);
-    ui.sidebarTab = null;
+  let agentNavigationError = $state('');
+  const agentNavigator = $derived.by(() => {
+    const connection = ws;
+    return createAgentNavigator({ switchWorkspace: connection.switchWorkspace.bind(connection),
+      isAlive: () => remoteAppAlive && ws === connection,
+      navigate: (workspaceId, paneId) => { ui.navigate(workspaceId, paneId); connection.listPanes(); ui.sidebarTab = null; },
+      onError: error => { agentNavigationError = String(error); }, failureMessage: tr('mobile.workspaceSwitchFail') });
+  });
+  function selectAgentPane(paneId: string, ownerWorkspaceId = ui.activeWorkspaceId): Promise<void> {
+    agentNavigationError = ''; return agentNavigator(ownerWorkspaceId, paneId);
   }
   function activeAttentionPaneIds(): string[] {
     const prefix = `${ui.activeWorkspaceId}:`;
@@ -1309,7 +1317,10 @@
   });
 </script>
 
+
 <div class="app-root" class:embedded>
+  {#if agentNavigationError}<p role="alert" style="position:absolute;top:48px;left:12px;right:12px;z-index:100;padding:12px;background:var(--rg-surface);color:var(--rg-fg)">{agentNavigationError}</p>{/if}
+
   {#if $pwaUpdateReady}
     <div class="pwa-update-banner" role="status">
       <span>新版 Remote 已就绪</span>
@@ -1512,8 +1523,10 @@
             ? linkedDirectory.path
             : ''}
           {ws}
+          {workspaces}
           {panes}
           attentionPaneIds={activeAttentionPaneIds()}
+          {attentionPaneKeys}
           {dataProvider}
           onClose={() => ui.sidebarTab = null}
           onTabChange={selectSidebarTab}
@@ -1539,6 +1552,7 @@
           <div class="agent-attention-monitor" aria-hidden="true">
           <module.default
             {ws}
+            {workspaces}
             workspaceId={ui.activeWorkspaceId}
             {queryClient}
             {panes}

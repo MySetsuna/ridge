@@ -29,6 +29,8 @@ struct Page {
     workspace: String,
     native: bool,
     query: String,
+    #[serde(default)]
+    assistant_only: bool,
     bounds: Vec<Bound>,
     after: Option<Key>,
 }
@@ -306,6 +308,7 @@ pub fn read(state: &AppState, args: &Value, native: bool) -> Result<Value, Strin
         return Err("history paging requires the opaque Runtime cursor".into());
     }
     let query = args["query"].as_str().unwrap_or("").to_lowercase();
+    let assistant_only = args["assistantOnly"].as_bool().unwrap_or(false);
     if query.len() > 1024 {
         return Err("history query too large".into());
     }
@@ -315,6 +318,7 @@ pub fn read(state: &AppState, args: &Value, native: bool) -> Result<Value, Strin
             || page.workspace != workspace
             || page.native != native
             || page.query != query
+            || page.assistant_only != assistant_only
         {
             return Err("history cursor scope mismatch".into());
         }
@@ -337,6 +341,7 @@ pub fn read(state: &AppState, args: &Value, native: bool) -> Result<Value, Strin
             workspace: workspace.into(),
             native,
             query: query.clone(),
+            assistant_only,
             bounds,
             after: None,
         }
@@ -363,6 +368,9 @@ pub fn read(state: &AppState, args: &Value, native: bool) -> Result<Value, Strin
                 return Ok(());
             }
             let (kind, text) = content(&record, native);
+            if assistant_only && !matches!(kind.as_str(), "agent_message_chunk" | "agentMessage") {
+                return Ok(());
+            }
             if !query.is_empty()
                 && !format!(
                     "{} {} {} {} {} {}",

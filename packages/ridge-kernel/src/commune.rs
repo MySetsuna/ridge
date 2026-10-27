@@ -195,6 +195,7 @@ pub async fn dispatch(
             profile["groups"] = groups["groups"].clone();
             profile["groupsRevision"] = groups["groupsRevision"].clone();
             profile["groupTasks"] = crate::commune_tasks::list(state, workspace, native)?;
+            let capabilities = if native { ridge_core::CapabilitySet::allow_all() } else { ridge_core::CapabilitySet::remote_default() };
             if let Some(roster) = profile["roster"].as_array_mut() {
                 roster.retain(|row| row["protocolBinding"].is_object());
                 for row in roster {
@@ -207,8 +208,8 @@ pub async fn dispatch(
                         && session.is_some_and(|session| session.is_connected());
                     let working = connected && session.is_some_and(|session| session.is_busy());
                     row["online"] = json!(connected);
-                    row["canSend"] = json!(native);
-                    row["canCancel"] = json!(native);
+                    row["canSend"] = json!(capabilities.is_allowed("send_agent_message"));
+                    row["canCancel"] = json!(capabilities.is_allowed("cancel_agent_message"));
                     row["status"] = json!(if !connected {
                         "Disappeared"
                     } else if working {

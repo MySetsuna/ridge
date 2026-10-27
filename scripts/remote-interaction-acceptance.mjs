@@ -29,7 +29,7 @@ async function evaluate(expression) {
   assert.ok(!response.result?.exceptionDetails, 'current-source host command failed');
   return response.result?.result?.value;
 }
-const invoke = (command, args = {}) => evaluate(`window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)},${JSON.stringify(args)})`);
+const invoke = (command, args = {}) => evaluate(`import('/src/lib/transport/nativeRuntimeCore.ts').then(({invoke}) => invoke(${JSON.stringify(command)},${JSON.stringify(args)}))`);
 if (process.argv.includes('--reload-frontend')) await invoke('set_remote_enabled', { enabled: false });
 await invoke('set_remote_enabled', { enabled: true });
 const host = await invoke('get_remote_info');
@@ -77,9 +77,13 @@ try {
       isMobile: mobile, hasTouch: mobile });
     const page = await context.newPage();
     const pageErrors = [];
+    const controlErrors = [];
     const wasmRequests = new Set();
     page.on('request', request => { if (/\.wasm(?:\?|$)/.test(request.url())) wasmRequests.add(new URL(request.url()).pathname); });
     page.on('pageerror', error => { if (pageErrors.length < 5) pageErrors.push(error.message); });
+    page.on('console', message => {
+      if (message.text().startsWith('[remote] roster refresh failed') && controlErrors.length < 5) controlErrors.push(message.text());
+    });
     await page.addInitScript(() => {
       window.__RIDGE_E2E__ = true;
       performance.setResourceTimingBufferSize(5000);
@@ -102,9 +106,11 @@ try {
         if (typeof data === 'string') {
           try {
             const message = JSON.parse(data);
-            if (message.type === 'invoke-request' && message.cmd === 'get_terminal_history') window.__interactionHistoryRequests++;
-            if (message.type === 'invoke-request' && message.cmd === 'write_terminal_input') {
-              window.__interactionWrites.push(message.args.input.bytes);
+            const command = message.type === 'invoke-request' ? message.cmd : message.jsonrpc === '2.0' ? message.method : undefined;
+            const args = message.type === 'invoke-request' ? message.args : message.params;
+            if (command === 'get_terminal_history') window.__interactionHistoryRequests++;
+            if (command === 'write_terminal_input') {
+              window.__interactionWrites.push(args.input.bytes);
             }
           } catch { /* binary/other control messages are not input evidence */ }
         }
@@ -119,7 +125,7 @@ try {
     await page.locator('.hidden-input:not([disabled])').waitFor({ timeout: 30_000 });
     await page.waitForFunction(() => window.__windE2E?.paneKeys().length > 0 || document.querySelector('[role="alert"]'));
     const initializationError = await page.locator('[role="alert"]').allTextContents();
-    assert.equal(initializationError.length, 0, `terminal initialization: ${initializationError.join(' ')}`);
+    assert.equal(initializationError.length, 0, `terminal initialization: ${initializationError.join(' ')} ${controlErrors.join(' ')}`);
     if (process.argv.includes('--font-split')) await check('Remote renders with the smaller terminal WASM and never requests the selected-font WASM', async () => {
       const resources = await page.evaluate(() => performance.getEntriesByType('resource').filter(entry => /\.wasm(?:\?|$)/.test(entry.name)).map(entry => ({ path: new URL(entry.name).pathname, decodedBytes: entry.decodedBodySize, durationMs: entry.duration })));
       evidence.fontSplit = { requests: [...wasmRequests], resources };
@@ -290,7 +296,9 @@ try {
       await waitWrites();
       assert.match(await writes(), /^\x1b\[<35;\d+;\d+M$/);
     });
-    if (!mobile) await check('desktop legacy X10 non-UTF8 mouse reaches the real Host unchanged', async () => {
+    if (!mobile) await check(process.platform === 'win32'
+      ? 'desktop legacy X10 transport bytes retained; Windows console child UTF-8 limitation recorded'
+      : 'desktop legacy X10 non-UTF8 mouse reaches the real Host unchanged', async () => {
       await invoke('write_to_pty', { ...activePane, data: '\x03' });
       const legacyReady = `${ready}_X10`;
       await invoke('write_to_pty', { ...activePane, data: `node "${fixturePath}" ${legacyReady} legacy\r` });
@@ -302,7 +310,14 @@ try {
       const bytes = await page.evaluate(() => window.__interactionWrites.flat());
       assert.deepEqual(bytes.slice(0, 3), [27, 91, 77]);
       assert.ok(bytes.some(byte => byte >= 128), 'fixture must exercise a non-UTF8 mouse coordinate');
-      const hex = Buffer.from(bytes).toString('hex');
+      // Windows ConPTY + Node ReadConsole is a Unicode channel, not a raw byte
+      // tap. A direct private PTY/base64 probe reproduces the same conversion.
+      // Keep the transport-byte assertion, but do not claim arbitrary-byte
+      // child delivery on Windows. Unix PTYs must preserve every byte.
+      const hex = process.platform === 'win32'
+        ? Buffer.from(Buffer.from(bytes).toString('utf8')).toString('hex')
+        : Buffer.from(bytes).toString('hex');
+      if (process.platform === 'win32') evidence.platformLimitations = ['Legacy non-UTF8 X10 coordinates are converted by the Windows console/Node child input path; arbitrary-byte child delivery remains unsupported. SGR mouse is tested separately.'];
       evidence.classicBytes = bytes;
       try {
         await page.waitForFunction(({ key, marker }) => window.__windE2E.visibleText(key).join('').includes(marker), { key: paneKey, marker: `${legacyReady}:${hex}` }, { timeout: 5_000 });

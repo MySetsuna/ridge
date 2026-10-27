@@ -39,8 +39,8 @@ export const remoteQueryKeys = {
   teamRoster: (sessionId: number, workspaceId?: string) =>
     ['remote', sessionId, 'team', workspaceId ?? ''] as const,
   /** Transcript cache identity includes the selected workspace and exact CWD scope. */
-  agentHistory: (sessionId: number, workspaceId: string, limit = 24, cursor = '', query = '') =>
-    ['remote', sessionId, 'team', workspaceId, 'history', limit, cursor, query] as const,
+  agentHistory: (sessionId: number, workspaceId: string, limit = 24, cursor = '', query = '', assistantOnly = false) =>
+    ['remote', sessionId, 'team', workspaceId, 'history', limit, cursor, query, assistantOnly] as const,
   /**
    * Sidebar reads use the same TanStack Query cache as workspace/pane reads.
    * Keep cwd and target in every key: two panes can point at the same path
@@ -118,6 +118,18 @@ export interface RemoteTeamRosterSnapshot {
 }
 
 const EMPTY_TEAM_TOPOLOGY: TeammateTopology = { roster: [], leaderId: null, edges: [] };
+const rosterControlReads = new WeakMap<RemoteLink, Promise<[HitlPendingItem[], OrchestrationHealth]>>();
+
+function readRosterControls(link: RemoteLink): Promise<[HitlPendingItem[], OrchestrationHealth]> {
+  const existing = rosterControlReads.get(link);
+  if (existing) return existing;
+  const work = Promise.all([
+    emptyOnUnsupported(link.listHitlPending(), []),
+    emptyOnUnsupported(link.getOrchestrationHealth(), { suspendedAgents: 0, pendingHitl: 0 }),
+  ]).finally(() => { if (rosterControlReads.get(link) === work) rosterControlReads.delete(link); });
+  rosterControlReads.set(link, work);
+  return work;
+}
 
 function isUnsupportedHostMethod(error: unknown): boolean {
   return /method not supported by kernel host/i.test(error instanceof Error ? error.message : unknownText(error));
@@ -148,12 +160,12 @@ export function fetchRemoteTeamRoster(
     (context) => abortable(
       Promise.all([
         emptyOnUnsupported(link.getTeammateTopology(workspaceId), EMPTY_TEAM_TOPOLOGY),
-        emptyOnUnsupported(link.listHitlPending(), []),
-        link.getOrchestrationHealth().catch(() => ({ suspendedAgents: 0, pendingHitl: 0 })),
-      ]).then(([topology, pending, health]) => ({ topology, pending, health })),
-      [signal, context?.signal],
+        readRosterControls(link),
+      ]).then(([topology, [pending, health]]) => ({ topology, pending, health })),
+      [context?.signal],
     ),
     REMOTE_ROSTER_STALE_TIME_MS,
+    signal,
   );
 }
 
@@ -167,15 +179,17 @@ export function fetchRemoteAgentHistory(
   signal?: AbortSignal,
   cursor?: string,
   query = '',
+  assistantOnly = false,
 ): Promise<AgentHistoryReply[]> {
   return fetchRemoteQuery(
     queryClient,
-    remoteQueryKeys.agentHistory(sessionId, workspaceId, limit, cursor, query),
+    remoteQueryKeys.agentHistory(sessionId, workspaceId, limit, cursor, query, assistantOnly),
     (context) => abortable(
-      link.listAgentHistory(workspaceId, limit, cursor, query),
-      [signal, context?.signal],
+      link.listAgentHistory(workspaceId, limit, cursor, query, undefined, assistantOnly),
+      [context?.signal],
     ),
     REMOTE_SIDEBAR_STALE_TIME_MS,
+    signal,
   );
 }
 

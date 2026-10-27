@@ -10,6 +10,7 @@ import {
   refreshAgentPaneHighlight,
   agentHitlPendingStore,
   agentTopologyStore,
+  agentRefreshFailuresStore,
   pruneAgentPaneHighlightWorkspaces,
   resetAgentPaneHighlightSync,
   syncAgentPaneHighlight,
@@ -35,6 +36,32 @@ afterEach(() => {
 });
 
 describe('agent pane highlight data plane', () => {
+  it('retains confirmed members and approvals when a source read fails, while another source progresses', async () => {
+    const pending = [{ id: 'permission-a', initiator: 'pane-a', workspaceId: 'ws-a' }];
+    const invoke = async (command: string, args?: Record<string, unknown>) => command === 'list_hitl_pending' ? pending
+      : { roster: [profile({ id: String(args?.workspaceId), paneId: args?.workspaceId === 'ws-a' ? 'pane-a' : 'pane-b', status: 'Working', outputSeq: 1 })] };
+    await refreshAgentPaneHighlight({ workspaceIds: ['ws-a', 'ws-b'], invoke });
+    const before = get(agentTopologyStore)['ws-a'];
+    await refreshAgentPaneHighlight({ workspaceIds: ['ws-a', 'ws-b'], invoke: async (command, args) => {
+      if (command === 'list_hitl_pending' || args?.workspaceId === 'ws-a') throw Error('transient read failure');
+      return { roster: [profile({ id: 'ws-b', paneId: 'pane-b', status: 'Idle', outputSeq: 2 })] };
+    } });
+    expect(get(agentTopologyStore)['ws-a']).toBe(before);
+    expect(get(agentTopologyStore)['ws-b'].roster[0].outputSeq).toBe(2);
+    expect(get(agentHitlPendingStore)).toEqual(pending);
+    expect(get(agentRefreshFailuresStore)).toEqual(expect.arrayContaining(['ws-a', 'approvals']));
+    expect(get(agentPaneStatusStore)['ws-a:pane-a']).toBe('waiting');
+  });
+
+  it('does not revive a removed source when its older read finishes', async () => {
+    let finish!: (value: unknown) => void;
+    const refresh = refreshAgentPaneHighlight({ workspaceIds: ['removed'], invoke: command => command === 'list_hitl_pending'
+      ? Promise.resolve([]) : new Promise(resolve => { finish = resolve; }) });
+    pruneAgentPaneHighlightWorkspaces([]);
+    finish({ roster: [profile({ id: 'late', paneId: 'pane', status: 'Working', outputSeq: 1 })] });
+    await refresh;
+    expect(get(agentTopologyStore)).toEqual({});
+  });
   it('writes intervention attention from roster without mounting AgentCenterPanel', async () => {
     const invoke = async (cmd: string) => {
       if (cmd === 'get_teammate_topology') {

@@ -60,6 +60,11 @@ fn command(endpoint: &KernelEndpoint, method: &str, args: Value) -> Value {
     assert_eq!(reply["ok"], true, "{reply}");
     reply["value"].clone()
 }
+fn remote_command(endpoint: &KernelEndpoint, method: &str, args: Value) -> Value {
+    let reply=client::request_json(endpoint,"POST","/v1/domain/commands",Some(&json!({"method":method,"args":args,"native":false,"roots":[],"connectionId":Uuid::new_v4()}))).unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    reply["value"].clone()
+}
 fn attach(endpoint: &KernelEndpoint, workspace: &Value, root: &Path) -> (Value, PathBuf) {
     fs::create_dir_all(root).unwrap();
     let descriptor = root.join("endpoint.json");
@@ -131,7 +136,7 @@ fn frozen_multi_member_dispatch_is_durable_exact_and_never_replayed() {
     assert_eq!(groups["groups"][0]["revision"], 1);
     let assigned = json!({"workspaceId":workspace,"groupId":group_id,"groupRevision":1,"groupAction":"assign","idempotency_key":"approved-plan-1",
         "targets":[target(&first,"cancel-permission"),target(&second,"wait-for-cancel")]});
-    let accepted = command(endpoint, "send_agent_message", assigned.clone());
+    let accepted = remote_command(endpoint, "send_agent_message", assigned.clone());
     assert_eq!(accepted["children"].as_array().unwrap().len(), 2);
     let scope = json!({"workspaceId":workspace,"groupTaskId":accepted["groupTaskId"]});
     let waiting = wait(endpoint, &scope, |status| {
@@ -156,7 +161,7 @@ fn frozen_multi_member_dispatch_is_durable_exact_and_never_replayed() {
         )["ok"],
         false
     );
-    let cancel = command(endpoint, "cancel_agent_message", scope.clone());
+    let cancel = remote_command(endpoint, "cancel_agent_message", scope.clone());
     assert_eq!(cancel["cancellationRequested"], true);
     wait(endpoint, &scope, |status| {
         status["children"]

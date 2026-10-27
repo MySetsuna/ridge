@@ -1,0 +1,65 @@
+name: rtp1-kernel-e2e
+
+# Live RTP1-over-WebSocket end-to-end harness (v8-6 / v9-1).
+#
+# Boots a real ridge-kernel subprocess via `cargo run --bin ridge --
+# kernel ensure`, then exercises the canonical RTP1 wire contract
+# through `scripts/rtp1-kernel-e2e.mjs` (attach / input / output /
+# detach over ws://127.0.0.1:<port>/v1/rtp1).
+#
+# This workflow guards against wire-contract regressions on every PR
+# and push to main. It complements the in-process `conformance_rtp1`
+# unit tests with a true-subprocess / true-WebSocket end-to-end probe.
+#
+# Trade-off: ubuntu-latest only. Windows runner cost is not justified
+# for a single shell-script; release-build runs are out of scope.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-rtp1-e2e-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-rtp1-e2e-
+
+      - name: Build ridge binary (debug)
+        run: cargo build -p ridge --bin ridge
+
+      - name: Run RTP1 WS end-to-end harness
+        id: e2e
+        run: node scripts/rtp1-kernel-e2e.mjs
+
+      - name: Upload harness log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtp1-e2e-log
+          path: |
+            /tmp/ridge-rtp1-e2e-*/kernel.json
+          if-no-files-found: ignore
+          retention-days: 7

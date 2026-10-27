@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { QueryClient } from '@tanstack/svelte-query';
 import type { RemoteLink } from '@ridge/remote';
 import {
   REMOTE_ROSTER_STALE_TIME_MS,
@@ -79,9 +80,32 @@ describe('remoteQueries', () => {
     await expect(work).resolves.toBe('late result');
   });
 
+  it.each(['roster', 'history'] as const)('does not poison a replacement %s observer when a refresh is cancelled', async (kind) => {
+    const remote = link();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    if (kind === 'roster') vi.mocked(remote.getTeammateTopology).mockImplementationOnce(async () => { await gate; return { roster: [], leaderId: null, edges: [] }; });
+    else vi.mocked(remote.listAgentHistory).mockImplementationOnce(async () => { await gate; return []; });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const first = new AbortController();
+    const read = (signal?: AbortSignal) => kind === 'roster'
+      ? fetchRemoteTeamRoster(remote, client, 1, 'source', signal)
+      : fetchRemoteAgentHistory(remote, client, 1, 'source', 24, signal);
+    try {
+      const abandoned = read(first.signal);
+      const rejected = expect(abandoned).rejects.toBe('superseded');
+      first.abort('superseded');
+      const replacement = read();
+      release();
+      await rejected;
+      await expect(replacement).resolves.toBeDefined();
+      expect(kind === 'roster' ? remote.getTeammateTopology : remote.listAgentHistory).toHaveBeenCalledOnce();
+    } finally { client.clear(); }
+  });
+
 	it('keeps roster results typed when health RPC is unavailable', async () => {
     const remote = link();
-    vi.mocked(remote.getOrchestrationHealth).mockRejectedValueOnce(new Error('old host'));
+    vi.mocked(remote.getOrchestrationHealth).mockRejectedValueOnce(new Error('method not supported by kernel host'));
     const fetchQuery = makeFetchQuery();
     await expect(fetchRemoteTeamRoster(remote, {
       fetchQuery,
@@ -102,7 +126,7 @@ describe('remoteQueries', () => {
     vi.mocked(remote.listAgentHistory).mockResolvedValueOnce(history as never);
     const fetchQuery = makeFetchQuery();
 		await expect(fetchRemoteAgentHistory(remote, { fetchQuery }, 9, 'workspace-a', 12)).resolves.toEqual(history);
-    expect(remote.listAgentHistory).toHaveBeenCalledWith('workspace-a', 12, undefined, '');
+    expect(remote.listAgentHistory).toHaveBeenCalledWith('workspace-a', 12, undefined, '', undefined, false);
 		expect(fetchQuery).toHaveBeenCalledWith(expect.objectContaining({
 			queryKey: remoteQueryKeys.agentHistory(9, 'workspace-a', 12),
 		}));

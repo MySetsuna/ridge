@@ -35,10 +35,7 @@ code_targets:
   - packages/ridge-term-font/Cargo.toml
   - packages/ridge-term-font/src/lib.rs
   - packages/remote/src/shared/terminal/wasmRuntime.ts
-  - src-tauri/src/remote_host_impl.rs
   - src-tauri/src/state.rs
-  - src-tauri/src/engine/parser.rs
-  - src-tauri/src/commands/cloud_pane.rs
   - Cargo.toml
   - Cargo.lock
   - package.json
@@ -61,10 +58,7 @@ code_targets:
   - packages/ridge-term/src/search.rs
   - packages/ridge-term/src/semantic.rs
   - packages/ridge-term/src/terminal_protocol_generated.rs
-  - packages/ridge-cli/src/tui/workspace.rs
-  - packages/ridge-cli/src/tui/lan_host_impl.rs
   - packages/ridge-cli/src/kernel_host_impl.rs
-  - packages/ridge-cli/src/session.rs
   - packages/ridge-cli/src/rpc.rs
   - src-tauri/src/lib.rs
   - packages/remote/src/shared/cloud/signaling/generated/**
@@ -75,12 +69,8 @@ code_targets:
   - packages/remote/src/shared/cloud/signaling/index.ts
   - packages/ridge-term/src/producer.rs
   - packages/ridge-term/src/term/delta.rs
-  - src-tauri/src/types.rs
-  - src-tauri/src/engine/pty.rs
-  - src-tauri/src/commands/terminal.rs
   - packages/remote/src/shared/terminal/ptyBridge.ts
   - packages/ridge-term/src/*.rs
-  - src/lib/remote/cloud/cloudHostTopologyLink.ts
   - src/lib/hosts/hostForest.ts
   - packages/ridge-term-font/src/*.rs
   - packages/remote/src/shared/terminal/retryableLazyImport.ts
@@ -102,6 +92,8 @@ code_targets:
   - packages/ridge-kernel/src/server.rs
   - packages/ridge-core/src/capability.rs
   - packages/remote/src/shared/cloud/remoteAllowlist.ts
+  - .github/workflows/release.yml
+  - .github/workflows/rtp1-kernel-e2e.yml
 test_targets:
   - src/remote/lib/TerminalCanvas.test.ts
   - src/remote/lib/remoteInput.test.ts
@@ -128,7 +120,6 @@ test_targets:
   - packages/remote/src/shared/transport/cloudWebrtcAdapter.test.ts
   - packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts
   - packages/remote/src/shared/terminal/ptyBridge.test.ts
-  - src/lib/remote/cloud/cloudHostTopologyLink.test.ts
   - src/lib/transport/tauriShim/bridge.test.ts
   - src/lib/transport/tauriShim/compatibility.test.ts
   - packages/remote/src/shared/transport/lanWsAdapter.test.ts
@@ -142,6 +133,7 @@ test_targets:
   - packages/remote/src/shared/cloud/faultInjection.test.ts
   - scripts/cloud-terminal-system-acceptance.mjs
   - packages/remote/src/shared/cloud/remoteAllowlist.test.ts
+  - packages/ridge-kernel/tests/remote_invoke_runtime.rs
 ---
 
 # Remote interaction and runtime reliability
@@ -217,3 +209,15 @@ The user explicitly rejected restoring a v2 layer and authorized rebuilding the 
 Frames carry pane, terminal lifetime and controller activation. Live revisions are contiguous; duplicate/stale frames are harmless, gaps require an authoritative snapshot. History pages use absolute row ranges and a history generation changed on clear/reflow; ordinary live output cannot invalidate a page solely by advancing its live revision. Snapshot, delta and history packets each carry their own bounded OSC8 dictionary; cells do not depend on an unbounded persistent wire-ID registry. Late pages, overlapping ranges and missing definitions never partially mutate the live terminal. Preserve viewport/selection anchors and explicitly handle expired/evicted ranges.
 
 Initial delivery contains visible screens and a bounded recent row tail. Fetch older rows only near the unloaded boundary. No full-history snapshot on ordinary output, sandbox replay of history, or silently truncated stream. Encoded input crosses transports as bytes with source sequence and terminal-lifetime fencing, preserving non-UTF8 mouse reports. Capture, encoding, admission and host acknowledgement use the same desktop/Remote path. Record real integration and row/payload/paint metrics before completion.
+
+## Repeated recovery and Host negotiation
+
+A second connected edge during in-flight reauthorization retains the latest recovery intent. Authorization results from an obsolete connection generation cannot change the new link state, tear down its subscriptions or notify a successful recovery. Once the obsolete work settles, process the latest still-connected generation exactly once, retaining trust-grant/TOTP policy and never replaying uncertain terminal input. Final disconnect disposes all pending recovery work.
+
+Kernel answers the existing JSON-RPC notification hello with the canonical negotiated hello or rejection notification, as required by the current protocol implementation. Supported client notification shapes, including unsubscribe after native JSON-RPC promotion, reach the same subscription lifecycle and authorization checks as their existing forms. No new protocol schema or privilege is introduced. Canvas context-loss/restoration is observed at the actual canvas propagation boundary so WebGL fallback can recover.
+
+Acceptance includes deferred authorization while the connection repeatedly drops and recovers, obsolete successes/failures and final disconnect; real Kernel WebSocket hello acceptance/rejection and unsubscribe stopping live delivery; desktop/mobile browser restoration and bounded local latency measurements with exact build/route and explicit real-device/WAN gaps. Unit-only transport tests do not establish overall network or mobile performance.
+
+Continuous validation runs current independent Kernel, real Commune registration/group-task and Remote invoke/notification integration tests on ordinary changes as well as releases. Legacy desktop/CLI launch harnesses are archived when replaced; CI artifacts must not upload endpoint files or tokens. Regression fixtures use owned settings/cwd/auth roots and assert metadata-plus-snapshot ordering from the current stream contract.
+
+When enabling LAN Remote without an explicit port, retain the existing default-port probing and fall back to an OS-assigned available port if that range cannot bind. Report and advertise the actual port through the existing info/QR/mDNS path. An explicitly requested port never silently changes outside its existing probe range. Keep native-only controls, TLS, authentication and listener cleanup unchanged. Verify default failure/recovery and explicit-port failure policy, and exercise the owned current-source host on Windows where the default range is reserved.

@@ -320,6 +320,8 @@ export interface ThemeSnapshot {
  */
 /** P1 teammate roster 成员（`get_teammate_topology` 投影；无 MCP endpoint/token）。 */
 export interface TeammateRosterMember {
+  canSend?: boolean;
+  canCancel?: boolean;
   id: string;
   name: string;
   paneId: string;
@@ -451,6 +453,11 @@ export interface TeammateTopology {
 
 /** P2：待裁决高危动作的脱敏快照——绝不含 action 命令全文。 */
 export interface HitlPendingItem {
+  workspaceId?: string;
+  agentId?: string;
+  sessionId?: string;
+  generation?: number;
+  lease?: string;
   id: string;
   initiator: string;
   level: string;
@@ -571,7 +578,7 @@ export interface RemoteLink {
   /** P1 roster：只读拓扑快照（capability `teammate` 协商后可用；UI 轮询取数）。 */
   getTeammateTopology(workspaceId?: string): Promise<TeammateTopology>;
   /** Real session-file history, always restricted to the selected workspace's pane CWDs. */
-  listAgentHistory(workspaceId: string, limit?: number, cursor?: string, query?: string, textCursor?: string): Promise<AgentHistoryReply[]>;
+  listAgentHistory(workspaceId: string, limit?: number, cursor?: string, query?: string, textCursor?: string, assistantOnly?: boolean): Promise<AgentHistoryReply[]>;
   /** Persist the current workspace's Agent groups for Remote/desktop parity. */
   setTeammateGroups(workspaceId: string, groups: readonly TeammateGroup[], expectedRevision: number): Promise<TeammateGroupSnapshot>;
   /** Create a new pane and resume a recorded Agent session in its CWD. */
@@ -1684,7 +1691,7 @@ export class RemoteConnection implements RemoteLink {
     return data._result as AgentMessageReceipt;
   }
 
-  async listAgentHistory(workspaceId: string, limit = 24, cursor?: string, query = '', textCursor?: string): Promise<AgentHistoryReply[]> {
+  async listAgentHistory(workspaceId: string, limit = 24, cursor?: string, query = '', textCursor?: string, assistantOnly = false): Promise<AgentHistoryReply[]> {
     const data = (await this._sendAndWait(
       {
         type: 'invoke-request',
@@ -1694,6 +1701,7 @@ export class RemoteConnection implements RemoteLink {
           limit: Math.max(1, Math.min(100, Math.floor(limit))),
           cursor,
           textCursor,
+          assistantOnly,
           query: query.trim(),
         },
         _reqId: ++this._reqCounter,

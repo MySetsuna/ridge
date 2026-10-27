@@ -7,9 +7,7 @@ lifecycle: ACTIVE
 parent: L1-PROJECT-001
 code_targets:
   - src-tauri/src/commands/project.rs
-  - src-tauri/src/commands/teammate.rs
   - src-tauri/src/teammate/**
-  - src-tauri/src/remote_host_impl.rs
   - src/lib/teammate/**
   - src/lib/components/SettingsPanel.svelte
   - src/remote/lib/SidebarTeamRoster.svelte
@@ -28,6 +26,10 @@ test_targets:
   - packages/ridge-core/src/**
 ---
 
-# Agent Commune exact workspace conversation binding
+# Agent Commune exact conversation binding and global presentation
 
-Agent's Commune shall bind every member, group, transcript history, resume action, and delivery target to a single exact workspace-scoped conversation identity. Provider-specific transcript indexing shall expose an opaque binding reference rather than infer identity from agent names or current working directories. Each member has a stable member identity distinct from its delivery identity and reports bound, unbound, or ambiguous state; only an explicit exact transcript binding may resolve unbound or ambiguous candidates. History and recent replies are queried, cached, and rendered per workspace and binding revision, never host-wide, and resume uses the exact bound transcript reference. Individual and group messages shall go exclusively through the built-in teammate service and durable Hub queue, with receipt status; PTY input is never a fallback delivery path. Auto-discovered members shall receive service-resolvable delivery identities without altering member identity. Group and teammate-setting state is backend canonical, revisioned, workspace scoped, and migrates legacy group membership only on an exact member identity match; unresolved legacy entries are archived with a visible recovery path. Desktop and Remote/mobile clients shall share these isolation and delivery guarantees. Acceptance requires provider locator tests, workspace collision tests, no CWD/name fallback tests, explicit binding tests, exact legacy migration and archive tests, service-only delivery tests with durable receipt status, remote workspace-query/cache tests, and the repository test, lint, typecheck, SpecTree verification and completion gates.
+Commune aggregates all Agents and protocol history available to the authenticated Host connection, independent of the active terminal workspace. Workspace remains an internal authorization and source identity: every member, group record, transcript row, approval and delivery action retains its exact original workspace/pane/member/session and binding revision. Aggregation never falls back to names or CWD, crosses ungranted workspaces, merges permissions, or treats a transport receipt as Agent task completion. Existing groups are presented together while mutations route to their original service identity.
+
+Members have stable identities distinct from delivery identities; ambiguous/unbound protocol sessions stay explicit. History and replies remain cached per source workspace and binding revision, then merged into the global view. Individual and group protocol messages use the durable Hub; explicit user terminal actions use the existing fenced manual input path. Remote and desktop share these source-isolation guarantees. Transient reads retain confirmed data with visible stale/error state; removed sources and superseded reads cannot repopulate the current projection.
+
+Acceptance covers concurrent same-name Agents across multiple workspaces, global discovery/replies/history while switching terminal workspaces, exact target sends and approvals, isolated pagination and failures, preserved group records, and no name/CWD fallback or automatic input retry. Run real Kernel protocol/UI integration plus repository test/lint/typecheck and SpecTree verify/complete.

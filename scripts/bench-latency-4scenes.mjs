@@ -16,7 +16,9 @@ const label = (process.env.RIDGE_BENCH_LABEL ?? 'default').replace(/[^a-zA-Z0-9_
 const count = Number(process.env.RIDGE_BENCH_SAMPLES ?? '20');
 if (!Number.isInteger(count) || count < 1 || count > 100) throw new Error('samples must be 1..100');
 const scenes = (process.env.RIDGE_BENCH_SCENES ?? 'idle,heavy,firstopen,switchback').split(',');
+if (process.env.RIDGE_BENCH_MOBILE === '1' && scenes.some(scene => ['firstopen','switchback','cmd','powershell'].includes(scene))) throw Error('mobile probe covers idle, heavy, history and reconnect only');
 if (scenes.some(scene => !['idle','heavy','firstopen','switchback','history','reconnect','powershell','cmd','tui'].includes(scene))) throw new Error('unknown scene');
+const mobile = process.env.RIDGE_BENCH_MOBILE === '1';
 const binary = path.resolve(process.env.RIDGE_BIN ?? 'target/debug/ridge.exe');
 const port = Number(process.env.RIDGE_BENCH_HOST_PORT ?? '5121');
 const state = fs.mkdtempSync(path.join(os.tmpdir(), 'ridge-diag-'));
@@ -68,6 +70,7 @@ function program(ready) {
   return "import sys,threading,time\ndef load(n):\n for i in range(n):\n  print('load_'+str(i),flush=True); time.sleep(.001)\nprint('"+ready+"',flush=True)\nfor line in sys.stdin:\n s=line.strip()\n if s.startswith('LOAD'): threading.Thread(target=load,args=(int(s.split('_')[1]) if '_' in s else 1000,),daemon=True).start()\n elif s=='EXIT': break\n else: print('reply_'+s,flush=True)";
 }
 async function active(page) {
+  if (mobile) return page.evaluate(() => window.__windE2E?.paneKeys()[0] ?? null);
   return page.evaluate(() => {
     const nodes = [...document.querySelectorAll('[data-rg-pane-id]')].filter(el=>el.getBoundingClientRect().width>0 && el.getBoundingClientRect().height>0);
     const node = nodes.find(el=>el.contains(document.activeElement)) ?? nodes.find(el => el.dataset.rgPaneActive === 'true') ?? nodes[0];
@@ -91,6 +94,7 @@ async function kernelReplyPresent(key, expected) {
   return typeof value.data_b64==='string'?Buffer.from(value.data_b64,'base64').toString().includes(expected):null;
 }
 async function focusPane(page, key) {
+  if (mobile) { await page.locator('.hidden-input:not([disabled])').focus(); return; }
   const id=key.includes(':')?key.slice(key.lastIndexOf(':')+1):key;
   const sink = page.locator('[data-rg-pane-id="'+id+'"]').filter({ visible: true }).first();
   await sink.click({ position: {x:60,y:40} });
@@ -115,7 +119,7 @@ async function startChild(page, key) {
   const encoded = Buffer.from(program(ready)).toString('base64');
   await typeLine(page, 'python -u -c "exec(__import__(\'base64\').b64decode(\''+encoded+'\'))"',key);
   await visible(page, key, ready);
-  const workspace=await page.evaluate(()=>[...document.querySelectorAll('[data-ws-tab-id]')].find(tab=>tab.className.includes('bg-[var(--rg-accent)]/15'))?.getAttribute('data-ws-tab-id'));
+  const workspace=mobile ? key.slice(0,key.lastIndexOf(':')) : await page.evaluate(()=>[...document.querySelectorAll('[data-ws-tab-id]')].find(tab=>tab.className.includes('bg-[var(--rg-accent)]/15'))?.getAttribute('data-ws-tab-id'));
   if(!workspace) throw new Error('controlled reply workspace ownership unavailable');
   childPanes.set(key,workspace);
 }
@@ -166,7 +170,8 @@ try {
   const cert = new crypto.X509Certificate(fs.readFileSync(tls));
   const pin = crypto.createHash('sha256').update(cert.publicKey.export({type:'spki',format:'der'})).digest('base64');
   browser = await chromium.launch({headless:true,args:['--ignore-certificate-errors-spki-list='+pin,'--enable-unsafe-swiftshader','--use-angle=swiftshader']});
-  page = await browser.newPage({viewport:{width:1440,height:900}});
+  result.client = mobile ? 'Chromium mobile emulation; not a physical phone' : 'Chromium desktop';
+  page = await browser.newPage({viewport:mobile ? {width:412,height:915} : {width:1440,height:900},isMobile:mobile,hasTouch:mobile});
   page.on('dialog', dialog => dialog.accept());
   result.browserDiagnostic = { errors: [], subscriptions: [], terminalFrames: 0 };
   page.on('pageerror', error => result.browserDiagnostic.errors.push(error.message.slice(0,400)));
@@ -196,15 +201,16 @@ try {
       if(PerformanceObserver.supportedEntryTypes.includes('longtask')) new PerformanceObserver(list=>{for(const e of list.getEntries()){window.__ridgeLoopProbe.longTasks.push({at:e.startTime,durationMs:e.duration});if(window.__ridgeLoopProbe.longTasks.length>128)window.__ridgeLoopProbe.longTasks.shift();}}).observe({type:'longtask',buffered:true});
     }
   },{trace:result.traceEnabled,loop:result.clientLoopProbeEnabled});
-  const managerChunk=fs.readdirSync('remote-dist/desktop/_app/immutable/chunks').find(name=>name.endsWith('.js') && fs.readFileSync(path.join('remote-dist/desktop/_app/immutable/chunks',name),'utf8').includes('__windE2E'));
+  const managerDirectory=mobile ? 'remote-dist/mobile/assets' : 'remote-dist/desktop/_app/immutable/chunks';
+  const managerChunk=fs.readdirSync(managerDirectory).find(name=>name.endsWith('.js') && fs.readFileSync(path.join(managerDirectory,name),'utf8').includes('__windE2E'));
   await page.addInitScript(chunk=>window.__ridgeManagerChunk=chunk,managerChunk);
   const workers=new Set(); page.on('worker',worker=>workers.add(worker.url().startsWith('blob:')?'blob-worker':new URL(worker.url()).pathname));
   const resources = new Set(); page.on('response', response => { const url=new URL(response.url()); if(/\.(js|wasm|css)$/.test(url.pathname)) resources.add(url.pathname); });
-  await page.goto('https://127.0.0.1:'+hostRegistry.port+'/?ui=desktop',{waitUntil:'domcontentloaded'});
+  await page.goto('https://127.0.0.1:'+hostRegistry.port+(mobile ? '/' : '/?ui=desktop'),{waitUntil:'domcontentloaded'});
   const input=page.locator('input[inputmode="numeric"]').first(); await input.waitFor({timeout:15000}); await input.fill(code); await input.press('Enter');
   stderr='';
   await page.waitForFunction(() => !!window.__windE2E?.paneKeys().length,{timeout:30000});
-  result.frontend = {indexHash:hash(path.join(root,'remote-dist/desktop/index.html')),resources:[]};
+  result.frontend = {indexHash:hash(path.join(root,mobile ? 'remote-dist/mobile/index.html' : 'remote-dist/desktop/index.html')),resources:[]};
   const initial=await active(page); if(!initial) throw new Error('no actual mounted pane key');
   await startChild(page,initial);
   result.kernelPty=await kernelMeasure();
@@ -240,7 +246,7 @@ try {
         let transitionMs;
         if(scene==='firstopen') { const transition=performance.now(); key=await newWorkspace(page); transitionMs=performance.now()-transition; await startChild(page,key); }
         if(scene==='switchback') { const owned=[...childPanes]; const [expected,workspace]=owned[i%2 ? owned.length-1 : 0]; const transition=performance.now(); await page.locator('[data-ws-tab-id="'+workspace+'"]').click(); key=await until(async()=>await active(page)===expected?expected:null); transitionMs=performance.now()-transition; }
-        if(scene==='history') { await page.locator('[data-rg-pane-id]').filter({visible:true}).first().hover(); await page.mouse.wheel(0,-100000); await page.mouse.wheel(0,100000); }
+        if(scene==='history') { await page.locator(mobile ? '.term-stage .container' : '[data-rg-pane-id]').filter({visible:true}).first().hover(); await page.mouse.wheel(0,-100000); await page.mouse.wheel(0,100000); }
         if(scene==='reconnect') { const document=await page.evaluate(()=>window.__ridgeBenchmarkDocument); const transition=performance.now(); await page.reload({waitUntil:'domcontentloaded'}); await page.waitForFunction(previous=>window.__ridgeBenchmarkDocument!==previous,document); await page.waitForFunction(()=>!!window.__windE2E?.paneKeys().length); key=await until(()=>active(page)); await terminalReady(page,key); transitionMs=performance.now()-transition; }
         if(!['powershell','cmd'].includes(scene) && !childPanes.has(key)) throw new Error('selected pane has no verified controlled reply process');
         const nonce='U'+i+'_'+crypto.randomUUID().slice(0,8);
@@ -268,8 +274,8 @@ try {
   result.frontend.resources=[...resources].sort();
   result.frontend.observedDedicatedWorkers=[...workers];
   result.frontend.artifacts=result.frontend.resources.map(resource=> {
-    const file=path.resolve(root,'remote-dist/desktop','.'+resource);
-    return file.startsWith(path.resolve(root,'remote-dist/desktop')+path.sep) && fs.existsSync(file) ? {resource,sha256:hash(file)} : {resource,sha256:null};
+    const file=path.resolve(root,mobile ? 'remote-dist/mobile' : 'remote-dist/desktop','.'+resource);
+    return file.startsWith(path.resolve(root,mobile ? 'remote-dist/mobile' : 'remote-dist/desktop')+path.sep) && fs.existsSync(file) ? {resource,sha256:hash(file)} : {resource,sha256:null};
   });
   result.frontend.activeServiceWorkers=await page.evaluate(async()=> 'serviceWorker' in navigator ? (await navigator.serviceWorker.getRegistrations()).map(r=>r.active ? new URL(r.active.scriptURL).pathname : null) : []).catch(()=>null);
   result.trace=await page.evaluate(()=>window.__RIDGE_REMOTE_PERF?.snapshot()??null).catch(()=>null);

@@ -54,7 +54,7 @@
     );
   }
 
-  const store = teammateGroupStore();
+  const store = $derived(teammateGroupStore(workspaceId));
 
   // 工作区切换 → 载入该工作区持久化的编组/任务。setWorkspace 内部用非响应式守卫，
   // 不读取 store 的 $state，故此 effect 不会自循环。
