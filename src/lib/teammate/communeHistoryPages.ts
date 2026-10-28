@@ -20,6 +20,7 @@ export class CommuneHistoryPages {
     return copy;
   }
   async next(limit = 100): Promise<AgentHistoryReply[]> {
+    if (limit <= 0) return [];
     this.failures.clear();
     const sources = new Map([...this.sources].map(([id, source]) => [id, { ...source, rows: [...source.rows] }]));
     const fill = async (workspaceId: string, source: Source) => {
@@ -33,13 +34,14 @@ export class CommuneHistoryPages {
       } catch (error) { this.failures.set(workspaceId, error instanceof Error ? error.message : String(error)); }
     };
     const result: AgentHistoryReply[] = [];
+    // Fill only empty buffers; selecting a buffered row needs no Promise batch.
+    const entries = [...sources];
+    for (let i = 0; i < entries.length; i += 4) await Promise.all(entries.slice(i, i + 4).map(([id, source]) => fill(id, source)));
     while (result.length < limit) {
-      // Four concurrent reads bound global discovery without serializing every source.
-      const entries = [...sources];
-      for (let i = 0; i < entries.length; i += 4) await Promise.all(entries.slice(i, i + 4).map(([id, source]) => fill(id, source)));
       const candidate = entries.filter(([, source]) => source.rows.length).sort((a, b) => compareCommuneHistory(a[1].rows[0], b[1].rows[0]))[0];
       if (!candidate) break;
       result.push(candidate[1].rows.shift()!);
+      if (result.length < limit && candidate[1].rows.length === 0) await fill(...candidate);
     }
     this.sources = sources;
     return result;

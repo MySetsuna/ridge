@@ -8,6 +8,20 @@ const row = (workspaceId: string, timestamp: number): AgentHistoryReply => ({
 });
 
 describe('global Commune history pagination', () => {
+  it('bounds reads to four sources and never prefetches beyond a satisfied page', async () => {
+    let active = 0, peak = 0;
+    const load = vi.fn(async ({ workspaceId }: CommuneHistoryRequest) => {
+      active++; peak = Math.max(peak, active);
+      await new Promise(resolve => setTimeout(resolve, 1)); active--;
+      return [{ ...row(workspaceId, 1), cursor: 'opaque-next' }];
+    });
+    const pages = new CommuneHistoryPages(Array.from({ length: 9 }, (_, i) => String(i)), load);
+    expect(await pages.next(0)).toEqual([]); expect(load).not.toHaveBeenCalled();
+    expect(await pages.next(1)).toHaveLength(1);
+    expect(peak).toBe(4); expect(load).toHaveBeenCalledTimes(9);
+    expect(pages.hasMore).toBe(true);
+  });
+
   it('orders same-millisecond sequence numbers numerically and isolates discarded page candidates', async () => {
     const pages = new CommuneHistoryPages(['a'], async () => [9, 10, 100].map(sequence => ({ ...row('a', 1), sequence })));
     expect((await pages.next(1))[0].sequence).toBe(100);

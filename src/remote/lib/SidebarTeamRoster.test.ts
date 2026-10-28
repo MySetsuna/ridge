@@ -33,7 +33,7 @@ describe('remote Agent drawer alignment contract', () => {
   });
 
   it('refreshes live roster from transport events while history remains cached', () => {
-    expect(source).toContain('function scheduleLiveRefresh(): void');
+    expect(source).toContain('function scheduleLiveRefresh(');
     expect(source).toContain('const offMessage = ws.onMessage');
     expect(source).toContain('const offRaw = ws.onRawBytes');
     expect(source).not.toContain('ROSTER_POLL_INTERVAL_MS');

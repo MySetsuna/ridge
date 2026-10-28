@@ -30,6 +30,8 @@
   let requestVersion = 0;
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
   let eventRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let pendingEventRefresh = false;
+  let viewingEarlier = false;
   const key = (row: AgentHistoryReply) => `${row.workspaceId}:${row.id ?? `${row.memberId}:${row.sequence}`}`;
 
   async function refresh(more = false) {
@@ -37,12 +39,16 @@
     const scope = scopeKey;
     const requestedQuery = query.trim();
     const version = ++requestVersion;
+    if (!more) {
+      pendingEventRefresh = false; viewingEarlier = false;
+      if (eventRefreshTimer) { clearTimeout(eventRefreshTimer); eventRefreshTimer = undefined; }
+    }
     busy = true;
     error = '';
     try {
       const candidate = more && pages ? pages.fork() : new CommuneHistoryPages(scope.split(','), load, requestedQuery);
       const page = await candidate.next();
-      if (version !== requestVersion || scope !== scopeKey) return;
+      if (version !== requestVersion || scope !== scopeKey || requestedQuery !== query.trim()) return;
       const retained = more ? rows : loadedQuery === requestedQuery ? rows.filter(row => candidate.failures.has(row.workspaceId ?? '')) : [];
       const merged = new Map(retained.map(row => [key(row), row]));
       for (const row of page) merged.set(key(row), row);
@@ -51,29 +57,54 @@
       loadedQuery = requestedQuery;
       error = [...candidate.failures].map(([source, failure]) => `${source}: ${failure}`).join('; ');
       pages = candidate; hasMore = candidate.hasMore;
-      if (!more) { expanded = {}; newEvents = candidate.failures.size > 0; if (visible) scope.split(',').filter(id => !candidate.failures.has(id)).forEach(markCommuneRead); }
+      viewingEarlier = more;
+      if (!more) { expanded = {}; newEvents = candidate.failures.size > 0 || pendingEventRefresh; if (visible && !pendingEventRefresh) scope.split(',').filter(id => !candidate.failures.has(id)).forEach(markCommuneRead); }
     } catch (failure) {
       if (version === requestVersion) error = failure instanceof Error ? failure.message : String(failure);
-    } finally { if (version === requestVersion) busy = false; }
+    } finally { if (version === requestVersion) { busy = false; scheduleEventRefresh(); } }
   }
   async function textPage(row: AgentHistoryReply, textCursor: string) {
     if (!row.workspaceId || !scopeKey.split(',').includes(row.workspaceId) || busy) return;
     const scope = scopeKey;
+    const requestedQuery = query.trim();
     const version = ++requestVersion;
     busy = true;
     try {
       const page = await load({ workspaceId: row.workspaceId, textCursor });
-      if (version === requestVersion && scope === scopeKey && page[0]) rows = rows.map(item => key(item) === key(row) ? { ...page[0], cursor: item.cursor } : item);
+      if (version !== requestVersion || scope !== scopeKey || requestedQuery !== query.trim()) return;
+      if (page[0] && (page[0].workspaceId !== row.workspaceId || key(page[0]) !== key(row))) throw new Error('Commune history text page identity mismatch');
+      if (page[0]) {
+        rows = rows.map(item => key(item) === key(row) ? { ...page[0], cursor: item.cursor } : item);
+        viewingEarlier = true;
+      }
     } catch (failure) { if (version === requestVersion) error = failure instanceof Error ? failure.message : String(failure); }
-    finally { if (version === requestVersion) busy = false; }
+    finally { if (version === requestVersion) { busy = false; scheduleEventRefresh(); } }
   }
-  function search() {
+  function search(event: Event) {
+    query = (event.currentTarget as HTMLInputElement).value;
+    requestVersion++;
+    rows = []; pages = null; hasMore = false; error = ''; expanded = {}; busy = true;
+    viewingEarlier = false; pendingEventRefresh = false;
+    if (eventRefreshTimer) { clearTimeout(eventRefreshTimer); eventRefreshTimer = undefined; }
     if (searchTimer) clearTimeout(searchTimer);
     searchTimer = setTimeout(() => { searchTimer = undefined; void refresh(); }, 250);
+  }
+  function scheduleEventRefresh() {
+    if (!pendingEventRefresh || busy || searchTimer || viewingEarlier || eventRefreshTimer) return;
+    eventRefreshTimer = setTimeout(() => {
+      eventRefreshTimer = undefined;
+      if (busy || searchTimer || viewingEarlier) return;
+      pendingEventRefresh = false;
+      void refresh();
+    }, 160);
   }
   $effect(() => {
     const scope = scopeKey;
     requestVersion++;
+    if (searchTimer) clearTimeout(searchTimer);
+    if (eventRefreshTimer) clearTimeout(eventRefreshTimer);
+    searchTimer = undefined; eventRefreshTimer = undefined;
+    pendingEventRefresh = false; viewingEarlier = false; newEvents = false;
     rows = []; pages = null; hasMore = false; error = ''; busy = false; expanded = {};
     if (scope) untrack(() => { void refresh(); });
   });
@@ -81,8 +112,8 @@
     const changed = (eventWorkspaceId?: string) => {
       if (!eventWorkspaceId || !scopeKey.split(',').includes(eventWorkspaceId)) return;
       newEvents = true;
-      if (eventRefreshTimer) return;
-      eventRefreshTimer = setTimeout(() => { eventRefreshTimer = undefined; void refresh(); }, 160);
+      pendingEventRefresh = true;
+      scheduleEventRefresh();
     };
     const stops = [
       listen<{workspaceId?: string}>('commune-session-update', event => changed(event.payload?.workspaceId)),

@@ -157,6 +157,20 @@ try {
   await page.getByTestId('commune-history').getByRole('button', { name: /refresh|刷新/i }).click();
   await expect(page.getByRole('alert')).toHaveCount(0);
   evidence.checks.push('Injected one-source read failure retains its confirmed history while a real healthy ACP prompt adds replies; retry recovers');
+  await page.getByRole('button', { name: /^(Members|成员)/ }).first().click();
+  const quietMember = await page.evaluate(async () => {
+    const current=window.globalCommune;const workspaceId=current.workspaces[1].id;
+    const member=(await current.invoke('get_teammate_topology',{workspaceId})).roster[0];
+    return {workspaceId,paneId:member.paneId,agentId:member.agentId,id:member.id,generation:member.generation,lease:member.lease};
+  });
+  await expect(page.getByTitle(quietMember.id,{exact:true})).toHaveCount(1);
+  await new Promise(resolve=>setTimeout(resolve,600));
+  await page.evaluate(async target => {
+    const {id,...request}=target;const result=await window.globalCommune.invoke('release_teammate_agent',request);
+    if(result.removed!==true)throw Error('Owned quiet member removal failed');
+  },quietMember);
+  await expect(page.getByTitle(quietMember.id,{exact:true})).toHaveCount(0,{timeout:10000});
+  evidence.checks.push('A real quiet Kernel member retirement reaches the narrow Cloud facade and removes its card without terminal frames or manual refresh');
   assert.deepEqual(pageErrors, []); evidence.checks.push('Narrow mobile production Commune aggregates the same two source sessions through the real Runtime facade; not a Cloud-network test');
   await page.screenshot({ path: path.resolve(evidenceDir,'global-mobile.png') });
   evidence.result = 'PASS';

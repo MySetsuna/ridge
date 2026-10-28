@@ -175,6 +175,22 @@ async function connected() {
 }
 
 describe('CloudRemoteConnection.init', () => {
+  it('forwards quiet Commune membership and session updates and releases subscriptions', async () => {
+    const conn = await connected();
+    const seen: WsMessage[] = [];
+    conn.onMessage(message => { if (message.type === 'event') seen.push(message); });
+    for (const name of ['commune-members-changed', 'commune-session-update']) {
+      expect(handlers[name]).toBeTypeOf('function');
+      handlers[name]({ payload: { workspaceId: 'ws2', kind: 'agent_message_chunk' } });
+    }
+    expect(seen).toEqual(['commune-members-changed', 'commune-session-update'].map(name => ({
+      type: 'event', name, payload: { workspaceId: 'ws2', kind: 'agent_message_chunk' },
+    })));
+    conn.disconnect();
+    expect(handlers['commune-members-changed']).toBeUndefined();
+    expect(handlers['commune-session-update']).toBeUndefined();
+  });
+
   it('reads the active workspace and reaches connected', async () => {
     const conn = await connected();
     expect(invokeMock).toHaveBeenCalledWith('get_active_workspace_id');

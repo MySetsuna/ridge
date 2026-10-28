@@ -2,3 +2,4 @@
 import '../src/app.css';
 export { mount, unmount } from 'svelte';
 export { createClassComponent } from 'svelte/legacy';
+export { QueryClient } from '@tanstack/svelte-query';

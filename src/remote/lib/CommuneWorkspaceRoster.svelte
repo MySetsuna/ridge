@@ -63,6 +63,9 @@
   // Live roster follows PTY/topology events; the short debounce only coalesces
   // bursts. Agent history remains independently throttled to five minutes.
   let liveRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let refreshInFlight: Promise<void> | undefined;
+  let refreshQueued = false;
+  let liveRefreshDirty = false;
   let topo = $state<TeammateTopology>({ roster: [], leaderId: null, edges: [] });
   const terminalCandidates = $derived((topo.discovered ?? []).filter(candidate => candidate.workspaceId === workspaceId && !candidate.protocolConnected));
   $effect(() => { const snapshot = topo; untrack(() => onSnapshot?.(snapshot)); });
@@ -95,11 +98,15 @@
   /** Previous live status; completion attention is a working→idle edge. */
   let observedAgentStatuses = new Map<string, AgentPaneStatus>();
 
-  function scheduleLiveRefresh(): void {
+  function scheduleLiveRefresh(invalidate = false): void {
+    liveRefreshDirty ||= invalidate;
     if (liveRefreshTimer) return;
     liveRefreshTimer = setTimeout(() => {
       liveRefreshTimer = undefined;
-      void startRefresh();
+      if (refreshInFlight) { refreshQueued = true; return; }
+      const dirty = liveRefreshDirty;
+      liveRefreshDirty = false;
+      void startRefresh(false, dirty);
     }, 250);
   }
 
@@ -318,12 +325,14 @@
     await startRefresh();
   }
 
-  async function refresh(generation: number, signal: AbortSignal) {
+  async function refresh(generation: number, signal: AbortSignal, force = false) {
     if (!ws.hasCapability('teammate')) return;
     const token = ++refreshToken;
     const rosterWorkspaceId = normalizeTeamRosterWorkspaceId(workspaceId);
     const sessionId = remoteSessionId(ws);
     try {
+      if (signal.aborted || !scopeGuard.isCurrent(generation)) return;
+      if (force) await invalidateRosterQuery();
       if (signal.aborted || !scopeGuard.isCurrent(generation)) return;
       const loadHistory = !historyUnavailable && shouldRefreshAgentHistory(historyLoadedAt);
       const [snapshot, recent] = await Promise.all([
@@ -374,8 +383,9 @@
     }
   }
 
-  function startRefresh(resetScope = false): Promise<void> {
+  function startRefresh(resetScope = false, force = false): Promise<void> {
     if (disposed) return Promise.resolve();
+    if (refreshInFlight && !resetScope) { refreshQueued = true; liveRefreshDirty ||= force; return refreshInFlight; }
     if (resetScope) {
       historyLoadedAt = 0;
       historyUnavailable = false;
@@ -383,7 +393,13 @@
       onAttentionChange?.([]);
     }
     const run = scopeGuard.begin();
-    return refresh(run.generation, run.signal);
+    const work = refresh(run.generation, run.signal, force).finally(() => {
+      if (refreshInFlight !== work) return;
+      refreshInFlight = undefined;
+      if (refreshQueued && !disposed) { refreshQueued = false; scheduleLiveRefresh(); }
+    });
+    refreshInFlight = work;
+    return work;
   }
 
   $effect(() => {
@@ -401,11 +417,11 @@
         if (message.workspaceId === workspaceId) scheduleLiveRefresh();
       } else if (message.type === 'panes' && (!message.workspaceId || message.workspaceId === workspaceId)) {
         scheduleLiveRefresh();
-      } else if (message.type === 'event' && ['commune-session-update','commune-groups-changed','commune-task-changed','teammate://hitl-pending-changed'].includes(message.name)) {
+      } else if (message.type === 'event' && ['commune-members-changed','commune-session-update','commune-groups-changed','commune-task-changed','teammate://hitl-pending-changed'].includes(message.name)) {
         const payload = message.payload as {workspaceId?: string} | undefined;
         if (!payload?.workspaceId || payload.workspaceId === workspaceId) {
           if (message.name === 'commune-session-update') { historyLoadedAt = 0; historyUnavailable = false; }
-          void invalidateRosterQuery().then(() => scheduleLiveRefresh());
+          scheduleLiveRefresh(true);
         }
       }
     });
@@ -413,8 +429,11 @@
       if (pane.workspaceId === workspaceId) scheduleLiveRefresh();
     });
     const offTerminal = ws.onTerminalFrame?.(() => scheduleLiveRefresh()) ?? (() => {});
-    const offReconnect = ws.onReconnect(() => { void startRefresh(true); });
-    const offCapabilities = ws.onCapabilitiesChanged(() => { void startRefresh(true); });
+    const offReconnect = ws.onReconnect(() => { void startRefresh(true, true); });
+    // The subscription's immediate capability snapshot is a warm mount, not a reconnect.
+    let subscribingCapabilities = true;
+    const offCapabilities = ws.onCapabilitiesChanged(() => { void startRefresh(true, !subscribingCapabilities); });
+    subscribingCapabilities = false;
     return () => {
       disposed = true;
       scopeGuard.invalidate();
@@ -432,7 +451,7 @@
 
 {#if !globalView || topo.roster.length > 0 || terminalCandidates.length > 0 || groups.length > 0 || failed}
 <div class="rg-commune roster">
-  {#if failed}<p role="alert">{$t('commune.healthSnapshotFailed')} <button onclick={() => void invalidateRosterQuery().then(() => startRefresh(true))}>{$t('commune.refresh')}</button></p>{/if}
+  {#if failed}<p role="alert">{$t('commune.healthSnapshotFailed')} <button onclick={() => void startRefresh(true, true)}>{$t('commune.refresh')}</button></p>{/if}
   {#if !globalView && (health.suspendedAgents > 0 || health.pendingHitl > 0 || pending.length > 0)}
     <div class="badges" data-testid="remote-orch-badges">
       {#if health.pendingHitl > 0 || pending.length > 0}

@@ -40,6 +40,7 @@ test_targets:
   - scripts/commune-global-ui-acceptance.mjs
   - scripts/commune-a2a-sdk-acceptance.py
   - scripts/commune-sdk-acceptance.mjs
+  - scripts/commune-live-history-acceptance.mjs
 depends_on:
   - L2-AGENT-COMMUNE-EXACT-BINDING
   - L2-RIDGE-COMMUNION-M53
@@ -254,3 +255,11 @@ Remote 在既有已认证且允许读取该来源终端的连接上展示普通�
 验收：两来源同名成员建成同一组；桌面与窄屏均只有一个建组入口并可编辑/重开/切换终端；真实协议广播、逐员任务、等待权限、取消、局部失败、重复键、旧 revision、越权和进程换代均保持精确身份。含冲突 ID 的旧组与在途任务保留，读零写入，首次编辑原子迁移，写失败与重启不丢数据。Remote 候选展示真实现有进程的脱敏结果，定位到正确来源，普通候选不出现协议派发与审批能力；未认证请求/native-only 绕过仍拒绝。
 
 外部互操作验证必须区分官方独立 SDK 与真实已有 Agent，核对协商版本、认证、同一 session、任务与取消、产物覆盖、审批一次消费；测试 fixture 不冒充外部 Agent。真机、蜂窝/WAN、托管 Cloud 的验收报告声明实际设备/路由；缺设备或运行方端点时保留待验收，不以模拟通过替代。
+
+## Live refresh and history recovery (CHG-087)
+
+Remote LAN and Cloud must deliver the existing member, session, group, task and approval events to the same Commune projection. Membership changes refresh even when no terminal bytes arrive. Relevant session events invalidate the matching source's recent replies; unrelated sources keep their cached snapshot. Coalesce bursts and serialize source reads so slow requests can finish under continuous events, with at most one pending follow-up. Reconnect or explicit retry invalidates stale reads without changing identity, permissions, protocol or persistence.
+
+History input immediately fences old list/text-page results before its debounce. A successful response must still match source set, query and request generation before it can change rows, errors or read markers. Live events coalesce behind active reads instead of continuously superseding them. Browsing earlier history preserves that slice and shows the existing new-events indicator; explicit refresh returns to recent entries. Source/query changes and unmount cancel pending timers and fence old work. Text pages must retain the selected event's source and identity. Failure preserves confirmed rows and supports deliberate retry.
+
+Global history merge keeps each source's opaque cursor and buffered rows. Fill empty sources with at most four concurrent reads; consume buffered rows without scheduling a fresh all-source Promise batch per row. Do not prefetch after satisfying the requested page. Validate ordered, duplicate-free pagination, independent failures and no read-side Agent/input side effects. Compare fixed multi-source pagination CPU time against the previous implementation. Browser acceptance must exercise actual current components with delayed reads, bursts, source switching, search races and earlier-history navigation; distinguish injected failures and owned protocol fixtures from external/device/network coverage.
