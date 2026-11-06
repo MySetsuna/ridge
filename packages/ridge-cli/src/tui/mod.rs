@@ -82,11 +82,13 @@ pub async fn run_lan_host_only(
 
     let requested_port = if port == 0 { config::lan_port() } else { port };
     let endpoint=crate::kernel_ctl::ensure_kernel_running().map_err(anyhow::Error::msg)?;
-    lan_session::spawn_local_terminal(&endpoint,shell.as_deref(),cwd.as_deref()).context("create initial pane")?;
-    let totp = ridge_kernel::auth_client::remote_auth(endpoint);
+    let totp = ridge_kernel::auth_client::remote_auth(endpoint.clone());
     totp.call("remote_set_totp_identity",serde_json::json!({"username":config::totp_identity()})).map_err(anyhow::Error::msg)?;
     clear_lan_host_status()?;
-    totp.call("set_remote_enabled",serde_json::json!({"enabled":true,"port":requested_port})).map_err(anyhow::Error::msg)?;
+    let cwd = lan_session::local_cwd(cwd.as_deref())?;
+    let mut args = lan_session::independent_terminal_request(&endpoint, "lan", shell.as_deref(), Some(&cwd))?;
+    args["port"] = serde_json::json!(requested_port);
+    lan_session::create_independent_terminal(&endpoint, args).context("create initial LAN terminal")?;
     let info=crate::host::lan_info(&totp)?;
     let port=info.port;let lan_ip=info.lan_ip;let scheme=if info.tls{"https"}else{"http"};
 

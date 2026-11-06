@@ -240,6 +240,7 @@ export const MUTATING_METHODS: readonly string[] = [
   'resume_agent_session',
   // iter-61：agent 标记切换（写 teammate 侧表）。
   'release_teammate_agent',
+  'create_independent_terminal',
 ];
 
 const ALLOW_SET: ReadonlySet<string> = new Set(REMOTE_ALLOWLIST);

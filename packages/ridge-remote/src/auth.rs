@@ -666,6 +666,20 @@ mod tests {
     }
 
     #[test]
+    fn expired_local_grants_reject_replay_without_affecting_live_grants() {
+        let store = super::SessionStore::new();
+        let origin = "http://tauri.localhost";
+        let expired = store.create_origin_bound_session("old-window", "127.0.0.1", origin).unwrap();
+        let live = store.create_origin_bound_session("live-window", "127.0.0.1", origin).unwrap();
+        store.tokens.lock().get_mut(&expired).unwrap().created -= super::SESSION_TTL + std::time::Duration::from_secs(1);
+        assert!(store.origin_bound_connection_id(&expired).is_none());
+        assert!(!store.validate_origin_bound_token(&expired, "old-window", "127.0.0.1", origin));
+        assert!(!store.validate_origin_bound_token(&expired, "old-window", "127.0.0.1", origin));
+        assert!(!store.set_origin_bound_workspace(&expired, &uuid::Uuid::new_v4().to_string()));
+        assert!(store.validate_origin_bound_token(&live, "live-window", "127.0.0.1", origin));
+    }
+
+    #[test]
     fn local_grants_are_bounded_and_revocable() {
         let store = super::SessionStore::new();
         assert!(store

@@ -423,5 +423,17 @@
     "changeId": "CHG-087",
     "specHash": "9bd0481a927725e202f5d510fc261a3ba904922d3ee6016b8e67b98fdc6028f9",
     "approvedAt": "2026-10-28T02:19:30.840Z"
+  },
+  {
+    "changeId": "CHG-088",
+    "specHash": "00f27969f4633c511dad7a889c7e8a8eb098653ff039bee0df1764b36f13c372",
+    "approvedAt": "2026-11-06T09:42:19.291Z",
+    "source": "completion_derived",
+    "actor": "Codex",
+    "confirmationRef": "User-authorized shared CLI command requires canonical mutating-set mirror parity and native-only regression",
+    "derivedFrom": {
+      "buildId": "BUILD-1354dc286215",
+      "specHash": "b2aab435717d303f0ebe82b2efb2cdda2845e0240fdce5eddc539439b4bc41a9"
+    }
   }
 ]

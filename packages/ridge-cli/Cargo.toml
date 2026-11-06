@@ -129,6 +129,7 @@ default = ["rtc"]
 rtc = ["dep:webrtc", "ridge-kernel/rtc"]
 
 [dev-dependencies]
+portable-pty = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util", "time"] }
 # §7.4 trust-grant 测试夹具：trust-hello/proof 用 Ed25519 签名控密钥对（与 ridge-core
 # device_identity 同 crate 版本）；验证走 `ridge_core::device_identity::verify`，

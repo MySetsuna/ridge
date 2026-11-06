@@ -364,6 +364,7 @@ pub const MUTATING_METHODS: &[&str] = &[
     "resume_agent_session",
     // Native-only protocol membership retirement remains a state mutation.
     "release_teammate_agent",
+    "create_independent_terminal",
 ];
 
 /// True if `method` mutates host state (see [`MUTATING_METHODS`]). The read-only

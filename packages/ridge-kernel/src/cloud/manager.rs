@@ -67,7 +67,7 @@ impl Manager {
                     self.publish(state,"connecting","",vec![]);
                     let (stop,stopped)=oneshot::channel();let (actions,receiver)=mpsc::channel(64);
                     let owner=self.clone();let state=state.clone();let cfg=config.clone();
-                    let task=tokio::spawn(async move {owner.run(state,cfg,stopped,receiver).await;});
+                    let task=tokio::spawn(async move {owner.run(state,cfg,stopped,receiver,None).await;});
                     *self.worker.lock().await=Some(Worker {config,stop,actions,task});Ok(Value::Null)
                 }
                 _=>{
@@ -78,20 +78,105 @@ impl Manager {
             }
         }.await)
     }
-    async fn run(self:std::sync::Arc<Self>,state:AppState,config:Config,mut stopped:oneshot::Receiver<()>,mut actions:mpsc::Receiver<Action>) {
+    pub(crate) async fn ensure_online(
+        self: &std::sync::Arc<Self>,
+        state: &AppState,
+        args: &Value,
+    ) -> Result<(), String> {
+        if !cfg!(feature = "rtc") {
+            return Err("Cloud RTC disabled in this Runtime build".into());
+        }
+        let config: Config =
+            serde_json::from_value(args.clone()).map_err(|_| "invalid Cloud host configuration")?;
+        let url = config.signal_url()?;
+        let _guard = self.control.lock().await;
+        if state
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err("Runtime shutting down".into());
+        }
+        {
+            let worker = self.worker.lock().await;
+            if worker
+                .as_ref()
+                .is_some_and(|worker| worker.config != config && !worker.task.is_finished())
+            {
+                return Err("Cloud Host configuration conflicts with the active service; configure it explicitly before creating a terminal".into());
+            }
+            if worker
+                .as_ref()
+                .is_some_and(|worker| worker.config == config && !worker.task.is_finished())
+                && self
+                    .snapshot
+                    .lock()
+                    .map_err(|_| "Cloud host state unavailable")?["state"]
+                    == "online"
+            {
+                return Ok(());
+            }
+        }
+        let ready = async {
+            let mut signaling = Signaling::<Value>::connect(&url)
+                .await
+                .map_err(|_| "Cloud signaling authentication failed")?;
+            loop {
+                let frame = signaling
+                    .incoming
+                    .recv()
+                    .await
+                    .ok_or("Cloud signaling closed before host authentication")?;
+                match frame["t"].as_str() {
+                    Some("welcome") => return Ok(signaling),
+                    Some("error") => return Err("Cloud relay refused the host"),
+                    _ => {}
+                }
+            }
+        };
+        let signaling = tokio::time::timeout(Duration::from_secs(3), ready)
+            .await
+            .map_err(|_| "Cloud host authentication timed out")?
+            .map_err(str::to_owned)?;
+        state.remote_auth.call(
+            "remote_set_totp_identity",
+            json!({"username":config.username}),
+        )?;
+        self.stop_inner().await;
+        self.publish(state, "online", "", vec![]);
+        let (stop, stopped) = oneshot::channel();
+        let (actions, receiver) = mpsc::channel(64);
+        let owner = self.clone();
+        let owned_state = state.clone();
+        let cfg = config.clone();
+        let task = tokio::spawn(async move {
+            owner
+                .run(owned_state, cfg, stopped, receiver, Some(signaling))
+                .await;
+        });
+        *self.worker.lock().await = Some(Worker {
+            config,
+            stop,
+            actions,
+            task,
+        });
+        Ok(())
+    }
+
+    async fn run(self:std::sync::Arc<Self>,state:AppState,config:Config,mut stopped:oneshot::Receiver<()>,mut actions:mpsc::Receiver<Action>,mut ready:Option<Signaling<Value>>) {
         let builder=reqwest::Client::builder().timeout(Duration::from_secs(15)).redirect(reqwest::redirect::Policy::none()).danger_accept_invalid_certs(config.local());
         let builder=if config.local(){builder.no_proxy()}else{builder};
         let http=match builder.build(){Ok(client)=>client,Err(_)=>{self.publish(&state,"error","Cloud HTTP client unavailable",vec![]);return;}};
         let mut attempts=0u32;
         loop {
             let url=match config.signal_url(){Ok(url)=>url,Err(error)=>{self.publish(&state,"error",&error,vec![]);return;}};
-            let connected=tokio::select! {_=&mut stopped=>break, result=Signaling::<Value>::connect(&url)=>result};
+            let authenticated = ready.is_some();
+            let connected=if let Some(signaling)=ready.take() {Ok(signaling)} else {tokio::select! {_=&mut stopped=>break, result=Signaling::<Value>::connect(&url)=>result}};
             let mut signaling=match connected {Ok(signal)=>signal,Err(_)=>{
                 self.publish(&state,"error","Cloud signaling connection failed",vec![]);attempts+=1;
                 tokio::select! {_=&mut stopped=>break,_=tokio::time::sleep(Duration::from_secs((1u64<<attempts.min(5)).min(30)))=>{}}continue;
             }};
             let ice=ice::fetch_ice_servers(&http,&config.device_token,&config.api_base()).await;
-            let sender=signaling.sender();let mut peers=HashMap::<String,Peer>::new();let mut scopes=HashMap::<String,Scope>::new();let mut denied=HashSet::new();let mut status="connecting";
+            let sender=signaling.sender();let mut peers=HashMap::<String,Peer>::new();let mut scopes=HashMap::<String,Scope>::new();let mut denied=HashSet::new();let mut status=if authenticated {"online"} else {"connecting"};
             let mut early=HashMap::<String,Vec<SignalMsg>>::new();
             let (events,mut statuses)=mpsc::channel::<(String,String)>(64);
             let mut heartbeat=tokio::time::interval(Duration::from_secs(1));

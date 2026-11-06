@@ -56,31 +56,183 @@ pub(crate) fn local_cwd(cwd:Option<&str>)->Result<String>{
     std::env::current_dir()?.into_os_string().into_string().map_err(|_|anyhow!("CLI working directory must be valid UTF-8"))
 }
 
-pub(crate) fn spawn_local_terminal(endpoint:&ridge_kernel::registry::KernelEndpoint,shell:Option<&str>,cwd:Option<&str>)->Result<ridge_term::terminal_protocol::PaneRef>{
-    let id=uuid::Uuid::new_v4();let workspace=uuid::Uuid::new_v4();
-    let cwd=local_cwd(cwd)?;
-    let created=ridge_kernel::client::create_domain_pty(endpoint,id,shell,Some(&cwd),Some(workspace),"shell",Some("ridge-interactive")).map_err(anyhow::Error::msg)?;
-    if created!=id{return Err(anyhow!("local Runtime terminal identity mismatch"));}
-    Ok(ridge_term::terminal_protocol::PaneRef::new(workspace.to_string(),id.to_string()))
+pub(crate) fn spawn_local_terminal(
+    endpoint: &ridge_kernel::registry::KernelEndpoint,
+    shell: Option<&str>,
+    cwd: Option<&str>,
+) -> Result<ridge_term::terminal_protocol::PaneRef> {
+    let cwd = local_cwd(cwd)?;
+    let args = independent_terminal_request(endpoint, "dashboard", shell, Some(&cwd))?;
+    create_independent_terminal(endpoint, args)
 }
 
-pub async fn connect_local(shell:Option<String>,cwd:Option<String>)->Result<(LanControllerSession,mpsc::Receiver<Vec<u8>>)> {
-    let (grant,target)=tokio::task::spawn_blocking(move ||->Result<_>{
+pub(crate) fn independent_terminal_request(
+    endpoint: &ridge_kernel::registry::KernelEndpoint,
+    entry: &str,
+    shell: Option<&str>,
+    cwd: Option<&str>,
+) -> Result<serde_json::Value> {
+    let status = ridge_kernel::client::request_json(endpoint, "GET", "/v1/status", None)
+        .map_err(anyhow::Error::msg)?;
+    let epoch = status["runtime_epoch"]
+        .as_str()
+        .filter(|epoch| !epoch.is_empty())
+        .context("Runtime epoch unavailable")?;
+    let cwd = cwd
+        .map(|cwd| {
+            let path = std::path::Path::new(cwd);
+            if path.is_absolute() {
+                Ok(path.to_path_buf())
+            } else {
+                std::env::current_dir().map(|base| base.join(path))
+            }
+        })
+        .transpose()?;
+    Ok(
+        serde_json::json!({"workspaceId":uuid::Uuid::new_v4(),"paneId":uuid::Uuid::new_v4(),
+        "runtimeEpoch":epoch,"entry":entry,"shell":shell,"cwd":cwd}),
+    )
+}
+
+pub(crate) fn create_independent_terminal(
+    endpoint: &ridge_kernel::registry::KernelEndpoint,
+    args: serde_json::Value,
+) -> Result<ridge_term::terminal_protocol::PaneRef> {
+    let request = serde_json::json!({"method":"create_independent_terminal","args":args,
+        "native":true,"roots":[],"connectionId":uuid::Uuid::new_v4()});
+    let reply =
+        ridge_kernel::client::request_json(endpoint, "POST", "/v1/domain/commands", Some(&request))
+            .or_else(|_| {
+                ridge_kernel::client::request_json(
+                    endpoint,
+                    "POST",
+                    "/v1/domain/commands",
+                    Some(&request),
+                )
+            })
+            .map_err(|error| {
+                anyhow!(
+                    "terminal creation outcome unknown; workspace={} pane={}: {error}",
+                    args["workspaceId"],
+                    args["paneId"]
+                )
+            })?;
+    if reply["ok"] != true {
+        return Err(anyhow!(
+            "{}",
+            reply["error"]["message"]
+                .as_str()
+                .unwrap_or("terminal creation rejected")
+        ));
+    }
+    terminal_result(&args, &reply["value"])
+}
+
+fn terminal_result(
+    args: &serde_json::Value,
+    value: &serde_json::Value,
+) -> Result<ridge_term::terminal_protocol::PaneRef> {
+    if value["workspaceId"] != args["workspaceId"] || value["paneId"] != args["paneId"] {
+        return Err(anyhow!("Runtime returned a different terminal identity"));
+    }
+    Ok(ridge_term::terminal_protocol::PaneRef::new(
+        value["workspaceId"]
+            .as_str()
+            .context("missing workspace identity")?,
+        value["paneId"].as_str().context("missing pane identity")?,
+    ))
+}
+
+pub async fn connect_local(
+    shell: Option<String>,
+    cwd: Option<String>,
+) -> Result<(LanControllerSession, mpsc::Receiver<Vec<u8>>)> {
+    let (grant, args) = tokio::task::spawn_blocking(move || -> Result<_> {
         use ridge_kernel::client;
-        let endpoint=crate::kernel_ctl::ensure_kernel_running().map_err(anyhow::Error::msg)?;
-        let target=spawn_local_terminal(&endpoint,shell.as_deref(),cwd.as_deref())?;
-        let device=format!("ridge-cli-local-{}",uuid::Uuid::new_v4());let origin="http://127.0.0.1";
-        let grant:ridge_kernel::local_client::ClientGrant=serde_json::from_value(client::request_json(&endpoint,"POST","/v1/local/clients",
-            Some(&serde_json::json!({"deviceId":device,"origin":origin}))).map_err(anyhow::Error::msg)?)?;
-        if grant.protocol_version!=client::KERNEL_PROTOCOL_VERSION||grant.device_id!=device||grant.origin!=origin
-            ||grant.ws_url!=format!("ws://127.0.0.1:{}/v1/local/ws",endpoint.port)||grant.token.len()!=64 {
+        let endpoint = crate::kernel_ctl::ensure_kernel_running().map_err(anyhow::Error::msg)?;
+        let device = format!("ridge-cli-local-{}", uuid::Uuid::new_v4());
+        let origin = "http://127.0.0.1";
+        let grant: ridge_kernel::local_client::ClientGrant = serde_json::from_value(
+            client::request_json(
+                &endpoint,
+                "POST",
+                "/v1/local/clients",
+                Some(&serde_json::json!({"deviceId":device,"origin":origin})),
+            )
+            .map_err(anyhow::Error::msg)?,
+        )?;
+        if grant.protocol_version != client::KERNEL_PROTOCOL_VERSION
+            || grant.device_id != device
+            || grant.origin != origin
+            || grant.ws_url != format!("ws://127.0.0.1:{}/v1/local/ws", endpoint.port)
+            || grant.token.len() != 64
+        {
             return Err(anyhow!("local Runtime grant identity mismatch"));
         }
-        Ok((grant,target))
-    }).await??;
-    let connection=ConnectionTarget::Local(grant);
-    let stream=connection.open().await?;
-    Ok(session_from_stream(stream,connection,Some(target)))
+        let cwd = local_cwd(cwd.as_deref())?;
+        let args = independent_terminal_request(&endpoint, "tui", shell.as_deref(), Some(&cwd))?;
+        if args["runtimeEpoch"] != grant.runtime_epoch {
+            return Err(anyhow!("Runtime changed during client authorization"));
+        }
+        Ok((grant, args))
+    })
+    .await??;
+    let connection = ConnectionTarget::Local(grant);
+    let mut stream = connection.open().await?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let message = serde_json::json!({"jsonrpc":"2.0","id":id,"method":"create_independent_terminal","params":args}).to_string();
+    let reply = match create_over_stream(&mut stream, &id, &message).await {
+        Ok(reply) => reply,
+        Err(_) => {
+            stream = connection.open().await.with_context(|| {
+                format!("creation outcome unknown; workspace={} pane={}; reconnect with the original terminal identities",
+                    args["workspaceId"], args["paneId"])
+            })?;
+            create_over_stream(&mut stream, &id, &message)
+                .await
+                .with_context(|| {
+                    format!(
+                        "creation outcome unknown; workspace={} pane={}",
+                        args["workspaceId"], args["paneId"]
+                    )
+                })?
+        }
+    };
+    if let Some(error) = reply["error"]["message"].as_str() {
+        return Err(anyhow!("{error}"));
+    }
+    let target = terminal_result(&args, &reply["result"])?;
+    let (session, output) = session_from_stream(stream, connection, Some(target.clone()));
+    session.activate(target)?;
+    Ok((session, output))
+}
+
+async fn create_over_stream(
+    stream: &mut LanWsStream,
+    id: &str,
+    message: &str,
+) -> Result<serde_json::Value> {
+    stream.send(Message::Text(message.to_owned())).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while let Some(frame) = stream.next().await {
+            match frame? {
+                Message::Text(text) => {
+                    let reply: serde_json::Value = serde_json::from_str(&text)?;
+                    if reply["id"] == id {
+                        return Ok(reply);
+                    }
+                }
+                Message::Ping(bytes) => stream.send(Message::Pong(bytes)).await?,
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+        Err(anyhow!(
+            "Runtime connection closed during creation; outcome unknown"
+        ))
+    })
+    .await
+    .context("terminal creation timed out; outcome unknown")?
 }
 
 pub(crate) fn tls_connector()->Result<Connector> {

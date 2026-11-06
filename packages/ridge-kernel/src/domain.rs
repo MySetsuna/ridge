@@ -874,6 +874,174 @@ fn validate_pty_create(request: &PtyCreateRequest) -> Option<&'static str> {
     }
 }
 
+fn initial_workspace(request: &PtyCreateRequest, pty_id: Uuid) -> WorkspaceMeta {
+    let mut panes = HashMap::new();
+    panes.insert(
+        pty_id,
+        ridge_core::workspace::pane_tree::Pane {
+            id: pty_id,
+            mode: ridge_core::workspace::mode::PaneMode::Terminal,
+            cwd: request.cwd.clone().map(std::path::PathBuf::from),
+            shell_kind: request.shell.clone().or(request.program.clone()),
+        },
+    );
+    WorkspaceMeta {
+        pane_tree: PaneTree {
+            root: ridge_core::workspace::pane_tree::PaneNode::Leaf(pty_id),
+            panes,
+        },
+        ..WorkspaceMeta::default()
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct IndependentTerminal {
+    pub workspace_id: Uuid,
+    pub pane_id: Uuid,
+    pub runtime_epoch: String,
+    pub entry: String,
+    pub shell: Option<String>,
+    pub cwd: Option<String>,
+    pub port: Option<u16>,
+    pub cloud: Option<Value>,
+}
+
+impl IndependentTerminal {
+    pub(crate) fn parse(st: &AppState, args: &Value, native: bool) -> Result<Self, String> {
+        if !native {
+            return Err("independent terminal creation requires native trust".into());
+        }
+        let request: Self = serde_json::from_value(args.clone())
+            .map_err(|_| "invalid independent terminal request")?;
+        if request.runtime_epoch != st.runtime_epoch {
+            return Err("Runtime epoch changed; creation outcome must be reconciled".into());
+        }
+        if !matches!(
+            request.entry.as_str(),
+            "tui" | "dashboard" | "lan" | "cloud"
+        ) {
+            return Err("invalid terminal entry".into());
+        }
+        if request.workspace_id.is_nil()
+            || request.pane_id.is_nil()
+            || request
+                .cwd
+                .as_deref()
+                .is_some_and(|cwd| !std::path::Path::new(cwd).is_absolute())
+        {
+            return Err(
+                "terminal requires stable identities and an absolute working directory".into(),
+            );
+        }
+        Ok(request)
+    }
+}
+
+pub(crate) fn create_independent_terminal(
+    st: &AppState,
+    request: IndependentTerminal,
+) -> Result<Value, String> {
+    if st.shutting_down.load(std::sync::atomic::Ordering::Acquire) {
+        return Err("Runtime is shutting down".into());
+    }
+    let retired = st
+        .retired_workspaces
+        .lock()
+        .map_err(|_| "workspace lifecycle unavailable")?;
+    if retired.contains(&request.workspace_id) {
+        return Err("workspace has been closed".into());
+    }
+    let mut graph = st
+        .workspaces
+        .lock()
+        .map_err(|_| "workspace graph unavailable")?;
+    let profile = (request.entry != "cloud").then_some("ridge-interactive");
+    let result = json!({"workspaceId":request.workspace_id,"paneId":request.pane_id});
+    if let Some(workspace) = graph.workspace(request.workspace_id) {
+        let pane = workspace
+            .pane_tree
+            .panes
+            .get(&request.pane_id)
+            .ok_or("creation identity already belongs to another pane")?;
+        let pty = st
+            .ptys
+            .list()
+            .into_iter()
+            .find(|pty| pty.id == request.pane_id && pty.workspace_id == Some(request.workspace_id))
+            .ok_or("created terminal is no longer available; reconcile the original outcome")?;
+        if request
+            .cwd
+            .as_deref()
+            .is_some_and(|cwd| pane.cwd.as_deref() != Some(std::path::Path::new(cwd)))
+            || pane.shell_kind != request.shell
+            || pty.launch_profile.as_deref() != profile
+        {
+            return Err("creation retry changed its launch parameters".into());
+        }
+        return Ok(result);
+    }
+    if st.ptys.contains(request.pane_id) {
+        return Err("pane identity already exists".into());
+    }
+    let cwd = match request.cwd {
+        Some(cwd) => Some(cwd),
+        None => crate::settings::default_cwd()?,
+    };
+    if cwd
+        .as_deref()
+        .is_some_and(|cwd| !st.fs_scope.is_allowed(cwd))
+    {
+        return Err("terminal working directory is outside the Runtime roots".into());
+    }
+    let launch = PtyCreateRequest {
+        pty_id: Some(request.pane_id),
+        program: None,
+        args: Vec::new(),
+        env: HashMap::new(),
+        shell: request.shell,
+        cwd,
+        workspace_id: Some(request.workspace_id),
+        role: Some("shell".into()),
+        launch_profile: profile.map(str::to_owned),
+        cols: None,
+        rows: None,
+    };
+    let mut next = graph.clone();
+    let mut metadata = initial_workspace(&launch, request.pane_id);
+    if request.entry == "cloud" {
+        metadata.name = Some("CLI remote".into());
+    }
+    next.insert_workspace(request.workspace_id, metadata);
+    st.ptys
+        .spawn_command_for_with_env(PtyLaunch {
+            id: request.pane_id,
+            program: launch.shell.as_deref(),
+            args: &launch.args,
+            cwd: launch.cwd.as_deref(),
+            workspace_id: launch.workspace_id,
+            role: "shell",
+            launch_profile: profile,
+            env: Some(&launch.env),
+            initial_size: None,
+        })
+        .map_err(|error| error.to_string())?;
+    if let Err(error) = persist_workspaces(st, &next) {
+        st.ptys.destroy(request.pane_id).map_err(|rollback| {
+            format!("workspace save failed ({error}); PTY rollback failed: {rollback}")
+        })?;
+        return Err(format!(
+            "workspace save failed ({error}); creation rolled back"
+        ));
+    }
+    *graph = next;
+    drop(graph);
+    drop(retired);
+    st.business_events.workspace_list_changed();
+    st.business_events.pane_tree_changed(request.workspace_id);
+    Ok(result)
+}
+
 fn seed_workspace_for_pty(
     st: &AppState,
     request: &PtyCreateRequest,
@@ -886,30 +1054,7 @@ fn seed_workspace_for_pty(
     if graph.workspace(workspace_id).is_some() {
         return Ok(None);
     }
-    let mut panes = HashMap::new();
-    panes.insert(
-        pty_id,
-        ridge_core::workspace::pane_tree::Pane {
-            id: pty_id,
-            mode: ridge_core::workspace::mode::PaneMode::Terminal,
-            cwd: request.cwd.clone().map(std::path::PathBuf::from),
-            shell_kind: request.shell.clone().or(request.program.clone()),
-        },
-    );
-    graph.insert_workspace(
-        workspace_id,
-        ridge_core::workspace::graph::WorkspaceMeta {
-            foreign_panes:HashMap::new(),
-            display_seq: 0,
-            file: None,
-            pane_tree: ridge_core::workspace::pane_tree::PaneTree {
-                root: ridge_core::workspace::pane_tree::PaneNode::Leaf(pty_id),
-                panes,
-            },
-            name: None,
-            locked_sizes: HashMap::new(),
-        },
-    );
+    graph.insert_workspace(workspace_id, initial_workspace(request, pty_id));
     persist_workspaces(st, &graph)?;
     Ok(Some(workspace_id))
 }

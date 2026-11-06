@@ -141,7 +141,22 @@ pub async fn command(
         Ok(method) => method,
         Err(error) => return Ok(Json(json!({"ok":false,"error":error.to_json_rpc()}))),
     };
-    let result = if method=="cloud_http" {
+    let result = if method == "create_independent_terminal" {
+        let create = async {
+            let terminal = crate::domain::IndependentTerminal::parse(&state, &request.args, request.native)?;
+            if terminal.entry == "lan" {
+                let mut args = json!({"enabled":true});
+                if let Some(port) = terminal.port { args["port"] = json!(port); }
+                state.lan.dispatch(&state, "set_remote_enabled", &args, request.native).await.ok_or("LAN control unavailable")??;
+            }
+            if terminal.entry == "cloud" {
+                state.cloud.ensure_online(&state, terminal.cloud.as_ref().ok_or("missing Cloud host configuration")?).await?;
+            }
+            tokio::task::spawn_blocking(move || crate::domain::create_independent_terminal(&state, terminal))
+                .await.map_err(|_| "terminal creation worker failed".to_owned())?
+        };
+        create.await.map_err(ridge_core::CoreError::InvalidArgs)
+    } else if method=="cloud_http" {
         crate::cloud::http::execute(&request.args,request.native).await
     } else if let Some(result)=crate::git_commands::dispatch(&method,&request.args,&state.fs_scope,&ctx).await {
         result

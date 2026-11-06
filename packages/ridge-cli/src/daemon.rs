@@ -182,18 +182,16 @@ fn fatal_hint(code: &str) -> &'static str {
 /// （D-GM-9，缺省回退 `cwd` → 进程当前目录）。
 pub(crate) fn start(endpoint:&ridge_kernel::registry::KernelEndpoint,shell:Option<String>,cwd:Option<String>,root:Option<String>)->Result<()> {
     let auth=config::load_auth()?.context("本机尚未激活云端设备：先运行 ridge login")?;
-    if shell.is_some()||cwd.is_some() {
-        let workspace=ridge_kernel::client::request_json(&endpoint,"POST","/v1/domain/workspaces",Some(&serde_json::json!({"name":"CLI remote"}))).map_err(anyhow::Error::msg)?;
-        let workspace=uuid::Uuid::parse_str(workspace["workspace_id"].as_str().context("missing workspace identity")?)?;
-        let pane=uuid::Uuid::new_v4();
-        let topology=serde_json::json!({"pane_tree":{"root":{"Leaf":pane},"panes":{pane.to_string():{"id":pane,"mode":"Terminal","cwd":cwd}}}});
-        let updated=ridge_kernel::client::request_json(&endpoint,"PUT",&format!("/v1/domain/workspaces/{workspace}/topology"),Some(&topology)).map_err(anyhow::Error::msg)?;
-        if updated["ok"]!=true {anyhow::bail!("CLI remote workspace could not be prepared");}
-        ridge_kernel::client::create_domain_pty(&endpoint,pane,shell.as_deref(),cwd.as_deref(),Some(workspace),"shell",None).map_err(anyhow::Error::msg)?;
+    let root=root.or(cwd.clone()).or_else(||std::env::current_dir().ok().map(|path|path.to_string_lossy().into_owned()));
+    let cloud = serde_json::json!({"deviceToken":auth.token,"deviceName":auth.device_name,"username":auth.username,"baseDomain":config::base_domain(),"root":root,"plaintext":std::env::var("RIDGE_CLOUD_DEV_PLAINTEXT").ok().as_deref()==Some("1")});
+    if shell.is_some() || cwd.is_some() {
+        let mut args = crate::tui::lan_session::independent_terminal_request(endpoint, "cloud", shell.as_deref(), cwd.as_deref())?;
+        args["cloud"] = cloud;
+        crate::tui::lan_session::create_independent_terminal(endpoint, args)?;
+    } else {
+        let runtime = ridge_kernel::auth_client::remote_auth(endpoint.clone());
+        runtime.call("cloud_host_online",cloud).map_err(anyhow::Error::msg)?;
     }
-    let runtime=ridge_kernel::auth_client::remote_auth(endpoint.clone());
-    let root=root.or(cwd).or_else(||std::env::current_dir().ok().map(|path|path.to_string_lossy().into_owned()));
-    runtime.call("cloud_host_online",serde_json::json!({"deviceToken":auth.token,"deviceName":auth.device_name,"username":auth.username,"baseDomain":config::base_domain(),"root":root,"plaintext":std::env::var("RIDGE_CLOUD_DEV_PLAINTEXT").ok().as_deref()==Some("1")})).map_err(anyhow::Error::msg)?;
     Ok(())
 }
 

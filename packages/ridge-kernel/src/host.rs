@@ -285,20 +285,6 @@ impl KernelHost {
                 }
             }
         }
-        if ids.is_empty() {
-            if let Ok(value) = request_json(&endpoint, "POST", "/v1/domain/workspaces", None) {
-                if let Some(id) = value
-                    .get("workspace_id")
-                    .and_then(Value::as_str)
-                    .and_then(|id| Uuid::parse_str(id).ok())
-                {
-                    if let Err(error) = Self::seed_workspace_pane(&endpoint, id) {
-                        errors.push(format!("seed initial workspace pane: {error}"));
-                    }
-                    ids.push(id);
-                }
-            }
-        }
         let entries = workspace_snapshot.as_ref().map(|snapshot|snapshot.entries.clone()).unwrap_or_default();
         let active = workspace_snapshot
             .and_then(|snapshot| snapshot.active)
@@ -1291,6 +1277,22 @@ fn handle_client_text(
             )
         }
     };
+    if (jsonrpc || invoke) && method == "create_independent_terminal" {
+        let result = dispatch_shared_core(host, method, args, binding.is_some(), &[], connection_id);
+        if let Ok(value) = &result {
+            if let Some(workspace) = value["workspaceId"].as_str().and_then(|id| Uuid::parse_str(id).ok()) {
+                if let Ok(mut selected) = view.lock() { *selected = Some(workspace); }
+                if let Some(token) = binding.and_then(|(connection, _)| connection.token.as_deref()) {
+                    host.sessions.set_origin_bound_workspace(token, &workspace.to_string());
+                }
+            }
+        }
+        if jsonrpc { return value.get("id").map(|id| match result {
+            Ok(value) => ridge_remote::rpc::result_response(id, value),
+            Err(error) => ridge_remote::rpc::error_response(id, &error),
+        }.to_string()); }
+        return reply(result.map_err(|error| error.message));
+    }
     if (jsonrpc||invoke)&&matches!(method,"clear_pane_terminal"|"toggle_mode"|"attach_host_session"|"detach_host_session"|"list_native_sessions"|"new_headless_session"|"terminate_native_session"|"summon_native_session") {
         let mut args=args.clone();
         if matches!(method,"clear_pane_terminal"|"toggle_mode"|"attach_host_session"|"detach_host_session"|"summon_native_session")&&args["workspaceId"].is_null() {args["workspaceId"]=view.lock().ok().and_then(|view|*view).map(|id|json!(id)).unwrap_or(Value::Null);}

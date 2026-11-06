@@ -87,7 +87,7 @@ describe('isMutatingMethod', () => {
   });
 
   it('classifies native-only writes without widening the Remote capability set', () => {
-    const nativeOnly = new Set(['release_teammate_agent', 'initialize_cloud_controller_identity',
+    const nativeOnly = new Set(['release_teammate_agent', 'create_independent_terminal', 'initialize_cloud_controller_identity',
       'git_push_branch', 'git_merge_branch', 'git_delete_branch', 'git_rename_branch', 'git_rebase',
       'git_delete_tag', 'git_push_tag', 'git_stash_push', 'git_stash_apply', 'git_stash_pop',
       'git_stash_drop', 'git_stash_branch', 'git_cherry_pick_abort', 'git_revert_abort']);

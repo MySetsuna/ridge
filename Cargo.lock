@@ -5657,6 +5657,7 @@ dependencies = [
  "hkdf",
  "ignore",
  "parking_lot",
+ "portable-pty",
  "qrcode",
  "rand 0.8.6",
  "ratatui",
