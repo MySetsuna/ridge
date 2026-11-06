@@ -24,13 +24,9 @@ test_targets:
   - src/lib/stores/fileWatcherSync.test.ts
   - src/lib/stores/fsEvents.test.ts
   - src/lib/stores/gitGuardStats.test.ts
-  - src/lib/stores/hostReconnect.test.ts
-  - src/lib/stores/hostReconnectProduct.test.ts
   - src/lib/stores/hosts.connect.test.ts
   - src/lib/stores/hosts.refresh.test.ts
   - src/lib/stores/hostsMutation.test.ts
-  - src/lib/stores/hostsOutbound.test.ts
-  - src/lib/stores/hostsOutboundProduct.test.ts
   - src/lib/stores/hostsPublic.test.ts
   - src/lib/stores/imagePreviewVersion.test.ts
   - src/lib/stores/paneGitStatus.test.ts
@@ -72,24 +68,14 @@ public_interface:
   - "export async function detachRemoteHostSession(paneId: string):
     Promise<void>"
   - "export async function disconnectHost(hostId: string): Promise<void>"
-  - "export async function fetchForeignHistoryTail( hostId: string, sessionId:
-    string, ): Promise<HistoryTailSnapshot | null>"
-  - "export async function fetchLiveBackpressure( hostId: string, ):
-    Promise<LiveBackpressureDto | null>"
-  - "export async function fetchOutboundStats(hostId: string):
-    Promise<OutboundStats | null>"
   - "export async function forgetHost(hostId: string): Promise<void>"
   - "export async function hostShellChoices(hostId: string): Promise<Array<"
-  - "export async function markHostPaneAgent( hostId: string, workspaceId:
-    string, paneId: string, on: boolean, ): Promise<void>"
   - "export async function newHeadlessSession(name?: string, cwd?: string):
     Promise<string>"
   - "export async function openHostWorkspace(hostId: string, workspaceId:
     string): Promise<void>"
   - "export async function openSharedWorkspace(session: HostSession):
     Promise<void>"
-  - "export async function pumpAllConnectedOutbound(): Promise<number>"
-  - "export async function pumpHostOutput(hostId: string): Promise<number>"
   - "export async function refreshHostTopology( hostId: string, options?: {
     supersede?: boolean; onProgress?: HostForestProgressListener }, ):
     Promise<HostForestResult | null>"
@@ -103,17 +89,11 @@ public_interface:
     string, name: string, ): Promise<void>"
   - "export async function terminateSession(socket: string, target: string):
     Promise<void>"
-  - "export function attachSeedPlanForSession( hostId: string, sessionId:
-    string, reattach: boolean, ): ReturnType<typeof planAttachSeed>"
   - "export function cancelHostTopologyRetry(hostId: string): void"
   - "export function collectAttachedRemotePanes( sessions: readonly
     Pick<HostSession, 'workspaceId' | 'remoteSessionId' | 'attached'>[], ):
     AttachedRemotePaneIndex"
   - "export function hasHostTopologyLink(hostId: string): boolean"
-  - "export function historyBadgeForSession(hostId: string, sessionId: string):
-    string"
-  - "export function hostOperatorAlert( hostId: string, reconnectAttempt:
-    number, ): string | null"
   - "export function hostShareDeviceName(hostId: string): string | undefined"
   - "export function isRemotePaneAttached( index: AttachedRemotePaneIndex,
     workspaceId: string, paneId: string, paneOccurrences: number, ): boolean"
@@ -121,28 +101,16 @@ public_interface:
     boolean, detail?: string, category?: 'user' | 'parked' | 'channel', ):
     string"
   - "export function lanTrustUrl(host: string, port: number): string"
-  - "export function noteLifecycleDetach(hostId: string, sessionId: string):
-    void"
-  - "export function noteLifecycleFanout(hostId: string, bytes: number): void"
-  - "export function noteLifecycleSubscribe(hostId: string, sessionId: string):
-    void"
-  - "export function noteOutboundReconnectAttempt(hostId: string): number"
-  - "export function notePumpBatch(hostId: string, byteLength: number, capHint =
-    256 * 1024): void"
-  - "export function pumpBadgeForHost(hostId: string): string"
   - "export function registerHostTopologyLink(source: RegisteredHostLink): () =>
     void"
   - "export function remotePaneKey(workspaceId: string, paneId: string): string"
-  - "export function resetOutboundReconnectAttempt(hostId: string): void"
   - export interface AttachedRemotePaneIndex
   - export interface Host
   - export interface HostAttachRequest
   - export interface HostConnectProgress
   - export interface HostSession
   - export interface HostWorkspace
-  - export interface LiveBackpressureDto
   - export interface NativeSessionInfo
-  - export interface OutboundStats
   - export interface RegisteredHostLink
   - export type HostKind
   - export type HostStatus
@@ -187,3 +155,130 @@ verified_by:
 # hosts.ts
 
 Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+
+## CHG-090 映射处置 — 测试引用
+
+旧测试已随 CHG-070 源链迁出。保留原始测试映射及 Git 归档证据，移除现役失效引用。其余原有测试目标保留，不按名称猜测替代覆盖。
+
+原始 test_targets
+
+```json
+[
+  "src/lib/actions/hostSessionDrag.test.ts",
+  "src/lib/hosts/hostSessionIsolation.test.ts",
+  "src/lib/remote/cloud/cloudHostStore.test.ts",
+  "src/lib/stores/clipboardResolve.test.ts",
+  "src/lib/stores/contextMenu.test.ts",
+  "src/lib/stores/dockRegionPicker.test.ts",
+  "src/lib/stores/editorWindow.test.ts",
+  "src/lib/stores/explorerLayout.test.ts",
+  "src/lib/stores/fileEditor.test.ts",
+  "src/lib/stores/fileExplorer.test.ts",
+  "src/lib/stores/fileWatcherSync.test.ts",
+  "src/lib/stores/fsEvents.test.ts",
+  "src/lib/stores/gitGuardStats.test.ts",
+  "src/lib/stores/hostReconnect.test.ts",
+  "src/lib/stores/hostReconnectProduct.test.ts",
+  "src/lib/stores/hosts.connect.test.ts",
+  "src/lib/stores/hosts.refresh.test.ts",
+  "src/lib/stores/hostsMutation.test.ts",
+  "src/lib/stores/hostsOutbound.test.ts",
+  "src/lib/stores/hostsOutboundProduct.test.ts",
+  "src/lib/stores/hostsPublic.test.ts",
+  "src/lib/stores/imagePreviewVersion.test.ts",
+  "src/lib/stores/paneGitStatus.test.ts",
+  "src/lib/stores/paneTree.coverage.test.ts",
+  "src/lib/stores/paneTree.test.ts",
+  "src/lib/stores/processGuardPolicy.test.ts",
+  "src/lib/stores/project.test.ts",
+  "src/lib/stores/remoteStatus.test.ts",
+  "src/lib/stores/scmCache.test.ts",
+  "src/lib/stores/searchState.test.ts",
+  "src/lib/stores/settings.test.ts",
+  "src/lib/stores/terminalHistory.test.ts",
+  "src/lib/stores/termSettings.test.ts",
+  "src/lib/stores/themes.slug.test.ts",
+  "src/lib/stores/themes.test.ts"
+]
+```
+
+`src/lib/stores/hostReconnect.test.ts` → `docs/archive/CHG-070/hostReconnect.test.ts`
+
+`src/lib/stores/hostReconnectProduct.test.ts` → `docs/archive/CHG-070/hostReconnectProduct.test.ts`
+
+`src/lib/stores/hostsOutbound.test.ts` → `docs/archive/CHG-070/hostsOutbound.test.ts`
+
+`src/lib/stores/hostsOutboundProduct.test.ts` → `docs/archive/CHG-070/hostsOutboundProduct.test.ts`
+
+## CHG-090 映射处置 — 导出快照
+
+CHG-070 后 Host 输出泵、重连与进程操作归 Runtime，展示 stores 不再导出旧 owner 方法。 仅更新迁移观察的确定性导出快照，产品要求保留。按 SpecTree SOP 执行 interface L4-OBS-SRC-LIB-STORES-HOSTS-TS-74da5b22 --confirm 后重新批准和锁定。
+
+旧声明保留如下。
+
+```json
+[
+  "export async function acceptSharedWorkspace(grantId: string): Promise<void>",
+  "export async function attachHostSession(request: HostAttachRequest): Promise<string | null>",
+  "export async function attachRemoteHostSession( hostId: string, sessionId: string, remoteWorkspaceId?: string, ): Promise<string>",
+  "export async function attachSession( socket: string, target: string, workspaceId?: string ): Promise<void>",
+  "export async function attachSessionAt( socket: string, target: string, targetPaneId: string, region: AttachRegion ): Promise<void>",
+  "export async function changeHostPaneShell( hostId: string, workspaceId: string, paneId: string, shellId: string, ): Promise<void>",
+  "export async function closeHostPane(hostId: string, workspaceId: string, paneId: string): Promise<void>",
+  "export async function closeHostWorkspace(hostId: string, workspaceId: string): Promise<void>",
+  "export async function connectHost( kind: 'remote' | 'rdg', label: string, addr: string, token?: string, channel: 'lan' | 'public' = 'lan', ): Promise<void>",
+  "export async function createHostPane(hostId: string, workspaceId: string): Promise<void>",
+  "export async function createHostWorkspace(hostId: string, name?: string): Promise<void>",
+  "export async function detachRemoteHostSession(paneId: string): Promise<void>",
+  "export async function disconnectHost(hostId: string): Promise<void>",
+  "export async function fetchForeignHistoryTail( hostId: string, sessionId: string, ): Promise<HistoryTailSnapshot | null>",
+  "export async function fetchLiveBackpressure( hostId: string, ): Promise<LiveBackpressureDto | null>",
+  "export async function fetchOutboundStats(hostId: string): Promise<OutboundStats | null>",
+  "export async function forgetHost(hostId: string): Promise<void>",
+  "export async function hostShellChoices(hostId: string): Promise<Array<",
+  "export async function markHostPaneAgent( hostId: string, workspaceId: string, paneId: string, on: boolean, ): Promise<void>",
+  "export async function newHeadlessSession(name?: string, cwd?: string): Promise<string>",
+  "export async function openHostWorkspace(hostId: string, workspaceId: string): Promise<void>",
+  "export async function openSharedWorkspace(session: HostSession): Promise<void>",
+  "export async function pumpAllConnectedOutbound(): Promise<number>",
+  "export async function pumpHostOutput(hostId: string): Promise<number>",
+  "export async function refreshHostTopology( hostId: string, options?: { supersede?: boolean; onProgress?: HostForestProgressListener }, ): Promise<HostForestResult | null>",
+  "export async function refreshHosts(): Promise<void>",
+  "export async function renameHostWorkspace( hostId: string, workspaceId: string, name: string, ): Promise<void>",
+  "export async function retryHostTopology(hostId: string): Promise<HostForestResult | null>",
+  "export async function revokeSharedWorkspace(grantId: string): Promise<void>",
+  "export async function saveHostWorkspace( hostId: string, workspaceId: string, name: string, ): Promise<void>",
+  "export async function terminateSession(socket: string, target: string): Promise<void>",
+  "export function attachSeedPlanForSession( hostId: string, sessionId: string, reattach: boolean, ): ReturnType<typeof planAttachSeed>",
+  "export function cancelHostTopologyRetry(hostId: string): void",
+  "export function collectAttachedRemotePanes( sessions: readonly Pick<HostSession, 'workspaceId' | 'remoteSessionId' | 'attached'>[], ): AttachedRemotePaneIndex",
+  "export function hasHostTopologyLink(hostId: string): boolean",
+  "export function historyBadgeForSession(hostId: string, sessionId: string): string",
+  "export function hostOperatorAlert( hostId: string, reconnectAttempt: number, ): string | null",
+  "export function hostShareDeviceName(hostId: string): string | undefined",
+  "export function isRemotePaneAttached( index: AttachedRemotePaneIndex, workspaceId: string, paneId: string, paneOccurrences: number, ): boolean",
+  "export function lanConnectionError( host: string, port: number, secure: boolean, detail?: string, category?: 'user' | 'parked' | 'channel', ): string",
+  "export function lanTrustUrl(host: string, port: number): string",
+  "export function noteLifecycleDetach(hostId: string, sessionId: string): void",
+  "export function noteLifecycleFanout(hostId: string, bytes: number): void",
+  "export function noteLifecycleSubscribe(hostId: string, sessionId: string): void",
+  "export function noteOutboundReconnectAttempt(hostId: string): number",
+  "export function notePumpBatch(hostId: string, byteLength: number, capHint = 256 * 1024): void",
+  "export function pumpBadgeForHost(hostId: string): string",
+  "export function registerHostTopologyLink(source: RegisteredHostLink): () => void",
+  "export function remotePaneKey(workspaceId: string, paneId: string): string",
+  "export function resetOutboundReconnectAttempt(hostId: string): void",
+  "export interface AttachedRemotePaneIndex",
+  "export interface Host",
+  "export interface HostAttachRequest",
+  "export interface HostConnectProgress",
+  "export interface HostSession",
+  "export interface HostWorkspace",
+  "export interface LiveBackpressureDto",
+  "export interface NativeSessionInfo",
+  "export interface OutboundStats",
+  "export interface RegisteredHostLink",
+  "export type HostKind",
+  "export type HostStatus"
+]
+```

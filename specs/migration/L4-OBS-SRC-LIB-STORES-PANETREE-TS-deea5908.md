@@ -21,13 +21,9 @@ test_targets:
   - src/lib/stores/fileWatcherSync.test.ts
   - src/lib/stores/fsEvents.test.ts
   - src/lib/stores/gitGuardStats.test.ts
-  - src/lib/stores/hostReconnect.test.ts
-  - src/lib/stores/hostReconnectProduct.test.ts
   - src/lib/stores/hosts.connect.test.ts
   - src/lib/stores/hosts.refresh.test.ts
   - src/lib/stores/hostsMutation.test.ts
-  - src/lib/stores/hostsOutbound.test.ts
-  - src/lib/stores/hostsOutboundProduct.test.ts
   - src/lib/stores/hostsPublic.test.ts
   - src/lib/stores/imagePreviewVersion.test.ts
   - src/lib/stores/paneGitStatus.test.ts
@@ -82,7 +78,7 @@ public_interface:
     'vertical' )"
   - "export async function switchWorkspace(workspaceId: string):
     Promise<boolean>"
-  - export async function syncPaneLayoutFromBackend()
+  - export async function syncPaneLayoutFromBackend(wsId = get(activeWorkspaceId)
   - "export async function toggleEditor(paneId: string, filePath?: string)"
   - "export function beginDesktopKernelReattachGate(): () => void"
   - "export function buildPxAnchorPlans( root: PaneNode, primary: SplitterRef,
@@ -184,3 +180,142 @@ verified_by:
 # paneTree.ts
 
 Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+
+## CHG-090 映射处置 — 测试引用
+
+旧测试已随 CHG-070 源链迁出。保留原始测试映射及 Git 归档证据，移除现役失效引用。其余原有测试目标保留，不按名称猜测替代覆盖。
+
+原始 test_targets
+
+```json
+[
+  "src/lib/stores/clipboardResolve.test.ts",
+  "src/lib/stores/contextMenu.test.ts",
+  "src/lib/stores/dockRegionPicker.test.ts",
+  "src/lib/stores/editorWindow.test.ts",
+  "src/lib/stores/explorerLayout.test.ts",
+  "src/lib/stores/fileEditor.test.ts",
+  "src/lib/stores/fileExplorer.test.ts",
+  "src/lib/stores/fileWatcherSync.test.ts",
+  "src/lib/stores/fsEvents.test.ts",
+  "src/lib/stores/gitGuardStats.test.ts",
+  "src/lib/stores/hostReconnect.test.ts",
+  "src/lib/stores/hostReconnectProduct.test.ts",
+  "src/lib/stores/hosts.connect.test.ts",
+  "src/lib/stores/hosts.refresh.test.ts",
+  "src/lib/stores/hostsMutation.test.ts",
+  "src/lib/stores/hostsOutbound.test.ts",
+  "src/lib/stores/hostsOutboundProduct.test.ts",
+  "src/lib/stores/hostsPublic.test.ts",
+  "src/lib/stores/imagePreviewVersion.test.ts",
+  "src/lib/stores/paneGitStatus.test.ts",
+  "src/lib/stores/paneTree.coverage.test.ts",
+  "src/lib/stores/paneTree.test.ts",
+  "src/lib/stores/processGuardPolicy.test.ts",
+  "src/lib/stores/project.test.ts",
+  "src/lib/stores/remoteStatus.test.ts",
+  "src/lib/stores/scmCache.test.ts",
+  "src/lib/stores/searchState.test.ts",
+  "src/lib/stores/settings.test.ts",
+  "src/lib/stores/terminalHistory.test.ts",
+  "src/lib/stores/termSettings.test.ts",
+  "src/lib/stores/themes.slug.test.ts",
+  "src/lib/stores/themes.test.ts"
+]
+```
+
+`src/lib/stores/hostReconnect.test.ts` → `docs/archive/CHG-070/hostReconnect.test.ts`
+
+`src/lib/stores/hostReconnectProduct.test.ts` → `docs/archive/CHG-070/hostReconnectProduct.test.ts`
+
+`src/lib/stores/hostsOutbound.test.ts` → `docs/archive/CHG-070/hostsOutbound.test.ts`
+
+`src/lib/stores/hostsOutboundProduct.test.ts` → `docs/archive/CHG-070/hostsOutboundProduct.test.ts`
+
+## CHG-090 映射处置 — 导出快照
+
+布局同步已按当前调用链接收客户端工作区目标，签名快照保留该参数。 仅更新迁移观察的确定性导出快照，产品要求保留。按 SpecTree SOP 执行 interface L4-OBS-SRC-LIB-STORES-PANETREE-TS-deea5908 --confirm 后重新批准和锁定。
+
+旧声明保留如下。
+
+```json
+[
+  "export async function clearRecentWorkspaces(): Promise<void>",
+  "export async function closePane(paneId: string)",
+  "export async function closeWorkspace(workspaceId: string)",
+  "export async function createWorkspace()",
+  "export async function deleteSavedWorkspace(id: string)",
+  "export async function deleteSavedWorkspaceFile(path: string): Promise<void>",
+  "export async function deleteWorkspaceFile(workspaceId: string): Promise<void>",
+  "export async function dockPane( sourcePaneId: string, targetPaneId: string, region: DockRegion )",
+  "export async function getDefaultWorkspaceSaveDir(): Promise<string>",
+  "export async function getLastOpenedWorkspacePath(): Promise<string | null>",
+  "export async function getRestoreSet(): Promise<string[]>",
+  "export async function getStartupContext(): Promise<StartupContext | null>",
+  "export async function listRecentWorkspaces(): Promise<string[]>",
+  "export async function listSavedWorkspaceFiles(): Promise<SavedWorkspaceEntry[]>",
+  "export async function loadSavedWorkspaces()",
+  "export async function openWorkspaceFromFile(path: string): Promise<string>",
+  "export async function persistSplitRatios(splitPath: number[], sizes: number[])",
+  "export async function persistSplitRatiosBatch(updates: SplitRatioUpdate[])",
+  "export async function refreshWorkspaceSaveInfo(): Promise<void>",
+  "export async function refreshWorkspaces(options: RefreshWorkspacesOptions = {})",
+  "export async function renameSavedWorkspace(id: string, name: string)",
+  "export async function renameWorkspace(workspaceId: string, name: string)",
+  "export async function reorderWorkspaces(fromIndex: number, toIndex: number)",
+  "export async function saveCurrentWorkspace()",
+  "export async function saveWorkspaceToFile( workspaceId: string, name: string, path?: string ): Promise<string>",
+  "export async function setupPaneCwdListeners( workspaceId: string, treeOverride?: PaneNode ): Promise<void>",
+  "export async function splitActivePane(direction: 'horizontal' | 'vertical')",
+  "export async function splitPane( paneId: string, direction: 'horizontal' | 'vertical' )",
+  "export async function switchWorkspace(workspaceId: string): Promise<boolean>",
+  "export async function syncPaneLayoutFromBackend()",
+  "export async function toggleEditor(paneId: string, filePath?: string)",
+  "export function beginDesktopKernelReattachGate(): () => void",
+  "export function buildPxAnchorPlans( root: PaneNode, primary: SplitterRef, primaryBasisPx: number ): PxAnchorPlan[]",
+  "export function clearAgentPaneAttention(workspaceId: string, paneId: string): void",
+  "export function clearJunctionRegistry()",
+  "export function clearSplitResizeUi()",
+  "export function collapseCwd(cwd: string): string",
+  "export function extractCwdsFromLayout( node: PaneNode, workspaceId: string ): Record<string, string>",
+  "export function findJunctionsNearPosition( axis: SplitterAxis, positionPx: number, threshold: number = SNAP_THRESHOLD_PX ): JunctionRef[]",
+  "export function findSameAxisRefs( primary: SplitterRef, threshold: number = SNAP_THRESHOLD_PX ): SameAxisCandidate[]",
+  "export function finishSplitResizeDrag(): SplitRatioUpdate[]",
+  "export function focusPane(paneId: string, workspaceId?: string): void",
+  "export function forgetWorkspaceTree(wsId: string): void",
+  "export function getAllPaneIds(node: PaneNode): string[]",
+  "export function getPaneCwd(workspaceId: string, paneId: string): string | undefined",
+  "export function getSplitterLineEndpoints( ref: SplitterRef ):",
+  "export function getSplitterScreenCenter(ref: SplitterRef): number | null",
+  "export function paneIdsFromRatioUpdates( root: PaneNode, updates: SplitRatioUpdate[] ): string[]",
+  "export function pointerInCoupleZone( primary: SplitterRef, sibling: SplitterRef, pointer: { x: number; y: number } ): boolean",
+  "export function pxAnchorRatios( plan: PxAnchorPlan, signedDeltaPx: number ): number[]",
+  "export function queueSplitResizeJunction( primary: SplitterRef, orthogonals: SplitterRef[], pointer: { x: number; y: number }, sameAxisCandidates: SplitterRef[] = [], snapState: JunctionSnapState | null = null )",
+  "export function registerJunction(junction: JunctionRef)",
+  "export function scheduleForceFitActivePanes(): void",
+  "export function scheduleForceFitAfterSplit(sourcePaneId: string, newPaneId: string): void",
+  "export function setAgentPaneAttention( workspaceId: string, paneId: string, attention: AgentPaneAttention | null ): void",
+  "export function setAgentPaneStatus( workspaceId: string, paneId: string, status: AgentPaneStatus | null, ): void",
+  "export function setPaneCwd(workspaceId: string, paneId: string, cwd: string | null | undefined): void",
+  "export function startSplitResizeDrag(pointer: { x: number; y: number })",
+  "export function updateSplitResizeDrag(pointer: { x: number; y: number })",
+  "export function waitForDesktopKernelReattach(): Promise<void>",
+  "export interface JunctionRef",
+  "export interface JunctionSnapState",
+  "export interface JunctionSplitterRef",
+  "export interface PxAnchorPlan",
+  "export interface RefreshWorkspacesOptions",
+  "export interface SameAxisCandidate",
+  "export interface SavedWorkspace",
+  "export interface SavedWorkspaceEntry",
+  "export interface SplitRatioUpdate",
+  "export interface SplitterRef",
+  "export interface StartupContext",
+  "export interface WorkspaceSaveInfo",
+  "export type AgentPaneAttention",
+  "export type AgentPaneStatus",
+  "export type DockRegion",
+  "export type SplitResizeUiState",
+  "export type SplitterAxis"
+]
+```

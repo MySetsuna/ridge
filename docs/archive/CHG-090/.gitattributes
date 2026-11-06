@@ -1,0 +1,2 @@
+# Historical Git blobs retain their original LF or CRLF bytes.
+source/** -text

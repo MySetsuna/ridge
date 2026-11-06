@@ -14,7 +14,6 @@ test_targets:
   - src/lib/remote/cloud/cloudControllerBoot.integration.test.ts
   - src/lib/remote/cloud/cloudControllerBoot.test.ts
   - src/lib/remote/cloud/cloudHostStore.test.ts
-  - src/lib/remote/cloud/cloudHostTopologyLink.test.ts
   - src/lib/remote/cloud/sharedWorkspaceProjection.behavior.test.ts
   - src/lib/remote/cloud/sharedWorkspaceProjection.test.ts
 verified_by:
@@ -29,3 +28,22 @@ verified_by:
 # CheckinGateCard.svelte
 
 Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+
+## CHG-090 映射处置 — 测试引用
+
+旧测试已随 CHG-070 源链迁出。保留原始测试映射及 Git 归档证据，移除现役失效引用。其余原有测试目标保留，不按名称猜测替代覆盖。
+
+原始 test_targets
+
+```json
+[
+  "src/lib/remote/cloud/cloudControllerBoot.integration.test.ts",
+  "src/lib/remote/cloud/cloudControllerBoot.test.ts",
+  "src/lib/remote/cloud/cloudHostStore.test.ts",
+  "src/lib/remote/cloud/cloudHostTopologyLink.test.ts",
+  "src/lib/remote/cloud/sharedWorkspaceProjection.behavior.test.ts",
+  "src/lib/remote/cloud/sharedWorkspaceProjection.test.ts"
+]
+```
+
+`src/lib/remote/cloud/cloudHostTopologyLink.test.ts` → `docs/archive/CHG-070/frontend-cloud-topology/cloudHostTopologyLink.test.ts`

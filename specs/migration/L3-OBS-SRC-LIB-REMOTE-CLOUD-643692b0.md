@@ -12,7 +12,6 @@ code_targets:
   - src/lib/remote/cloud/CheckinGateCard.svelte
   - src/lib/remote/cloud/cloudControllerBoot.ts
   - src/lib/remote/cloud/cloudHostStore.ts
-  - src/lib/remote/cloud/cloudHostTopologyLink.ts
   - src/lib/remote/cloud/CloudProModal.svelte
   - src/lib/remote/cloud/sharedWorkspaceProjection.ts
 public_interface:
@@ -50,8 +49,31 @@ public_interface:
   - export interface CloudControllerBootParams
   - export interface CloudControllerHandle
   - export interface SharedWorkspaceProjection
+test_targets: []
 ---
 
 # src/lib/remote/cloud module
 
 Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+
+## CHG-090 映射处置
+
+保留仍存在的观察目标。移除失效的现役映射，已迁出路径留历史证据，不能据观察记录推断新位置已实现同一行为。
+
+`src/lib/remote/cloud/cloudHostTopologyLink.ts` → `docs/archive/CHG-070/frontend-cloud-topology/cloudHostTopologyLink.ts`，Git 3c7a18af4bb88aa3a7131cc45b51624a1fda699a / blob fe7afc793d3a41e2200c160861ed33f9e0306a0a
+
+原始映射保留如下，历史归档仅用于溯源。
+
+```json
+{
+  "codeTargets": [
+    "src/lib/remote/cloud/CheckinGateCard.svelte",
+    "src/lib/remote/cloud/cloudControllerBoot.ts",
+    "src/lib/remote/cloud/cloudHostStore.ts",
+    "src/lib/remote/cloud/cloudHostTopologyLink.ts",
+    "src/lib/remote/cloud/CloudProModal.svelte",
+    "src/lib/remote/cloud/sharedWorkspaceProjection.ts"
+  ],
+  "testTargets": []
+}
+```

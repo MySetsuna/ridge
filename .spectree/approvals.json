@@ -447,5 +447,17 @@
       "buildId": "BUILD-b541dc13075e",
       "specHash": "1271ca4d3929e08c131f6f96b6bd8ef0cf4a904d38505c49bd1085362991101f"
     }
+  },
+  {
+    "changeId": "CHG-090",
+    "specHash": "1a8a0fa4afbc582a41f3f315f3399d323272a5339f7123a867df30b99602df08",
+    "approvedAt": "2026-11-06T11:16:23.159Z",
+    "source": "completion_derived",
+    "actor": "Codex",
+    "confirmationRef": "修正旧资产目录内活动环境观察记录的父级，保留本地文件原状，仅治理规范层级",
+    "derivedFrom": {
+      "buildId": "BUILD-3b9c9cae960b",
+      "specHash": "528269d8f9c43a505b96ac365d1f7c4c5df7d9189eb4da200e82f3efd9180328"
+    }
   }
 ]

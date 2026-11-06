@@ -112,7 +112,6 @@ test_targets:
   - src/lib/remote/cloud/cloudControllerBoot.integration.test.ts
   - src/lib/remote/cloud/cloudControllerBoot.test.ts
   - src/lib/remote/cloud/cloudHostStore.test.ts
-  - src/lib/remote/cloud/cloudHostTopologyLink.test.ts
   - src/lib/remote/cloud/sharedWorkspaceProjection.behavior.test.ts
   - src/lib/remote/cloud/sharedWorkspaceProjection.test.ts
   - src/lib/remote/remoteBootMode.test.ts
@@ -127,13 +126,9 @@ test_targets:
   - src/lib/stores/fileWatcherSync.test.ts
   - src/lib/stores/fsEvents.test.ts
   - src/lib/stores/gitGuardStats.test.ts
-  - src/lib/stores/hostReconnect.test.ts
-  - src/lib/stores/hostReconnectProduct.test.ts
   - src/lib/stores/hosts.connect.test.ts
   - src/lib/stores/hosts.refresh.test.ts
   - src/lib/stores/hostsMutation.test.ts
-  - src/lib/stores/hostsOutbound.test.ts
-  - src/lib/stores/hostsOutboundProduct.test.ts
   - src/lib/stores/hostsPublic.test.ts
   - src/lib/stores/imagePreviewVersion.test.ts
   - src/lib/stores/paneGitStatus.test.ts
@@ -153,7 +148,6 @@ test_targets:
   - src/lib/teammate/agentPaneHighlightSync.test.ts
   - src/lib/teammate/hitlAuditFilter.test.ts
   - src/lib/teammate/hitlAuditPanel.test.ts
-  - src/lib/teammate/layoutEvent.test.ts
   - src/lib/teammate/memberTasks.test.ts
   - src/lib/teammate/orchControlPlane.test.ts
   - src/lib/teammate/teammateGroups.test.ts
@@ -162,7 +156,6 @@ test_targets:
   - src/lib/terminal/desktopPaneResize.test.ts
   - src/lib/terminal/hostPorts.test.ts
   - src/lib/terminal/paneSizeSync.test.ts
-  - src/lib/terminal/ptyRuntimeSnapshot.test.ts
   - src/lib/terminal/ptyWriteQueue.test.ts
   - src/lib/terminal/refreshEntrypoints.test.ts
   - src/lib/terminal/rendererBackend.test.ts
@@ -419,3 +412,229 @@ verified_by:
 # app.html
 
 Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+
+## CHG-090 映射处置 — 测试引用
+
+旧测试已随 CHG-070 源链迁出。保留原始测试映射及 Git 归档证据，移除现役失效引用。其余原有测试目标保留，不按名称猜测替代覆盖。
+
+原始 test_targets
+
+```json
+[
+  "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts",
+  "packages/remote/src/shared/cloud/apiClient.refresh.test.ts",
+  "packages/remote/src/shared/cloud/apiClient.test.ts",
+  "packages/remote/src/shared/cloud/auth.test.ts",
+  "packages/remote/src/shared/cloud/cloudHostBridge.test.ts",
+  "packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts",
+  "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
+  "packages/remote/src/shared/cloud/controllerIdentity.test.ts",
+  "packages/remote/src/shared/cloud/controllerInstanceId.test.ts",
+  "packages/remote/src/shared/cloud/deviceTrust.test.ts",
+  "packages/remote/src/shared/cloud/e2ee.test.ts",
+  "packages/remote/src/shared/cloud/faultInjection.test.ts",
+  "packages/remote/src/shared/cloud/keyBinding.test.ts",
+  "packages/remote/src/shared/cloud/priorityFrameQueue.test.ts",
+  "packages/remote/src/shared/cloud/remoteAllowlist.test.ts",
+  "packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts",
+  "packages/remote/src/shared/cloud/signaling/conformance.test.ts",
+  "packages/remote/src/shared/cloud/signaling/drift.test.ts",
+  "packages/remote/src/shared/cloud/weakNetLab.test.ts",
+  "packages/remote/src/shared/cloud/workspaceScope.test.ts",
+  "packages/remote/src/shared/hosts/foreignPaneStatus.test.ts",
+  "packages/remote/src/shared/hosts/liveBackpressure.test.ts",
+  "packages/remote/src/shared/hosts/livePumpPolicy.test.ts",
+  "packages/remote/src/shared/hosts/outboundLifecycle.test.ts",
+  "packages/remote/src/shared/hosts/outboundReconnect.test.ts",
+  "packages/remote/src/shared/reconnectPolicy.test.ts",
+  "packages/remote/src/shared/teammate/hitlAuditRemote.test.ts",
+  "packages/remote/src/shared/terminal/clipboardImage.test.ts",
+  "packages/remote/src/shared/terminal/dropPaste.test.ts",
+  "packages/remote/src/shared/terminal/fontDataService.test.ts",
+  "packages/remote/src/shared/terminal/fontStack.test.ts",
+  "packages/remote/src/shared/terminal/hostRemountPolicy.test.ts",
+  "packages/remote/src/shared/terminal/imeAnchor.test.ts",
+  "packages/remote/src/shared/terminal/imeDelta.test.ts",
+  "packages/remote/src/shared/terminal/initialPaneFit.test.ts",
+  "packages/remote/src/shared/terminal/linkAffordance.test.ts",
+  "packages/remote/src/shared/terminal/linkOpenHost.test.ts",
+  "packages/remote/src/shared/terminal/linkSpans.test.ts",
+  "packages/remote/src/shared/terminal/manager.attach.test.ts",
+  "packages/remote/src/shared/terminal/manager.test.ts",
+  "packages/remote/src/shared/terminal/mobileCopy.test.ts",
+  "packages/remote/src/shared/terminal/mobileTouchScroll.test.ts",
+  "packages/remote/src/shared/terminal/mouseForwardPolicy.test.ts",
+  "packages/remote/src/shared/terminal/paneDockResolve.test.ts",
+  "packages/remote/src/shared/terminal/paneGeometry.test.ts",
+  "packages/remote/src/shared/terminal/paneInputGate.test.ts",
+  "packages/remote/src/shared/terminal/paneOrigin.test.ts",
+  "packages/remote/src/shared/terminal/paneShell.test.ts",
+  "packages/remote/src/shared/terminal/ptyBridge.test.ts",
+  "packages/remote/src/shared/terminal/sentenceBuffer.test.ts",
+  "packages/remote/src/shared/terminal/shellInputSnapshot.test.ts",
+  "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts",
+  "packages/remote/src/shared/terminal/terminalFocus.test.ts",
+  "packages/remote/src/shared/terminal/terminalMemoryPolicy.test.ts",
+  "packages/remote/src/shared/terminal/themeBridge.test.ts",
+  "packages/remote/src/shared/terminal/tuiGate.test.ts",
+  "packages/remote/src/shared/transport/capabilityContract.test.ts",
+  "packages/remote/src/shared/transport/cloudChunk.test.ts",
+  "packages/remote/src/shared/transport/cloudMux.test.ts",
+  "packages/remote/src/shared/transport/cloudWebrtcAdapter.test.ts",
+  "packages/remote/src/shared/transport/conformance.test.ts",
+  "packages/remote/src/shared/transport/lanWsAdapter.test.ts",
+  "packages/remote/src/shared/transport/matrixParity.test.ts",
+  "packages/remote/src/shared/transport/paneRpcScheduler.test.ts",
+  "packages/remote/src/shared/transport/protocolAdmission.test.ts",
+  "packages/remote/src/shared/transport/protocolAdmissionProduct.test.ts",
+  "packages/remote/src/shared/transport/random.test.ts",
+  "packages/remote/src/shared/transport/remoteInvokeAdmit.test.ts",
+  "packages/remote/src/shared/transport/remotePerfTrace.test.ts",
+  "packages/remote/src/shared/transport/rpcClient.test.ts",
+  "packages/remote/src/shared/transport/unknownText.test.ts",
+  "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+  "packages/remote/src/shared/transport/wsRemotePending.test.ts",
+  "packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts",
+  "packages/remote/src/shared/transport/wsRemoteUrl.test.ts",
+  "scripts/app-csp.test.mjs",
+  "src-tauri/tests/win_manifest_boot.rs",
+  "src/lib/actions/hostSessionDrag.test.ts",
+  "src/lib/actions/overlayScroll.test.ts",
+  "src/lib/actions/paneDockDrag.test.ts",
+  "src/lib/components/customTheme.test.ts",
+  "src/lib/components/explorerPaste.test.ts",
+  "src/lib/components/GitGraph.test.ts",
+  "src/lib/components/inputBufferTracker.test.ts",
+  "src/lib/components/interactionContracts.test.ts",
+  "src/lib/components/SettingsPanel.test.ts",
+  "src/lib/components/SidebarLazyMount.test.ts",
+  "src/lib/components/SplitContainer.test.ts",
+  "src/lib/hosts/compositionHarness.test.ts",
+  "src/lib/hosts/foreignHistorySession.test.ts",
+  "src/lib/hosts/hostConnectFlow.test.ts",
+  "src/lib/hosts/hostControlSurface.test.ts",
+  "src/lib/hosts/hostForest.test.ts",
+  "src/lib/hosts/hostSessionIsolation.test.ts",
+  "src/lib/hosts/remotePaneBindings.test.ts",
+  "src/lib/lsp/lspClient.test.ts",
+  "src/lib/monaco/ridgeTheme.test.ts",
+  "src/lib/pure-logic-coverage.test.ts",
+  "src/lib/remote/cloud/cloudControllerBoot.integration.test.ts",
+  "src/lib/remote/cloud/cloudControllerBoot.test.ts",
+  "src/lib/remote/cloud/cloudHostStore.test.ts",
+  "src/lib/remote/cloud/cloudHostTopologyLink.test.ts",
+  "src/lib/remote/cloud/sharedWorkspaceProjection.behavior.test.ts",
+  "src/lib/remote/cloud/sharedWorkspaceProjection.test.ts",
+  "src/lib/remote/remoteBootMode.test.ts",
+  "src/lib/remote/totpIdentitySync.test.ts",
+  "src/lib/stores/clipboardResolve.test.ts",
+  "src/lib/stores/contextMenu.test.ts",
+  "src/lib/stores/dockRegionPicker.test.ts",
+  "src/lib/stores/editorWindow.test.ts",
+  "src/lib/stores/explorerLayout.test.ts",
+  "src/lib/stores/fileEditor.test.ts",
+  "src/lib/stores/fileExplorer.test.ts",
+  "src/lib/stores/fileWatcherSync.test.ts",
+  "src/lib/stores/fsEvents.test.ts",
+  "src/lib/stores/gitGuardStats.test.ts",
+  "src/lib/stores/hostReconnect.test.ts",
+  "src/lib/stores/hostReconnectProduct.test.ts",
+  "src/lib/stores/hosts.connect.test.ts",
+  "src/lib/stores/hosts.refresh.test.ts",
+  "src/lib/stores/hostsMutation.test.ts",
+  "src/lib/stores/hostsOutbound.test.ts",
+  "src/lib/stores/hostsOutboundProduct.test.ts",
+  "src/lib/stores/hostsPublic.test.ts",
+  "src/lib/stores/imagePreviewVersion.test.ts",
+  "src/lib/stores/paneGitStatus.test.ts",
+  "src/lib/stores/paneTree.coverage.test.ts",
+  "src/lib/stores/paneTree.test.ts",
+  "src/lib/stores/processGuardPolicy.test.ts",
+  "src/lib/stores/project.test.ts",
+  "src/lib/stores/remoteStatus.test.ts",
+  "src/lib/stores/scmCache.test.ts",
+  "src/lib/stores/searchState.test.ts",
+  "src/lib/stores/settings.test.ts",
+  "src/lib/stores/terminalHistory.test.ts",
+  "src/lib/stores/termSettings.test.ts",
+  "src/lib/stores/themes.slug.test.ts",
+  "src/lib/stores/themes.test.ts",
+  "src/lib/teammate/agentCommuneModel.test.ts",
+  "src/lib/teammate/agentPaneHighlightSync.test.ts",
+  "src/lib/teammate/hitlAuditFilter.test.ts",
+  "src/lib/teammate/hitlAuditPanel.test.ts",
+  "src/lib/teammate/layoutEvent.test.ts",
+  "src/lib/teammate/memberTasks.test.ts",
+  "src/lib/teammate/orchControlPlane.test.ts",
+  "src/lib/teammate/teammateGroups.test.ts",
+  "src/lib/teammate/teammateModel.test.ts",
+  "src/lib/teammate/workspaceMemory.test.ts",
+  "src/lib/terminal/desktopPaneResize.test.ts",
+  "src/lib/terminal/hostPorts.test.ts",
+  "src/lib/terminal/paneSizeSync.test.ts",
+  "src/lib/terminal/ptyRuntimeSnapshot.test.ts",
+  "src/lib/terminal/ptyWriteQueue.test.ts",
+  "src/lib/terminal/refreshEntrypoints.test.ts",
+  "src/lib/terminal/rendererBackend.test.ts",
+  "src/lib/transport/tauri.test.ts",
+  "src/lib/transport/tauriShim/bridge.test.ts",
+  "src/lib/transport/tauriShim/compatibility.test.ts",
+  "src/lib/transport/tauriShim/opener.test.ts",
+  "src/lib/transport/tauriShim/window.test.ts",
+  "src/lib/transport/ws.test.ts",
+  "src/lib/utils/anchorRect.test.ts",
+  "src/lib/utils/ansi.test.ts",
+  "src/lib/utils/linkResolver.test.ts",
+  "src/lib/utils/linkTrust.test.ts",
+  "src/lib/utils/markdown.test.ts",
+  "src/lib/utils/path.test.ts",
+  "src/lib/utils/pathToken.test.ts",
+  "src/lib/utils/pLimit.test.ts",
+  "src/lib/utils/repeatedError.test.ts",
+  "src/lib/utils/resizeThrottle.test.ts",
+  "src/lib/utils/withTimeout.test.ts",
+  "src/remote/BottomTabBar.test.ts",
+  "src/remote/lib/clipboard.test.ts",
+  "src/remote/lib/cloudRemote.test.ts",
+  "src/remote/lib/generationGuard.test.ts",
+  "src/remote/lib/keyboardOffset.test.ts",
+  "src/remote/lib/listenerCleanup.test.ts",
+  "src/remote/lib/paneFeedScheduler.test.ts",
+  "src/remote/lib/paneLifecycle.test.ts",
+  "src/remote/lib/paneSwitchBuffer.test.ts",
+  "src/remote/lib/remoteGitActions.test.ts",
+  "src/remote/lib/RemoteGitPanel.test.ts",
+  "src/remote/lib/remoteQueries.test.ts",
+  "src/remote/lib/RemoteSidebar.test.ts",
+  "src/remote/lib/scrollbackWorker.test.ts",
+  "src/remote/lib/sidebarProvider.test.ts",
+  "src/remote/lib/SidebarTeamRoster.test.ts",
+  "src/remote/lib/teamRosterScope.test.ts",
+  "src/remote/lib/TerminalCanvas.test.ts",
+  "src/remote/lib/theme.test.ts",
+  "src/remote/lib/treeState.test.ts",
+  "src/remote/lib/WorkspaceTree.test.ts",
+  "src/remote/main.test.ts",
+  "src/remote/MainApp.test.ts",
+  "src/remote/pwaInstallScope.test.ts",
+  "src/remote/queryPolicy.test.ts",
+  "src/remote/runtimeMessagingScope.test.ts",
+  "src/service-worker.test.ts",
+  "src/shared/sidebar/gitRequestLifecycle.test.ts",
+  "src/shared/sidebar/sidebarRequestLifecycle.test.ts"
+]
+```
+
+`src/lib/remote/cloud/cloudHostTopologyLink.test.ts` → `docs/archive/CHG-070/frontend-cloud-topology/cloudHostTopologyLink.test.ts`
+
+`src/lib/stores/hostReconnect.test.ts` → `docs/archive/CHG-070/hostReconnect.test.ts`
+
+`src/lib/stores/hostReconnectProduct.test.ts` → `docs/archive/CHG-070/hostReconnectProduct.test.ts`
+
+`src/lib/stores/hostsOutbound.test.ts` → `docs/archive/CHG-070/hostsOutbound.test.ts`
+
+`src/lib/stores/hostsOutboundProduct.test.ts` → `docs/archive/CHG-070/hostsOutboundProduct.test.ts`
+
+`src/lib/teammate/layoutEvent.test.ts` → `docs/archive/CHG-070/frontend-runtime-events/layoutEvent.test.ts`
+
+`src/lib/terminal/ptyRuntimeSnapshot.test.ts` → `docs/archive/CHG-090/source/src/lib/terminal/ptyRuntimeSnapshot.test.ts`

@@ -14,7 +14,6 @@ test_targets:
   - src/lib/terminal/desktopPaneResize.test.ts
   - src/lib/terminal/hostPorts.test.ts
   - src/lib/terminal/paneSizeSync.test.ts
-  - src/lib/terminal/ptyRuntimeSnapshot.test.ts
   - src/lib/terminal/ptyWriteQueue.test.ts
   - src/lib/terminal/refreshEntrypoints.test.ts
   - src/lib/terminal/rendererBackend.test.ts
@@ -34,3 +33,23 @@ verified_by:
 # paneSizeSync.ts
 
 Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+
+## CHG-090 映射处置 — 测试引用
+
+旧测试已随 CHG-070 源链迁出。保留原始测试映射及 Git 归档证据，移除现役失效引用。其余原有测试目标保留，不按名称猜测替代覆盖。
+
+原始 test_targets
+
+```json
+[
+  "src/lib/terminal/desktopPaneResize.test.ts",
+  "src/lib/terminal/hostPorts.test.ts",
+  "src/lib/terminal/paneSizeSync.test.ts",
+  "src/lib/terminal/ptyRuntimeSnapshot.test.ts",
+  "src/lib/terminal/ptyWriteQueue.test.ts",
+  "src/lib/terminal/refreshEntrypoints.test.ts",
+  "src/lib/terminal/rendererBackend.test.ts"
+]
+```
+
+`src/lib/terminal/ptyRuntimeSnapshot.test.ts` → `docs/archive/CHG-090/source/src/lib/terminal/ptyRuntimeSnapshot.test.ts`

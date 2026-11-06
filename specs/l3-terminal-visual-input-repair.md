@@ -23,8 +23,6 @@ code_targets:
   - src/lib/components/DiffEditorModal.svelte
   - src/lib/terminal/ptyWriteQueue.ts
   - src/app.css
-  - src-tauri/src/engine/parser.rs
-  - src-tauri/src/engine/pty.rs
   - src/remote/lib/FileViewer.svelte
   - packages/ridge-term/src/term/delta.rs
   - packages/ridge-term/src/semantic.rs
@@ -36,6 +34,8 @@ code_targets:
   - packages/ridge-term/src/links.rs
   - packages/remote/src/shared/terminal/linkAffordance.ts
   - packages/remote/src/shared/terminal/renderTransaction.ts
+  - packages/ridge-kernel/src/pty.rs
+  - packages/ridge-kernel/src/host.rs
 test_targets:
   - packages/remote/src/shared/terminal/manager.test.ts
   - packages/remote/src/shared/terminal/manager.attach.test.ts
@@ -48,6 +48,8 @@ test_targets:
   - tests/e2e-shell/input-echo.spec.ts
   - scripts/terminal-five-fixes-e2e.mjs
   - packages/remote/src/shared/terminal/linkAffordance.test.ts
+  - packages/ridge-kernel/tests/snapshot_history_runtime.rs
+  - packages/ridge-kernel/tests/terminal_events_runtime.rs
 ---
 
 # Terminal visual coordinates and input fidelity
@@ -79,3 +81,63 @@ Unbracketed clipboard paste encodes each logical LF/CRLF/CR break as one CR Ente
 ## Acceptance
 
 Run npm test, npm run lint, npm run typecheck, terminal Rust tests, native parser regressions and the real PowerShell paste acceptance. Rebuild the consumed WASM/frontend assets. Run scripts/terminal-five-fixes-e2e.mjs against production output: verify actual Monaco colors under CSP, Remote FileViewer read/edit styles, GPU row order, and painted cursor/probe agreement through scrolling. Inspect final diff and deterministic stc verify/complete gates. Do not claim success from compilation, unit mocks or unchanged source alone.
+
+## CHG-090 映射处置
+
+原需求正文保留。CHG-069/070 后终端生产及 Host 分发归 Kernel，旧桌面命令/parser/PTY 映射退出现役。进程树销毁归 PTY 与 ridge-core process_guard/process_identity，owned_pty_process_tree 验收；输入/终端操作、快照历史、事件及背压分别由所列测试核验。现有纯前端渲染、输入与主题测试继续适用。
+
+`src-tauri/src/engine/parser.rs` → `docs/archive/CHG-070/desktop-retired-tree/engine/parser.rs`，Git 3c7a18af4bb88aa3a7131cc45b51624a1fda699a / blob 6017aa2b200e47df2d6b6e1272be4a9b7d42b9fe
+
+`src-tauri/src/engine/pty.rs` → `docs/archive/CHG-070/desktop-retired-tree/engine/pty.rs`，Git 3c7a18af4bb88aa3a7131cc45b51624a1fda699a / blob b17874492947c3ba83ce50bd41e493c499ec5337
+
+原始映射保留如下，历史归档仅用于溯源。
+
+```json
+{
+  "codeTargets": [
+    "packages/ridge-term/src/render/renderer.rs",
+    "packages/ridge-term/src/render/backend.rs",
+    "packages/ridge-term/src/render/surface_host.rs",
+    "packages/ridge-term/src/render/webgpu.rs",
+    "packages/ridge-term/src/term/grid.rs",
+    "packages/ridge-term/src/term/terminal.rs",
+    "packages/ridge-term/src/term/parser.rs",
+    "packages/ridge-term/src/lib.rs",
+    "packages/remote/src/shared/terminal/manager.ts",
+    "packages/remote/src/shared/terminal/linkSpans.ts",
+    "packages/remote/src/shared/terminal/tuiGate.ts",
+    "packages/remote/src/shared/terminal/linkOpenHost.ts",
+    "src/lib/components/RidgePane.svelte",
+    "src/lib/components/FileEditor.svelte",
+    "src/lib/components/DiffEditorModal.svelte",
+    "src/lib/terminal/ptyWriteQueue.ts",
+    "src/app.css",
+    "src-tauri/src/engine/parser.rs",
+    "src-tauri/src/engine/pty.rs",
+    "src/remote/lib/FileViewer.svelte",
+    "packages/ridge-term/src/term/delta.rs",
+    "packages/ridge-term/src/semantic.rs",
+    "packages/ridge-term/src/term/modes.rs",
+    "src/lib/monaco/ridgeTheme.ts",
+    "src/lib/monaco/trustedThemeStyles.ts",
+    "packages/ridge-term/src/input.rs",
+    "packages/ridge-term/src/term/cell.rs",
+    "packages/ridge-term/src/links.rs",
+    "packages/remote/src/shared/terminal/linkAffordance.ts",
+    "packages/remote/src/shared/terminal/renderTransaction.ts"
+  ],
+  "testTargets": [
+    "packages/remote/src/shared/terminal/manager.test.ts",
+    "packages/remote/src/shared/terminal/manager.attach.test.ts",
+    "packages/remote/src/shared/terminal/linkSpans.test.ts",
+    "packages/remote/src/shared/terminal/tuiGate.test.ts",
+    "src/lib/terminal/ptyWriteQueue.test.ts",
+    "src/lib/terminal/rendererBackend.test.ts",
+    "tests/e2e/fileEditor.spec.ts",
+    "tests/e2e-shell/selection-tui-refresh.spec.ts",
+    "tests/e2e-shell/input-echo.spec.ts",
+    "scripts/terminal-five-fixes-e2e.mjs",
+    "packages/remote/src/shared/terminal/linkAffordance.test.ts"
+  ]
+}
+```

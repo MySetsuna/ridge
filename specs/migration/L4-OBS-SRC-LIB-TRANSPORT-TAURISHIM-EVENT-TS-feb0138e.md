@@ -12,7 +12,6 @@ code_targets:
   - src/lib/transport/tauriShim/event.ts
 test_targets:
   - src/lib/stores/fsEvents.test.ts
-  - src/lib/teammate/layoutEvent.test.ts
   - src/lib/transport/tauriShim/bridge.test.ts
   - src/lib/transport/tauriShim/compatibility.test.ts
   - src/lib/transport/tauriShim/opener.test.ts
@@ -35,3 +34,22 @@ verified_by:
 # event.ts
 
 Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+
+## CHG-090 映射处置 — 测试引用
+
+旧测试已随 CHG-070 源链迁出。保留原始测试映射及 Git 归档证据，移除现役失效引用。其余原有测试目标保留，不按名称猜测替代覆盖。
+
+原始 test_targets
+
+```json
+[
+  "src/lib/stores/fsEvents.test.ts",
+  "src/lib/teammate/layoutEvent.test.ts",
+  "src/lib/transport/tauriShim/bridge.test.ts",
+  "src/lib/transport/tauriShim/compatibility.test.ts",
+  "src/lib/transport/tauriShim/opener.test.ts",
+  "src/lib/transport/tauriShim/window.test.ts"
+]
+```
+
+`src/lib/teammate/layoutEvent.test.ts` → `docs/archive/CHG-070/frontend-runtime-events/layoutEvent.test.ts`

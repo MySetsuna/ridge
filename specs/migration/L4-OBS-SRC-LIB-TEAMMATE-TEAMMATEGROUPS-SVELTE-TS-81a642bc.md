@@ -15,7 +15,6 @@ test_targets:
   - src/lib/teammate/agentPaneHighlightSync.test.ts
   - src/lib/teammate/hitlAuditFilter.test.ts
   - src/lib/teammate/hitlAuditPanel.test.ts
-  - src/lib/teammate/layoutEvent.test.ts
   - src/lib/teammate/memberTasks.test.ts
   - src/lib/teammate/orchControlPlane.test.ts
   - src/lib/teammate/teammateGroups.test.ts
@@ -39,6 +38,8 @@ public_interface:
     null"
   - "export function parsePersisted(raw: string | null): PersistShape"
   - "export function persistedEquals(a: unknown, b: unknown): boolean"
+  - "export function pruneTeammateGroupStores(workspaceIds: readonly string[]):
+    void"
   - "export function recolorGroupIn( groups: readonly TeammateGroup[], id:
     string, color: string ): TeammateGroup[]"
   - "export function removeGroupIn(groups: readonly TeammateGroup[], id:
@@ -54,7 +55,8 @@ public_interface:
     string, agentId: string | null ): TeammateGroup[]"
   - "export function stableWorkspaceKey( workspaceId: string | undefined,
     filePath: string | null | undefined ): string"
-  - "export function teammateGroupStore(): TeammateGroupStore"
+  - "export function teammateGroupStore(workspaceId?: string):
+    TeammateGroupStore"
   - "export function withTask( tasks: readonly GroupTask[], task: GroupTask,
     cap: number = TASK_CAP ): GroupTask[]"
   - export interface GroupAddMemberEvent
@@ -77,3 +79,61 @@ verified_by:
 # teammateGroups.svelte.ts
 
 Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+
+## CHG-090 映射处置 — 测试引用
+
+旧测试已随 CHG-070 源链迁出。保留原始测试映射及 Git 归档证据，移除现役失效引用。其余原有测试目标保留，不按名称猜测替代覆盖。
+
+原始 test_targets
+
+```json
+[
+  "src/lib/teammate/agentCommuneModel.test.ts",
+  "src/lib/teammate/agentPaneHighlightSync.test.ts",
+  "src/lib/teammate/hitlAuditFilter.test.ts",
+  "src/lib/teammate/hitlAuditPanel.test.ts",
+  "src/lib/teammate/layoutEvent.test.ts",
+  "src/lib/teammate/memberTasks.test.ts",
+  "src/lib/teammate/orchControlPlane.test.ts",
+  "src/lib/teammate/teammateGroups.test.ts",
+  "src/lib/teammate/teammateModel.test.ts",
+  "src/lib/teammate/workspaceMemory.test.ts"
+]
+```
+
+`src/lib/teammate/layoutEvent.test.ts` → `docs/archive/CHG-070/frontend-runtime-events/layoutEvent.test.ts`
+
+## CHG-090 映射处置 — 导出快照
+
+CHG-084/085 的 Host 全局编组投影及过期 store 清理替代旧 workspace-only 投影快照。 仅更新迁移观察的确定性导出快照，产品要求保留。按 SpecTree SOP 执行 interface L4-OBS-SRC-LIB-TEAMMATE-TEAMMATEGROUPS-SVELTE-TS-81a642bc --confirm 后重新批准和锁定。
+
+旧声明保留如下。
+
+```json
+[
+  "export function addGroup(groups: readonly TeammateGroup[], group: TeammateGroup): TeammateGroup[]",
+  "export function addMemberIn( groups: readonly TeammateGroup[], groupId: string, agentId: string ): TeammateGroup[]",
+  "export function buildGroup( name: string, color: string, memberAgentIds: readonly string[] ): TeammateGroup",
+  "export function buildTask( groupId: string, objective: string, targets: readonly string[] ): GroupTask",
+  "export function findGroupByName( groups: readonly TeammateGroup[], name: string ): TeammateGroup | undefined",
+  "export function groupOfAgent( groups: readonly TeammateGroup[], agentId: string ): TeammateGroup | undefined",
+  "export function groupsStorageKey(stableKey: string): string",
+  "export function parseGroupAddMember(raw: unknown): GroupAddMemberEvent | null",
+  "export function parsePersisted(raw: string | null): PersistShape",
+  "export function persistedEquals(a: unknown, b: unknown): boolean",
+  "export function recolorGroupIn( groups: readonly TeammateGroup[], id: string, color: string ): TeammateGroup[]",
+  "export function removeGroupIn(groups: readonly TeammateGroup[], id: string): TeammateGroup[]",
+  "export function removeMemberIn( groups: readonly TeammateGroup[], groupId: string, agentId: string ): TeammateGroup[]",
+  "export function renameGroupIn( groups: readonly TeammateGroup[], id: string, name: string ): TeammateGroup[]",
+  "export function resolveMembers( memberAgentIds: readonly string[], roster: readonly TeammateProfile[] ): ResolvedGroupMember[]",
+  "export function serializePersisted(state: PersistShape): string",
+  "export function setGroupLeaderIn( groups: readonly TeammateGroup[], id: string, agentId: string | null ): TeammateGroup[]",
+  "export function stableWorkspaceKey( workspaceId: string | undefined, filePath: string | null | undefined ): string",
+  "export function teammateGroupStore(): TeammateGroupStore",
+  "export function withTask( tasks: readonly GroupTask[], task: GroupTask, cap: number = TASK_CAP ): GroupTask[]",
+  "export interface GroupAddMemberEvent",
+  "export interface GroupTask",
+  "export interface ResolvedGroupMember",
+  "export interface TeammateGroup"
+]
+```

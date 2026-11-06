@@ -15,7 +15,6 @@ test_targets:
   - src/lib/teammate/agentPaneHighlightSync.test.ts
   - src/lib/teammate/hitlAuditFilter.test.ts
   - src/lib/teammate/hitlAuditPanel.test.ts
-  - src/lib/teammate/layoutEvent.test.ts
   - src/lib/teammate/memberTasks.test.ts
   - src/lib/teammate/orchControlPlane.test.ts
   - src/lib/teammate/teammateGroups.test.ts
@@ -45,3 +44,26 @@ verified_by:
 # workspaceMemory.ts
 
 Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+
+## CHG-090 映射处置 — 测试引用
+
+旧测试已随 CHG-070 源链迁出。保留原始测试映射及 Git 归档证据，移除现役失效引用。其余原有测试目标保留，不按名称猜测替代覆盖。
+
+原始 test_targets
+
+```json
+[
+  "src/lib/teammate/agentCommuneModel.test.ts",
+  "src/lib/teammate/agentPaneHighlightSync.test.ts",
+  "src/lib/teammate/hitlAuditFilter.test.ts",
+  "src/lib/teammate/hitlAuditPanel.test.ts",
+  "src/lib/teammate/layoutEvent.test.ts",
+  "src/lib/teammate/memberTasks.test.ts",
+  "src/lib/teammate/orchControlPlane.test.ts",
+  "src/lib/teammate/teammateGroups.test.ts",
+  "src/lib/teammate/teammateModel.test.ts",
+  "src/lib/teammate/workspaceMemory.test.ts"
+]
+```
+
+`src/lib/teammate/layoutEvent.test.ts` → `docs/archive/CHG-070/frontend-runtime-events/layoutEvent.test.ts`

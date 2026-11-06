@@ -16,23 +16,23 @@ code_targets:
   - packages/remote/src/shared/terminal/manager.ts
   - src/remote/MainApp.svelte
   - src/remote/lib/paneFeedScheduler.ts
-  - src-tauri/src/commands/cloud_pane.rs
-  - src-tauri/src/commands/terminal.rs
-  - src-tauri/src/remote_host_impl.rs
   - src-tauri/src/state.rs
-  - src-tauri/src/engine/kernel_pty.rs
-  - src-tauri/src/engine/pty.rs
   - packages/ridge-cli/src/kernel_host_impl.rs
   - packages/ridge-kernel/src/pty.rs
   - packages/ridge-kernel/src/client.rs
   - scripts/bench-latency-4scenes.mjs
   - packages/ridge-remote/src/tls.rs
+  - packages/ridge-kernel/src/host.rs
+  - packages/ridge-kernel/src/business.rs
+  - packages/ridge-kernel/src/domain.rs
+  - packages/ridge-kernel/src/cloud/manager.rs
 test_targets:
   - packages/remote/src/shared/transport/remotePerfTrace.test.ts
   - packages/remote/src/shared/transport/paneRpcScheduler.test.ts
   - packages/remote/src/shared/cloud/priorityFrameQueue.test.ts
   - packages/remote/src/shared/cloud/cloudHostBridge.test.ts
   - packages/ridge-kernel/tests/kernel_backend_waterfall.rs
+  - packages/ridge-kernel/tests/remote_backpressure.rs
 ---
 
 # Authenticated production latency attribution
@@ -62,3 +62,54 @@ Unit tests validate opt-in behavior, bounded metadata retention, accurate select
 ## Isolated fixture admission
 
 The existing benchmark runs only an owned test host and Kernel. A TLS directory override is admitted only with the existing test-fixture permission flag, requires an absolute path and fails closed for malformed configuration. Without that opt-in, the production TLS directory and certificate policy are unchanged. The fixture uses its own auth file and per-browser leaf SPKI pin, without changing system trust or the installed service certificate files. Cleanup uses the authenticated Kernel shutdown endpoint; retained temporary state must be disclosed.
+
+## CHG-090 映射处置
+
+原需求正文保留。CHG-069/070 后终端生产及 Host 分发归 Kernel，旧桌面命令/parser/PTY 映射退出现役。进程树销毁归 PTY 与 ridge-core process_guard/process_identity，owned_pty_process_tree 验收；输入/终端操作、快照历史、事件及背压分别由所列测试核验。现有纯前端渲染、输入与主题测试继续适用。
+
+`src-tauri/src/commands/cloud_pane.rs` → `docs/archive/CHG-090/source/src-tauri/src/commands/cloud_pane.rs`，Git 3c7a18af4bb88aa3a7131cc45b51624a1fda699a / blob b42df5590aa4eb8a55ccf6328b05afd556a96ca5
+
+`src-tauri/src/commands/terminal.rs` → `docs/archive/CHG-090/source/src-tauri/src/commands/terminal.rs`，Git 3c7a18af4bb88aa3a7131cc45b51624a1fda699a / blob 15029d6855a7c6d1aba44e8a33a5d3d82961a7bd
+
+`src-tauri/src/remote_host_impl.rs` → `docs/archive/CHG-090/source/src-tauri/src/remote_host_impl.rs`，Git 3c7a18af4bb88aa3a7131cc45b51624a1fda699a / blob 4494aeb7dec320fa924d5ddcb45ff6e29705efb1
+
+`src-tauri/src/engine/kernel_pty.rs` → `docs/archive/CHG-070/desktop-retired-tree/engine/kernel_pty.rs`，Git 3c7a18af4bb88aa3a7131cc45b51624a1fda699a / blob 2443eb631826581fced757b0d2935a32dcbd0049
+
+`src-tauri/src/engine/pty.rs` → `docs/archive/CHG-070/desktop-retired-tree/engine/pty.rs`，Git 3c7a18af4bb88aa3a7131cc45b51624a1fda699a / blob b17874492947c3ba83ce50bd41e493c499ec5337
+
+原始映射保留如下，历史归档仅用于溯源。
+
+```json
+{
+  "codeTargets": [
+    "packages/remote/src/shared/transport/remotePerfTrace.ts",
+    "packages/remote/src/shared/transport/paneRpcScheduler.ts",
+    "packages/remote/src/shared/transport/wsRemote.ts",
+    "packages/remote/src/shared/cloud/controllerCloudProvider.ts",
+    "packages/remote/src/shared/cloud/ridgeCloudProvider.ts",
+    "packages/remote/src/shared/cloud/cloudHostBridge.ts",
+    "packages/remote/src/shared/cloud/priorityFrameQueue.ts",
+    "packages/remote/src/shared/terminal/manager.ts",
+    "src/remote/MainApp.svelte",
+    "src/remote/lib/paneFeedScheduler.ts",
+    "src-tauri/src/commands/cloud_pane.rs",
+    "src-tauri/src/commands/terminal.rs",
+    "src-tauri/src/remote_host_impl.rs",
+    "src-tauri/src/state.rs",
+    "src-tauri/src/engine/kernel_pty.rs",
+    "src-tauri/src/engine/pty.rs",
+    "packages/ridge-cli/src/kernel_host_impl.rs",
+    "packages/ridge-kernel/src/pty.rs",
+    "packages/ridge-kernel/src/client.rs",
+    "scripts/bench-latency-4scenes.mjs",
+    "packages/ridge-remote/src/tls.rs"
+  ],
+  "testTargets": [
+    "packages/remote/src/shared/transport/remotePerfTrace.test.ts",
+    "packages/remote/src/shared/transport/paneRpcScheduler.test.ts",
+    "packages/remote/src/shared/cloud/priorityFrameQueue.test.ts",
+    "packages/remote/src/shared/cloud/cloudHostBridge.test.ts",
+    "packages/ridge-kernel/tests/kernel_backend_waterfall.rs"
+  ]
+}
+```

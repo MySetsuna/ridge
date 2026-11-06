@@ -17,8 +17,6 @@ code_targets:
   - src/lib/teammate/HitlApprovalModal.svelte
   - src/lib/teammate/hitlAuditFilter.ts
   - src/lib/teammate/hitlAuditPanel.ts
-  - src/lib/teammate/layoutChange.golden.json
-  - src/lib/teammate/layoutEvent.ts
   - src/lib/teammate/memberTasks.ts
   - src/lib/teammate/orchControlPlane.ts
   - src/lib/teammate/teammateGroups.svelte.ts
@@ -166,8 +164,44 @@ public_interface:
   - export type LayoutChangeKind
   - export type RiskLevel
   - export type TeammateStatus
+test_targets: []
 ---
 
 # src/lib/teammate module
 
 Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+
+## CHG-090 映射处置
+
+保留仍存在的观察目标。移除失效的现役映射，已迁出路径留历史证据，不能据观察记录推断新位置已实现同一行为。
+
+`src/lib/teammate/layoutChange.golden.json` → `docs/archive/CHG-070/frontend-runtime-events/layoutChange.golden.json`，Git 3c7a18af4bb88aa3a7131cc45b51624a1fda699a / blob c11ef79581b0e8fb05b49e52dbe05fed3b40395e
+
+`src/lib/teammate/layoutEvent.ts` → `docs/archive/CHG-070/frontend-runtime-events/layoutEvent.ts`，Git 3c7a18af4bb88aa3a7131cc45b51624a1fda699a / blob 872c965fe4b34a531eb81b364b36c51608fbdc15
+
+原始映射保留如下，历史归档仅用于溯源。
+
+```json
+{
+  "codeTargets": [
+    "src/lib/teammate/AgentCenterPanel.svelte",
+    "src/lib/teammate/agentCommuneModel.ts",
+    "src/lib/teammate/AgentMemberRow.svelte",
+    "src/lib/teammate/AgentPaneHighlightSync.svelte",
+    "src/lib/teammate/agentPaneHighlightSync.ts",
+    "src/lib/teammate/HitlApprovalModal.svelte",
+    "src/lib/teammate/hitlAuditFilter.ts",
+    "src/lib/teammate/hitlAuditPanel.ts",
+    "src/lib/teammate/layoutChange.golden.json",
+    "src/lib/teammate/layoutEvent.ts",
+    "src/lib/teammate/memberTasks.ts",
+    "src/lib/teammate/orchControlPlane.ts",
+    "src/lib/teammate/teammateGroups.svelte.ts",
+    "src/lib/teammate/TeammateGroupsSection.svelte",
+    "src/lib/teammate/teammateModel.ts",
+    "src/lib/teammate/teammateSettings.ts",
+    "src/lib/teammate/workspaceMemory.ts"
+  ],
+  "testTargets": []
+}
+```

@@ -21,14 +21,9 @@ test_targets:
   - src/lib/hosts/hostForest.test.ts
   - src/lib/hosts/hostSessionIsolation.test.ts
   - src/lib/remote/cloud/cloudHostStore.test.ts
-  - src/lib/remote/cloud/cloudHostTopologyLink.test.ts
-  - src/lib/stores/hostReconnect.test.ts
-  - src/lib/stores/hostReconnectProduct.test.ts
   - src/lib/stores/hosts.connect.test.ts
   - src/lib/stores/hosts.refresh.test.ts
   - src/lib/stores/hostsMutation.test.ts
-  - src/lib/stores/hostsOutbound.test.ts
-  - src/lib/stores/hostsOutboundProduct.test.ts
   - src/lib/stores/hostsPublic.test.ts
   - src/lib/terminal/hostPorts.test.ts
 verified_by:
@@ -57,3 +52,44 @@ verified_by:
 # host.rs
 
 Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+
+## CHG-090 映射处置 — 测试引用
+
+旧测试已随 CHG-070 源链迁出。保留原始测试映射及 Git 归档证据，移除现役失效引用。其余原有测试目标保留，不按名称猜测替代覆盖。
+
+原始 test_targets
+
+```json
+[
+  "packages/remote/src/shared/cloud/cloudHostBridge.test.ts",
+  "packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts",
+  "packages/remote/src/shared/terminal/hostRemountPolicy.test.ts",
+  "packages/remote/src/shared/terminal/linkOpenHost.test.ts",
+  "src/lib/actions/hostSessionDrag.test.ts",
+  "src/lib/hosts/hostConnectFlow.test.ts",
+  "src/lib/hosts/hostControlSurface.test.ts",
+  "src/lib/hosts/hostForest.test.ts",
+  "src/lib/hosts/hostSessionIsolation.test.ts",
+  "src/lib/remote/cloud/cloudHostStore.test.ts",
+  "src/lib/remote/cloud/cloudHostTopologyLink.test.ts",
+  "src/lib/stores/hostReconnect.test.ts",
+  "src/lib/stores/hostReconnectProduct.test.ts",
+  "src/lib/stores/hosts.connect.test.ts",
+  "src/lib/stores/hosts.refresh.test.ts",
+  "src/lib/stores/hostsMutation.test.ts",
+  "src/lib/stores/hostsOutbound.test.ts",
+  "src/lib/stores/hostsOutboundProduct.test.ts",
+  "src/lib/stores/hostsPublic.test.ts",
+  "src/lib/terminal/hostPorts.test.ts"
+]
+```
+
+`src/lib/remote/cloud/cloudHostTopologyLink.test.ts` → `docs/archive/CHG-070/frontend-cloud-topology/cloudHostTopologyLink.test.ts`
+
+`src/lib/stores/hostReconnect.test.ts` → `docs/archive/CHG-070/hostReconnect.test.ts`
+
+`src/lib/stores/hostReconnectProduct.test.ts` → `docs/archive/CHG-070/hostReconnectProduct.test.ts`
+
+`src/lib/stores/hostsOutbound.test.ts` → `docs/archive/CHG-070/hostsOutbound.test.ts`
+
+`src/lib/stores/hostsOutboundProduct.test.ts` → `docs/archive/CHG-070/hostsOutboundProduct.test.ts`

@@ -21,13 +21,9 @@ test_targets:
   - src/lib/stores/fileWatcherSync.test.ts
   - src/lib/stores/fsEvents.test.ts
   - src/lib/stores/gitGuardStats.test.ts
-  - src/lib/stores/hostReconnect.test.ts
-  - src/lib/stores/hostReconnectProduct.test.ts
   - src/lib/stores/hosts.connect.test.ts
   - src/lib/stores/hosts.refresh.test.ts
   - src/lib/stores/hostsMutation.test.ts
-  - src/lib/stores/hostsOutbound.test.ts
-  - src/lib/stores/hostsOutboundProduct.test.ts
   - src/lib/stores/hostsPublic.test.ts
   - src/lib/stores/imagePreviewVersion.test.ts
   - src/lib/stores/paneGitStatus.test.ts
@@ -83,3 +79,54 @@ verified_by:
 # termSettings.ts
 
 Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+
+## CHG-090 映射处置 — 测试引用
+
+旧测试已随 CHG-070 源链迁出。保留原始测试映射及 Git 归档证据，移除现役失效引用。其余原有测试目标保留，不按名称猜测替代覆盖。
+
+原始 test_targets
+
+```json
+[
+  "src/lib/stores/clipboardResolve.test.ts",
+  "src/lib/stores/contextMenu.test.ts",
+  "src/lib/stores/dockRegionPicker.test.ts",
+  "src/lib/stores/editorWindow.test.ts",
+  "src/lib/stores/explorerLayout.test.ts",
+  "src/lib/stores/fileEditor.test.ts",
+  "src/lib/stores/fileExplorer.test.ts",
+  "src/lib/stores/fileWatcherSync.test.ts",
+  "src/lib/stores/fsEvents.test.ts",
+  "src/lib/stores/gitGuardStats.test.ts",
+  "src/lib/stores/hostReconnect.test.ts",
+  "src/lib/stores/hostReconnectProduct.test.ts",
+  "src/lib/stores/hosts.connect.test.ts",
+  "src/lib/stores/hosts.refresh.test.ts",
+  "src/lib/stores/hostsMutation.test.ts",
+  "src/lib/stores/hostsOutbound.test.ts",
+  "src/lib/stores/hostsOutboundProduct.test.ts",
+  "src/lib/stores/hostsPublic.test.ts",
+  "src/lib/stores/imagePreviewVersion.test.ts",
+  "src/lib/stores/paneGitStatus.test.ts",
+  "src/lib/stores/paneTree.coverage.test.ts",
+  "src/lib/stores/paneTree.test.ts",
+  "src/lib/stores/processGuardPolicy.test.ts",
+  "src/lib/stores/project.test.ts",
+  "src/lib/stores/remoteStatus.test.ts",
+  "src/lib/stores/scmCache.test.ts",
+  "src/lib/stores/searchState.test.ts",
+  "src/lib/stores/settings.test.ts",
+  "src/lib/stores/terminalHistory.test.ts",
+  "src/lib/stores/termSettings.test.ts",
+  "src/lib/stores/themes.slug.test.ts",
+  "src/lib/stores/themes.test.ts"
+]
+```
+
+`src/lib/stores/hostReconnect.test.ts` → `docs/archive/CHG-070/hostReconnect.test.ts`
+
+`src/lib/stores/hostReconnectProduct.test.ts` → `docs/archive/CHG-070/hostReconnectProduct.test.ts`
+
+`src/lib/stores/hostsOutbound.test.ts` → `docs/archive/CHG-070/hostsOutbound.test.ts`
+
+`src/lib/stores/hostsOutboundProduct.test.ts` → `docs/archive/CHG-070/hostsOutboundProduct.test.ts`

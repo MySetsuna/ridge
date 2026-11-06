@@ -13,7 +13,6 @@ code_targets:
 test_targets:
   - packages/remote/src/shared/terminal/ptyBridge.test.ts
   - scripts/cdp-pty-state.test.mjs
-  - src/lib/terminal/ptyRuntimeSnapshot.test.ts
   - src/lib/terminal/ptyWriteQueue.test.ts
 verified_by:
   - TEST-OBS-PACKAGES-REMOTE-SRC-SHARED-TERMINAL-PTYBRIDGE-TEST-TS-3f30eb8e
@@ -25,3 +24,20 @@ verified_by:
 # pty.rs
 
 Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+
+## CHG-090 映射处置 — 测试引用
+
+旧测试已随 CHG-070 源链迁出。保留原始测试映射及 Git 归档证据，移除现役失效引用。其余原有测试目标保留，不按名称猜测替代覆盖。
+
+原始 test_targets
+
+```json
+[
+  "packages/remote/src/shared/terminal/ptyBridge.test.ts",
+  "scripts/cdp-pty-state.test.mjs",
+  "src/lib/terminal/ptyRuntimeSnapshot.test.ts",
+  "src/lib/terminal/ptyWriteQueue.test.ts"
+]
+```
+
+`src/lib/terminal/ptyRuntimeSnapshot.test.ts` → `docs/archive/CHG-090/source/src/lib/terminal/ptyRuntimeSnapshot.test.ts`

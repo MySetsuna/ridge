@@ -15,21 +15,23 @@ test_targets:
   - src/lib/teammate/agentPaneHighlightSync.test.ts
   - src/lib/teammate/hitlAuditFilter.test.ts
   - src/lib/teammate/hitlAuditPanel.test.ts
-  - src/lib/teammate/layoutEvent.test.ts
   - src/lib/teammate/memberTasks.test.ts
   - src/lib/teammate/orchControlPlane.test.ts
   - src/lib/teammate/teammateGroups.test.ts
   - src/lib/teammate/teammateModel.test.ts
   - src/lib/teammate/workspaceMemory.test.ts
 public_interface:
-  - "export function parseCircuitTripped(payload: unknown): CircuitTrip | null"
   - "export function parseHitlRequest(payload: unknown): HitlRequest | null"
+  - "export function parseProtocolDelivery(value: unknown): ProtocolDelivery |
+    undefined"
   - "export function parseTopologySnapshot(payload: unknown): TopologySnapshot"
   - "export function riskLabel(level: RiskLevel): 'L0' | 'L1' | 'L2'"
-  - export interface CircuitTrip
+  - export interface DiscoveredAgent
   - export interface HitlDecision
   - export interface HitlRequest
   - export interface PendingApproval
+  - export interface PermissionOption
+  - export interface ProtocolDelivery
   - export interface TeammateProfile
   - export interface TopologyEdge
   - export interface TopologySnapshot
@@ -55,3 +57,54 @@ verified_by:
 # teammateModel.ts
 
 Observed from the existing project. Confirm intended behavior, targets, and interfaces before baseline.
+
+## CHG-090 映射处置 — 测试引用
+
+旧测试已随 CHG-070 源链迁出。保留原始测试映射及 Git 归档证据，移除现役失效引用。其余原有测试目标保留，不按名称猜测替代覆盖。
+
+原始 test_targets
+
+```json
+[
+  "src/lib/teammate/agentCommuneModel.test.ts",
+  "src/lib/teammate/agentPaneHighlightSync.test.ts",
+  "src/lib/teammate/hitlAuditFilter.test.ts",
+  "src/lib/teammate/hitlAuditPanel.test.ts",
+  "src/lib/teammate/layoutEvent.test.ts",
+  "src/lib/teammate/memberTasks.test.ts",
+  "src/lib/teammate/orchControlPlane.test.ts",
+  "src/lib/teammate/teammateGroups.test.ts",
+  "src/lib/teammate/teammateModel.test.ts",
+  "src/lib/teammate/workspaceMemory.test.ts"
+]
+```
+
+`src/lib/teammate/layoutEvent.test.ts` → `docs/archive/CHG-070/frontend-runtime-events/layoutEvent.test.ts`
+
+## CHG-090 映射处置 — 导出快照
+
+CHG-070/079 后通用协议成员与投递模型替代旧 circuit 事件模型。 仅更新迁移观察的确定性导出快照，产品要求保留。按 SpecTree SOP 执行 interface L4-OBS-SRC-LIB-TEAMMATE-TEAMMATEMODEL-TS-5b42791e --confirm 后重新批准和锁定。
+
+旧声明保留如下。
+
+```json
+[
+  "export function parseCircuitTripped(payload: unknown): CircuitTrip | null",
+  "export function parseHitlRequest(payload: unknown): HitlRequest | null",
+  "export function parseTopologySnapshot(payload: unknown): TopologySnapshot",
+  "export function riskLabel(level: RiskLevel): 'L0' | 'L1' | 'L2'",
+  "export interface CircuitTrip",
+  "export interface HitlDecision",
+  "export interface HitlRequest",
+  "export interface PendingApproval",
+  "export interface TeammateProfile",
+  "export interface TopologyEdge",
+  "export interface TopologySnapshot",
+  "export type AgentActivity",
+  "export type AgentRole",
+  "export type AgentTier",
+  "export type HitlVerdict",
+  "export type RiskLevel",
+  "export type TeammateStatus"
+]
+```
