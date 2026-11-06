@@ -1,3 +1,5 @@
+> 历史报告，结论与测试数量属于 Foundation 当时构建。当前架构见[导览](README.md)，权威需求见[根规范](../../specs/)。
+
 # Ridge Runtime Foundation — Final Report
 
 ## TL;DR

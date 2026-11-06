@@ -1,3 +1,5 @@
+> 历史副本，保留 Foundation 时期原文。现行权威见[根规范](../../../specs/L2-TERM-001.md)及[当前导览](../README.md)。
+
 ---
 id: L2-TERM-001
 level: L2

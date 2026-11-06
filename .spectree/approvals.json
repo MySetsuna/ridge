@@ -435,5 +435,17 @@
       "buildId": "BUILD-1354dc286215",
       "specHash": "b2aab435717d303f0ebe82b2efb2cdda2845e0240fdce5eddc539439b4bc41a9"
     }
+  },
+  {
+    "changeId": "CHG-089",
+    "specHash": "9b26fb89dfb8bd4185827d5a9a2fb52fe6671d35b7a8aae7d54075f893740d95",
+    "approvedAt": "2026-11-06T10:55:30.444Z",
+    "source": "completion_derived",
+    "actor": "Codex",
+    "confirmationRef": "用户要求继续按草案推进文档整理和映射清理，按当前源码与已批准契约更新导览并保留历史",
+    "derivedFrom": {
+      "buildId": "BUILD-b541dc13075e",
+      "specHash": "1271ca4d3929e08c131f6f96b6bd8ef0cf4a904d38505c49bd1085362991101f"
+    }
   }
 ]

@@ -1,84 +1,32 @@
-# Ridge 架构总览
+# Ridge 架构导览
 
-> 单一入口：本目录是项目的权威架构说明。`specs/L2-*.md` 在仓库根
-> 的副本只是过渡锚点，所有新建 / 修改应直接落到本目录的对应文件。
+本目录解释当前源码与流程。权威需求位于根目录 [specs](../../specs/)，变更位于 [changes](../../changes/)，均经 SpecTree 提案、批准、锁定、验证与完成流程管理。
 
-## 目录
+## 当前阅读入口
 
-```
-docs/architecture/
-├── README.md                           ← 本文件（入口 / 索引）
-├── 00-overview.md                      ← 系统拓扑、组件清单、模块边界
-├── 10-kernel.md                        ← ridge-kernel 内部架构
-├── 20-rtp1-wire.md                     ← RTP1 wire 协议 + 22 消息类型
-├── 30-remote-lifecycle.md              ← attachment state machine + recovery
-├── 40-cli.md                           ← ridge CLI / 旧 rdg 路径
-├── 50-desktop-tauri.md                 ← Tauri 桌面端 + WebGPU 渲染
-├── 60-data-flow.md                     ← 端到端数据通路
-├── 70-runtime-epoch.md                 ← host_id / runtime_epoch / 身份
-├── 80-security.md                       ← 鉴权 / controller_id / 输入所有权
-├── 90-performance.md                   ← 性能契约 / 故障注入 / baseline
-├── RIDGE-RUNTIME-FOUNDATION-FINAL.md   ← Foundation 终报告（沿用）
-├── notes/                              ← 历史验收文档（保留作 trace）
-│   ├── IMPLEMENTATION-ACCEPTANCE.md
-│   ├── PHASE-A-FINAL-ACCEPTANCE.md
-│   └── PHASE-A6-LIVE-VALIDATION.md
-└── specs/                              ← L2 spec（沿用）
-    ├── L2-PROTO-001.md   RTP1 wire protocol
-    ├── L2-REMOTE-001.md  Remote session lifecycle
-    ├── L2-TERM-001.md    Terminal rendering contract
-    └── L2-PERF-001.md     Performance & fault injection
-```
+| 章节 | 内容 |
+| --- | --- |
+| [系统总览](00-overview.md) | 独立 Runtime、展示端与传输边界 |
+| [Kernel](10-kernel.md) | 业务组合、PTY、持久化与事件 |
+| [终端协议](20-rtp1-wire.md) | 当前语义协议、生成源与 RTP1 兼容面 |
+| [连接生命周期](30-remote-lifecycle.md) | 订阅、恢复与进程存活 |
+| [CLI](40-cli.md) | TUI、仪表盘、LAN、Cloud 与独立终端创建 |
+| [桌面](50-desktop-tauri.md) | OS bootstrap、共享 client 与渲染 |
+| [数据流](60-data-flow.md) | 输入、输出、工作区与 Commune |
+| [身份与代际](70-runtime-epoch.md) | Host、Runtime、pane 与客户端选择 |
+| [安全](80-security.md) | 私有凭据、本地授权与 Remote 权限 |
+| [性能与验证](90-performance.md) | 可执行入口及证据边界 |
 
-## 文档地图
+## 权威契约
 
-按阅读顺序（图在 `images/` 下 GitHub 直接渲染）：
+- [统一客户端 Runtime](../../specs/l2-unified-client-runtime.md)规定服务所有权与展示边界。
+- [CLI 独立终端创建](../../specs/l3-cli-independent-terminal-creation.md)规定四入口的鉴权、提交与重试。
+- [Remote 交互可靠性](../../specs/l3-remote-interaction-reliability.md)规定当前终端语义与恢复。
+- [Commune 协议成员](../../specs/l3-commune-protocol-membership.md)规定 Host 全局成员、编组与历史。
+- [协议](../../specs/L2-PROTO-001.md)、[终端](../../specs/L2-TERM-001.md)、[生命周期](../../specs/L2-REMOTE-001.md)、[性能](../../specs/L2-PERF-001.md)须结合后续修订阅读。
 
-1. **00-overview.md** — 第一次来必看。组件拓扑、模块边界、不变量。
-   ![overview](images/00-overview.svg)
-2. **10-kernel.md** — kernel 是 PTY / lifecycle / output_seq 的唯一权威。
-3. **20-rtp1-wire.md** — kernel ↔ remote 的 canonical wire。
-   ![rtp1-frame](images/20-rtp1-frame.svg)
-4. **30-remote-lifecycle.md** — attachment state machine + 重连 / 恢复剧本。
-   ![terminal-lifecycle](images/30-terminal-lifecycle.svg)
-   ![attachment-lifecycle](images/30-attachment-lifecycle.svg)
-5. **40-cli.md** — headless host（ridge / 旧 rdg）的内部架构。
-6. **50-desktop-tauri.md** — Tauri 桌面端 + WebGPU。
-7. **60-data-flow.md** — 跨模块端到端追踪。
-8. **70-runtime-epoch.md** — kernel boot 时 mint 的 UUID v7 身份。
-9. **80-security.md** — 鉴权 / 输入所有权 / 传输完整性。
-10. **90-performance.md** — baseline + 故障注入 + 优化闸。
+## 历史材料
 
-## 与 specs 的关系
+CHG-089 改写前的十一篇导览原文保存在 [Foundation 导览归档](../archive/CHG-089/architecture/)。旧版将 RTP1 adapter、Tauri 模块和阶段测试数量作为当时依据。
 
-| Spec | 对应实现 / 测试 |
-|---|---|
-| `L2-PROTO-001.md` | `packages/ridge-kernel/src/rtp1.rs` + `rtp1_ws.rs` + `rtp1_session.rs`；`packages/ridge-kernel/tests/conformance_rtp1.rs`（12 acceptance）+ `packages/ridge-cli/tests/rtp1_kernel_e2e.rs`（live WS） |
-| `L2-REMOTE-001.md` | `packages/ridge-kernel/src/pty.rs`（lifecycle）+ `rtp1_session.rs`（attachment state machine）；`packages/ridge-kernel/tests/stability_fault.rs` |
-| `L2-TERM-001.md` | `packages/ridge-kernel/src/pty.rs`（PTY registry + bounded replay）；`packages/ridge-kernel/tests/terminal_live.rs`（16 live PTY scenarios）+ `tests/performance_baseline.rs` |
-| `L2-PERF-001.md` | `packages/ridge-kernel/tests/performance_baseline.rs`；故障注入脚本与 vte/clipboard 集成见各模块测试 |
-
-## 测试矩阵
-
-```
-cargo test -p ridge-kernel --lib             78 (rtp1/rtp1_session/rtp1_ws/pty/...)
-cargo test -p ridge-kernel --test conformance_kernel_backed
-cargo test -p ridge-kernel --test conformance_replay
-cargo test -p ridge-kernel --test conformance_runtime
-cargo test -p ridge-kernel --test conformance_rtp1          ← 12 RTP1 acceptance + 7 remote lifecycle
-cargo test -p ridge-kernel --test kernel_backend_waterfall
-cargo test -p ridge-kernel --test stability_fault            ← 13 (incl. per-controller wire validation)
-cargo test -p ridge-kernel --test terminal_live             ← 16 live OS PTY scenarios
-cargo test -p ridge-kernel --test performance_baseline      ← 5 perf baselines (--ignored)
-cargo test -p ridge-cli      --bin ridge                     175 lib
-cargo test -p ridge-cli      --test rtp1_kernel_e2e          ← 1 live kernel + WS
-cargo test -p ridge-cli      --test kernel_lifecycle_e2e     4/5 (1 pre-existing harness timeout)
-```
-
-总计：149 kernel + 175 ridge-cli + 1 live WS e2e + 4/5 pre-existing e2e = PASS。
-
-## 交叉引用
-
-- `CLAUDE.md` (仓库根) — Claude Code 项目指令
-- `.claude/` (仓库根) — Claude Code 本地设置
-- `AGENTS.md` (仓库根) — 项目 agent 指引（背景）
+[Foundation 终报告](RIDGE-RUNTIME-FOUNDATION-FINAL.md)、[验收记录](notes/README.md)、本目录 [旧规范副本](specs/)及 images/ 中四张 SVG 均为历史材料。其原始结论、相对链接与图片只表达当时状态，当前入口以本页所链根规范及实现为准。

@@ -1,155 +1,29 @@
-# 60 — 端到端数据通路
+# 60 — 端到端数据流
 
-本文追踪每个 byte 从 PTY 子进程到最终渲染像素的完整路径。Foundation
-收口后存在两条路径：
-* **canonical**：kernel RTP1 WS ↔ shell `rtp1_kernel_client` ↔ renderer
-* **legacy adapter**：kernel HTTP `bounded-seq-v1` ↔ shell `KernelPtyReader` ↔ renderer
+## 终端输入与输出
 
-## 路径 A：RTP1 WS（canonical）
-
-```
-PTY 子进程 stdout (portable_pty bytes)
-        │ chunk
-        ▼
-[1] kernel: PtyBridge reader_thread
-        │ mpsc::Sender<Vec<u8>>
-        ▼
-[2] kernel: spawn task（按 spawn_command_for_with_env 启动）
-        │ bytes.recv().await
-        ├─► [2a] screen.lock().feed(&bytes)        // ridge_term::Terminal 同步
-        ├─► [2b] retained.extend_from_slice         // scrollback (cap 1 MiB)
-        └─► [2c] hub.publish(&bytes)                // → PtyOutputHub
-                │ bytes
-                ▼
-[3] kernel: PtyOutputHub（环形 256 KiB / 256 帧）
-        │ notify_waiters()
-        ├─► consumer A (HTTP lease)
-        └─► consumer B (RTP1 WS output pump)
-                │
-                ▼
-[4] kernel: rtp1_ws::run_output_pump
-        │ lease.next(50ms, 64)
-        ▼ frames
-[5] kernel: Rtp1Session::build_output_frames("term", &frames)
-        │ ≤ 24 KiB / chunk; total ≤ 64 KiB / frame
-        ▼ RTP1 frames (Vec<rtp1::Frame>)
-[6] kernel: mpsc::Sender<Frame>  →  tx
-        ▼
-[7] shell: rtp1_ws::drive (read loop)
-        │ ws.send(Message::Binary(rtp1::encode(&frame)))
-        ▼ WebSocket binary
-[8] shell: rtp1_kernel_client::Rtp1KernelClient read loop
-        │ mpsc::Receiver<OutputFrame>
-        ▼ OutputFrame (parsed)
-[9] shell: engine::kernel_pty → Tauri Channel
-        ▼
-[10] shell: PaneParser.feed → PaneDeltaMailbox
-        ▼
-[11] Tauri Channel → JS take_pane_delta_frame
-        ▼
-[12] JS: WASM Terminal.applyDelta
-        ▼
-[13] TerminalManager.render (RAF → WebGPU surface)
-        ▼
-[14] GPU present → pixels on screen
+```text
+键盘 / TUI 输入
+  → 本地授权 WS / LAN WSS / Cloud WebRTC
+  → KernelHost 校验连接、pane 与订阅
+  → Kernel PTY 写入 → child
+child 输出
+  → PtyRegistry reader → TerminalProducer.feed_semantic
+  → 权威 snapshot / delta / history
+  → Host 活动订阅 → 传输适配
+  → 客户端校验代际与 revision → 展示镜像 → 渲染
 ```
 
-## 路径 B：HTTP long-poll（legacy adapter）
+真实接线见 [pty.rs](../../packages/ridge-kernel/src/pty.rs)与 [host.rs](../../packages/ridge-kernel/src/host.rs)，前端消费见 [manager.ts](../../packages/remote/src/shared/terminal/manager.ts)，TUI 消费见 [lan_session.rs](../../packages/ridge-cli/src/tui/lan_session.rs)。有界队列与恢复以[现行终端契约](../../specs/l3-remote-interaction-reliability.md)为准。
 
-```
-PTY 子进程 stdout
-        │
-        ▼
-[1..3] 同 RTP1 路径
-        │
-        ▼
-[4] shell: KernelPtyReader (HTTP long-poll GET /v1/domain/ptys/:id/output/:lease)
-        │ 超时 ~50ms，命中即取 ≤ 64 帧
-        ▼ bytes
-[5] shell: PaneParser.feed → PaneDeltaMailbox
-        ▼
-[6..13] 同 RTP1 路径
-```
+## 业务与事件
 
-## 输入路径（C→S：controller → PTY 子进程）
+共同 Host 请求到受保护的 /v1/domain/commands，由 [business.rs](../../packages/ridge-kernel/src/business.rs)按 native/Remote 身份、方法和路径授权，交给领域服务及 ridge-core。Runtime 产生状态事件，客户端更新投影。Host 部分内部调用仍经私有 HTTP 和事件 WS。
 
-```
-controller (browser / mobile / CLI)
-   │
-   ▼ RTP1 InputFrame { terminal_id, controller_id, input_seq, data_b64 }
-   │
-   ▼ kernel: rtp1_ws::handle_input
-        │ controller_id alignment check (active_controller)
-        ▼
-   ▼ kernel: PtyRegistry::write_with_controller(pty_id, controller_id, &data)
-        │ 检查 attached_controllers[pty_id].contains(controller_id)
-        │ 否则返 PtyInputError::ControllerIdUnknown
-        ▼
-   ▼ kernel: PtyBridge.write_input(&data)
-        │ portable_pty::MasterPty.writer.write_all + flush
-        ▼
-   PTY 子进程 stdin
-```
+创建为显式写操作，Host snapshot 读取无初始创建副作用。[CLI 四入口](40-cli.md)共享独立终端创建。保存 .ridge 属显式持久化，运行态与客户端选择各自维护。
 
-控制权流转：
-1. **legacy HTTP**：`/v1/domain/ptys/:id/write` body 含可选
-   `controller_id`；缺省时 kernel 自动注册 `legacy-http:<pty_id>` 合成
-   id，让 shell 的 `KernelPtyWriter` 在迁移窗口内继续工作。
-2. **canonical RTP1**：WS adapter 在 `attach` / `detach` 时调
-   `PtyRegistry::attach_controller` / `detach_controller`。
+## Commune
 
-## session_event 派发（PTY exit）
+[Commune 契约](../../specs/l3-commune-protocol-membership.md)规定 Host 全局成员及编组。Runtime 持有成员、协议连接、任务收据与历史，桌面/Remote 展示投影。内部按 workspace/pane/session 精确绑定，编组持久化含 revision 校验与迁移，任务 Hub 收据归服务端。
 
-```
-PTY 子进程退出 → reader task 退出循环
-        │
-        ▼
-[1] kernel: reader task 收尾
-        ├─► hub.close()
-        ├─► lifecycle[id] = Exited
-        └─► exit_subs[id].send(PtyExitNotification)
-                │
-                ▼ broadcast::Receiver
-[2] kernel: rtp1_ws::run_output_pump
-        │ select! { exit = exit_recv.recv() => ... }
-        ▼
-[3] kernel: tx.send(SessionEvent{event:"exited", code, terminal_id})
-        │
-        ▼
-[4] shell: rtp1_kernel_client read loop
-        │ 收到 session_event
-        ▼ state = Closing
-[5] shell: 与 server detach_ack 配合收尾
-```
-
-## Service 边界
-
-* [1]-[3] **kernel 进程内部**（in-process mpsc / broadcast）。
-* [4]-[6] **kernel 进程 ↔ 消费者**：HTTP long-poll 或 RTP1 WS。
-* [7]-[8] **kernel WS frame ↔ shell RTP1 client**（WebSocket transport）。
-* [9]-[13] **shell 进程内部**（Tauri Channel / mailbox）。
-* [14] **GPU present**（浏览器 / WebView）。
-
-## 失败 / 重试语义
-
-| 失败点 | 恢复路径 |
-|---|---|
-| PTY 子进程崩溃 | reader task 退出 → lifecycle=Exited → session_event{event:"exited"} |
-| HTTP long-poll 超时 | 50ms 后 next poll；PTY idle 时不会消耗 CPU |
-| RTP1 WS 断 | kernel side 立即通知 client；client 重连自动 attach + since_output_seq |
-| Resync 触发 | 服务端先发 desync{reason}; client 自动 replay → snapshot |
-| 客户端输入未注册 controller_id | kernel 返 error{code:"controller_id_unknown"} |
-| 输入超 realtime cap | kernel 返 error{code:"input_too_large"} |
-
-## 端到端测试
-
-* `packages/ridge-cli/tests/rtp1_kernel_e2e.rs::rtp1_ws_full_lifecycle`：
-  开真实 kernel 子进程 → WS attach → 全 message flow 验证 → detach。
-* `packages/ridge-kernel/tests/terminal_live.rs`：16 个 live OS PTY 场景
-  （UTF-8/ANSI/resize storm/emoji/alternate screen/...）。
-
-## 详尽规范
-
-* Kernel：`docs/architecture/10-kernel.md`
-* RTP1 wire：`docs/architecture/20-rtp1-wire.md`
-* Lifecycle：`docs/architecture/30-remote-lifecycle.md`
+[commune_connection.rs](../../packages/ridge-kernel/src/commune_connection.rs)接协议连接，[成员面板](../../src/lib/teammate/)接事件。新消息按当前视图与历史位置处理，历史导航及未读提示各有语义。核验见 [commune_registration](../../packages/ridge-kernel/tests/commune_registration.rs)、[commune_group_tasks](../../packages/ridge-kernel/tests/commune_group_tasks.rs)及 [live-history 验收](../../scripts/commune-live-history-acceptance.mjs)。
