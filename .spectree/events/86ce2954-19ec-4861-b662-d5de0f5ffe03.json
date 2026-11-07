@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "id": "86ce2954-19ec-4861-b662-d5de0f5ffe03",
+  "at": "2026-11-07T09:51:18.161Z",
+  "type": "applied",
+  "source": "local_operation",
+  "changeId": "CHG-106",
+  "data": {
+    "added": [
+      "L4-CLOUD-MOBILE-REAUTH-GATE"
+    ],
+    "changed": [],
+    "retiring": [],
+    "patch": {
+      "changeId": "CHG-106",
+      "nodes": [
+        {
+          "id": "L4-CLOUD-MOBILE-REAUTH-GATE",
+          "level": "L4",
+          "title": "移动 Cloud 重连鉴权完成后再恢复页面连接",
+          "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+          "codeTargets": [
+            "src/remote/lib/cloudRemote.ts"
+          ],
+          "testTargets": [
+            "src/remote/lib/cloudRemote.test.ts"
+          ],
+          "dependsOn": [
+            "L4-CLOUD-HOST-REJOIN-SESSION"
+          ],
+          "body": "# 移动端重连鉴权门\n\nRTC/E2EE 已连接不代表当前主机会话已获用户授权。移动适配器在重新连接时须等本代际 trust grant 或兼容 TOTP 验证成功，清理旧订阅后才发布 connected 与恢复事件，避免页面查询、终端订阅和 resize 抢在鉴权之前。等待期间保留断线或连接中状态；鉴权失败明确报错。重复断线、过期结果和撤销授权不得使新会话进入可用态。首次连接仍由现有 CloudAuthScreen 完成授权。\n\n覆盖延迟授权期间无 connected 观察、成功事件顺序、失败不恢复、重复断线旧代际忽略及输入幂等。公开 Remote 部署后须在实际 TURN 中继下验证主机服务重连后页面自动保留活动终端并可输入，无需手动重新选 pane。",
+          "acceptanceChecks": [
+            {
+              "id": "mobile-reauth",
+              "command": [
+                "pnpm",
+                "exec",
+                "vitest",
+                "run",
+                "src/remote/lib/cloudRemote.test.ts"
+              ],
+              "description": "未授权重连不暴露 connected，成功后恢复一次；失败与过时代际不能开门"
+            }
+          ]
+        }
+      ],
+      "remove": []
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "buildId": "BUILD-ba85b748a2f7",
+  "changeId": "CHG-106",
+  "specHash": "64931f088e90d484cc7c81b53628e31de0da3d1d897f762cc0181ea48315b374",
+  "workspaceHash": "ba89dda9e83cbb267f279fd9a008284e05515e1190aba6d1743512d0b015a25c",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-CLOUD-MOBILE-REAUTH-GATE",
+      "checkId": "mobile-reauth",
+      "command": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/remote/lib/cloudRemote.test.ts"
+      ],
+      "description": "未授权重连不暴露 connected，成功后恢复一次；失败与过时代际不能开门",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-07T09:54:43.048Z",
+  "diagnostics": [],
+  "eventId": "40fe37b1-ccb2-4469-bfed-c2c15104d541"
+}

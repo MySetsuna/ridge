@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "47f676b0-2fb6-4a05-9d34-06b282e637b7",
+  "at": "2026-11-07T09:50:01.276Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-106",
+  "data": {
+    "title": "修复 Cloud 移动端重连鉴权前误发工作区请求",
+    "implementation": "REQUIRED"
+  }
+}

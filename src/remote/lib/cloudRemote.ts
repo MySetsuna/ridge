@@ -125,6 +125,7 @@ export class CloudRemoteConnection implements RemoteLink {
   private readonly fixedAuthorized: boolean;
 
   private _state: ConnectionState = 'connecting';
+  private transportConnected = false;
   // 最近一次失败分级（任务 A 问题1）。云端服务端「已认证但无权」会经信令 error 帧把
   // 稳定 code 透传到 provider onError → notifyError；据此区分用户问题/设备停用/通道异常。
   private _failure: ConnectionFailure | null = null;
@@ -427,6 +428,7 @@ export class CloudRemoteConnection implements RemoteLink {
     if (providerState === 'connected') mapped = 'connected';
     else if (providerState === 'error') mapped = 'error';
     else if (providerState === 'disconnected') mapped = 'disconnected';
+    this.transportConnected = mapped === 'connected';
     const wasDown = this._state !== 'connected';
     if (mapped !== this._state) this.connectionGeneration++;
     if (mapped !== 'connected') this.pendingReconnect = null;
@@ -435,10 +437,11 @@ export class CloudRemoteConnection implements RemoteLink {
     if (mapped === 'error' && !this._failure) {
       this._failure = { category: 'channel' };
     }
-    this.setState(mapped);
     if (mapped === 'connected' && wasDown && this._everConnected) {
       this.pendingReconnect = this.connectionGeneration;
       void this._handleReconnect();
+    } else {
+      this.setState(mapped);
     }
     if (mapped === 'connected') this._everConnected = true;
   }
@@ -451,6 +454,7 @@ export class CloudRemoteConnection implements RemoteLink {
    */
   notifyError(message: string, code?: string): void {
     if (this.disposed) return;
+    this.transportConnected = false;
     this.connectionGeneration++;
     this.pendingReconnect = null;
     const failure = classifyFailure(code);
@@ -481,10 +485,10 @@ export class CloudRemoteConnection implements RemoteLink {
     if (this.disposed || this._reconnecting) return;
     this._reconnecting = true;
     try {
-      while (!this.disposed && this._state === 'connected' && this.pendingReconnect !== null) {
+      while (!this.disposed && this.transportConnected && this.pendingReconnect !== null) {
       const generation = this.pendingReconnect;
       this.pendingReconnect = null;
-      const current = () => !this.disposed && generation === this.connectionGeneration && this._state === 'connected';
+      const current = () => !this.disposed && generation === this.connectionGeneration && this.transportConnected;
       // Re-authorize. Prefer the signed 24h controller grant so a full reconnect
       // never depends on replaying an expired six-digit code. The in-memory code
       // remains only as a compatibility fallback for older hosts.
@@ -512,6 +516,7 @@ export class CloudRemoteConnection implements RemoteLink {
       // register_pane_delta_channel → scrollback 从缓存重绘、但实时渲染不恢复。
       // 先清掉旧订阅状态，后续 subscribePane 才会在新传输上真正重跑 _subscribe。
       this._teardownSubscriptions();
+      this.setState('connected');
       queueMicrotask(() => { if (current()) this.paneScheduler.resumeAll(); });
       this.reconnectListeners.forEach((fn) => {
         try { fn(); } catch { /* listener owns its errors */ }

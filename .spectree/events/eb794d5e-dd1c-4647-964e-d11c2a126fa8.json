@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "eb794d5e-dd1c-4647-964e-d11c2a126fa8",
+  "at": "2026-11-07T09:54:46.849Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-106",
+  "buildId": "BUILD-3fcd45f706c2",
+  "data": {
+    "previousBuildId": "BUILD-ba85b748a2f7",
+    "testEvidence": {
+      "buildId": "BUILD-ba85b748a2f7",
+      "workspaceHash": "ba89dda9e83cbb267f279fd9a008284e05515e1190aba6d1743512d0b015a25c",
+      "verifiedAt": "2026-11-07T09:54:43.048Z",
+      "eventId": "40fe37b1-ccb2-4469-bfed-c2c15104d541"
+    },
+    "absorbed": [
+      "changes/CHG-106.md",
+      "specs/l4-cloud-mobile-reauth-gate.md",
+      "src/remote/lib/cloudRemote.test.ts",
+      "src/remote/lib/cloudRemote.ts"
+    ],
+    "activated": [
+      "L4-CLOUD-MOBILE-REAUTH-GATE"
+    ],
+    "archived": []
+  }
+}

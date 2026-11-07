@@ -1,53 +1,37 @@
 {
   "version": 1,
-  "changeId": "CHG-104",
-  "specHash": "60d81f2a4373d6d245c322ea2c04c80c4705f0d42bc789fe17417c234c9b3087",
+  "changeId": "CHG-106",
+  "specHash": "3322f7a117368197e196a7adc6d3e2d3092b86ee7f3023f92328996955863019",
   "units": [
     {
-      "id": "L4-CLOUD-RELEASE-0198",
+      "id": "L4-CLOUD-MOBILE-REAUTH-GATE",
       "level": "L4",
-      "nodeHash": "e11b0b2a0f48c1d886e9b1464d2e94aa97bf8d896850c2d251aae32097436a72",
+      "nodeHash": "916333ba1b1df20820f02424dcbc135538a263870aeb189575c71dfa0f10f5c0",
       "codeTargets": [
-        "package.json",
-        "Cargo.lock",
-        "src-tauri/Cargo.toml",
-        "src-tauri/tauri.conf.json"
+        "src/remote/lib/cloudRemote.ts"
       ],
       "testTargets": [
-        "scripts/check-release-version.mjs",
-        "scripts/check-release-version.test.mjs"
+        "src/remote/lib/cloudRemote.test.ts"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "release-version",
-          "command": [
-            "node",
-            "scripts/check-release-version.mjs"
-          ],
-          "description": "四处产品版本一致为 0.1.98，独立 crate 版本不变"
-        },
-        {
-          "id": "release-version-regression",
+          "id": "mobile-reauth",
           "command": [
             "pnpm",
             "exec",
             "vitest",
             "run",
-            "scripts/check-release-version.test.mjs"
+            "src/remote/lib/cloudRemote.test.ts"
           ],
-          "description": "版本及 tag 契约拒绝缺失或不一致"
+          "description": "未授权重连不暴露 connected，成功后恢复一次；失败与过时代际不能开门"
         }
       ]
     }
   ],
   "allowedPaths": [
-    "Cargo.lock",
-    "package.json",
-    "scripts/check-release-version.mjs",
-    "scripts/check-release-version.test.mjs",
-    "src-tauri/Cargo.toml",
-    "src-tauri/tauri.conf.json"
+    "src/remote/lib/cloudRemote.test.ts",
+    "src/remote/lib/cloudRemote.ts"
   ],
   "testCommand": [
     "npm",
@@ -181,6 +165,7 @@
     "changes/CHG-103.md": "db8ee38623c2bd64c4f26059cc039b60dc6cae66e0fed2434419adfed60afe8b",
     "changes/CHG-104.md": "701f3d41deebc2ebeab89ffbae31801f80597cc419150975e6b4afd5d74f8e1b",
     "changes/CHG-105.md": "75423db63f94375898cddb5864e72ad8067acf7428ca1c0b74b3fc117260b266",
+    "changes/CHG-106.md": "a5e121ead338ae3bddb5d81b5d6379c824f3cdb3c6d22e7e9055a6907dfaf107",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -1126,6 +1111,7 @@
     "specs/l3-terminal-visual-input-repair.md": "b68a179f6722237d8de2c9cd96cf170a1a1e786d5974dd7ac93ed76a22e7f8df",
     "specs/l4-cloud-host-rejoin-session.md": "a297688f1db5740640420e68390fae55f5da322a4673f3206b381ba2084598ad",
     "specs/l4-cloud-ice-negotiation-reliability.md": "9ffb24dc04927a338c4f79f37e79f04fd2b1847c03b7259f3a8dd52e7f631951",
+    "specs/l4-cloud-mobile-reauth-gate.md": "869f80b0c43d610eccee51c283da8c91eb3a9b02868e3f8262874b2db27daecc",
     "specs/l4-cloud-release-0198.md": "742b446f82e2e31f92f8dbc8aa3f8360f6fdeaaecc3862a0101644c9107ebce4",
     "specs/l4-cloud-turn-credential-type.md": "541f222eb1502931431950b4cefc02880e3dfe14f19f2eb1e781f33a41c41028",
     "specs/l4-commune-connection-wizard.md": "55e0d08a4f29a319f1eb7154228661d1e9585f54ce75ebda007858fad433b505",
@@ -2426,8 +2412,8 @@
     "src/remote/lib/agentNavigation.ts": "86cce58a815a667ecc01dce4333518000697e2e4b272a02caddc02a1ebc6746b",
     "src/remote/lib/clipboard.test.ts": "193c8770ebe7a5ffe239fbb126ebedb63de7c3c1797b88e3081811852dd90538",
     "src/remote/lib/clipboard.ts": "eb5114470fff3122d310d8b7af8fdb1130c4e380943208684748ec9efd062463",
-    "src/remote/lib/cloudRemote.test.ts": "4021c2431fe75ac898002a3b3c866898e926e45c3d3b2053a4e89810c41f9f60",
-    "src/remote/lib/cloudRemote.ts": "50e2e9484f95dad2ba4ea74d8a61b6b998a2a4dab4edde057520908bbdcd04d2",
+    "src/remote/lib/cloudRemote.test.ts": "b83fbb92906f9e64c33510dd81b18c2b105f95912bd79d74e6bf3f8b4bd0ed7d",
+    "src/remote/lib/cloudRemote.ts": "bcc2b0da977aa2e7c3444018bea70047e43511769600296fab6cc34c0985e23e",
     "src/remote/lib/communeMemberDelivery.test.ts": "0212f399efbf2becb4b0d0dc24503bc89c3b023303f58f4cda4f9489d78c419c",
     "src/remote/lib/communeMemberDelivery.ts": "86abb070221786a225f1695c58dfae714d12c238e2f14fc4eec1e51e0b437e5e",
     "src/remote/lib/CommuneMemberMessage.svelte": "3a1e091140da8f90a76710d69d8f583bb8ba390ee51f25c428f384ad6b521ad1",
@@ -2601,6 +2587,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-609ba39a7502",
-  "manifestHash": "609ba39a750262d17408cbac5733d2f04820011829a0efd2cac2ea7fa92b9e33"
+  "buildId": "BUILD-3fcd45f706c2",
+  "manifestHash": "3fcd45f706c29f05d6a9209e28e794fb96649e37b4fa42dc4dc4643a0866f7d3"
 }

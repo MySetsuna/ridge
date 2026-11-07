@@ -796,6 +796,25 @@ describe('CloudRemoteConnection theme', () => {
 });
 
 describe('CloudRemoteConnection reconnect', () => {
+  it.each([false, true])('publishes connected only after current authorization succeeds (%s)', async authorized => {
+    const handle = fakeHandle();
+    let finish!: (ok: boolean) => void;
+    handle.tryTrustGrant = vi.fn(() => new Promise<boolean>(resolve => { finish = resolve; }));
+    const conn = new CloudRemoteConnection(handle as never);
+    await conn.init();
+    const events: string[] = [];
+    conn.onStateChange(state => events.push(state));
+    conn.onReconnect(() => events.push('restored'));
+    conn.notifyState('disconnected'); conn.notifyState('connected');
+    await flush();
+    expect(events).not.toContain('connected');
+    expect(conn.state()).not.toBe('connected');
+    finish(authorized);
+    await flush();
+    expect(events).toEqual(authorized ? ['disconnected', 'connected', 'restored'] : ['disconnected', 'error']);
+    conn.disconnect();
+  });
+
   it.each([false, true])('recovers the latest connected generation after stale authorization resolves %s', async staleResult => {
     const handle = fakeHandle();
     let finish!: (ok: boolean) => void;
