@@ -753,6 +753,10 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
         this.hostPresent = msg.role === 'host' ? false : this.hostPresent;
         if (msg.role === 'host' && !this.closed && this.state === 'connecting') {
           this.fail('对端（host）已离开', 'NETWORK');
+        } else if (msg.role === 'host' && !this.closed) {
+          this.teardownTransport();
+          this.resetBinding();
+          this.scheduleReconnect('对端（host）已离开');
         }
         return;
       case 'answer':

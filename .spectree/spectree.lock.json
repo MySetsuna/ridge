@@ -1,60 +1,46 @@
 {
   "version": 1,
-  "changeId": "CHG-102",
-  "specHash": "6c662f70b372024131143b2fe8f1bdd95036172c0dfe8549e9466332e43aed1f",
+  "changeId": "CHG-105",
+  "specHash": "c03e4c206f3e67c5194965f88f89148acf780cd8520e914d5d020be596bd2ff1",
   "units": [
     {
-      "id": "L4-CLOUD-TURN-CREDENTIAL-TYPE",
+      "id": "L4-CLOUD-HOST-REJOIN-SESSION",
       "level": "L4",
-      "nodeHash": "74cb7679a79ca75b21b61686a8c28dbfad4dfd93fd28db711963bc27d3432824",
+      "nodeHash": "5867247563e72876dca069ee42d9035694027a3b0d7d6adbd969e57c2cf2013f",
       "codeTargets": [
-        "packages/ridge-kernel/src/cloud/rtc.rs"
+        "packages/remote/src/shared/cloud/controllerCloudProvider.ts"
       ],
       "testTargets": [
-        "packages/ridge-kernel/src/cloud/rtc.rs",
+        "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
         "scripts/kernel-cloud-owner-acceptance.mjs"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "turn-native-construction",
+          "id": "host-rejoin-state",
           "command": [
-            "cargo",
-            "test",
-            "--locked",
-            "-p",
-            "ridge-kernel",
-            "--lib",
-            "cloud::rtc::imp::tests"
+            "pnpm",
+            "exec",
+            "vitest",
+            "run",
+            "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts"
           ],
-          "description": "真实 webrtc 构造验证有密码 TURN 的 host/controller 两角色可创建、缺密码仍拒绝"
+          "description": "主机离线使旧 RTC 与加密状态失效，退避后全量重建；旧回调不能污染新连接"
         },
         {
-          "id": "turn-kernel-build",
-          "command": [
-            "cargo",
-            "build",
-            "--locked",
-            "-p",
-            "ridge-kernel",
-            "--bin",
-            "ridge-kernel"
-          ],
-          "description": "构建包含修复的自有真实 Kernel"
-        },
-        {
-          "id": "turn-browser-kernel",
+          "id": "host-rejoin-browser",
           "command": [
             "node",
             "scripts/kernel-cloud-owner-acceptance.mjs"
           ],
-          "description": "混合 STUN/TURN 配置的实际 Chromium/Rust RTC、加密鉴权和原终端操作；隔离链路不冒充公网验收"
+          "description": "真实浏览器与 Kernel 在主机服务重连后恢复鉴权和原终端输入；原 shell 不变"
         }
       ]
     }
   ],
   "allowedPaths": [
-    "packages/ridge-kernel/src/cloud/rtc.rs",
+    "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
+    "packages/remote/src/shared/cloud/controllerCloudProvider.ts",
     "scripts/kernel-cloud-owner-acceptance.mjs"
   ],
   "testCommand": [
@@ -187,6 +173,8 @@
     "changes/CHG-101.md": "de0a35e4056440063d23ac286b10953608fa49d1015d9c3d5f69d3950a50eb71",
     "changes/CHG-102.md": "67713fa4961c9cdc1c4de9f34631700b740fb233ebf6b87f3bc70a493c438da5",
     "changes/CHG-103.md": "db8ee38623c2bd64c4f26059cc039b60dc6cae66e0fed2434419adfed60afe8b",
+    "changes/CHG-104.md": "bead738ffcd80943ed57971bde1693bbad8191b670616fce733f1c74df3919fa",
+    "changes/CHG-105.md": "75423db63f94375898cddb5864e72ad8067acf7428ca1c0b74b3fc117260b266",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -239,8 +227,8 @@
     "packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts": "b51991703158b2fb30f7bc6d2331bb3194762ea4ae6a642dc601d07eb0fd4005",
     "packages/remote/src/shared/cloud/cloudHostPaneSource.ts": "09ecaea4d36bf30ebb405af9da99c466ae27340fac17e8914e156b6ca0ff6837",
     "packages/remote/src/shared/cloud/cloudTransportLimits.ts": "70e5198aa56103a84208c8679e42a1dc1203ca122f6cccfa71644e66b21ce2de",
-    "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts": "e6438ce9314fc0c6b5c6eb2d276c3b4ecf105a9a5c93a0d365376725aeb2a965",
-    "packages/remote/src/shared/cloud/controllerCloudProvider.ts": "efbb235605e68130d5199d6778df1947af29a41286e5a30608240c49a054dba3",
+    "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts": "3d7dafec36902001eb1b82315fd2a093e1e081a64bf23c6744d3a1f050f0ba35",
+    "packages/remote/src/shared/cloud/controllerCloudProvider.ts": "a9c2d8f9a033cc22e6c66083a9f462ef10cd1f431fc50dc31739440ed075cfea",
     "packages/remote/src/shared/cloud/controllerIdentity.test.ts": "ed7dedee46ed14ae7f61a6737102588430da181c3586c0edf7ff42398777e6e4",
     "packages/remote/src/shared/cloud/controllerIdentity.ts": "ffcbb970bbae87b5eeef15a89e43c38a7e703490040561972287de9e8b52867b",
     "packages/remote/src/shared/cloud/controllerInstanceId.test.ts": "3f649a43d49ebe5ef62c3b93fa815f2c30c530234f130fdaddcef9946a5a5ed3",
@@ -905,7 +893,7 @@
     "scripts/ensure-teammate-shim.mjs": "38152e30d4c917111007131d546feeab755abf9d883ac32f5f52af508fe9df05",
     "scripts/gen-remote-icons.mjs": "4b7e412380543987bc1426544e7a43a922ae0b21d80471392498f08276cea525",
     "scripts/generate-review-pack.mjs": "123a75b869901996910573d866dd58539129715d593eec384811514c71a37b18",
-    "scripts/kernel-cloud-owner-acceptance.mjs": "6bbf717848f5e7b96f73a0ff68ad6c1c2d778ca25e64dd0f5575eab3dca5edd2",
+    "scripts/kernel-cloud-owner-acceptance.mjs": "c9e3fdcc783db1f07140d651681c6cbf0c462833e651f45aef5e6deef26fa185",
     "scripts/kernel-host-smoke.ps1": "16594d4b4b5354ba2da8fad434a73a218a5298fd25a10aec3ef793fce82250b6",
     "scripts/kernel-lan-owner-acceptance.mjs": "e661e9cd4c86c12678ed709f999c08f76892c311ce8c99b4099a35a6b3ccfb7f",
     "scripts/lib/cdpModuleUrl.mjs": "5e12a93497f627425b544666f4d6343b7d9b019a78fa27dc25869c5bfccc5505",
@@ -1130,6 +1118,7 @@
     "specs/l3-runtime-workspace-continuity.md": "350703f12b771ad46d34aae4fa5b46d2fdadb9d4dda13290c527e144a70c7e6d",
     "specs/l3-spec-mapping-governance.md": "84c8e5ffee176e5733a352dbf85a6cb3bd2e4b454e59c7ffe4b6af308cbc82a9",
     "specs/l3-terminal-visual-input-repair.md": "b68a179f6722237d8de2c9cd96cf170a1a1e786d5974dd7ac93ed76a22e7f8df",
+    "specs/l4-cloud-host-rejoin-session.md": "a297688f1db5740640420e68390fae55f5da322a4673f3206b381ba2084598ad",
     "specs/l4-cloud-ice-negotiation-reliability.md": "9ffb24dc04927a338c4f79f37e79f04fd2b1847c03b7259f3a8dd52e7f631951",
     "specs/l4-cloud-turn-credential-type.md": "541f222eb1502931431950b4cefc02880e3dfe14f19f2eb1e781f33a41c41028",
     "specs/l4-commune-connection-wizard.md": "55e0d08a4f29a319f1eb7154228661d1e9585f54ce75ebda007858fad433b505",
@@ -2605,6 +2594,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-bace5e91b648",
-  "manifestHash": "bace5e91b648e80a17fb489eaec2775e2c1afaecc8dded320fc1e2317f6097fd"
+  "buildId": "BUILD-2695ad2ab716",
+  "manifestHash": "2695ad2ab71657cceb88842d25cc4432eb31cd8440d3ed221e7ee22be1412b60"
 }

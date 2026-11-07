@@ -151,6 +151,17 @@ try {
   const data=process.platform==='win32'?`call "${script}"\r\n`:`sh '${script.replaceAll("'","'\\''")}'\n`;
   const ack=await second.evaluate(args=>window.client.rpc('write_to_pty',args),{workspaceId:workspace,paneId:pane,data});assert.equal(ack.error,undefined);
   await until(async()=>{const output=await request(`/v1/domain/ptys/${pane}`,undefined,'GET');return Buffer.from(output.data_b64,'base64').toString().includes('CLOUD_RUNTIME_OWNER_REPLY');},'RTC input did not reach the real child');
+  const originalChild=(await request('/v1/domain/ptys',undefined,'GET')).ptys.find(pty=>pty.pty_id===pane);
+  const previousPeer=await second.evaluate(()=>JSON.stringify(Array.from(window.client.provider.getBindTranscript())));
+  await command('cloud_host_offline');
+  await until(async()=>await second.evaluate(()=>window.client.state!=='connected'),'host offline left the browser falsely connected');
+  await command('cloud_host_online',{deviceToken:'owned-device',deviceName:'desktop',username:'owner',baseDomain:`localhost:${port}`,plaintext:true});
+  await until(async()=>await second.evaluate(previous=>window.client.state==='connected'&&JSON.stringify(Array.from(window.client.provider.getBindTranscript()??[]))!==previous,previousPeer),'host rejoin did not rebuild the encrypted browser session');
+  const resumed=join(root,'browser-host-rejoin.txt');
+  const rejoined=await second.evaluate(args=>window.client.rpc('write_to_pty',args),{workspaceId:workspace,paneId:pane,data:`echo BROWSER_HOST_REJOIN > "${resumed.replaceAll('\\','/')}"\r\n`});assert.equal(rejoined.error,undefined);
+  await until(async()=>{try{return (await readFile(resumed,'utf8')).includes('BROWSER_HOST_REJOIN');}catch{return false;}},'browser rejoin input did not reach the original child');
+  const resumedChild=(await request('/v1/domain/ptys',undefined,'GET')).ptys.find(pty=>pty.pty_id===pane);
+  assert.equal(resumedChild.child_pid,originalChild.child_pid);assert.equal(resumedChild.child_start_instance,originalChild.child_start_instance);
   await second.close();await until(async()=>(await command('get_cloud_host_state')).sessions.length===0,'browser peers did not release');
   const config={userToken:'owned-controller',username:'owner',deviceName:'desktop',baseDomain:`localhost:${port}`,plaintext:true,code:(await command('get_remote_info')).totpCode,legacyFingerprint:'1111-2222-3333-4444'};
   await command('initialize_cloud_controller_identity',{legacySeed:Array(32).fill(9)});

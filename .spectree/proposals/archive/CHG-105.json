@@ -1,0 +1,18 @@
+{
+  "changeId": "CHG-105",
+  "remove": [],
+  "nodes": [{
+    "id": "L4-CLOUD-HOST-REJOIN-SESSION",
+    "level": "L4",
+    "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+    "title": "Cloud 主机重入后重建完整控制会话",
+    "codeTargets": ["packages/remote/src/shared/cloud/controllerCloudProvider.ts"],
+    "testTargets": ["packages/remote/src/shared/cloud/controllerCloudProvider.test.ts", "scripts/kernel-cloud-owner-acceptance.mjs"],
+    "dependsOn": ["L4-CLOUD-TURN-CREDENTIAL-TYPE"],
+    "acceptanceChecks": [
+      {"id":"host-rejoin-state","command":["pnpm","exec","vitest","run","packages/remote/src/shared/cloud/controllerCloudProvider.test.ts"],"description":"主机离线使旧 RTC 与加密状态失效，退避后全量重建；旧回调不能污染新连接"},
+      {"id":"host-rejoin-browser","command":["node","scripts/kernel-cloud-owner-acceptance.mjs"],"description":"真实浏览器与 Kernel 在主机服务重连后恢复鉴权和原终端输入；原 shell 不变"}
+    ],
+    "body": "# 主机重入与会话连续性\n\n收到当前信令的 host peer-leave 时，已建立或握手中的控制会话不能继续宣称在线。立即关闭旧 RTC、DataChannel、信令及 E2EE 状态，使用现有退避与全量重建机制重新建立信令、RTC 和加密鉴权。主机重入不能沿用旧密钥或仅 ICE restart。首次连接尚未建立时保留明确离线错误；重复事件和旧传输回调不得产生并行连接或污染新会话。仅控制端自身信令断开、RTC 仍健康的情况维持既有策略。\n\n回归须覆盖已连接会话的主机离开、完整新传输及重新加密握手；真实浏览器/Kernel 验收需切断并重启自有主机 Cloud 服务，重新鉴权后写入原终端，验证 child PID 不变。公开部署后另执行实际 TURN 中继下的输入、刷新与主机重连，不以 fixture 冒充公网验收。"
+  }]
+}

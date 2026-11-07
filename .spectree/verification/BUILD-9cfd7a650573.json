@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "buildId": "BUILD-9cfd7a650573",
+  "changeId": "CHG-105",
+  "specHash": "8f050c254e39089302782fd82910e54cfa751a1a39ae72ea723d39899a3023de",
+  "workspaceHash": "97c89693cf7a7cfd4d2e25248ad2cc4f66b2f6cb4213b1a10f749f1eee804812",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-CLOUD-HOST-REJOIN-SESSION",
+      "checkId": "host-rejoin-state",
+      "command": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts"
+      ],
+      "description": "主机离线使旧 RTC 与加密状态失效，退避后全量重建；旧回调不能污染新连接",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-CLOUD-HOST-REJOIN-SESSION",
+      "checkId": "host-rejoin-browser",
+      "command": [
+        "node",
+        "scripts/kernel-cloud-owner-acceptance.mjs"
+      ],
+      "description": "真实浏览器与 Kernel 在主机服务重连后恢复鉴权和原终端输入；原 shell 不变",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-07T09:29:21.453Z",
+  "diagnostics": [],
+  "eventId": "c632887d-74e7-4413-ae48-12d507ecc302"
+}

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "95b6ea01-af4c-4a3e-888c-24b351c03d2e",
+  "at": "2026-11-07T09:23:01.324Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-105",
+  "data": {
+    "changeId": "CHG-105",
+    "specHash": "8f050c254e39089302782fd82910e54cfa751a1a39ae72ea723d39899a3023de",
+    "approvedAt": "2026-11-07T09:23:01.302Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "用户要求真实公网 E2E 后交付，发现问题继续修复；沿用已批准的 change 元数据例外",
+    "attributionVerified": false
+  }
+}

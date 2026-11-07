@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "id": "19d032d2-c8d0-4e6b-b5d0-de33e977cb8e",
+  "at": "2026-11-07T09:29:24.505Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-105",
+  "buildId": "BUILD-2695ad2ab716",
+  "data": {
+    "previousBuildId": "BUILD-9cfd7a650573",
+    "testEvidence": {
+      "buildId": "BUILD-9cfd7a650573",
+      "workspaceHash": "97c89693cf7a7cfd4d2e25248ad2cc4f66b2f6cb4213b1a10f749f1eee804812",
+      "verifiedAt": "2026-11-07T09:29:21.453Z",
+      "eventId": "c632887d-74e7-4413-ae48-12d507ecc302"
+    },
+    "absorbed": [
+      "changes/CHG-104.md",
+      "changes/CHG-105.md",
+      "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
+      "packages/remote/src/shared/cloud/controllerCloudProvider.ts",
+      "scripts/kernel-cloud-owner-acceptance.mjs",
+      "specs/l4-cloud-host-rejoin-session.md"
+    ],
+    "activated": [
+      "L4-CLOUD-HOST-REJOIN-SESSION"
+    ],
+    "archived": []
+  }
+}

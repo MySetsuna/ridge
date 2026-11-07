@@ -838,6 +838,34 @@ describe('ControllerCloudProvider 断线自动重连 (P1)', () => {
     expect(provider.getState()).toBe('connected');
   });
 
+  it('host leaving invalidates a connected RTC session and rebuilds encryption after backoff', async () => {
+    const { provider, pc, dc } = await connectToConnected();
+    const ws = FakeWebSocket.instances[0];
+    const staleMessage = ws.onmessage!;
+    ws.deliver({ t: 'peer-leave', role: 'controller' });
+    expect(provider.getState()).toBe('connected');
+    ws.deliver({ t: 'peer-leave', role: 'host' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(provider.getState()).toBe('disconnected');
+    expect(pc.connectionState).toBe('closed');
+    expect(dc.readyState).toBe('closed');
+    expect(provider.getBindTranscript()).toBeNull();
+    await vi.advanceTimersByTimeAsync(1400);
+    expect(FakePeerConnection.instances).toHaveLength(2);
+    const fresh = FakePeerConnection.instances[1];
+    const signal = FakeWebSocket.instances[1];
+    staleMessage({ data: JSON.stringify({ t: 'peer-leave', role: 'host' }) });
+    signal.deliver({ t: 'welcome', room: 'my-laptop-alice', role: 'controller', peerPresent: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(signal.sentParsed().filter(message => message.t === 'offer')).toHaveLength(1);
+    fresh.channel!.fireOpen();
+    hostHandshake(fresh.channel!, signal);
+    fresh.connectionState = 'connected';
+    fresh.onconnectionstatechange?.();
+    expect(provider.getState()).toBe('connected');
+    provider.disconnect();
+  });
+
   it('disconnect() 取消待定重连，不再重建', async () => {
     const { provider, pc } = await connectToConnected();
     pc.connectionState = 'failed';

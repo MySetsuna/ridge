@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "f44c6a38-d2d3-4507-89f6-0e2be0b0091b",
+  "at": "2026-11-07T09:21:42.346Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-105",
+  "data": {
+    "title": "修复主机重入信令房间后旧加密通道假在线",
+    "implementation": "REQUIRED"
+  }
+}
