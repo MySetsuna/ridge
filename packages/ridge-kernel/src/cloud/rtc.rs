@@ -101,6 +101,7 @@ mod imp {
     use webrtc::data_channel::data_channel_message::DataChannelMessage;
     use webrtc::data_channel::RTCDataChannel;
     use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+    use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
     use webrtc::ice_transport::ice_server::RTCIceServer;
     use webrtc::peer_connection::configuration::RTCConfiguration;
     use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -178,6 +179,7 @@ mod imp {
                 urls: server.urls,
                 username: server.username.unwrap_or_default(),
                 credential: server.credential.unwrap_or_default(),
+                credential_type: RTCIceCredentialType::Password,
                 ..Default::default()
             })
             .collect()
@@ -204,6 +206,41 @@ mod imp {
                 }));
             })
         }));
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn turn_servers(credential: Option<&str>) -> Vec<IceServerConfig> {
+            vec![IceServerConfig {
+                urls: vec!["turn:127.0.0.1:9?transport=udp".into()],
+                username: Some("owned-turn-test".into()),
+                credential: credential.map(str::to_owned),
+            }]
+        }
+
+        #[tokio::test]
+        async fn turn_password_initializes_both_real_rtc_roles() {
+            let (_input, incoming) = mpsc::channel(8);
+            let (outgoing, _output) = mpsc::channel(8);
+            let mut answerer = WebRtcHost.answer(turn_servers(Some("owned-password")), incoming, outgoing)
+                .await.expect("password TURN configuration must initialize the host");
+            answerer.close().await;
+
+            let (_input, incoming) = mpsc::channel(8);
+            let (outgoing, _output) = mpsc::channel(8);
+            let mut offerer = WebRtcHost.offer(turn_servers(Some("owned-password")), incoming, outgoing)
+                .await.expect("password TURN configuration must initialize the controller");
+            offerer.close().await;
+        }
+
+        #[tokio::test]
+        async fn turn_without_password_is_still_rejected() {
+            let (_input, incoming) = mpsc::channel(8);
+            let (outgoing, _output) = mpsc::channel(8);
+            assert!(WebRtcHost.answer(turn_servers(None), incoming, outgoing).await.is_err());
+        }
     }
 
     fn register_channel(dc:&Arc<RTCDataChannel>,input:mpsc::Sender<Vec<u8>>){

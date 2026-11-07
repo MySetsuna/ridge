@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "id": "ab8c4369-972c-43fe-be5c-61e7740ef961",
+  "at": "2026-11-07T09:10:03.962Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-102",
+  "buildId": "BUILD-c6688025dde4",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-c6688025dde4",
+    "changeId": "CHG-102",
+    "specHash": "34313c5a4467143f85ba2bd8f74784194ad4005fb887897c2026a5cb1a357763",
+    "workspaceHash": "8a7dc4ec2ec6d3f13d0eca7ccfd56ab17db1239a6e97d8754bd200d76f60445e",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "PASS",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-CLOUD-TURN-CREDENTIAL-TYPE",
+        "checkId": "turn-native-construction",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--lib",
+          "cloud::rtc::imp::tests"
+        ],
+        "description": "真实 webrtc 构造验证有密码 TURN 的 host/controller 两角色可创建、缺密码仍拒绝",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-CLOUD-TURN-CREDENTIAL-TYPE",
+        "checkId": "turn-kernel-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--bin",
+          "ridge-kernel"
+        ],
+        "description": "构建包含修复的自有真实 Kernel",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-CLOUD-TURN-CREDENTIAL-TYPE",
+        "checkId": "turn-browser-kernel",
+        "command": [
+          "node",
+          "scripts/kernel-cloud-owner-acceptance.mjs"
+        ],
+        "description": "混合 STUN/TURN 配置的实际 Chromium/Rust RTC、加密鉴权和原终端操作；隔离链路不冒充公网验收",
+        "status": "PASS",
+        "exitCode": 0
+      }
+    ],
+    "valid": true,
+    "verifiedAt": "2026-11-07T09:10:03.960Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "packages/ridge-kernel/src/cloud/rtc.rs",
+        "before": "96f4f04024c3058f40c83f6146338b5de649da531b037e88ba8da0a84de3cbe6",
+        "after": "4c9d16766c91b4503346b98f7e09cbe0bdeaf7bdae63f858a76989d4f6e9aa09"
+      },
+      {
+        "path": "scripts/kernel-cloud-owner-acceptance.mjs",
+        "before": "dcafdf7682408587f879faf2184e378faf97d97b28799e2a40ce2ffd35333531",
+        "after": "6bbf717848f5e7b96f73a0ff68ad6c1c2d778ca25e64dd0f5575eab3dca5edd2"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/ab8c4369-972c-43fe-be5c-61e7740ef961.log"
+  }
+}

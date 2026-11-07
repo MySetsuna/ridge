@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "9032e4a7-6f71-49ed-a81f-d64347fb23d7",
+  "at": "2026-11-07T07:22:30.908Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-102",
+  "data": {
+    "title": "允许真实 Cloud 验收指定安装版 Kernel 以定位路径相关连接差异",
+    "implementation": "REQUIRED"
+  }
+}

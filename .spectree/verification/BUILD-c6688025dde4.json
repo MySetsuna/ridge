@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "buildId": "BUILD-c6688025dde4",
+  "changeId": "CHG-102",
+  "specHash": "34313c5a4467143f85ba2bd8f74784194ad4005fb887897c2026a5cb1a357763",
+  "workspaceHash": "8a7dc4ec2ec6d3f13d0eca7ccfd56ab17db1239a6e97d8754bd200d76f60445e",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-CLOUD-TURN-CREDENTIAL-TYPE",
+      "checkId": "turn-native-construction",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--lib",
+        "cloud::rtc::imp::tests"
+      ],
+      "description": "真实 webrtc 构造验证有密码 TURN 的 host/controller 两角色可创建、缺密码仍拒绝",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-CLOUD-TURN-CREDENTIAL-TYPE",
+      "checkId": "turn-kernel-build",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--bin",
+        "ridge-kernel"
+      ],
+      "description": "构建包含修复的自有真实 Kernel",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-CLOUD-TURN-CREDENTIAL-TYPE",
+      "checkId": "turn-browser-kernel",
+      "command": [
+        "node",
+        "scripts/kernel-cloud-owner-acceptance.mjs"
+      ],
+      "description": "混合 STUN/TURN 配置的实际 Chromium/Rust RTC、加密鉴权和原终端操作；隔离链路不冒充公网验收",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-07T09:10:03.960Z",
+  "diagnostics": [],
+  "eventId": "ab8c4369-972c-43fe-be5c-61e7740ef961"
+}

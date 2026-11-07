@@ -591,5 +591,17 @@
       "buildId": "BUILD-197fd91f932f",
       "specHash": "d8bf2e90b764b58e634782288b173013c54291377e949206bee04e49496815e0"
     }
+  },
+  {
+    "changeId": "CHG-102",
+    "specHash": "6c662f70b372024131143b2fe8f1bdd95036172c0dfe8549e9466332e43aed1f",
+    "approvedAt": "2026-11-07T09:13:26.872Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "用户要求修复实际公网连接，并自行完成真实 E2E 后交付",
+    "derivedFrom": {
+      "buildId": "BUILD-c6688025dde4",
+      "specHash": "34313c5a4467143f85ba2bd8f74784194ad4005fb887897c2026a5cb1a357763"
+    }
   }
 ]

@@ -1,51 +1,61 @@
 {
   "version": 1,
-  "changeId": "CHG-101",
-  "specHash": "87aadc855524b1307de81c84672b7fecb6b6522023483b28710137654d12887c",
+  "changeId": "CHG-102",
+  "specHash": "6c662f70b372024131143b2fe8f1bdd95036172c0dfe8549e9466332e43aed1f",
   "units": [
     {
-      "id": "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
+      "id": "L4-CLOUD-TURN-CREDENTIAL-TYPE",
       "level": "L4",
-      "nodeHash": "4da69abbbfd305d6002c8d97477d690cbe02e2fb0cbf17b38c9d00ac13cd0b76",
+      "nodeHash": "74cb7679a79ca75b21b61686a8c28dbfad4dfd93fd28db711963bc27d3432824",
       "codeTargets": [
-        "src/lib/teammate/teammateGroups.svelte.ts",
-        "src/lib/teammate/HostCommuneGroups.svelte",
-        "src/lib/i18n/messages/commune.ts"
+        "packages/ridge-kernel/src/cloud/rtc.rs"
       ],
       "testTargets": [
-        "src/lib/teammate/teammateGroups.test.ts",
-        "scripts/commune-global-ui-acceptance.mjs"
+        "packages/ridge-kernel/src/cloud/rtc.rs",
+        "scripts/kernel-cloud-owner-acceptance.mjs"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "group-refresh-races",
+          "id": "turn-native-construction",
           "command": [
-            "pnpm",
-            "exec",
-            "vitest",
-            "run",
-            "src/lib/teammate/teammateGroups.test.ts"
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--lib",
+            "cloud::rtc::imp::tests"
           ],
-          "description": "覆盖初次加载、后台读取中写入、过期读取与错误返回、写入并发拒绝、作用域切换、失败后显式重试及 legacy 迁移互斥"
+          "description": "真实 webrtc 构造验证有密码 TURN 的 host/controller 两角色可创建、缺密码仍拒绝"
         },
         {
-          "id": "group-refresh-ui",
+          "id": "turn-kernel-build",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--bin",
+            "ridge-kernel"
+          ],
+          "description": "构建包含修复的自有真实 Kernel"
+        },
+        {
+          "id": "turn-browser-kernel",
           "command": [
             "node",
-            "scripts/commune-global-ui-acceptance.mjs"
+            "scripts/kernel-cloud-owner-acceptance.mjs"
           ],
-          "description": "生产 Commune 组件在后台读取挂起时仍可编辑与提交，读取旧回包不能回退新投影，窄屏状态可读且既有编组、派发、审批和接入回归成立"
+          "description": "混合 STUN/TURN 配置的实际 Chromium/Rust RTC、加密鉴权和原终端操作；隔离链路不冒充公网验收"
         }
       ]
     }
   ],
   "allowedPaths": [
-    "scripts/commune-global-ui-acceptance.mjs",
-    "src/lib/i18n/messages/commune.ts",
-    "src/lib/teammate/HostCommuneGroups.svelte",
-    "src/lib/teammate/teammateGroups.svelte.ts",
-    "src/lib/teammate/teammateGroups.test.ts"
+    "packages/ridge-kernel/src/cloud/rtc.rs",
+    "scripts/kernel-cloud-owner-acceptance.mjs"
   ],
   "testCommand": [
     "npm",
@@ -175,7 +185,8 @@
     "changes/CHG-099.md": "c152356827c7bfab1216f931a588597ae163d22bd7cfd81dea1fbe5a3e2b00f8",
     "changes/CHG-100.md": "7cb9f7fd3ecc2f65c632772a985821e4aae08da2ebff31578a65b16c6ffeafa0",
     "changes/CHG-101.md": "de0a35e4056440063d23ac286b10953608fa49d1015d9c3d5f69d3950a50eb71",
-    "changes/CHG-102.md": "d810412244195025fb403973f03f6b9e37701b087ccb2b9978153d594e0672ed",
+    "changes/CHG-102.md": "67713fa4961c9cdc1c4de9f34631700b740fb233ebf6b87f3bc70a493c438da5",
+    "changes/CHG-103.md": "db8ee38623c2bd64c4f26059cc039b60dc6cae66e0fed2434419adfed60afe8b",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -599,7 +610,7 @@
     "packages/ridge-kernel/src/cloud/mod.rs": "a131a263992e0526e52abd1b1d99ce3545bdd86b6acf81b76955cb48b645c7f0",
     "packages/ridge-kernel/src/cloud/mux.rs": "f6ee87eee360a29268edcbf8177582d791cc0081b64a405366a9ee74759d05d5",
     "packages/ridge-kernel/src/cloud/protocol.rs": "8070ff8a14991ca93c9ad3902f8578e9d7d228f7e25a72ba9b381d3cc4f7f6a0",
-    "packages/ridge-kernel/src/cloud/rtc.rs": "96f4f04024c3058f40c83f6146338b5de649da531b037e88ba8da0a84de3cbe6",
+    "packages/ridge-kernel/src/cloud/rtc.rs": "4c9d16766c91b4503346b98f7e09cbe0bdeaf7bdae63f858a76989d4f6e9aa09",
     "packages/ridge-kernel/src/cloud/session_control_tests.rs": "34fa86be170cb097ba385f58948b53f517ab3e2c969d0ff6f1c3b6b10e3b5bbc",
     "packages/ridge-kernel/src/cloud/session_control.rs": "721ebcf546f32eb1d0620abbd7a8a20653cd91ac5a8de494a872c6de22b2c7cd",
     "packages/ridge-kernel/src/cloud/signaling.rs": "fd096bdfd09c4534a25e441df64f198d0abd100befbadbd5b88a6d9205edb867",
@@ -894,7 +905,7 @@
     "scripts/ensure-teammate-shim.mjs": "38152e30d4c917111007131d546feeab755abf9d883ac32f5f52af508fe9df05",
     "scripts/gen-remote-icons.mjs": "4b7e412380543987bc1426544e7a43a922ae0b21d80471392498f08276cea525",
     "scripts/generate-review-pack.mjs": "123a75b869901996910573d866dd58539129715d593eec384811514c71a37b18",
-    "scripts/kernel-cloud-owner-acceptance.mjs": "dcafdf7682408587f879faf2184e378faf97d97b28799e2a40ce2ffd35333531",
+    "scripts/kernel-cloud-owner-acceptance.mjs": "6bbf717848f5e7b96f73a0ff68ad6c1c2d778ca25e64dd0f5575eab3dca5edd2",
     "scripts/kernel-host-smoke.ps1": "16594d4b4b5354ba2da8fad434a73a218a5298fd25a10aec3ef793fce82250b6",
     "scripts/kernel-lan-owner-acceptance.mjs": "e661e9cd4c86c12678ed709f999c08f76892c311ce8c99b4099a35a6b3ccfb7f",
     "scripts/lib/cdpModuleUrl.mjs": "5e12a93497f627425b544666f4d6343b7d9b019a78fa27dc25869c5bfccc5505",
@@ -1120,6 +1131,7 @@
     "specs/l3-spec-mapping-governance.md": "84c8e5ffee176e5733a352dbf85a6cb3bd2e4b454e59c7ffe4b6af308cbc82a9",
     "specs/l3-terminal-visual-input-repair.md": "b68a179f6722237d8de2c9cd96cf170a1a1e786d5974dd7ac93ed76a22e7f8df",
     "specs/l4-cloud-ice-negotiation-reliability.md": "9ffb24dc04927a338c4f79f37e79f04fd2b1847c03b7259f3a8dd52e7f631951",
+    "specs/l4-cloud-turn-credential-type.md": "541f222eb1502931431950b4cefc02880e3dfe14f19f2eb1e781f33a41c41028",
     "specs/l4-commune-connection-wizard.md": "55e0d08a4f29a319f1eb7154228661d1e9585f54ce75ebda007858fad433b505",
     "specs/l4-commune-group-dispatch-intent.md": "29265c991a0a8cd463e077c07e8811c152d439cb13c91c09bd5f733d37689810",
     "specs/l4-commune-group-online-eligibility.md": "b2c1504eee42922418f323f556e2ac2a0c7755640178ecc267b23af3338d7b47",
@@ -2593,6 +2605,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-b6fbdea1ec80",
-  "manifestHash": "b6fbdea1ec805eb672779504d96c86f093e0653231345c867e0285c611e6de3b"
+  "buildId": "BUILD-bace5e91b648",
+  "manifestHash": "bace5e91b648e80a17fb489eaec2775e2c1afaecc8dded320fc1e2317f6097fd"
 }

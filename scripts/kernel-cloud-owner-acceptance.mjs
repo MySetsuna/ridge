@@ -21,7 +21,7 @@ const server=http.createServer((request,response)=>{
   response.setHeader('access-control-allow-origin','*');response.setHeader('access-control-allow-headers','authorization,content-type');
   if(request.method==='OPTIONS'){response.writeHead(204);response.end();return;}
   if(request.url==='/client.js'){response.setHeader('content-type','text/javascript');response.end(bundle);return;}
-  if(request.url==='/api/v1/ice-servers'){response.setHeader('content-type','application/json');response.end(JSON.stringify({ok:true,data:{iceServers:[{urls:'stun:127.0.0.1:9'}]}}));return;}
+  if(request.url==='/api/v1/ice-servers'){response.setHeader('content-type','application/json');response.end(JSON.stringify({ok:true,data:{iceServers:[{urls:'stun:127.0.0.1:9'},{urls:'turn:127.0.0.1:9?transport=udp',username:'owned-turn-test',credential:'owned-password'}]}}));return;}
   if(request.url==='/api/v1/workspace-shares/verify-access'){
     let body='';request.on('data',bytes=>body+=bytes);request.on('end',()=>{
       if(request.headers.authorization!=='Bearer owned-device'||JSON.parse(body).token!=='owned-share'){response.writeHead(403);response.end('{}');return;}

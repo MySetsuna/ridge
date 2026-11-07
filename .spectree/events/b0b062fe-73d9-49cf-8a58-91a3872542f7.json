@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "b0b062fe-73d9-49cf-8a58-91a3872542f7",
+  "at": "2026-11-07T09:13:26.874Z",
+  "type": "approval_derived",
+  "source": "local_operation",
+  "changeId": "CHG-102",
+  "data": {
+    "changeId": "CHG-102",
+    "specHash": "6c662f70b372024131143b2fe8f1bdd95036172c0dfe8549e9466332e43aed1f",
+    "approvedAt": "2026-11-07T09:13:26.872Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "用户要求修复实际公网连接，并自行完成真实 E2E 后交付",
+    "derivedFrom": {
+      "buildId": "BUILD-c6688025dde4",
+      "specHash": "34313c5a4467143f85ba2bd8f74784194ad4005fb887897c2026a5cb1a357763"
+    },
+    "attributionVerified": false
+  }
+}

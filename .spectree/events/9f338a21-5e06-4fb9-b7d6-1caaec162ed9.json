@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "9f338a21-5e06-4fb9-b7d6-1caaec162ed9",
+  "at": "2026-11-07T08:38:49.101Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-102",
+  "data": {
+    "changeId": "CHG-102",
+    "specHash": "34313c5a4467143f85ba2bd8f74784194ad4005fb887897c2026a5cb1a357763",
+    "approvedAt": "2026-11-07T08:38:49.098Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "用户要求修复实际公网连接，并自行完成真实 E2E 后交付",
+    "attributionVerified": false
+  }
+}

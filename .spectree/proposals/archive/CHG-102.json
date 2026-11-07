@@ -1,0 +1,19 @@
+{
+  "changeId":"CHG-102",
+  "nodes":[{
+    "id":"L4-CLOUD-TURN-CREDENTIAL-TYPE",
+    "level":"L4",
+    "parent":"L3-REMOTE-INTERACTION-RELIABILITY",
+    "title":"Kernel 的 TURN 密码凭据映射及真实连接验收",
+    "codeTargets":["packages/ridge-kernel/src/cloud/rtc.rs"],
+    "testTargets":["packages/ridge-kernel/src/cloud/rtc.rs","scripts/kernel-cloud-owner-acceptance.mjs"],
+    "dependsOn":[],
+    "acceptanceChecks":[
+      {"id":"turn-native-construction","command":["cargo","test","--locked","-p","ridge-kernel","--lib","cloud::rtc::imp::tests"],"description":"真实 webrtc 构造验证有密码 TURN 的 host/controller 两角色可创建、缺密码仍拒绝"},
+      {"id":"turn-kernel-build","command":["cargo","build","--locked","-p","ridge-kernel","--bin","ridge-kernel"],"description":"构建包含修复的自有真实 Kernel"},
+      {"id":"turn-browser-kernel","command":["node","scripts/kernel-cloud-owner-acceptance.mjs"],"description":"混合 STUN/TURN 配置的实际 Chromium/Rust RTC、加密鉴权和原终端操作；隔离链路不冒充公网验收"}
+    ],
+    "body":"# TURN 密码凭据映射\n\nCloud API 的 TURN username/credential 属于密码凭据；Kernel 将 IceServerConfig 转换为 webrtc::RTCIceServer 时须明确设置 RTCIceCredentialType::Password，不能依赖该库的 Unspecified 默认。保留原 URL、用户名与密码，不以删除 TURN、吞掉构造错误或降低认证来换取连接。该映射同时用于 Kernel answerer 与 offerer。未提供必需 TURN 密码时继续由真实 WebRTC 校验拒绝。\n\n回归应在真实 WebRTC 构造边界验证正常密码与缺密码配置。已有真实浏览器/Kernel 验收使用包含密码 TURN 的 ICE 列表，避免仅 STUN fixture 掩盖生产差异。STUN/故障 TURN 的隔离用例仅证明配置与协商执行链；实际公网 E2E 须另外通过正常登录、服务端签发 ICE、真实主机 answer/加密/终端输入、刷新与重连验证。用户既有终端进程不因测试擅自重启。"
+  }],
+  "remove":[]
+}

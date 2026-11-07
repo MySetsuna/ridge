@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "8112651f-9243-4de8-9c8a-826290fafc6d",
+  "at": "2026-11-07T09:13:26.897Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-102",
+  "buildId": "BUILD-bace5e91b648",
+  "data": {
+    "previousBuildId": "BUILD-c6688025dde4",
+    "testEvidence": {
+      "buildId": "BUILD-c6688025dde4",
+      "workspaceHash": "8a7dc4ec2ec6d3f13d0eca7ccfd56ab17db1239a6e97d8754bd200d76f60445e",
+      "verifiedAt": "2026-11-07T09:10:03.960Z",
+      "eventId": "ab8c4369-972c-43fe-be5c-61e7740ef961"
+    },
+    "absorbed": [
+      "changes/CHG-102.md",
+      "packages/ridge-kernel/src/cloud/rtc.rs",
+      "scripts/kernel-cloud-owner-acceptance.mjs",
+      "specs/l4-cloud-turn-credential-type.md"
+    ],
+    "activated": [
+      "L4-CLOUD-TURN-CREDENTIAL-TYPE"
+    ],
+    "archived": []
+  }
+}
