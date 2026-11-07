@@ -1,48 +1,46 @@
 {
   "version": 1,
-  "changeId": "CHG-094",
-  "specHash": "eecf54f2882d2f3a6c350fce11bda0f52f5cc63074110137682b42ee9c71f1aa",
+  "changeId": "CHG-095",
+  "specHash": "cc9d8a4a56a15854a020ad89e6234ad871eae3994768faa99b6343e50133388f",
   "units": [
     {
-      "id": "L4-COMMUNE-GROUP-USABILITY",
+      "id": "L4-REMOTE-PWA-EDIT-PROTECTION",
       "level": "L4",
-      "nodeHash": "41be677ecd614dc0a2e9de2e32a6b24de2ae959cdad0f604c58ead25055ddb25",
+      "nodeHash": "924a8a7535d128d75333ca5614762c1b23860cab1b915f7b2050bcd608a513b4",
       "codeTargets": [
-        "src/lib/teammate/TerminalAgentRow.svelte",
-        "src/lib/teammate/HostCommuneGroups.svelte",
-        "src/lib/teammate/teammateGroups.svelte.ts",
-        "src/lib/teammate/AgentCenterPanel.svelte",
-        "src/remote/lib/GlobalCommuneRoster.svelte",
-        "src/lib/i18n/messages/commune.ts",
-        "src/lib/teammate/communeVisual.css"
+        "src/remote/lib/pwaUpdate.ts",
+        "src/remote/main.ts",
+        "src/remote/MainApp.svelte",
+        "src/remote/lib/FileViewer.svelte",
+        "src/lib/i18n/messages/mobile.ts"
       ],
       "testTargets": [
-        "src/lib/teammate/teammateGroups.test.ts",
-        "scripts/commune-global-ui-acceptance.mjs"
+        "src/remote/lib/pwaUpdate.test.ts",
+        "scripts/remote-tabs-acceptance.mjs",
+        "src/remote/main.test.ts"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "commune-group-usability-ui",
+          "id": "pwa-file-editor-integration",
           "command": [
             "node",
-            "scripts/commune-global-ui-acceptance.mjs"
+            "scripts/remote-tabs-acceptance.mjs"
           ],
-          "description": "真实 Kernel 和受控既有 ACP 会话上验证协作入口可见、跨来源成员选择、候选接入解释、已归组成员可见与原子移动、派发记录保留和窄屏可用性"
+          "description": "真实 Remote 文件组件与隔离 Kernel 上验证未保存/保存中更新拦截、保存和放弃动作、更新失败、断线与迟到回执保护；明确注入更新执行器以避免真实重载，实机生产 SW 另验"
         }
       ]
     }
   ],
   "allowedPaths": [
-    "scripts/commune-global-ui-acceptance.mjs",
-    "src/lib/i18n/messages/commune.ts",
-    "src/lib/teammate/AgentCenterPanel.svelte",
-    "src/lib/teammate/HostCommuneGroups.svelte",
-    "src/lib/teammate/TerminalAgentRow.svelte",
-    "src/lib/teammate/communeVisual.css",
-    "src/lib/teammate/teammateGroups.svelte.ts",
-    "src/lib/teammate/teammateGroups.test.ts",
-    "src/remote/lib/GlobalCommuneRoster.svelte"
+    "scripts/remote-tabs-acceptance.mjs",
+    "src/lib/i18n/messages/mobile.ts",
+    "src/remote/MainApp.svelte",
+    "src/remote/lib/FileViewer.svelte",
+    "src/remote/lib/pwaUpdate.test.ts",
+    "src/remote/lib/pwaUpdate.ts",
+    "src/remote/main.test.ts",
+    "src/remote/main.ts"
   ],
   "testCommand": [
     "npm",
@@ -165,6 +163,7 @@
     "changes/CHG-092.md": "ab0f71c5294792c9d1145ca1d40f5ff5fc1706ecfc05c70d7eb4914d020d44b1",
     "changes/CHG-093.md": "a59fe5e67b924db9d74c7b3a5b5daeb6e9c33d2cf091b759a6951555a586a354",
     "changes/CHG-094.md": "b54904027fbcc7952379f8cad41c56afacb9c77fcfa5cea0d46f47d5341c8faf",
+    "changes/CHG-095.md": "048926ad100701fb97454ddf09adb9d3b9abb7e0faebf93c9284dd9174067477",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -924,7 +923,7 @@
     "scripts/remote-runtime-last-error-attribution.mjs": "ff5f76bf44a7f25f83091d7978a57d7b570acff6a7100427279e489dac2138bc",
     "scripts/remote-runtime-last-error-attribution.test.ts": "631b6b2d18d477a8967824b001e30a3875070ad2904efe6059b946ec528ccf22",
     "scripts/remote-state-e2e.mjs": "9bde8a49c790d0bf9c4011c0ba99604216bd55f64bb9f5605a4f4d3d8a5b78f6",
-    "scripts/remote-tabs-acceptance.mjs": "280ea1917b286b141ccf86cc804dbd5dbbd68561fce595ed9aa7fd4824c25581",
+    "scripts/remote-tabs-acceptance.mjs": "76dc8282dece6862a4b5ab55ec7a8e7c7b86ea7a567ae6f3679b64578c81a7fb",
     "scripts/remote-verify-fix.mjs": "c487b5e5c7a3d70c8165d9b6021ead61404e7f4e186d24978f5af675e24e5899",
     "scripts/ridge-tmux-log-setup.ps1": "6dea5f56ebba87f458772b94bd9b97ef91f68b4e8f2c88a5187daa1eca8a7939",
     "scripts/rtp1-kernel-e2e.mjs": "19bef654e79328ad4cc5ce587a2ebc1c2ac63ff51363b0b918b9752ea5b9eca7",
@@ -1111,6 +1110,7 @@
     "specs/l4-commune-group-usability.md": "b7f5bafb575bed7fe2306132822d5e5f2bbcb52557fc2143b10478544ecd116b",
     "specs/l4-commune-remote-delivery.md": "43ae0e9067cebb2a70ba1f46fc92104e0d625ae80dbce045e40239cb56c08230",
     "specs/l4-perf-latency-bench-entry.md": "86935a5eb9927f52620529e323278781fcf871545b9fc9cec4232c01418d798c",
+    "specs/l4-remote-pwa-edit-protection.md": "de2d74877a2b6738abf58c6c0388ab0eac67bcf515dfeac0b1a01e20b67b1872",
     "specs/l4-ridge-mcp-sidecar-windows-x64.md": "d1670206a676daa0e7bc9841ad226637b512af9e020eb834a38092c92ffe9824",
     "specs/migration/L2-OBS-CARGO-TOML-2e9d962a.md": "661c8fa4621b6ba8c1c814e5b5186c31cf8f1840f9ba4d359c6ef660c0fdef52",
     "specs/migration/L2-OBS-CLAUDE-e026f56c.md": "d91cbc151823db2c0e9f80f348febcd60827108d9ce918c84d3b87f17e145fcd",
@@ -2190,7 +2190,7 @@
     "src/lib/i18n/messages/explorer.ts": "abfbbcb952b109d938c953bf21bd0d8b4ac137d6fede8d63bbd218d1ddcfc73a",
     "src/lib/i18n/messages/index.ts": "df575b052745e4ccb25f88dd275c196f593017590ff0836dcf182d10befae437",
     "src/lib/i18n/messages/main.ts": "bb86cd7bee31363675d044f681c800d515fcdd12559f03590df16a1bf34f9e56",
-    "src/lib/i18n/messages/mobile.ts": "bb99d46a5f59ef2cbb10da81ba9fced286b176fc875dbe6013da66577ab862bf",
+    "src/lib/i18n/messages/mobile.ts": "42245606673d21103d78e559016762b27903d0d2fce1265a474a5e03feeb4424",
     "src/lib/i18n/messages/scm.ts": "cf88114cf44fa06cedd15b2f5ac58c42e78879174e17998db06056f2141f6ba4",
     "src/lib/i18n/messages/ui.ts": "c76555cd58a89419a30670e8855045bbb0c436adc8a27640f669d3b0f9c7eb3f",
     "src/lib/i18n/messages/workspace.ts": "51460c818cdde1ddae7f4b7c6c02ef8cca92edb87194ff2cb3ea1c3725d18cb2",
@@ -2403,7 +2403,7 @@
     "src/remote/lib/CommuneWorkspaceRoster.svelte": "dc4a4739c5eda7805a416f6aded33ebeee2bad9d66e5352c9f60c9a6a326288b",
     "src/remote/lib/deviceClass.test.ts": "167f95f9086abe437d9824fe5c15af603a18b70969c4ab537018b53e2e834bba",
     "src/remote/lib/deviceClass.ts": "21303195a10b45f8ec6f896f91ecabdbfdbe26929e3e712040b64c0c2dab16f6",
-    "src/remote/lib/FileViewer.svelte": "5d8cf15489361c16c9e4e05ca8e6b833008ef7d609e173fddb4581e9a2ade3f7",
+    "src/remote/lib/FileViewer.svelte": "96354793b463cf6dd17deee598e3484a0ee0567e12cf8072575e4329558feeaa",
     "src/remote/lib/generationGuard.test.ts": "b0f08e505186944fa4397c6d1429152960186f609c791a25fb1565613ade8c2c",
     "src/remote/lib/generationGuard.ts": "74da229bfe89693ad129f4ea611b8749ed172277ce57a7608687a722919588b1",
     "src/remote/lib/GlobalCommuneRoster.svelte": "8b4a932967802bd0924bb4a96cbbd73ce6942ec66bcc420fb18bb4496dba1ab4",
@@ -2420,7 +2420,8 @@
     "src/remote/lib/PaneShellPicker.svelte": "9f7f67ff412b6fe02b575311c08d8c1daa349feb287f2a8f594101929d774b2e",
     "src/remote/lib/paneSwitchBuffer.test.ts": "36071fb7d6b394ae0788370da6f846bf43d8c4ae8526a94c2e3a43821f9e61cc",
     "src/remote/lib/paneSwitchBuffer.ts": "a4177e2a663faa3e8ac5c43dcadce38d8465c4482a34c9409d89f2980a319507",
-    "src/remote/lib/pwaUpdate.ts": "91b3181dab31b51a2d10291fb684e7cef8c24d44c0171126ae8a024734da7829",
+    "src/remote/lib/pwaUpdate.test.ts": "6589013e2d35b6245ec67757938f640c8a1889e951f2df4caec35237110eebab",
+    "src/remote/lib/pwaUpdate.ts": "59438c598abd9350c2364ee693a66a32935531460727c46f9d0ca986df42986b",
     "src/remote/lib/remoteGitActions.test.ts": "d2f4a89ac5eac79ecdf21098ce0db7397ca10c98e98a35fd292c182da675ed88",
     "src/remote/lib/remoteGitActions.ts": "7277d9068eaeff58410b43a84ef184be38c68705d614cc5fb7ae29dd21bee6e0",
     "src/remote/lib/RemoteGitPanel.svelte": "d2ad05651e590c271bba442bc6d5c36656c94395836ca0dfb53a808c341b31de",
@@ -2452,9 +2453,9 @@
     "src/remote/lib/VirtualKeyboard.svelte": "84a887847c30ad2693ac830d28b10331b31fc3e5fc82be0b72b3d8e3bab3ed13",
     "src/remote/lib/WorkspaceTree.svelte": "391f017434b479dfbe68ba167e545175efdf1bc861620409b41ff6c0dfb140b9",
     "src/remote/lib/WorkspaceTree.test.ts": "2bc782a46108952860366e1502741c409b347ed43c7d8856b46ad51c06864ba0",
-    "src/remote/main.test.ts": "f9e083440317a33d6fb4062dec421de7e366def6cffd0f0736e27ae87cd42a0d",
-    "src/remote/main.ts": "a05741747019a610cc38422927513a5b718d962e16577f905d925f29cc78f872",
-    "src/remote/MainApp.svelte": "33d2dc987d91959ecb6988c1f09d04ae52f75da44e8e562d364a0cd545f1e0b1",
+    "src/remote/main.test.ts": "642393d572e77be6f64e6976197d5104aa8db32a963629beb942ed99cec71e86",
+    "src/remote/main.ts": "c80e3785691d42b05874c33c0f4e0c61fc1418f5e9323e09fa188664096c6249",
+    "src/remote/MainApp.svelte": "19ff0add6a77d8b7398328f942ac71f733881f349fa89754971b5e52c7e73bff",
     "src/remote/MainApp.test.ts": "eb48a9d957b0b7f4a6eee1556826c9828841126f53404b83b5fd63992de82af3",
     "src/remote/public/apple-touch-icon.png": "fcf04070e1ae0e72599b39cf3c118a81c57d01dbb98b894b6ba988bda26cc01e",
     "src/remote/public/favicon.png": "7b0d863efa5a660174ce0242b3b356c70cd952eceda2589da50819aa82cc02ac",
@@ -2569,6 +2570,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-d67004855e0e",
-  "manifestHash": "d67004855e0ee5d20a72d9fae6713af74bfc274638a079d29e49443264d09c8e"
+  "buildId": "BUILD-6357728a98d7",
+  "manifestHash": "6357728a98d7351d621ecb8efc00ec699694758f38a62493daa7c08916626e00"
 }

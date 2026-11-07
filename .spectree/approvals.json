@@ -495,5 +495,17 @@
       "buildId": "BUILD-2acdbe77f7e2",
       "specHash": "31eb499e586148c841ca43759943bfdb66fa3177d26607f36c7faa00823ae5af"
     }
+  },
+  {
+    "changeId": "CHG-095",
+    "specHash": "cc9d8a4a56a15854a020ad89e6234ad871eae3994768faa99b6343e50133388f",
+    "approvedAt": "2026-11-07T03:15:20.297Z",
+    "source": "completion_derived",
+    "actor": "Codex",
+    "confirmationRef": "补齐真实 bootstrap 更新及 beforeunload 接线回归，保持原数据保护授权范围",
+    "derivedFrom": {
+      "buildId": "BUILD-f08caba8e3ea",
+      "specHash": "5622930a6fbc1584886d5d1a506d4cbc79e399b284a70ded65d52e861cf1a2f4"
+    }
   }
 ]

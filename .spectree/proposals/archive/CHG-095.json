@@ -1,0 +1,36 @@
+{
+  "changeId": "CHG-095",
+  "nodes": [
+    {
+      "id": "L4-REMOTE-PWA-EDIT-PROTECTION",
+      "level": "L4",
+      "title": "Remote PWA 更新的未保存编辑保护",
+      "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+      "codeTargets": [
+        "src/remote/lib/pwaUpdate.ts",
+        "src/remote/main.ts",
+        "src/remote/MainApp.svelte",
+        "src/remote/lib/FileViewer.svelte",
+        "src/lib/i18n/messages/mobile.ts"
+      ],
+      "testTargets": [
+        "src/remote/lib/pwaUpdate.test.ts",
+        "scripts/remote-tabs-acceptance.mjs",
+        "src/remote/main.test.ts"
+      ],
+      "dependsOn": [],
+      "acceptanceChecks": [
+        {
+          "id": "pwa-file-editor-integration",
+          "command": [
+            "node",
+            "scripts/remote-tabs-acceptance.mjs"
+          ],
+          "description": "真实 Remote 文件组件与隔离 Kernel 上验证未保存/保存中更新拦截、保存和放弃动作、更新失败、断线与迟到回执保护；明确注入更新执行器以避免真实重载，实机生产 SW 另验"
+        }
+      ],
+      "body": "# Remote PWA 更新的编辑保护\n\n来自用户已授权实现的审核范围。自动后台更新与前台更新使用同一更新执行器和编辑保护检查。文件编辑器登记当前内存草稿和保存状态，未保存或保存中不得静默重载；存在更新时明确显示编辑保护状态。\n\n用户可保存后更新、放弃草稿后更新或稍后处理。保存失败、断线或保存后仍有更新输入均保留草稿并阻止重载。保存正在进行时不再发起保存、放弃或更新。放弃只在明确前台操作后恢复最后确认的文件快照，不写盘。更新执行失败保留就绪状态和重试入口。更新期间冻结编辑以避免门禁检查后的新输入丢失。多个编辑器任一仍有未保存内容均阻止重载。组件关闭后清理登记，避免已销毁编辑器永久阻塞更新。\n\n稍后操作禁止本次后台自动更新，下次前台激活可重新提示。已有未保存内容的手动页面离开使用浏览器支持的 beforeunload 提示。本轮不新增文件草稿落盘，不把此机制提升为移动操作系统回收进程后的草稿恢复。\n\n验收分别覆盖控制器错误/重试/并发状态和真实 Remote 编辑组件对更新执行器的接线。前台按钮有双语文案和明确结果，后台调用拒绝更新时不丢失就绪状态。实际手机及生产 SW 生命周期需单独标明验证范围。"
+    }
+  ],
+  "remove": []
+}

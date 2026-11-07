@@ -1,10 +1,11 @@
 <script lang="ts">
   import { X, FileText, GitBranch, Image as ImageIcon, Copy, Pencil, Eye, Save, RefreshCw } from 'lucide-svelte';
   import { convertFileSrc } from '@tauri-apps/api/core';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { t, tr } from '$lib/i18n';
   import type { SidebarProvider } from '../../shared/sidebar/types';
   import { writeClipboard } from './clipboard';
+  import { notifyPwaEditState, pwaUpdateBusy, registerPwaEditGuard } from './pwaUpdate';
 
   let { provider, kind, path, line, cached = false, onClose }: {
     provider: SidebarProvider;
@@ -26,6 +27,7 @@
   let error = $state<string | null>(null);
   let lines = $state<string[]>([]);        // read-view rows (file or diff)
   let content = $state('');                // full text, edited in place (file only)
+  let savedContent = '';
   let truncated = $state(false);
   let bodyEl = $state<HTMLDivElement | null>(null);
 
@@ -110,6 +112,7 @@
         : await (force && provider.refreshFile ? provider.refreshFile(path, controller.signal) : provider.readFile(path, controller.signal));
       if (controller.signal.aborted || generation !== loadGeneration) return;
       content = text;
+      savedContent = text;
       const { rows, truncated: tr2 } = splitLines(text);
       lines = rows;
       truncated = tr2;
@@ -138,6 +141,7 @@
     try {
       await targetProvider.writeFile(targetPath, submitted);
       if (generation !== saveGeneration) return;
+      savedContent = submitted;
       dirty = content !== submitted;
       // Refresh the read view from the saved content.
       const { rows, truncated: tr2 } = splitLines(content);
@@ -169,6 +173,14 @@
     if (dirty && !confirm(tr('mobile.viewerUnsavedConfirm'))) return;
     onClose();
   }
+
+  onMount(() => registerPwaEditGuard({
+    dirty: () => dirty,
+    saving: () => saving,
+    save,
+    discard() { content = savedContent; dirty = false; exitEdit(); },
+  }));
+  $effect(() => { void dirty; void saving; notifyPwaEditState(); });
 
   $effect(() => {
     // Reload whenever the target file/kind changes.
@@ -208,6 +220,7 @@
   {#if editing}
     <textarea
       class="editor"
+      disabled={$pwaUpdateBusy}
       value={content}
       oninput={onEditInput}
       spellcheck="false"
@@ -257,7 +270,7 @@
 </div>
 
 <style>
-  .viewer { position: fixed; inset: 0; z-index: 55; display: flex; flex-direction: column; background: var(--rg-bg); animation: vfade .15s ease-out; }
+  .viewer { position: fixed; inset: var(--rg-pwa-update-height,0px) 0 0; z-index: 55; display: flex; flex-direction: column; background: var(--rg-bg); animation: vfade .15s ease-out; }
   @keyframes vfade { from { opacity: 0 } to { opacity: 1 } }
   .v-header { display: flex; align-items: center; gap: 6px; padding: 8px 10px; padding-top: calc(8px + env(safe-area-inset-top, 0px)); border-bottom: 1px solid var(--rg-border-bright); background: var(--rg-surface); min-height: 48px; }
   .v-ico { display: inline-flex; align-items: center; color: var(--rg-accent); flex-shrink: 0; }

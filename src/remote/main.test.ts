@@ -14,6 +14,7 @@ vi.mock('virtual:pwa-register', () => ({ registerSW: mocks.registerSW }));
 const state = vi.hoisted(() => ({
   visibility: 'visible' as DocumentVisibilityState,
   visibilityHandler: undefined as (() => void) | undefined,
+  beforeUnloadHandler: undefined as ((event: any) => void) | undefined,
   messageHandler: undefined as ((event: any) => void) | undefined,
   reload: vi.fn(),
   register: vi.fn(async () => ({ scope: '/' })),
@@ -31,6 +32,7 @@ beforeEach(() => {
   mocks.applyUpdate.mockClear();
   state.visibility = 'visible';
   state.visibilityHandler = undefined;
+  state.beforeUnloadHandler = undefined;
   state.messageHandler = undefined;
   state.reload.mockClear();
   state.register.mockClear();
@@ -58,6 +60,9 @@ describe('Remote bootstrap and service-worker recovery', () => {
       }),
     };
     const windowMock = {
+      addEventListener: vi.fn((type: string, handler: (event: any) => void) => {
+        if (type === 'beforeunload') state.beforeUnloadHandler = handler;
+      }),
       matchMedia: vi.fn((query: string) => ({ matches: query.includes('standalone') })),
       location: { reload: state.reload },
       dispatchEvent: vi.fn((event: Event) => { state.dispatched.push(event); }),
@@ -88,6 +93,19 @@ describe('Remote bootstrap and service-worker recovery', () => {
     documentMock.visibilityState = 'hidden';
     state.visibilityHandler?.();
     expect(mocks.applyUpdate).toHaveBeenCalledWith(true);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    mocks.applyUpdate.mockClear();
+    const updates = await import('./lib/pwaUpdate');
+    const release = updates.registerPwaEditGuard({ dirty: () => true, saving: () => false, save: async () => {}, discard() {} });
+    options.onNeedRefresh();
+    expect(mocks.applyUpdate).not.toHaveBeenCalled();
+    const navigation = { preventDefault: vi.fn(), returnValue: 'unchanged' };
+    state.beforeUnloadHandler?.(navigation);
+    expect(navigation.preventDefault).toHaveBeenCalledOnce();
+    expect(navigation.returnValue).toBe('');
+    release();
+    state.visibilityHandler?.();
+    expect(mocks.applyUpdate).toHaveBeenCalledExactlyOnceWith(true);
   });
 
   it('does not install a cache-version handler that clears Remote credentials', async () => {
@@ -104,7 +122,7 @@ describe('Remote bootstrap and service-worker recovery', () => {
       }),
     };
     vi.stubGlobal('document', documentMock);
-    vi.stubGlobal('window', { matchMedia: () => ({ matches: false }), location: { reload: state.reload } });
+    vi.stubGlobal('window', { addEventListener: vi.fn(), matchMedia: () => ({ matches: false }), location: { reload: state.reload } });
     vi.stubGlobal('navigator', { serviceWorker });
     vi.stubGlobal('localStorage', { clear: state.clearLocal });
     vi.stubGlobal('sessionStorage', { clear: state.clearSession });

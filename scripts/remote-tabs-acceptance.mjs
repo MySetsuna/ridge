@@ -9,7 +9,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { chromium, expect } from '@playwright/test';
 
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'ridge-remote-tabs-'));
-const evidenceDir=path.resolve('artifacts/remote086');fs.mkdirSync(evidenceDir,{recursive:true});
+const evidenceDir=path.resolve(process.env.RIDGE_REMOTE_TABS_EVIDENCE_DIR ?? 'artifacts/remote086');fs.mkdirSync(evidenceDir,{recursive:true});
 const evidence={scope:'Actual Remote dev app and owned current Kernel via real TLS/WSS proxy; Chromium software WebGL, no handset/WAN claim',checks:[],result:'RUNNING'};
 const repo=path.join(root,'repo'),cwd=path.join(repo,'src');fs.mkdirSync(path.join(cwd,'nested'),{recursive:true});
 const origin=path.join(root,'owned-origin.git');execFileSync('git',['init','--bare',origin],{windowsHide:true,stdio:'pipe'});
@@ -125,6 +125,46 @@ try {
   await expect(page.locator('.editor')).toHaveValue('OFFLINE_BUFFER\n');await page.locator('.v-header button').filter({has:page.locator('svg.lucide-save')}).click();await expect(page.locator('.dirty-dot')).toHaveCount(0);await closeViewer();
   evidence.checks.push('Offline save fails immediately without transmission; editing survives reconnect and only a later explicit save writes the buffer');
   evidence.checks.push('Late save ACK confirms the submitted snapshot only; subsequent typing remains dirty and requires a second explicit save');
+  await page.getByRole('button',{name:'inner.txt',exact:true}).click();
+  await page.locator('.v-header button').filter({has:page.locator('svg.lucide-pencil')}).click();
+  await page.locator('.editor').fill('UPDATE_BUFFER\n');
+  const guardedUpdate=await page.evaluate(async()=>{
+    const updates=await import('/lib/pwaUpdate.ts');window.pwaProbe={updates,reloads:0};
+    updates.configurePwaUpdate(async()=>{window.pwaProbe.reloads++;});updates.markPwaUpdateReady();
+    return updates.applyPwaUpdate();
+  });
+  assert.equal(guardedUpdate,false,'the production editor must block background update execution');
+  await page.evaluate(key=>window.probe.fail[key]=true,saveKey);
+  await page.getByRole('button',{name:/^(保存后更新|Save and update)$/}).click();
+  await expect(page.locator('.v-saveerr')).toBeVisible();
+  await expect(page.locator('.editor')).toHaveValue('UPDATE_BUFFER\n');
+  await expect(page.getByRole('button',{name:/^(保存后更新|Save and update)$/})).toBeEnabled();
+  await expect.poll(async()=>{
+    const banner=await page.locator('.pwa-update-banner').boundingBox();
+    const viewer=await page.locator('.viewer').boundingBox();
+    return viewer.y >= banner.y + banner.height - 1;
+  }).toBe(true);
+  await page.screenshot({path:path.join(evidenceDir,'pwa-edit-protection.png')});
+  assert.equal(await page.evaluate(()=>window.pwaProbe.reloads),0);
+  await page.getByRole('button',{name:/^(保存后更新|Save and update)$/}).click();
+  await expect(page.locator('.pwa-update-banner')).toHaveCount(0);
+  assert.equal(fs.readFileSync(path.join(cwd,'nested','inner.txt'),'utf8'),'UPDATE_BUFFER\n');
+  await page.locator('.editor').fill('DISCARD_UPDATE_BUFFER\n');
+  await page.evaluate(()=>window.pwaProbe.updates.markPwaUpdateReady());
+  await page.getByRole('button',{name:/^(放弃编辑并更新|Discard edits and update)$/}).click();
+  await expect(page.locator('.editor')).toHaveCount(0);
+  assert.equal(fs.readFileSync(path.join(cwd,'nested','inner.txt'),'utf8'),'UPDATE_BUFFER\n');
+  await page.locator('.v-header button').filter({has:page.locator('svg.lucide-pencil')}).click();
+  await page.locator('.editor').fill('LATER_UPDATE_BUFFER\n');
+  await page.evaluate(()=>window.pwaProbe.updates.markPwaUpdateReady());
+  await page.getByRole('button',{name:/^(稍后|Later)$/}).click();
+  assert.equal(await page.evaluate(()=>window.pwaProbe.updates.applyPwaUpdate()),false);
+  await expect(page.locator('.editor')).toHaveValue('LATER_UPDATE_BUFFER\n');
+  await page.evaluate(()=>window.pwaProbe.updates.resumePwaUpdatePrompt());
+  await page.getByRole('button',{name:/^(放弃编辑并更新|Discard edits and update)$/}).click();
+  assert.equal(await page.evaluate(()=>window.pwaProbe.reloads),3);
+  await closeViewer();
+  evidence.checks.push('Real file editor gates an injected PWA updater; failed save keeps its draft, explicit save/discard and Later preserve the intended file data; no production SW claim');
   await page.locator('.ft-bar button').first().click();await page.route('**/file?**',route=>route.abort());await page.getByRole('button',{name:'image.svg',exact:true}).click();
   await expect(page.locator('.v-msg[role="alert"]')).toBeVisible();await page.unroute('**/file?**');await page.locator('.v-msg[role="alert"] button').click();await expect(page.locator('.image-preview')).toBeVisible();
   await page.waitForFunction(()=>document.querySelector('.image-preview')?.naturalWidth===48);await closeViewer();
@@ -148,7 +188,7 @@ try {
   const granted=await call('POST','/v1/domain/ptys',{pty_id:grantPane,workspace_id:grantWorkspace,program:process.platform==='win32'?'cmd.exe':'/bin/sh',args:process.platform==='win32'?['/d','/q','/k']:[],cwd:repo,env:{},role:'shell',cols:80,rows:24});assert.equal(granted.ok,true);
   await page.waitForFunction(async repo=>{try{return await window.probe.dp.pathExists(repo);}catch{return false;}},repo);
   await page.getByRole('button',{name:/^(Stage all|暂存全部)$/}).click();
-  assert.equal(await page.evaluate(()=>window.probe.calls.gitStage[0]),cwd);
+  assert.equal(path.resolve(await page.evaluate(()=>window.probe.calls.gitStage[0])),path.resolve(cwd));
   await expect(page.locator('.file-row').filter({hasText:'src/tracked.txt'})).toHaveCount(1);await page.locator('.file-row').filter({hasText:'src/tracked.txt'}).click();
   await expect(page.locator('.diff-pre')).toContainText('EDITED_WORKING');await closeViewer();
   await page.getByRole('button',{name:/^(Unstage all|撤销暂存全部)$/}).click();await until(()=>git('diff','--cached')==='','real unstage');
@@ -193,7 +233,7 @@ try {
       const start=performance.now();const app=client.createClassComponent({component,target,props:{provider:{readFile:async()=>text},kind:'file',path:'/owned/large.txt',onClose(){}}});
       await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));result[name].push({ms:performance.now()-start,rows:target.querySelectorAll('.code-row').length});app.$destroy();
     }target.remove();return result;
-  },{baselineUrl:sourceUrl('artifacts/remote086/FileViewerBaseline.svelte'),viewerUrl:sourceUrl('src/remote/lib/FileViewer.svelte'),clientUrl:sourceUrl('scripts/commune-permission-ui-client.mjs')});
+  },{baselineUrl:sourceUrl(path.join(evidenceDir,'FileViewerBaseline.svelte')),viewerUrl:sourceUrl('src/remote/lib/FileViewer.svelte'),clientUrl:sourceUrl('scripts/commune-permission-ui-client.mjs')});
   assert.ok(benchmark.before.every(sample=>sample.rows===4800));assert.ok(benchmark.after.every(sample=>sample.rows===200));evidence.renderBenchmark=benchmark;
   assert.deepEqual(pageErrors,[]);evidence.result='PASS';
 }catch(error){evidence.result='FAIL';evidence.error=String(error);evidence.pageErrors=pageErrors;if(page){evidence.calls=await page.evaluate(()=>window.probe?.calls).catch(()=>undefined);evidence.pathProof=await page.evaluate(async()=>{const call=window.probe?.calls.gitStage;if(!call)return;return Promise.all([call[0],...call[1]].map(async path=>{try{return {path,exists:await window.probe.dp.pathExists(path)};}catch(error){return {path,error:String(error)};}}));}).catch(()=>undefined);evidence.visibleError=await page.locator('[role="alert"],.v-msg').allTextContents().catch(()=>[]);await page.screenshot({path:path.join(evidenceDir,'failure.png')}).catch(()=>{});}process.exitCode=1;}

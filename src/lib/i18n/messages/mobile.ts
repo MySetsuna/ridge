@@ -1,5 +1,8 @@
 /** mobile 命名空间：移动端远控 UI（src/remote/*）。 */
 export const zh: Record<string, string> = {
+  updateReady: '新版 Remote 已就绪', updateEditsProtected: '更新已就绪，未保存的编辑正受保护',
+  updateSaving: '文件正在保存，更新将等待保存完成',
+  updateSave: '保存后更新', updateDiscard: '放弃编辑并更新', updateApply: '立即更新', updateLater: '稍后',
   // MainApp
   noActiveTerminal: '无活跃终端',
   creating: '创建中…',
@@ -133,6 +136,9 @@ export const zh: Record<string, string> = {
 };
 
 export const en: Record<string, string> = {
+  updateReady: 'Remote update ready', updateEditsProtected: 'Update ready · unsaved edits are protected',
+  updateSaving: 'Saving file · update waits for the save to finish',
+  updateSave: 'Save and update', updateDiscard: 'Discard edits and update', updateApply: 'Update now', updateLater: 'Later',
   // MainApp
   noActiveTerminal: 'No active terminal',
   creating: 'Creating…',

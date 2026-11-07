@@ -2,7 +2,7 @@
 import { mount } from 'svelte';
 import App from './App.svelte';
 import { registerSW } from 'virtual:pwa-register';
-import { configurePwaUpdate, markPwaUpdateReady } from './lib/pwaUpdate';
+import { applyPwaUpdate, configurePwaUpdate, markPwaUpdateReady, pwaEditsBlocked, resumePwaUpdatePrompt } from './lib/pwaUpdate';
 
 // iOS standalone historically exposed `navigator.standalone` without making
 // `(display-mode: standalone)` match. Mark the document before Svelte mounts
@@ -23,13 +23,10 @@ const app = mount(App, { target: document.getElementById('app')! });
 // reconnects with the saved token on reload, so the session resumes
 // transparently. (No-op in dev: devOptions.enabled is false.)
 let applyUpdate: ((reloadPage?: boolean) => Promise<void>) | undefined;
-let updateReady = false;
 
 function flushUpdateWhenHidden() {
-  if (updateReady && applyUpdate && document.visibilityState === 'hidden') {
-    updateReady = false;
-    void applyUpdate(true); // SKIP_WAITING + reload into the new build
-  }
+  if (document.visibilityState === 'hidden') void applyPwaUpdate();
+  else resumePwaUpdatePrompt();
 }
 
 // SW registration must be robust: a transient failure (flaky network on first
@@ -64,7 +61,6 @@ function manualRegisterWithRetry(attempt = 0): void {
 applyUpdate = registerSW({
   immediate: true,
   onNeedRefresh() {
-    updateReady = true;
 		markPwaUpdateReady();
     // If already backgrounded apply now; otherwise wait for the next time the
     // user switches away (frequent on mobile) — never interrupt the foreground.
@@ -91,5 +87,10 @@ applyUpdate = registerSW({
 if (applyUpdate) configurePwaUpdate(applyUpdate);
 
 document.addEventListener('visibilitychange', flushUpdateWhenHidden);
+window.addEventListener('beforeunload', event => {
+  if (!pwaEditsBlocked()) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
 
 export default app;
