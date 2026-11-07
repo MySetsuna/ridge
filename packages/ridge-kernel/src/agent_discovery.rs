@@ -47,7 +47,7 @@ fn snapshot() -> Result<Vec<Process>, String> {
     let mut system=System::new();system.refresh_processes(ProcessesToUpdate::All);
     let rows=system.processes().iter().map(|(pid,process)|Process {
         pid:pid.as_u32(),parent:process.parent().map(|pid|pid.as_u32()),
-        image:process.name().to_string_lossy().into_owned(),
+        image:process.exe().map(|path|path.to_string_lossy().into_owned()).unwrap_or_else(||process.name().to_string_lossy().into_owned()),
         arguments:process.cmd().iter().take(8).map(|arg|arg.to_string_lossy().into_owned()).collect(),
     }).collect::<Vec<_>>();
     *cache=Some((Instant::now(),rows.clone()));Ok(rows)

@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "id": "9f14acd8-cac4-4cd3-94aa-eff164335677",
+  "at": "2026-11-07T10:02:16.009Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-107",
+  "buildId": "BUILD-fb61bde73324",
+  "data": {
+    "previousBuildId": "BUILD-50b5c2bdb6a2",
+    "testEvidence": {
+      "buildId": "BUILD-50b5c2bdb6a2",
+      "workspaceHash": "cf575209fb6f379939903b700f7ab93abbc593baef65f701e077c696f3b057b1",
+      "verifiedAt": "2026-11-07T10:02:13.085Z",
+      "eventId": "2e36485a-082c-4356-9449-e40d4671a824"
+    },
+    "absorbed": [
+      "changes/CHG-107.md",
+      "packages/ridge-kernel/src/agent_discovery.rs",
+      "specs/l4-commune-executable-image.md"
+    ],
+    "activated": [
+      "L4-COMMUNE-EXECUTABLE-IMAGE"
+    ],
+    "archived": []
+  }
+}

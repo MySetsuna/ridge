@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "1651d01b-fbab-4d65-a071-4b31afb6affc",
+  "at": "2026-11-07T09:57:03.166Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-107",
+  "data": {
+    "changeId": "CHG-107",
+    "specHash": "3bd80ccbc76c24aff0af3e4c824d72e14dc5c1d78f7e71220d8071a4b360f12e",
+    "approvedAt": "2026-11-07T09:57:03.163Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "用户要求发现问题定位修复并完成发布；沿用 change 元数据例外",
+    "attributionVerified": false
+  }
+}

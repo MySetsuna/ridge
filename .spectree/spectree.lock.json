@@ -1,37 +1,41 @@
 {
   "version": 1,
-  "changeId": "CHG-106",
-  "specHash": "3322f7a117368197e196a7adc6d3e2d3092b86ee7f3023f92328996955863019",
+  "changeId": "CHG-107",
+  "specHash": "fafd5800c6cd2f94718b5f470de762592610ecdc62a1d414ad0497b91c3bb34c",
   "units": [
     {
-      "id": "L4-CLOUD-MOBILE-REAUTH-GATE",
+      "id": "L4-COMMUNE-EXECUTABLE-IMAGE",
       "level": "L4",
-      "nodeHash": "916333ba1b1df20820f02424dcbc135538a263870aeb189575c71dfa0f10f5c0",
+      "nodeHash": "b8ed52ffa30a0933c066a2a76589c90764768762b703e977b497aac0c1a00764",
       "codeTargets": [
-        "src/remote/lib/cloudRemote.ts"
+        "packages/ridge-kernel/src/agent_discovery.rs"
       ],
       "testTargets": [
-        "src/remote/lib/cloudRemote.test.ts"
+        "packages/ridge-kernel/tests/commune_registration.rs"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "mobile-reauth",
+          "id": "existing-process-enrollment",
           "command": [
-            "pnpm",
-            "exec",
-            "vitest",
-            "run",
-            "src/remote/lib/cloudRemote.test.ts"
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "commune_registration",
+            "--",
+            "--test-threads=1"
           ],
-          "description": "未授权重连不暴露 connected，成功后恢复一次；失败与过时代际不能开门"
+          "description": "真实长名协议进程发现、精确登记、原终端保留与组织重启恢复"
         }
       ]
     }
   ],
   "allowedPaths": [
-    "src/remote/lib/cloudRemote.test.ts",
-    "src/remote/lib/cloudRemote.ts"
+    "packages/ridge-kernel/src/agent_discovery.rs",
+    "packages/ridge-kernel/tests/commune_registration.rs"
   ],
   "testCommand": [
     "npm",
@@ -166,6 +170,7 @@
     "changes/CHG-104.md": "701f3d41deebc2ebeab89ffbae31801f80597cc419150975e6b4afd5d74f8e1b",
     "changes/CHG-105.md": "75423db63f94375898cddb5864e72ad8067acf7428ca1c0b74b3fc117260b266",
     "changes/CHG-106.md": "a5e121ead338ae3bddb5d81b5d6379c824f3cdb3c6d22e7e9055a6907dfaf107",
+    "changes/CHG-107.md": "07d21c2b401175e968c06bd72d3b6fda1f048278a25a4c27c9c5e34d03d03cc7",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -567,7 +572,7 @@
     "packages/ridge-core/src/workspace/mode.rs": "c9fa4739511c4abcb2667e77a9de9d68e62690e662ed6585cd4f2359c176c4f6",
     "packages/ridge-core/src/workspace/pane_tree.rs": "598e17f6c797ee65794b9dabace3b6f16536f3d21d6a5974d5f920007022c0b4",
     "packages/ridge-kernel/Cargo.toml": "4f1941a27630f1507c26f55cf5d340ff9922f04fa54979c0e55f5f5715eaf95d",
-    "packages/ridge-kernel/src/agent_discovery.rs": "cc073e033aa04c8638a4b7d7331d1c09579945225ed839a81f42eb7cbacc3cb1",
+    "packages/ridge-kernel/src/agent_discovery.rs": "5ad4b25986ca7fbf96e39edd82e4e74e145cbd7da2998987575af62097fc4b89",
     "packages/ridge-kernel/src/agent_profiles.rs": "2255c83cfbe959cb24ca4263ecf403daed18c762711dfcbfb304c575bb570f26",
     "packages/ridge-kernel/src/agent_terminal.rs": "202d4642c8765dfc70c3eed67383f4f8be7bd32e0b9b9f2e4e0a4374eb6deead",
     "packages/ridge-kernel/src/app_server.rs": "f8348145dcb5bd4f1618fbe822e4ff3e1c062f7cabd52b810c411dce673b07dc",
@@ -1115,6 +1120,7 @@
     "specs/l4-cloud-release-0198.md": "742b446f82e2e31f92f8dbc8aa3f8360f6fdeaaecc3862a0101644c9107ebce4",
     "specs/l4-cloud-turn-credential-type.md": "541f222eb1502931431950b4cefc02880e3dfe14f19f2eb1e781f33a41c41028",
     "specs/l4-commune-connection-wizard.md": "55e0d08a4f29a319f1eb7154228661d1e9585f54ce75ebda007858fad433b505",
+    "specs/l4-commune-executable-image.md": "b466605696afbafc421ac3d0fefa6313773009402ab26d19c9e3e78f7140e815",
     "specs/l4-commune-group-dispatch-intent.md": "29265c991a0a8cd463e077c07e8811c152d439cb13c91c09bd5f733d37689810",
     "specs/l4-commune-group-online-eligibility.md": "b2c1504eee42922418f323f556e2ac2a0c7755640178ecc267b23af3338d7b47",
     "specs/l4-commune-group-responsive-state.md": "23828a3c894ecc4d0cc39ba78d310d180025ed9bc719524b156278d42e446856",
@@ -2587,6 +2593,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-3fcd45f706c2",
-  "manifestHash": "3fcd45f706c29f05d6a9209e28e794fb96649e37b4fa42dc4dc4643a0866f7d3"
+  "buildId": "BUILD-fb61bde73324",
+  "manifestHash": "fb61bde73324f8f368f52b5abc9a1c198c1f10ee7ce84e7eb6d08b69d47418fb"
 }

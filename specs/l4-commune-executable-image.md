@@ -1,0 +1,33 @@
+---
+id: L4-COMMUNE-EXECUTABLE-IMAGE
+level: L4
+title: 使用完整执行路径发现 Linux 长名 Agent 进程
+status: LOCKED
+lifecycle: ACTIVE
+parent: L3-COMMUNE-PROTOCOL-MEMBERSHIP
+code_targets:
+  - packages/ridge-kernel/src/agent_discovery.rs
+test_targets:
+  - packages/ridge-kernel/tests/commune_registration.rs
+acceptance_checks:
+  - id: existing-process-enrollment
+    command:
+      - cargo
+      - test
+      - --locked
+      - -p
+      - ridge-kernel
+      - --test
+      - commune_registration
+      - --
+      - --test-threads=1
+    description: 真实长名协议进程发现、精确登记、原终端保留与组织重启恢复
+depends_on:
+  - L4-COMMUNE-ORGANIZATION-MEMBERS
+---
+
+# 完整执行映像发现
+
+Agent 进程快照应使用 sysinfo 已读取的完整 exe 路径作为映像，不能只使用 Linux 截断后的 comm/name。无法读取 exe 时保留原 name 作为兼容回退。本次不扩大命令参数采集，不把普通参数中的品牌文本视为新增身份依据，也不降低 PID 启动实例、终端归属或协议端点校验。
+
+现有真实 Commune 组织登记测试使用长文件名测试进程、PTY 和原协议端点，须在 Windows 与 Linux 上通过。Linux 已在同一源码稳定复现原发现超时；修复后重复该真实流程，原进程、会话和组关系不变。不能增加超时或跳过 Linux 用例来通过发布门禁。

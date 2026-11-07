@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "id": "2e36485a-082c-4356-9449-e40d4671a824",
+  "at": "2026-11-07T10:02:13.086Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-107",
+  "buildId": "BUILD-50b5c2bdb6a2",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-50b5c2bdb6a2",
+    "changeId": "CHG-107",
+    "specHash": "3bd80ccbc76c24aff0af3e4c824d72e14dc5c1d78f7e71220d8071a4b360f12e",
+    "workspaceHash": "cf575209fb6f379939903b700f7ab93abbc593baef65f701e077c696f3b057b1",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "PASS",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-COMMUNE-EXECUTABLE-IMAGE",
+        "checkId": "existing-process-enrollment",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--",
+          "--test-threads=1"
+        ],
+        "description": "真实长名协议进程发现、精确登记、原终端保留与组织重启恢复",
+        "status": "PASS",
+        "exitCode": 0
+      }
+    ],
+    "valid": true,
+    "verifiedAt": "2026-11-07T10:02:13.085Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "packages/ridge-kernel/src/agent_discovery.rs",
+        "before": "cc073e033aa04c8638a4b7d7331d1c09579945225ed839a81f42eb7cbacc3cb1",
+        "after": "5ad4b25986ca7fbf96e39edd82e4e74e145cbd7da2998987575af62097fc4b89"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/2e36485a-082c-4356-9449-e40d4671a824.log"
+  }
+}

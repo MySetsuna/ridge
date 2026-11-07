@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "3ad02dd8-9e26-4776-947d-55fb85c87b66",
+  "at": "2026-11-07T09:55:43.142Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-107",
+  "data": {
+    "title": "修复 Linux Agent 发现误用截断进程名",
+    "implementation": "REQUIRED"
+  }
+}

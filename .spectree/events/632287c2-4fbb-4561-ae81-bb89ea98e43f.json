@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "632287c2-4fbb-4561-ae81-bb89ea98e43f",
+  "at": "2026-11-07T10:02:15.990Z",
+  "type": "approval_derived",
+  "source": "local_operation",
+  "changeId": "CHG-107",
+  "data": {
+    "changeId": "CHG-107",
+    "specHash": "fafd5800c6cd2f94718b5f470de762592610ecdc62a1d414ad0497b91c3bb34c",
+    "approvedAt": "2026-11-07T10:02:15.988Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "用户要求发现问题定位修复并完成发布；沿用 change 元数据例外",
+    "derivedFrom": {
+      "buildId": "BUILD-50b5c2bdb6a2",
+      "specHash": "3bd80ccbc76c24aff0af3e4c824d72e14dc5c1d78f7e71220d8071a4b360f12e"
+    },
+    "attributionVerified": false
+  }
+}

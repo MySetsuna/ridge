@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "id": "6768ae78-b377-470e-965a-0211a75caa4f",
+  "at": "2026-11-07T09:58:54.846Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-107",
+  "buildId": "BUILD-50b5c2bdb6a2",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-50b5c2bdb6a2",
+    "changeId": "CHG-107",
+    "specHash": "3bd80ccbc76c24aff0af3e4c824d72e14dc5c1d78f7e71220d8071a4b360f12e",
+    "workspaceHash": "cf575209fb6f379939903b700f7ab93abbc593baef65f701e077c696f3b057b1",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "FAIL",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-COMMUNE-EXECUTABLE-IMAGE",
+        "checkId": "existing-process-enrollment",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--",
+          "--test-threads=1"
+        ],
+        "description": "真实长名协议进程发现、精确登记、原终端保留与组织重启恢复",
+        "status": "FAIL",
+        "exitCode": 101
+      }
+    ],
+    "valid": false,
+    "verifiedAt": "2026-11-07T09:58:54.845Z",
+    "diagnostics": [
+      {
+        "code": "ACCEPTANCE_E_FAILED",
+        "severity": "ERROR",
+        "message": "existing-process-enrollment: warning: linker stdout: 正在创建库 C:\\code\\wind\\target\\debug\\deps\\ridge_term_font.dll.lib 和对象 C:\\code\\wind\\target\\debug\\deps\\ridge_term_font.dll.exp\n  |\n  = note: `#[warn(linker_messages)]` on by default\n\nwarning: `ridge-term-font` (lib) generated 1 warning\nwarning: unused import: `std::cell::RefCell`\n  --> packages\\ridge-term\\src\\lib.rs:37:5\n   |\n37 | use std::cell::RefCell;\n   |     ^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default\n\nwarning: unused import: `wasm_bindgen::prelude::*`\n  --> packages\\ridge-term\\src\\lib.rs:39:5\n   |\n39 | use wasm_bindgen::prelude::*;\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `crate::input::KeyEvent`\n  --> packages\\ridge-term\\src\\lib.rs:54:5\n   |\n54 | use crate::input::KeyEvent;\n   |     ^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `crate::search::SearchState`\n  --> packages\\ridge-term\\src\\lib.rs:55:5\n   |\n55 | use crate::search::SearchState;\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused imports: `Pos`, `RangeAbs`, `Range`, and `Selection`\n  --> packages\\ridge-term\\src\\lib.rs:56:24\n   |\n56 | use crate::selection::{Pos, Range, RangeAbs, Selection};\n   |                        ^^^  ^^^^^  ^^^^^^^^  ^^^^^^^^^\n\nwarning: unused import: `crate::term::Terminal`\n  --> packages\\ridge-term\\src\\lib.rs:57:5\n   |\n57 | use crate::term::Terminal;\n   |     ^^^^^^^^^^^^^^^^^^^^^\n\nwarning: function `append_render_scroll_ops` is never used\n   --> packages\\ridge-term\\src\\lib.rs:247:4\n    |\n247 | fn append_render_scroll_ops(\n    |    ^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: constant `SHELL_HISTORY_STICKY_MS` is never used\n   --> packages\\ridge-term\\src\\lib.rs:537:7\n    |\n537 | const SHELL_HISTORY_STICKY_MS: i64 = 0;\n    |       ^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: linker stdout: 正在创建库 C:\\code\\wind\\target\\debug\\deps\\ridge_term.dll.lib 和对象 C:\\code\\wind\\target\\debug\\deps\\ridge_term.dll.exp\n  |\n  = note: `#[warn(linker_messages)]` on by default\n\nwarning: `ridge-term` (lib) generated 9 warnings (run `cargo fix --lib -p ridge-term` to apply 6 suggestions)\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\n   Compiling ridge-kernel v0.1.0 (C:\\code\\wind\\packages\\ridge-kernel)\nwarning: function `read_http_response` is never used\n    --> packages\\ridge-kernel\\src\\client.rs:1378:4\n     |\n1378 | fn read_http_response(stream: &mut TcpStream) -> Result<(String, Vec<u8>), String> {\n     |    ^^^^^^^^^^^^^^^^^^\n     |\n     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: function `builtin_agent_profiles` is never used\n  --> packages\\ridge-kernel\\src\\domain.rs:56:8\n   |\n56 | pub fn builtin_agent_profiles() -> Value {\n   |        ^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: `ridge-kernel` (lib) generated 2 warnings\nerror: failed to remove file `C:\\code\\wind\\target\\debug\\ridge-kernel.exe`\n\nCaused by:\n  拒绝访问。 (os error 5)\n",
+        "nodeId": "L4-COMMUNE-EXECUTABLE-IMAGE"
+      }
+    ],
+    "fileChanges": [
+      {
+        "path": "packages/ridge-kernel/src/agent_discovery.rs",
+        "before": "cc073e033aa04c8638a4b7d7331d1c09579945225ed839a81f42eb7cbacc3cb1",
+        "after": "5ad4b25986ca7fbf96e39edd82e4e74e145cbd7da2998987575af62097fc4b89"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/6768ae78-b377-470e-965a-0211a75caa4f.log"
+  }
+}
