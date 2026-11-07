@@ -5,6 +5,7 @@
   import { t, tr } from '$lib/i18n';
   import { teammateGroupStore, groupOfAgent, GROUP_COLORS } from './teammateGroups.svelte';
   import CommuneGroupTasks from './CommuneGroupTasks.svelte';
+  import { nativeGroupDispatchOwner } from './communeGroupDispatch';
   import type { AgentHistoryReply, CommuneGroupTask } from '../../../packages/remote/src/shared/transport/wsRemote';
 
   interface Member {id:string;name:string;workspaceName?:string;online?:boolean;generation?:number;lease?:string;canSend?:boolean;canCancel?:boolean}
@@ -14,6 +15,7 @@
     onConnect?:(candidate:Candidate) => void | Promise<void>; onLocate?:(candidate:Candidate) => void;
   } = $props();
   const store = teammateGroupStore();
+  const dispatchOwner = $derived(typeof identity === 'object' && identity !== null ? identity : nativeGroupDispatchOwner);
   let building = $state(false), name = $state(''), selected = $state<string[]>([]);
   let color = $state<string>(GROUP_COLORS[0]);
   const eligible = $derived(members.filter(member => !groupOfAgent(store.groups, member.id)));
@@ -114,7 +116,7 @@
           <button class="add" disabled={store.busy} onclick={() => store.addMember(group.id,member.id)}>+ {member.name}</button>
         {/each}
       </details>{/if}
-      <CommuneGroupTasks groupScope="host" {group} {members} tasks={store.dispatches}
+      <CommuneGroupTasks groupScope="host" {dispatchOwner} {group} {members} tasks={store.dispatches}
         read={request => invoke<CommuneGroupTask>('get_agent_message_delivery_status',{...request})}
         readEvent={request => invoke<AgentHistoryReply[]>('read_agent_recent_replies',{...request})}
         submit={members.some(member => member.canSend === true) ? request => invoke<CommuneGroupTask>('send_agent_message',{...request}) : undefined}

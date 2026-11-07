@@ -578,7 +578,7 @@
           {#each sortedGroupCandidates(g) as m (m.id)}
             <button class="member-add" onclick={() => toggleMember(g, m.id)}>+ {m.name}</button>
           {/each}
-          <CommuneGroupTasks {workspaceId} group={g} members={topo.roster} tasks={topo.groupTasks ?? []}
+          <CommuneGroupTasks {workspaceId} dispatchOwner={ws} group={g} members={topo.roster} tasks={topo.groupTasks ?? []}
             read={request => invoke<CommuneGroupTask>('get_agent_message_delivery_status', { ...request })}
             readEvent={request => ws.listAgentHistory(request.workspaceId, 100, undefined, '', request.textCursor)}
             submit={topo.roster.some(member => member.canSend === true) ? request => invoke<CommuneGroupTask>('send_agent_message', { ...request }) : undefined}

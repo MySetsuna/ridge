@@ -2,11 +2,13 @@
   import { onDestroy } from 'svelte';
   import { locale } from '$lib/i18n/locale';
   import { communeText, type CommuneUiTextKey } from './communeUiText';
+  import { communeGroupDispatch, nativeGroupDispatchOwner } from './communeGroupDispatch';
   import type { AgentHistoryReply, CommuneGroupDispatchRequest, CommuneGroupTask } from '../../../packages/remote/src/shared/transport/wsRemote';
   interface Member {id:string;name:string;generation?:number;lease?:string;online?:boolean;canSend?:boolean}
   interface Props {
     workspaceId?: string;
     groupScope?: 'host';
+    dispatchOwner?: object;
     group: {id:string;revision?:number;memberAgentIds:readonly string[]};
     members: readonly Member[];
     tasks?: readonly CommuneGroupTask[];
@@ -16,18 +18,20 @@
     readEvent?: (request:{workspaceId:string;textCursor:string}) => Promise<AgentHistoryReply[]>;
     onRefresh?: () => void | Promise<void>;
   }
-  let {workspaceId,groupScope,group,members,tasks=[],submit,cancel,read,readEvent,onRefresh}: Props = $props();
-  let mode = $state<'broadcast'|'assign'>('broadcast');
-  let selected = $state<Record<string,{generation:number;lease:string}>>({});
-  let selectedRevision = $state<number>();
-  let message = $state('');
-  let objectives = $state<Record<string,string>>({});
-  let busy = $state(false);
+  let {workspaceId,groupScope,dispatchOwner=nativeGroupDispatchOwner,group,members,tasks=[],submit,cancel,read,readEvent,onRefresh}: Props = $props();
+  const dispatch = $derived(communeGroupDispatch(dispatchOwner, groupScope ?? workspaceId ?? '', group.id));
+  const mode = $derived($dispatch.draft.mode);
+  const selected = $derived($dispatch.draft.selected);
+  const selectedRevision = $derived($dispatch.draft.selectedRevision);
+  const message = $derived($dispatch.draft.message);
+  const objectives = $derived($dispatch.draft.objectives);
+  let operationBusy = $state(false);
+  const busy = $derived(operationBusy || $dispatch.busy);
   let error = $state('');
   let received = $state<CommuneGroupTask>();
-  let attempt = $state<CommuneGroupDispatchRequest>();
   let version = 0;
   let currentScope = '';
+  let currentOwner: object | undefined;
   let detail = $state<CommuneGroupTask['objectiveDetail']>();
   let detailTask = $state('');
   let protocolDetail = $state<AgentHistoryReply>();
@@ -37,11 +41,17 @@
   const selectedIds = $derived(Object.keys(selected));
   const stale = $derived(selectedIds.length > 0 && (selectedRevision !== group.revision || selectedIds.some(id => {
     const member = candidates.find(member => member.id === id);
-    return !member || member.generation !== selected[id].generation || member.lease !== selected[id].lease;
+    return !member || !eligible(member) || member.generation !== selected[id].generation || member.lease !== selected[id].lease;
   })));
   const ready = $derived(!stale && selectedIds.length > 0 && selectedIds.length <= 32 && (mode === 'broadcast' ? !!message.trim() : selectedIds.every(id => !!objectives[id]?.trim())));
-  const displayed = $derived([...tasks, ...(received && !tasks.some(task => task.groupTaskId === received?.groupTaskId) ? [received] : [])]
-    .filter(task => (groupScope === 'host' ? task.groupScope === 'host' : task.workspaceId === workspaceId) && task.groupId === group.id));
+  const displayed = $derived.by(() => {
+    const confirmed = new Map<string, CommuneGroupTask>();
+    for (const task of [$dispatch.receipt, received, ...tasks]) {
+      if (task) confirmed.set(task.groupTaskId, task);
+    }
+    return [...confirmed.values()].filter(task =>
+      (groupScope === 'host' ? task.groupScope === 'host' : task.workspaceId === workspaceId) && task.groupId === group.id);
+  });
   const ct = (key: CommuneUiTextKey, vars?: Record<string, string | number>) => communeText($locale, key, vars);
   const stateKeys: Record<string, CommuneUiTextKey> = {
     prepared:'taskPrepared', submitted:'taskSubmitted', queued:'taskQueued', dispatching:'taskDispatching', running:'taskRunning',
@@ -50,31 +60,30 @@
   };
   const stateLabel = (state: string) => stateKeys[state] ? ct(stateKeys[state]) : state;
   function toggle(member:Member) {
-    if (selected[member.id]) { const next = {...selected}; delete next[member.id]; selected = next; }
+    if (selected[member.id]) { const next = {...selected}; delete next[member.id]; dispatch.edit({ selected: next }); }
     else if (eligible(member)) {
-      if (!selectedIds.length) selectedRevision = group.revision;
-      selected = {...selected,[member.id]:{generation:member.generation!,lease:member.lease!}};
+      dispatch.edit({ selectedRevision: selectedIds.length ? selectedRevision : group.revision,
+        selected: {...selected,[member.id]:{generation:member.generation!,lease:member.lease!}} });
     }
   }
-  async function send(request?:CommuneGroupDispatchRequest) {
-    if (!submit || (!workspaceId && groupScope !== 'host') || busy || (!request && !ready)) return;
+  async function send(original = false) {
+    if (!submit || (!workspaceId && groupScope !== 'host') || busy || (!original && !ready)) return;
     const scope = workspaceId;
     const token = ++version;
-    attempt = request ?? {...(groupScope === 'host' ? {groupScope} : {workspaceId}),groupId:group.id,groupRevision:selectedRevision!,groupAction:mode,
-      message:mode === 'broadcast' ? message.trim() : '',idempotency_key:crypto.randomUUID(),
+    const request: CommuneGroupDispatchRequest | undefined = original ? undefined : {
+      ...(groupScope === 'host' ? {groupScope} : {workspaceId}),groupId:group.id,groupRevision:selectedRevision!,groupAction:mode,
+      message:mode === 'broadcast' ? message.trim() : '',idempotency_key:$dispatch.pending?.request.idempotency_key ?? crypto.randomUUID(),
       targets:selectedIds.map(agentId => ({agentId,...selected[agentId],...(mode === 'assign' ? {objective:objectives[agentId].trim()} : {})}))};
-    busy = true; error = '';
+    error = '';
+    const result = await dispatch.send(submit, request);
+    if (!result || token !== version || scope !== workspaceId) return;
     try {
-      const result = await submit(attempt);
-      if (token !== version || scope !== workspaceId) return;
-      received = result; attempt = undefined; selected = {}; message = ''; objectives = {};
       await onRefresh?.();
     } catch (failure) { if (token === version) error = ct('operationFailed', {error:String(failure)}); }
-    finally { if (token === version) busy = false; }
   }
   async function cancelTask(id:string) {
     if (!cancel || busy) return;
-    const token = ++version; busy = true; error = '';
+    const token = ++version; operationBusy = true; error = '';
     try {
       const result = await cancel(id);
       if (token !== version) return;
@@ -82,31 +91,31 @@
       if (result.cancellationErrors?.length) error = result.cancellationErrors.map(item => `${item.memberId}: ${item.error}`).join('\n');
       await onRefresh?.();
     } catch (failure) { if (token === version) error = ct('operationFailed', {error:String(failure)}); }
-    finally { if (token === version) busy = false; }
+    finally { if (token === version) operationBusy = false; }
   }
   async function readObjective(groupTaskId:string, member:string, cursor?:string) {
     if (!read || (!workspaceId && groupScope !== 'host') || busy) return;
-    const token=++version; busy=true; error='';
+    const token=++version; operationBusy=true; error='';
     try {
       const result=await read({...(groupScope === 'host' ? {groupScope} : {workspaceId}),groupTaskId,...(cursor?{objectiveCursor:cursor}:{objectiveMemberId:member})});
       if (token===version) {detail=result.objectiveDetail;detailTask=groupTaskId;}
     } catch (failure) {if (token===version) error=ct('operationFailed', {error:String(failure)});}
-    finally {if (token===version) busy=false;}
+    finally {if (token===version) operationBusy=false;}
   }
   async function readOutput(id:string,cursor:string, sourceWorkspaceId=workspaceId) {
     if (!readEvent || !sourceWorkspaceId || busy) return;
-    const token=++version;busy=true;error='';
+    const token=++version;operationBusy=true;error='';
     try {
       const page=await readEvent({workspaceId:sourceWorkspaceId,textCursor:cursor});
       if (token===version) {protocolDetail=page[0];protocolOutput=id;}
     } catch (failure) {if (token===version) error=ct('operationFailed', {error:String(failure)});}
-    finally {if (token===version) busy=false;}
+    finally {if (token===version) operationBusy=false;}
   }
   $effect(() => {
     const scope = `${groupScope ?? workspaceId}:${group.id}`;
-    if (scope === currentScope) return;
-    currentScope = scope; version++; selected = {}; selectedRevision = undefined; received = undefined;
-    message = ''; objectives = {}; busy = false; error = ''; attempt = undefined;
+    if (scope === currentScope && dispatchOwner === currentOwner) return;
+    currentScope = scope; currentOwner = dispatchOwner; version++; received = undefined;
+    operationBusy = false; error = '';
     detail=undefined; detailTask='';
     protocolDetail=undefined;protocolOutput='';
   });
@@ -119,28 +128,30 @@
       <summary class="cursor-pointer text-[11px] text-[var(--rg-accent)]">{ct('reviewDispatch')}</summary>
       <div class="mt-2 space-y-2">
         <label class="block text-[11px]">{ct('action')}
-          <select bind:value={mode} disabled={busy} aria-label={ct('action')} class="ml-2 rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] px-2 py-1">
+          <select value={mode} onchange={event => dispatch.edit({mode:event.currentTarget.value as 'broadcast'|'assign'})} disabled={operationBusy} aria-label={ct('action')} class="ml-2 rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] px-2 py-1">
             <option value="broadcast">{ct('broadcast')}</option><option value="assign">{ct('assign')}</option>
           </select>
         </label>
         <ul class="space-y-1">
           {#each candidates as member (member.id)}
             <li class="space-y-1 text-[11px]">
-              <label class="flex items-center gap-2"><input type="checkbox" checked={!!selected[member.id]} disabled={busy || !eligible(member)} onchange={() => toggle(member)} aria-label={ct('selectMember', {name:member.name})} />
+              <label class="flex items-center gap-2"><input type="checkbox" checked={!!selected[member.id]} disabled={operationBusy || !eligible(member)} onchange={() => toggle(member)} aria-label={ct('selectMember', {name:member.name})} />
                 <span class="break-all">{member.name}</span><span class="text-[var(--rg-fg-muted)]">{member.online === true ? ct('online') : ct('offline')}{!eligible(member) ? ` · ${ct('noBinding')}` : ''}</span>
               </label>
-              {#if mode === 'assign' && selected[member.id]}<textarea rows="2" value={objectives[member.id] ?? ''} oninput={event => objectives = {...objectives,[member.id]:event.currentTarget.value}} disabled={busy} aria-label={ct('memberTask', {name:member.name})} placeholder={ct('memberObjective')} class="w-full rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] p-2"></textarea>{/if}
+              {#if mode === 'assign' && selected[member.id]}<textarea rows="2" value={objectives[member.id] ?? ''} oninput={event => dispatch.edit({objectives:{...objectives,[member.id]:event.currentTarget.value}})} disabled={operationBusy} aria-label={ct('memberTask', {name:member.name})} placeholder={ct('memberObjective')} class="w-full rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] p-2"></textarea>{/if}
             </li>
           {/each}
         </ul>
-        {#if mode === 'broadcast'}<textarea rows="2" bind:value={message} disabled={busy} aria-label={ct('broadcastTarget')} placeholder={ct('broadcastPlaceholder')} class="w-full rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] p-2 text-[11px]"></textarea>{/if}
-        {#if stale}<p role="status" class="text-[11px] text-amber-300">{ct('staleSelection')}<button onclick={() => { selected = {}; selectedRevision = undefined; }} class="ml-2 underline">{ct('clearSelection')}</button></p>{/if}
+        {#if mode === 'broadcast'}<textarea rows="2" value={message} oninput={event => dispatch.edit({message:event.currentTarget.value})} disabled={operationBusy} aria-label={ct('broadcastTarget')} placeholder={ct('broadcastPlaceholder')} class="w-full rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] p-2 text-[11px]"></textarea>{/if}
+        {#if stale}<p role="status" class="text-[11px] text-amber-300">{ct('staleSelection')}<button onclick={() => dispatch.edit({selected:{},selectedRevision:undefined})} class="ml-2 underline">{ct('clearSelection')}</button></p>{/if}
         <button disabled={busy || !ready} onclick={() => send()} class="rounded border border-[var(--rg-border)] px-2 py-1 text-[11px] disabled:opacity-40">{ct('dispatch',{count:selectedIds.length})}</button>
       </div>
     </details>
   {/if}
-  {#if error}<p role="alert" class="whitespace-pre-wrap break-all text-[11px] text-red-300">{error}</p>
-    {#if attempt}<button disabled={busy} onclick={() => send(attempt)} class="text-[11px] underline">{ct('retryDispatch')}</button>{/if}
+  {#if error || $dispatch.error}<p role="alert" class="whitespace-pre-wrap break-all text-[11px] text-red-300">{error || ct('operationFailed',{error:$dispatch.error})}</p>{/if}
+  {#if $dispatch.pending}
+    <p role="status" class="text-[11px] text-[var(--rg-fg-muted)]">{ct('groupDispatchPending')}</p>
+    <button disabled={busy || !submit} onclick={() => send(true)} class="text-[11px] underline">{ct('retryDispatch')}</button>
   {/if}
   {#each displayed as task (task.groupTaskId)}
     <article class="rg-commune-task space-y-2 rounded-xl border border-[var(--rg-border)] p-3 text-[11px]" data-group-task-id={task.groupTaskId}>

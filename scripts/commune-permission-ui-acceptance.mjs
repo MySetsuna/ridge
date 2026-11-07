@@ -116,7 +116,7 @@ try {
     const history = mount(History, { target: historyTarget, props: { workspaceId: target.workspaceId } });
     const groupTarget = document.createElement('section'); groupTarget.className = 'rg-commune'; groupTarget.dataset.testid = 'commune-groups'; document.body.append(groupTarget);
     const topology = parseTopologySnapshot(await invoke('get_teammate_topology', {workspaceId:target.workspaceId}));
-    const groups = mount(Groups, {target:groupTarget, props:{workspaceId:target.workspaceId,filePath:null,roster:topology.roster}});
+    let groups = mount(Groups, {target:groupTarget, props:{workspaceId:target.workspaceId,filePath:null,roster:topology.roster}});
     const workspaceTabTarget=document.createElement('section'); workspaceTabTarget.className='rg-commune'; document.body.append(workspaceTabTarget);
     const workspaceTabs=mount(WorkspaceTabs,{target:workspaceTabTarget,props:{
       workspaces:[{id:'saved-local',index:0,name:'Ridge',displaySeq:1},{id:'temporary',index:1,name:'Scratch',displaySeq:2}],
@@ -127,6 +127,7 @@ try {
     if(workspaceTabTarget.querySelectorAll('[data-testid="workspace-tab-saved"]').length!==1 || workspaceTabTarget.querySelectorAll('[data-testid="workspace-agent-unread"]').length!==1) throw Error('workspace tab does not distinguish the saved workspace from the unread temporary workspace');
     window.ownedGroups = teammateGroupStore(target.workspaceId);
     window.ownedApproval = { invoke, target, osCalls,
+      remountGroups: async () => { await unmount(groups); groups=mount(Groups,{target:groupTarget,props:{workspaceId:target.workspaceId,filePath:null,roster:topology.roster}}); },
       pause: () => { bridge.detach({ preserveListeners: true }); connection.disconnect(); },
       reconnect: async () => { connection = await connectPresentationRuntime(); bridge.attach(connection.transport, { useGlobalWorkspace: false }); },
       dispose: async () => { await unmount(workspaceTabs); await unmount(groups); await unmount(history); await unmount(modal); bridge.detach(); connection.disconnect(); } };
@@ -304,7 +305,39 @@ try {
   await taskUi.getByRole('button',{name:'清除旧选择',exact:true}).click();
   await taskUi.getByRole('checkbox',{name:'选择 unknown-protocol-process',exact:true}).check();
   await taskUi.getByRole('checkbox',{name:'选择 custom-process-two',exact:true}).check();
+  await page.evaluate(async () => {
+    const {bridge}=await import('/src/lib/transport/tauriShim/bridge.ts');
+    const invoke=bridge.invoke.bind(bridge);
+    window.groupDispatchRequests=[];
+    window.restoreGroupDispatch=()=>{bridge.invoke=invoke;};
+    bridge.invoke=async (method,args,...rest)=>{
+      if(method!=='send_agent_message'||!args.groupAction)return invoke(method,args,...rest);
+      window.groupDispatchRequests.push(JSON.parse(JSON.stringify(args)));
+      const result=await invoke(method,args,...rest);
+      if(window.groupDispatchRequests.length===1)throw Error('owned lost group reply after Runtime commit');
+      return result;
+    };
+  });
   await taskUi.getByRole('button',{name:'确认派发（2）',exact:true}).click();
+  await taskUi.getByRole('alert').filter({hasText:'owned lost group reply'}).waitFor();
+  await taskUi.getByRole('textbox',{name:'广播目标',exact:true}).fill('NEW_DRAFT_AFTER_UNCONFIRMED_GROUP');
+  await page.evaluate(()=>window.ownedApproval.remountGroups());
+  await taskUi.getByText('审定成员与目标，再派发',{exact:true}).click();
+  assert.equal(await taskUi.getByRole('textbox',{name:'广播目标',exact:true}).inputValue(),'NEW_DRAFT_AFTER_UNCONFIRMED_GROUP','remount must preserve the new draft and original unconfirmed group intent');
+  await taskUi.getByRole('button',{name:'确认派发（2）',exact:true}).click();
+  await taskUi.getByRole('alert').filter({hasText:'idempotency conflict'}).waitFor();
+  await taskUi.getByRole('button',{name:'重试原派发确认',exact:true}).click();
+  await until(()=>page.evaluate(()=>window.groupDispatchRequests.length===3));
+  await until(async()=>await taskUi.getByRole('button',{name:'重试原派发确认',exact:true}).count()===0);
+  const groupRequests=await page.evaluate(()=>window.groupDispatchRequests);
+  assert.equal(new Set(groupRequests.map(request=>request.idempotency_key)).size,1,'unconfirmed group confirmation must retain one key');
+  assert.equal(groupRequests[0].message,'browser-broadcast');
+  assert.equal(groupRequests[1].message,'NEW_DRAFT_AFTER_UNCONFIRMED_GROUP');
+  assert.deepEqual(groupRequests[2],groupRequests[0],'explicit retry must confirm the exact original request');
+  assert.equal(await taskUi.getByRole('textbox',{name:'广播目标',exact:true}).inputValue(),'NEW_DRAFT_AFTER_UNCONFIRMED_GROUP','original receipt must preserve the later draft');
+  assert.equal(fs.readFileSync(path.join(root,'prompt-log'),'utf8'),'browser-group-objective\nbrowser-broadcast\n');
+  assert.equal(fs.readFileSync(path.join(secondRoot,'prompt-log'),'utf8'),'browser-broadcast\n');
+  await page.evaluate(()=>window.restoreGroupDispatch());
   await until(async () => await taskUi.locator('[data-child-state="reply_ended"]').count() === 2);
   await taskUi.getByRole('combobox',{name:'协作动作',exact:true}).selectOption('assign');
   await taskUi.getByRole('checkbox',{name:'选择 unknown-protocol-process',exact:true}).check();
@@ -367,6 +400,7 @@ try {
     'Production group UI creates exact registered membership through Runtime and converges to a remote revision event',
     'A real group-leader task click freezes group and conversation binding in a durable task receipt; end_turn does not claim objective success',
     'Production multi-member task UI preserves draft across refresh, blocks changed group revision, broadcasts once, shows permission/running per child and cancels both original turns',
+    'After a real committed group dispatch loses its reply, remount preserves the pending intent and new draft; revised confirmation conflicts under the same key, original confirmation executes neither member twice',
     'Production task UI shows protocol-reported outputs and reads their original journal record; ordinary text and after-response output are excluded'];
   evidence.screenshot = screenshot; evidence.result = 'PASS';
   }
