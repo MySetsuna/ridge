@@ -36,7 +36,7 @@
   let detailTask = $state('');
   let protocolDetail = $state<AgentHistoryReply>();
   let protocolOutput = $state('');
-  const eligible = (member:Member) => member.canSend === true && typeof member.generation === 'number' && !!member.lease;
+  const eligible = (member:Member) => member.online === true && member.canSend === true && typeof member.generation === 'number' && !!member.lease;
   const candidates = $derived(group.memberAgentIds.map(id => members.find(member => member.id === id) ?? {id,name:id}));
   const selectedIds = $derived(Object.keys(selected));
   const stale = $derived(selectedIds.length > 0 && (selectedRevision !== group.revision || selectedIds.some(id => {

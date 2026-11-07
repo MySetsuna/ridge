@@ -1,27 +1,22 @@
 {
   "version": 1,
-  "changeId": "CHG-098",
-  "specHash": "5c986eac6c46bbe4926c80b1a481d3cd3d30f69ec13fd94b0659bf011260b7c4",
+  "changeId": "CHG-099",
+  "specHash": "909e9e6e3b3aa25a433106cd0799ed90dfd914b37f2629ec155322494ba9cdec",
   "units": [
     {
-      "id": "L4-COMMUNE-GROUP-DISPATCH-INTENT",
+      "id": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY",
       "level": "L4",
-      "nodeHash": "84742ae21ed4b67ce4915fd3d5df33973a4621cc6ac0af2674235500419d8a6b",
+      "nodeHash": "5ae05adc4c36869a74143f851cda4ca8d5c469713455e59fe2f16c8b27179384",
       "codeTargets": [
-        "src/lib/teammate/communeGroupDispatch.ts",
-        "src/lib/teammate/CommuneGroupTasks.svelte",
-        "src/lib/teammate/HostCommuneGroups.svelte",
-        "src/remote/lib/CommuneWorkspaceRoster.svelte",
-        "src/lib/teammate/communeUiText.ts"
+        "src/lib/teammate/CommuneGroupTasks.svelte"
       ],
       "testTargets": [
-        "src/lib/teammate/communeGroupDispatch.test.ts",
         "scripts/commune-permission-ui-acceptance.mjs"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "group-intent-kernel-build",
+          "id": "online-kernel-build",
           "command": [
             "cargo",
             "build",
@@ -31,10 +26,10 @@
             "--bin",
             "ridge-kernel"
           ],
-          "description": "构建现有组派发幂等与冻结目标的真实 Runtime"
+          "description": "构建当前真实 Runtime"
         },
         {
-          "id": "group-intent-fixture-build",
+          "id": "online-fixture-build",
           "command": [
             "cargo",
             "test",
@@ -45,27 +40,22 @@
             "commune_registration",
             "--no-run"
           ],
-          "description": "构建既有 ACP 会话 fixture"
+          "description": "构建连接可断开但原进程保活的已有 ACP fixture"
         },
         {
-          "id": "group-intent-ui",
+          "id": "online-group-ui",
           "command": [
             "node",
             "scripts/commune-permission-ui-acceptance.mjs"
           ],
-          "description": "真实组任务在提交后回执丢失、输入新草稿和组件重挂后，确认原派发不重复执行并保留新输入；回归审批、取消和产物"
+          "description": "真实连接断开后离线成员不能新选；已提交丢失回执的组派发仍能确认原请求，不重复执行；回归审批、组分工和产物"
         }
       ]
     }
   ],
   "allowedPaths": [
     "scripts/commune-permission-ui-acceptance.mjs",
-    "src/lib/teammate/CommuneGroupTasks.svelte",
-    "src/lib/teammate/HostCommuneGroups.svelte",
-    "src/lib/teammate/communeGroupDispatch.test.ts",
-    "src/lib/teammate/communeGroupDispatch.ts",
-    "src/lib/teammate/communeUiText.ts",
-    "src/remote/lib/CommuneWorkspaceRoster.svelte"
+    "src/lib/teammate/CommuneGroupTasks.svelte"
   ],
   "testCommand": [
     "npm",
@@ -185,13 +175,14 @@
     "changes/CHG-089.md": "f70ece267f350d8c16696b5934f50b68d55b61e6115af8ee93cf7ec39382309e",
     "changes/CHG-090.md": "b3ffdd64673f896290e8e1063b826257ad974005202a60650fdcd49f2d455500",
     "changes/CHG-091.md": "68f39e3a41f8559db0e4a79182b8812f485c1fb7989d7dca91ee52dcd31e2a0e",
-    "changes/CHG-092.md": "ab0f71c5294792c9d1145ca1d40f5ff5fc1706ecfc05c70d7eb4914d020d44b1",
+    "changes/CHG-092.md": "4e9382a3e63216d6aa65e0a3e00113cae637820dbf732057ff4e53c54ff1e77e",
     "changes/CHG-093.md": "a59fe5e67b924db9d74c7b3a5b5daeb6e9c33d2cf091b759a6951555a586a354",
     "changes/CHG-094.md": "b54904027fbcc7952379f8cad41c56afacb9c77fcfa5cea0d46f47d5341c8faf",
     "changes/CHG-095.md": "048926ad100701fb97454ddf09adb9d3b9abb7e0faebf93c9284dd9174067477",
     "changes/CHG-096.md": "78f086c298f741883e3c8dd5dd39a44574de217c8ab2462082d24ad7fc4293ae",
     "changes/CHG-097.md": "041f346f08d53d9c1daed15aa02c96a28ca7ae2d7f29afcab967440cdf4ed6c5",
     "changes/CHG-098.md": "a8a00de0ff07062fdff5f9d0b39dc922d0b7e64ad09d353932b0ebe311497c01",
+    "changes/CHG-099.md": "c152356827c7bfab1216f931a588597ae163d22bd7cfd81dea1fbe5a3e2b00f8",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -897,7 +888,7 @@
     "scripts/commune-a2a-sdk-acceptance.py": "736542a6c0f790db9fc6e20630620ebefbae39c6a2a1d54e2edb5238ce143e91",
     "scripts/commune-global-ui-acceptance.mjs": "583c76314031e3e77955e9c87648e58a7bdded74c88075e9eb8666fc6f195689",
     "scripts/commune-live-history-acceptance.mjs": "7de73d4c29c8dd6c8402ffea6692c20dc6d3d2485fc1c78233df3b688ccffaa0",
-    "scripts/commune-permission-ui-acceptance.mjs": "8e11c63be92ef4f4d366d5eaa6216522a22f671943046f1f4c167e260ca569d8",
+    "scripts/commune-permission-ui-acceptance.mjs": "2cc43534428c9857bae08ce33ee8c09ab4f74e64670dc8e5fe1cd3129cfe149f",
     "scripts/commune-permission-ui-client.mjs": "06a3047d9fd1774332953d2a8141ece0dd11a50fc1597d90583ca788e8b58215",
     "scripts/commune-sdk-acceptance.mjs": "ffb9662c18f9a6df982baba9fe831c8a1c57e136f3e84a055863060d88e6de45",
     "scripts/copy-teammate-shim.mjs": "2d372d8773beca4fc7f5b4d07e4a29c585637cccdf4ecc984de6d291fc793cb9",
@@ -1137,6 +1128,7 @@
     "specs/l3-terminal-visual-input-repair.md": "b68a179f6722237d8de2c9cd96cf170a1a1e786d5974dd7ac93ed76a22e7f8df",
     "specs/l4-commune-connection-wizard.md": "55e0d08a4f29a319f1eb7154228661d1e9585f54ce75ebda007858fad433b505",
     "specs/l4-commune-group-dispatch-intent.md": "29265c991a0a8cd463e077c07e8811c152d439cb13c91c09bd5f733d37689810",
+    "specs/l4-commune-group-online-eligibility.md": "b2c1504eee42922418f323f556e2ac2a0c7755640178ecc267b23af3338d7b47",
     "specs/l4-commune-group-usability.md": "b7f5bafb575bed7fe2306132822d5e5f2bbcb52557fc2143b10478544ecd116b",
     "specs/l4-commune-remote-delivery.md": "43ae0e9067cebb2a70ba1f46fc92104e0d625ae80dbce045e40239cb56c08230",
     "specs/l4-perf-latency-bench-entry.md": "86935a5eb9927f52620529e323278781fcf871545b9fc9cec4232c01418d798c",
@@ -2322,7 +2314,7 @@
     "src/lib/teammate/CommuneConnectionDialog.svelte": "97b892472869235c204f15e274295080f0f2ebba8858dfd5e90d24fe90d6f89c",
     "src/lib/teammate/communeGroupDispatch.test.ts": "4aa085e3f18d9fde4de89cf71d0af51e683e4d6d7a93b47d26b4fee61d81110a",
     "src/lib/teammate/communeGroupDispatch.ts": "ff5ae1f9d50a5daeb910948ab4d92fafb00af3a7ef263158f68bce668bc650f0",
-    "src/lib/teammate/CommuneGroupTasks.svelte": "8352d8c216d60830a9b42862afe3a4d9e16e583ffeda37cd2829345b9dc72c1e",
+    "src/lib/teammate/CommuneGroupTasks.svelte": "93876530087dc6d7b83d8496359c1caa4ff9537375cad54e297de8f73767900a",
     "src/lib/teammate/CommuneHistory.svelte": "80a58cc58f4cea1f2069829691ca04e4f2cd067e1a860f7aec3f9e95005d7b89",
     "src/lib/teammate/communeHistoryPages.test.ts": "bcbda9ac1ed4aae5e1779f577a6770bc9afe780677c0e36e9a43b2881fc8b411",
     "src/lib/teammate/communeHistoryPages.ts": "0287a3cc1e4d129cfb0b421d1efe225a3ccf207f0562b07df1e2be40bc822039",
@@ -2605,6 +2597,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-39b44077bd8c",
-  "manifestHash": "39b44077bd8c9a52772562b27ff189cc44ef6e5b638f8a51bf9d295ccb8de13c"
+  "buildId": "BUILD-448e129dba7f",
+  "manifestHash": "448e129dba7f60d2d99b9c4d91666026dcc7ebb77f8d5ea11e073cbdc16f5a5c"
 }

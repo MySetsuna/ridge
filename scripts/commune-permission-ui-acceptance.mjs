@@ -127,7 +127,11 @@ try {
     if(workspaceTabTarget.querySelectorAll('[data-testid="workspace-tab-saved"]').length!==1 || workspaceTabTarget.querySelectorAll('[data-testid="workspace-agent-unread"]').length!==1) throw Error('workspace tab does not distinguish the saved workspace from the unread temporary workspace');
     window.ownedGroups = teammateGroupStore(target.workspaceId);
     window.ownedApproval = { invoke, target, osCalls,
-      remountGroups: async () => { await unmount(groups); groups=mount(Groups,{target:groupTarget,props:{workspaceId:target.workspaceId,filePath:null,roster:topology.roster}}); },
+      remountGroups: async () => {
+        await unmount(groups);
+        const current=parseTopologySnapshot(await invoke('get_teammate_topology',{workspaceId:target.workspaceId}));
+        groups=mount(Groups,{target:groupTarget,props:{workspaceId:target.workspaceId,filePath:null,roster:current.roster}});
+      },
       pause: () => { bridge.detach({ preserveListeners: true }); connection.disconnect(); },
       reconnect: async () => { connection = await connectPresentationRuntime(); bridge.attach(connection.transport, { useGlobalWorkspace: false }); },
       dispose: async () => { await unmount(workspaceTabs); await unmount(groups); await unmount(history); await unmount(modal); bridge.detach(); connection.disconnect(); } };
@@ -381,6 +385,55 @@ try {
     assert.ok(historyDimensions.clientWidth>0 && historyDimensions.scrollWidth<=historyDimensions.clientWidth+1,`${name} narrow history layout overflows: ${JSON.stringify(historyDimensions)}`);
     await historyUi.screenshot({path:path.resolve(`.webview2-dev-cdp/073-commune-history-${name}-narrow.png`)});
   }
+  await page.evaluate(async ({workspaceId,paneId,identity}) => window.ownedApproval.invoke('send_agent_message', {
+    workspaceId,paneId,agentId:identity.agentId,generation:identity.generation,lease:identity.lease,
+    message:'disconnect-during-prompt',idempotency_key:crypto.randomUUID(),
+  }),{workspaceId,paneId:secondPane,identity:secondRegistered.value});
+  await until(()=>page.evaluate(async paneId =>
+    (await window.ownedApproval.invoke('get_teammate_topology',{workspaceId:window.ownedApproval.target.workspaceId})).roster
+      .find(member=>member.paneId===paneId)?.online===false,secondPane));
+  const offlineMember=await page.evaluate(async paneId =>
+    (await window.ownedApproval.invoke('get_teammate_topology',{workspaceId:window.ownedApproval.target.workspaceId})).roster
+      .find(member=>member.paneId===paneId),secondPane);
+  assert.equal(offlineMember.canSend,true,'method permission remains available after protocol disconnect');
+  assert.ok(offlineMember.generation>0&&offlineMember.lease,'offline identity retains its generation fence');
+  await page.evaluate(()=>window.ownedApproval.remountGroups());
+  await taskUi.getByText('审定成员与目标，再派发',{exact:true}).click();
+  assert.equal(await taskUi.getByRole('checkbox',{name:'选择 custom-process-two',exact:true}).isDisabled(),true,'an offline member cannot be selected for a new group dispatch');
+  assert.equal(await taskUi.getByRole('checkbox',{name:'选择 unknown-protocol-process',exact:true}).isEnabled(),true);
+  await taskUi.getByRole('combobox',{name:'协作动作',exact:true}).selectOption('broadcast');
+  await taskUi.getByRole('checkbox',{name:'选择 unknown-protocol-process',exact:true}).check();
+  await taskUi.getByRole('textbox',{name:'广播目标',exact:true}).fill('disconnect-during-prompt');
+  await page.evaluate(async () => {
+    const {bridge}=await import('/src/lib/transport/tauriShim/bridge.ts');
+    const invoke=bridge.invoke.bind(bridge);
+    window.offlineGroupConfirmations=[];
+    window.restoreOfflineGroup=()=>{bridge.invoke=invoke;};
+    bridge.invoke=async (method,args,...rest)=>{
+      if(method!=='send_agent_message'||!args.groupAction)return invoke(method,args,...rest);
+      window.offlineGroupConfirmations.push(JSON.parse(JSON.stringify(args)));
+      const result=await invoke(method,args,...rest);
+      if(window.offlineGroupConfirmations.length===1)throw Error('owned lost group reply before disconnect');
+      return result;
+    };
+  });
+  await taskUi.getByRole('button',{name:'确认派发（1）',exact:true}).click();
+  await taskUi.getByRole('alert').filter({hasText:'owned lost group reply before disconnect'}).waitFor();
+  await until(()=>page.evaluate(async () =>
+    (await window.ownedApproval.invoke('get_teammate_topology',{workspaceId:window.ownedApproval.target.workspaceId})).roster
+      .find(member=>member.agentId===window.ownedApproval.target.agentId)?.online===false));
+  await page.evaluate(()=>window.ownedApproval.remountGroups());
+  await taskUi.getByText('审定成员与目标，再派发',{exact:true}).click();
+  assert.equal(await taskUi.getByRole('button',{name:'确认派发（1）',exact:true}).isDisabled(),true,'offline selection blocks a new confirmation');
+  const confirmOriginal=taskUi.getByRole('button',{name:'重试原派发确认',exact:true});
+  assert.equal(await confirmOriginal.isEnabled(),true,'offline execution must not block confirming the original committed request');
+  await confirmOriginal.click();
+  await until(async()=>await confirmOriginal.count()===0);
+  const confirmations=await page.evaluate(()=>window.offlineGroupConfirmations);
+  assert.equal(confirmations.length,2);
+  assert.deepEqual(confirmations[0],confirmations[1],'offline confirmation must keep the exact original request');
+  assert.equal((fs.readFileSync(path.join(root,'prompt-log'),'utf8').match(/^disconnect-during-prompt$/gm)??[]).length,1,'original Agent must execute the group objective only once');
+  await page.evaluate(()=>window.restoreOfflineGroup());
   const calls = await page.evaluate(() => window.ownedApproval.osCalls);
   assert.deepEqual(calls, ['bootstrap_runtime_client', 'bootstrap_runtime_client', 'bootstrap_runtime_client']);
   await page.evaluate(() => window.ownedApproval.dispose());
@@ -401,6 +454,7 @@ try {
     'A real group-leader task click freezes group and conversation binding in a durable task receipt; end_turn does not claim objective success',
     'Production multi-member task UI preserves draft across refresh, blocks changed group revision, broadcasts once, shows permission/running per child and cancels both original turns',
     'After a real committed group dispatch loses its reply, remount preserves the pending intent and new draft; revised confirmation conflicts under the same key, original confirmation executes neither member twice',
+    'Actual protocol disconnect disables offline members for new group dispatch; after all peers disconnect, an already committed unconfirmed dispatch still confirms its original receipt and executes once',
     'Production task UI shows protocol-reported outputs and reads their original journal record; ordinary text and after-response output are excluded'];
   evidence.screenshot = screenshot; evidence.result = 'PASS';
   }
