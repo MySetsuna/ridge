@@ -2,7 +2,7 @@
 id: L4-OBS-SRC-LIB-COMPONENTS-RIDGEPANE-SVELTE-c57efa11
 level: L4
 parent: L3-OBS-SRC-LIB-COMPONENTS-28f39e09
-title: RidgePane.svelte
+title: RidgePane 生命周期与启动恢复
 status: LOCKED
 origin: observed
 migration_state: CONFIRMED
@@ -10,7 +10,9 @@ confidence: INFERRED
 observed_source_hash: 818be4df993b9bce2ea80f7e8c6e71eff235432927f95f50ff567a75e0538727
 code_targets:
   - src/lib/components/RidgePane.svelte
+  - src/lib/terminal/paneStartup.ts
 test_targets:
+  - src/lib/terminal/paneStartup.test.ts
   - src/lib/components/customTheme.test.ts
   - src/lib/components/explorerPaste.test.ts
   - src/lib/components/GitGraph.test.ts
@@ -30,6 +32,10 @@ verified_by:
   - TEST-OBS-SRC-LIB-COMPONENTS-SPLITCONTAINER-TEST-TS-1932765d
 ---
 
-# RidgePane.svelte
+# RidgePane 生命周期与启动恢复
 
 A desktop context menu opened while an inline TUI signal is live grants that pane a bounded host-interaction lease. Choosing a non-terminal-replacing menu action renews the lease and restores pane focus, so a visible TUI cursor or heuristic decay during menu use cannot route subsequent input through shell mode. Plain shell context menus never create the lease.
+
+本地及 Remote 桌面窗格按明确 workspaceId/paneId 启动，依次确保 PTY 存在、注册快照并同步尺寸、激活；组件失效后不得继续激活。任何启动失败须呈现可操作错误，重试沿用同一身份与既有 PTY，不关闭或重复创建已运行终端，不重放键盘输入。启动中重复重试必须合并或禁用。历史预取不先于关键终端启动；失败不阻止终端使用。
+
+验收以启动顺序、创建与订阅失败阻断后续激活、组件卸载隔离和相同身份重试的测试为准；真实公网补验终端输入、刷新、主机重连及原 child PID 保留。原有上下文菜单租约测试继续约束 TUI 输入归属。

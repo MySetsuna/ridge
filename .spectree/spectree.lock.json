@@ -1,53 +1,122 @@
 {
   "version": 1,
-  "changeId": "CHG-109",
-  "specHash": "b4c6615549f1ecf5cf6822dd489df1cc78b1921c5f417d21111929835358bc20",
+  "changeId": "CHG-110",
+  "specHash": "019d8df3d86d09dfb29b896351a966471fb5303aa2d9ca54b8b3d05b1db0be55",
   "units": [
     {
-      "id": "L4-CLOUD-RELEASE-0198",
+      "id": "L4-OBS-SRC-LIB-COMPONENTS-RIDGEPANE-SVELTE-c57efa11",
       "level": "L4",
-      "nodeHash": "ed28c5c5d39081527dd1108ac0f9ea6439f6bde826cc200d29577c5999d2c475",
+      "nodeHash": "e3ac44d741cae323aadf1616eb64389a0a9d390b32b3888af9d335c5533b8e38",
       "codeTargets": [
-        "package.json",
-        "Cargo.lock",
-        "src-tauri/Cargo.toml",
-        "src-tauri/tauri.conf.json"
+        "src/lib/components/RidgePane.svelte",
+        "src/lib/terminal/paneStartup.ts"
       ],
       "testTargets": [
-        "scripts/check-release-version.mjs",
-        "scripts/check-release-version.test.mjs"
+        "src/lib/terminal/paneStartup.test.ts",
+        "src/lib/components/customTheme.test.ts",
+        "src/lib/components/explorerPaste.test.ts",
+        "src/lib/components/GitGraph.test.ts",
+        "src/lib/components/inputBufferTracker.test.ts",
+        "src/lib/components/interactionContracts.test.ts",
+        "src/lib/components/SettingsPanel.test.ts",
+        "src/lib/components/SidebarLazyMount.test.ts",
+        "src/lib/components/SplitContainer.test.ts"
       ],
-      "status": "LOCKED",
-      "acceptanceChecks": [
-        {
-          "id": "release-version",
-          "command": [
-            "node",
-            "scripts/check-release-version.mjs"
-          ],
-          "description": "四处产品版本一致为 0.1.99，独立 crate 版本不变"
-        },
-        {
-          "id": "release-version-regression",
-          "command": [
-            "pnpm",
-            "exec",
-            "vitest",
-            "run",
-            "scripts/check-release-version.test.mjs"
-          ],
-          "description": "版本及 tag 契约拒绝缺失或不一致"
-        }
-      ]
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-CUSTOMTHEME-TEST-TS-0b73284d",
+      "level": "TEST",
+      "nodeHash": "08624b4cab96bbf0083c4f04d912734d5b3f76fffa7c5e40956d2fe0bb9fcf4d",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/customTheme.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-EXPLORERPASTE-TEST-TS-e29ef2f9",
+      "level": "TEST",
+      "nodeHash": "5ea41e7f3e18f821a298d65192f969462393f5cdefe1c0ce9c9c4341a3eb1bb3",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/explorerPaste.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-GITGRAPH-TEST-TS-69aabbd2",
+      "level": "TEST",
+      "nodeHash": "24c146c48701eb490a19a4a453c420c02130d1b44180eebc6a0d10110ac74181",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/GitGraph.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-INPUTBUFFERTRACKER-TEST-TS-a37220a2",
+      "level": "TEST",
+      "nodeHash": "6234a7dd8afaab35192d1eacffc714de479d824214aaccb1b44bf9591622a4b5",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/inputBufferTracker.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-INTERACTIONCONTRACTS-TEST-TS-6ff9d90a",
+      "level": "TEST",
+      "nodeHash": "480d10359a813b5e09e15eb4a1c16dcc1dca4baf215e8512ab2669bbcfe1cc18",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/interactionContracts.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-SETTINGSPANEL-TEST-TS-a77c4772",
+      "level": "TEST",
+      "nodeHash": "44d7c911b3a0d2afd5ef497196f80be05b2f80f0faa429befd5f7446a7431688",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/SettingsPanel.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-SIDEBARLAZYMOUNT-TEST-TS-a0bebf5d",
+      "level": "TEST",
+      "nodeHash": "ff8b36c2a8ab13c866dd32d16a839cd72ff6c8054c2f161e0042b00d14a10b02",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/SidebarLazyMount.test.ts"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "TEST-OBS-SRC-LIB-COMPONENTS-SPLITCONTAINER-TEST-TS-1932765d",
+      "level": "TEST",
+      "nodeHash": "bbb3008356ef3dfcf089b6a1b5a662175edbdd150501510cfceeef59ce0bed1b",
+      "codeTargets": [],
+      "testTargets": [
+        "src/lib/components/SplitContainer.test.ts"
+      ],
+      "status": "LOCKED"
     }
   ],
   "allowedPaths": [
-    "Cargo.lock",
-    "package.json",
-    "scripts/check-release-version.mjs",
-    "scripts/check-release-version.test.mjs",
-    "src-tauri/Cargo.toml",
-    "src-tauri/tauri.conf.json"
+    "src/lib/components/GitGraph.test.ts",
+    "src/lib/components/RidgePane.svelte",
+    "src/lib/components/SettingsPanel.test.ts",
+    "src/lib/components/SidebarLazyMount.test.ts",
+    "src/lib/components/SplitContainer.test.ts",
+    "src/lib/components/customTheme.test.ts",
+    "src/lib/components/explorerPaste.test.ts",
+    "src/lib/components/inputBufferTracker.test.ts",
+    "src/lib/components/interactionContracts.test.ts",
+    "src/lib/terminal/paneStartup.test.ts",
+    "src/lib/terminal/paneStartup.ts"
   ],
   "testCommand": [
     "npm",
@@ -185,6 +254,7 @@
     "changes/CHG-107.md": "07d21c2b401175e968c06bd72d3b6fda1f048278a25a4c27c9c5e34d03d03cc7",
     "changes/CHG-108.md": "25503115ad88eb18792c4a8cf77786c6b338c142f3f5c7c781bc0ab1aeddbf5c",
     "changes/CHG-109.md": "b430d248c8f315c2b71b3e47256c20af5812f5baa58d1a00a350b72a3399b393",
+    "changes/CHG-110.md": "1c09d8eab391f7f963a1627a93aa2c0bd28326f952728d58184226cce64fbd1b",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -1706,7 +1776,7 @@
     "specs/migration/L4-OBS-SRC-LIB-COMPONENTS-PANESHELLSWITCHER-SVELTE-e9e61dc2.md": "cb99ae206d3fbeba6db75383bb175c676b0ad4d13c2aca5b89938b06e5d2aa09",
     "specs/migration/L4-OBS-SRC-LIB-COMPONENTS-QUICKOPEN-SVELTE-f88b2028.md": "4d48703037ab12f10a5e01c4c0636e12485e4ed2145ff10fe6fbeae9f9b44d6f",
     "specs/migration/L4-OBS-SRC-LIB-COMPONENTS-RIDGEDIALOG-SVELTE-0b1fc5d1.md": "f55c2ba198a0fddc08cfecaed87ee1139c4540174090059e35aa4ff4c5716599",
-    "specs/migration/L4-OBS-SRC-LIB-COMPONENTS-RIDGEPANE-SVELTE-c57efa11.md": "62b37507cdd2041aafd7aa91b479be1b9123b8f51e992e2f1343acbfd0730587",
+    "specs/migration/L4-OBS-SRC-LIB-COMPONENTS-RIDGEPANE-SVELTE-c57efa11.md": "42c00187fcb027e49d9456e69f14f0553fd2d04e8c40d91adfab03ad019da78a",
     "specs/migration/L4-OBS-SRC-LIB-COMPONENTS-SAVEWORKSPACEDIALOG-SVELTE-70915b7d.md": "af96ac24e8975b11c0d9235453c4258e974434b1ebcca5bcf6f0cd70c0b61a89",
     "specs/migration/L4-OBS-SRC-LIB-COMPONENTS-SEARCHMODAL-SVELTE-badbc969.md": "f2f34de870d6fa46d2b226fff7e4f69184f46a296eea2b3b979421f0a09fe207",
     "specs/migration/L4-OBS-SRC-LIB-COMPONENTS-SEARCHSIDEBAR-SVELTE-39be3ed2.md": "a1b5b9065cc64c0b72d68eb390b30e1f1d740a88f40d1170096500b7750bfda0",
@@ -2188,7 +2258,7 @@
     "src/lib/components/PaneShellSwitcher.svelte": "ccd8c3a377c80b8dbd1816d4851bf5e2fa3706ea8a7740dba0299f14531c764c",
     "src/lib/components/QuickOpen.svelte": "ec5cdacd7839ba04fae33402e171bf9c2df9e6274483e55536944e5983963be2",
     "src/lib/components/RidgeDialog.svelte": "1c39ad434c3dd40a4cff8ddf95897b5c8efe3a6440c96194654431611c091d42",
-    "src/lib/components/RidgePane.svelte": "0df21ee0417cffcf03aa9ca12307524079301c2c5626b1a00fbb37f56ee93923",
+    "src/lib/components/RidgePane.svelte": "71148585aa9f6d3aad4433613a80c319ec56129fa951612009cb51644e2c5be6",
     "src/lib/components/SaveWorkspaceDialog.svelte": "f264d16025dd2abe5bd6683177262ec7629ba04303f414b96860ef614e2521fa",
     "src/lib/components/SearchModal.svelte": "ea4b5eaec92cfd2d8460a9243f0dfe256663759e7993b742ce4bd33e23a0db21",
     "src/lib/components/SearchSidebar.svelte": "7548e8a1b0c27b6d618ae53087be07287529db48fba412da73c7a7d4bca7d787",
@@ -2363,6 +2433,8 @@
     "src/lib/terminal/hostPorts.ts": "96253f19784e08db8437f74329c349e5e4abb53119cb9cb1b4e95c8873d737c8",
     "src/lib/terminal/paneSizeSync.test.ts": "55fc980a81a608781451bae0c4842935b2069186be10fd521ae8da2632ef8333",
     "src/lib/terminal/paneSizeSync.ts": "24e1574e84efe11d5bd2a2577d500be6d188610cb2da1cc47a54e6acaa0e39fa",
+    "src/lib/terminal/paneStartup.test.ts": "5f874d5c1fb76a52a7ffb653bb81ee90b0ed5064bc52b372e5c9b7924776790d",
+    "src/lib/terminal/paneStartup.ts": "49af3c3eafad58ba02e8e3cc9f6f1088cafe6fbe7b57560339f4e8d5d886c530",
     "src/lib/terminal/ptyWriteQueue.test.ts": "829c62fb3835046d40684e7df904878e2b6414eb3b527314bfb2831dc3600c42",
     "src/lib/terminal/ptyWriteQueue.ts": "2a7ceb3583415357d1bc0945d6d8bdc77f7a06f15f70d970b516536aa2886258",
     "src/lib/terminal/refreshEntrypoints.test.ts": "378eae86e77d3faf3bd38228a4c6eb5b9666051cd46cf918ea78119631065d5c",
@@ -2608,6 +2680,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-c06edd94f67b",
-  "manifestHash": "c06edd94f67b47e673ed77b88287849bfc2c0632a47b35b0701fdc880c5734da"
+  "buildId": "BUILD-b1865f303302",
+  "manifestHash": "b1865f303302aa49d1e87275542fcc2e7f7924bf55d6a9cb4e658f4cccf4b5a6"
 }

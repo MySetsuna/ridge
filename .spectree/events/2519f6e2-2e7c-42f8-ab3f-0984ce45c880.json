@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "2519f6e2-2e7c-42f8-ab3f-0984ce45c880",
+  "at": "2026-11-07T12:43:29.304Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-110",
+  "data": {
+    "title": "修复 Remote 桌面窗格启动超时黑屏并后置历史预取",
+    "implementation": "REQUIRED"
+  }
+}

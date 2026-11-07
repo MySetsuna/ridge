@@ -48,6 +48,7 @@ import type { ContextMenuItem } from '$lib/stores/contextMenu';
 import { reportRepeatedError } from '$lib/utils/repeatedError';
 import { synchronizePaneSize } from '$lib/terminal/paneSizeSync';
 import { scheduleForcedPaneResize } from '$lib/terminal/desktopPaneResize';
+import { startPaneSession } from '$lib/terminal/paneStartup';
 import { PaneRpcScheduler, type TerminalInputContext } from '@ridge/remote/shared/transport/paneRpcScheduler';
 import { RpcCancelledError, RpcTimeoutError, type RpcRequestOptions } from '@ridge/remote/shared/transport/types';
 import { pinImeCaretToAnchor } from '@ridge/remote/shared/terminal/imeAnchor';
@@ -71,6 +72,7 @@ let attached = $state(false);
 let webgpuInitError = $state<string | null>(null);
 let terminalStreamError = $state(false);
 let terminalStreamRetrying = $state(false);
+let terminalStartupRetrying = $state(false);
 let terminalExitMessage = $state<string | null>(null);
 let terminalLifecycleFailed = $state(false);
 let stopPtyView: (() => void) | null = null;
@@ -120,6 +122,36 @@ async function registerPtyStream(): Promise<void> {
     if (alive) terminalStreamError = true;
     console.warn('[ridge-pane] terminal stream registration failed', error);
   } finally { terminalStreamRetrying = false; }
+}
+
+async function retryTerminalConnection(): Promise<void> {
+  if (!alive || terminalStartupRetrying) return;
+  terminalStartupRetrying = true;
+  try {
+    await startPaneSession({
+      pane: { workspaceId, paneId },
+      shell: get(settingsStore).defaultShell || null,
+      grid: () => ({ rows: manager.rows(paneId), cols: manager.cols(paneId) }),
+      alive: () => alive,
+      prepareStream: async () => {
+        await registerPtyStream();
+        if (!alive) return;
+        if (terminalStreamError) throw new Error('terminal stream unavailable');
+        try { await manager.fitPaneNow(paneId); }
+        catch (error) { console.warn('initial pane fit failed; activation will retry size sync', error); }
+      },
+    });
+    if (!alive) return;
+    try {
+      await enableDeltaModeThenFit(paneId, () => manager.fitPaneNow(paneId, true), workspaceId);
+    } catch (error) {
+      console.warn('post-activation delta grid sync failed; resize retry remains armed', error);
+    }
+    if (alive) void terminalHistoryStore.fetch();
+  } catch (error) {
+    if (alive) terminalStreamError = true;
+    console.error('terminal startup failed', error);
+  } finally { terminalStartupRetrying = false; }
 }
 
 const DESKTOP_RESIZE_TIMEOUT_MS = 5_000;
@@ -1208,11 +1240,6 @@ onMount(() => {
 		return;
 	}
 
-	// Populate the shell-history store (Rust merges PowerShell / bash /
-	// zsh history files). Idempotent + cheap; the store keeps a single
-	// shared snapshot so per-pane mounts just refresh it.
-	terminalHistoryStore.fetch();
-
 	if (!isValidPaneId(paneId)) {
 		console.error(
 			'[ridge-pane] mounted with non-UUID paneId:',
@@ -1290,6 +1317,7 @@ onMount(() => {
 			manager.onEvent(paneId, onKernelEvent);
 			if (remotePaneBinding(paneId)) activateRemotePaneBinding(paneId);
 			else await registerPtyStream();
+			if (alive) void terminalHistoryStore.fetch();
 			return;
 		}
 
@@ -1343,6 +1371,7 @@ onMount(() => {
 		if (remote) {
 			manager.onResize(paneId, onPtyResize);
 			activateRemotePaneBinding(paneId);
+			if (alive) void terminalHistoryStore.fetch();
 			// manager.attach already measured the real container; claim now so
 			// the foreign PTY never remains at its placeholder 80x24 geometry.
 			manager.claimPaneSize(paneId);
@@ -1362,79 +1391,7 @@ onMount(() => {
 		if (!alive) return;
 		manager.onResize(paneId, onPtyResize);
 
-		// 3) PTY backend lifecycle
-		try {
-			await invoke('create_pane', {
-				paneId,
-				shell: get(settingsStore).defaultShell || null,
-				rows: manager.rows(paneId),
-				cols: manager.cols(paneId),
-			});
-		} catch (e) {
-			console.error('create_pane failed', e);
-			return;
-		}
-		if (!alive) return;
-
-		// 4) PTY output + closed-event listeners. ensurePtyBridge owns
-		// these subscriptions for the kernel's lifetime — they survive
-		// split / reparent unmount so PTY bytes during the unmount
-		// window are fed into the parked kernel rather than dropped.
-		// `pane-pty-closed` rebuild (create_pane + activate_pane_pty)
-		// also lives in the bridge.
-		//
-		// The bridge owns both the raw fallback listener and the binary delta
-		// Channel used by local desktop panes.
-		await registerPtyStream();
-		if (!alive) return;
-
-		// The bridge's canonical snapshot already contains the bounded recent row tail.
-		// Older rows arrive only through generation-fenced history pages.
-
-		// 6) Reassert the measured grid before activation. `create_pane` already
-		// starts the kernel PTY at this size; this fit catches layout changes that
-		// occurred while the blocking create request was in flight.
-		if (alive) {
-			try {
-				await manager.fitPaneNow(paneId);
-			} catch (e) {
-				console.warn('initial pane fit failed; activation will retry size sync', e);
-			}
-		}
-		if (!alive) return;
-
-		// 7) Activate PTY now that listener, history, and dimensions are ready
-		try {
-			await invoke('activate_pane_pty', {
-				workspaceId,
-				paneId,
-				rows: manager.rows(paneId),
-				cols: manager.cols(paneId),
-			});
-		} catch (e) {
-			const msg = String(e);
-			if (!/\bpane\s+not\s+found\b/i.test(msg)) {
-				console.error('activate_pane_pty failed', e);
-			}
-		}
-
-		// Local panes use the native Rust parser + binary delta lane. Once the
-		// native parser owns the grid, force one more fit through that parser so
-		// layout changes during activation reach the same grid authority.
-		try {
-			await enableDeltaModeThenFit(
-				paneId,
-				() => manager.fitPaneNow(paneId, true),
-				workspaceId,
-			);
-		} catch (e) {
-			console.warn('post-activation delta grid sync failed; resize retry remains armed', e);
-		}
-		if (!alive) return;
-
-		// `pane-pty-closed` rebuild now lives in ptyBridge and persists
-		// across this component's mount cycle, so we don't subscribe
-		// here. See ptyBridge.ts.
+		await retryTerminalConnection();
 	})();
 });
 
@@ -2176,7 +2133,7 @@ function captureBackspace(node: HTMLElement) {
 	use:captureBackspace
 >
 	{#if terminalStreamError}
-  <button style="position:absolute;top:8px;left:8px;z-index:20" disabled={terminalStreamRetrying} onpointerdown={(event) => event.stopPropagation()} onclick={() => void registerPtyStream()}>Terminal connection failed · Retry</button>
+  <button style="position:absolute;top:8px;left:8px;z-index:20" disabled={terminalStreamRetrying || terminalStartupRetrying} onpointerdown={(event) => event.stopPropagation()} onclick={() => void retryTerminalConnection()}>Terminal connection failed · Retry</button>
 	{/if}
 	{#if terminalExitMessage}
   <div role={terminalLifecycleFailed ? 'alert' : 'status'} aria-live={terminalLifecycleFailed ? 'assertive' : 'polite'} data-testid="terminal-exit-status" style="position:absolute;bottom:8px;left:8px;z-index:20;max-width:calc(100% - 16px);background:var(--rg-bg,#111827);color:var(--rg-fg,#f9fafb);border:1px solid var(--rg-border,#475569)" class="rounded px-3 py-2 text-xs">{terminalExitMessage}</div>
