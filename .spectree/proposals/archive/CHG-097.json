@@ -1,0 +1,60 @@
+{
+  "changeId": "CHG-097",
+  "nodes": [
+    {
+      "id": "L4-COMMUNE-CONNECTION-WIZARD",
+      "level": "L4",
+      "title": "Commune 既有会话连接向导",
+      "parent": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+      "codeTargets": [
+        "src/lib/teammate/CommuneConnectionDialog.svelte",
+        "src/lib/teammate/communeMembership.ts"
+      ],
+      "testTargets": [
+        "src/lib/teammate/communeMembership.test.ts",
+        "scripts/commune-permission-ui-acceptance.mjs"
+      ],
+      "dependsOn": [],
+      "acceptanceChecks": [
+        {
+          "id": "connection-kernel-build",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--bin",
+            "ridge-kernel"
+          ],
+          "description": "构建当前 Runtime 供真实接入验收使用"
+        },
+        {
+          "id": "connection-fixture-build",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "commune_registration",
+            "--no-run"
+          ],
+          "description": "构建隔离的已运行 ACP 会话端点"
+        },
+        {
+          "id": "connection-ui",
+          "command": [
+            "node",
+            "scripts/commune-permission-ui-acceptance.mjs",
+            "--membership"
+          ],
+          "description": "真实 Chromium 文件选择、预览、错误重试、取消与既有会话注册及移出，不新建替身会话"
+        }
+      ],
+      "body": "# Commune 既有会话连接向导\n\n## 用户流程\n\n桌面原有连接入口打开共享主题的独立对话框。默认选择运行方提供的 JSON 连接文件，先显示文件来源、协议、已有 session、工作目录与目标分屏，再显式连接。正常路径无需编写 JSON，高级入口保留粘贴并预览。只有选择或粘贴不会调用注册命令。\n\n读取限制为 UTF-8 64 KiB，拒绝无效 JSON、非对象和不同 workspace/pane 的描述。更换来源时清除上一预览，迟到文件读取不能覆盖新来源。错误就地显示且保留输入，明确提示核对原会话、连接文件和授权后重试。连接期间防重复提交及关闭，不静默重试。取消不注册、不终止 Agent。关闭恢复原入口焦点，支持键盘焦点约束。\n\n## 执行边界\n\n沿用 register_commune_member 及 native 信任边界，由 Runtime 校验 process start instance、endpoint owner、loopback、session、cwd 与权限，向导不增加新会话、新身份和凭据存储。协议与鉴权字段直接沿用运行方原描述，不伪造能力。注册成功后原调用者刷新已核实成员能力。Remote 继续提供 Host 侧连接说明。\n\n## 验收\n\n隔离单测覆盖字节上限、描述绑定和入口取消与防重。真实 Chromium 从文件读取原 ACP 会话描述，预览阶段 roster 无新成员。无效文件、跨分屏文件和 Runtime 连接拒绝均可见，原输入仍可修正并重试。成功后成员绑定原 process 和 session，移出后原终端进程存活，既有历史仍可读取。截图核对共享主题、窄屏、无横向溢出。外部 Agent 与真机联调单独记录，fixture 不作互操作通过声明。"
+    }
+  ],
+  "remove": []
+}

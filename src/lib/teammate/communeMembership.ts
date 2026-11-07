@@ -1,10 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
-import { choiceDialog, promptDialog } from '$lib/components/RidgeDialog.svelte';
+import { mount, unmount } from 'svelte';
+import { choiceDialog } from '$lib/components/RidgeDialog.svelte';
 import { parseTopologySnapshot, type TeammateProfile } from './teammateModel';
 
 export function connectionRequest(text: string, workspaceId: string, paneId: string): Record<string, unknown> {
-  if (text.length > 65536) throw new Error('连接描述过大');
-  const value: unknown = JSON.parse(text);
+  if (new TextEncoder().encode(text).byteLength > 65536) throw new Error('连接描述过大，最多 64 KiB');
+  let value: unknown;
+  try { value = JSON.parse(text.replace(/^\uFEFF/, '')); }
+  catch { throw new Error('连接描述不是有效 JSON'); }
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('连接描述须为 JSON 对象');
   const descriptor = value as Record<string, unknown>;
   if ((descriptor.workspaceId !== undefined && descriptor.workspaceId !== workspaceId)
@@ -12,11 +15,24 @@ export function connectionRequest(text: string, workspaceId: string, paneId: str
   return { ...descriptor, workspaceId, paneId };
 }
 
+let connectionDialogOpen = false;
+
 export async function registerCommuneMember(workspaceId: string, paneId: string): Promise<void> {
-  const text = await promptDialog({ title: '连接既有 Agent 会话',
-    message: '粘贴运行方提供的会话连接描述（JSON）。Runtime 将核验本分屏的进程、端点及会话身份。', okLabel: '连接' });
-  if (text === null) return;
-  await invoke('register_commune_member', connectionRequest(text, workspaceId, paneId));
+  if (connectionDialogOpen) throw new Error('请先完成已打开的会话连接');
+  connectionDialogOpen = true;
+  const previousFocus = document.activeElement;
+  try {
+    const { default: ConnectionDialog } = await import('./CommuneConnectionDialog.svelte');
+    await new Promise<void>((resolve, reject) => {
+      const dialog = mount(ConnectionDialog, { target: document.body, props: {
+        workspaceId, paneId,
+        onfinish: () => { void unmount(dialog).then(resolve, reject); },
+      } });
+    });
+  } finally {
+    connectionDialogOpen = false;
+    if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+  }
 }
 
 export async function removeCommuneMember(workspaceId: string, member: TeammateProfile): Promise<void> {
