@@ -483,5 +483,17 @@
       "buildId": "BUILD-327efdda178c",
       "specHash": "a9a88ca2a007e76dc2a5eaa2010d46116a4db44bf4567bead6ebfead2081346b"
     }
+  },
+  {
+    "changeId": "CHG-094",
+    "specHash": "eecf54f2882d2f3a6c350fce11bda0f52f5cc63074110137682b42ee9c71f1aa",
+    "approvedAt": "2026-11-07T02:57:59.864Z",
+    "source": "completion_derived",
+    "actor": "Codex",
+    "confirmationRef": "落实已授权编组可用性修复，明确先建空组再移动成员的既有 Runtime 能力入口",
+    "derivedFrom": {
+      "buildId": "BUILD-2acdbe77f7e2",
+      "specHash": "31eb499e586148c841ca43759943bfdb66fa3177d26607f36c7faa00823ae5af"
+    }
   }
 ]

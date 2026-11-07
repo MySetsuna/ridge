@@ -1,0 +1,40 @@
+---
+id: L4-COMMUNE-GROUP-USABILITY
+level: L4
+title: Commune 协作入口与完整编组成员选择
+status: LOCKED
+lifecycle: ACTIVE
+parent: L3-COMMUNE-PROTOCOL-MEMBERSHIP
+code_targets:
+  - src/lib/teammate/TerminalAgentRow.svelte
+  - src/lib/teammate/HostCommuneGroups.svelte
+  - src/lib/teammate/teammateGroups.svelte.ts
+  - src/lib/teammate/AgentCenterPanel.svelte
+  - src/remote/lib/GlobalCommuneRoster.svelte
+  - src/lib/i18n/messages/commune.ts
+  - src/lib/teammate/communeVisual.css
+test_targets:
+  - src/lib/teammate/teammateGroups.test.ts
+  - scripts/commune-global-ui-acceptance.mjs
+acceptance_checks:
+  - id: commune-group-usability-ui
+    command:
+      - node
+      - scripts/commune-global-ui-acceptance.mjs
+    description: 真实 Kernel 和受控既有 ACP 会话上验证协作入口可见、跨来源成员选择、候选接入解释、已归组成员可见与原子移动、派发记录保留和窄屏可用性
+depends_on: []
+---
+
+# Commune 协作入口与编组可用性
+
+用户明确要求修复难懂的协议操作、列表有成员却无编组候选及操作不便。协作连接、发送、审批等已有内容直接呈现在成员卡上，终端人工按键和输入保持独立可展开区域。
+
+建组流程明确展示所有已登记成员及其来源、在线状态和所属组。已归组成员可见并解释单主组约束，允许通过明确目标选择移动到另一组。移动复用现有组文档 CAS，一次请求同时从原组移出和在目标组加入，原组长被移出时清除原组长，不改已冻结任务。读取失效、并发修订冲突或写失败保留服务端确认的组，不作拆成两次写入的中间迁移。
+
+未登记终端候选在建组界面可见，说明协作会话待接入。桌面提供现有连接动作，Remote 定位原终端并说明须在主机完成登记。候选不能伪装协议身份，禁止隐式登记、发任务或终端输入。稳定组织成员身份与跨协议连接的持久化合并仍属 CHG-092 待定版设计。
+
+建组完成自动展开该组，流程依次指引成员、目标和确认派发。派发资格与编组成员分开说明。失败、同步中、无成员、全已归组与候选待连接各有可理解状态。共享主题和控件风格保持一致，主要操作适配手机触控。
+
+验收覆盖跨工作区同名/不同成员、候选无协议权限、全部已归组仍可见、成员移动的单次 CAS 和组长处理、冲突失败不覆盖、已冻结任务不改绑以及窄屏不横向溢出。
+
+建组允许先创建空组，随后添加或移动成员。此操作沿用 Runtime 已支持的空组文档形态，不发送任务、不建立会话；已全部归组时仍有清晰可达的重组路径。失联成员使用可读占位名称，原始身份在详情中保留。

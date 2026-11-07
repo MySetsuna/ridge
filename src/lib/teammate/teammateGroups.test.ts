@@ -15,6 +15,7 @@ import {
   removeGroupIn,
   removeMemberIn,
   addMemberIn,
+  moveMemberIn,
   recolorGroupIn,
   setGroupLeaderIn,
   groupOfAgent,
@@ -334,6 +335,34 @@ describe('persistedEquals（多 tab 卡死的第二道防线）', () => {
 
 describe('TeammateGroupStore runtime bridge', () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it('moves a member with one CAS write and retains confirmed groups on a revision conflict', async () => {
+    vi.stubGlobal('$state', <T>(value:T) => value);
+    const original = [
+      {...buildGroup('First',GROUP_COLORS[0],['agent-a']),leaderAgentId:'agent-a'},
+      buildGroup('Second',GROUP_COLORS[1],[]),
+    ];
+    invokeMock.mockResolvedValue({groups:original,groupsRevision:7});
+    const store = teammateGroupStore('move-member-test');
+    store.setWorkspace('move-member-test',null);
+    await vi.waitFor(() => expect(store.busy).toBe(false));
+    const expected = moveMemberIn(original,original[1].id,'agent-a');
+    expect(expected[0]).toMatchObject({memberAgentIds:[],leaderAgentId:undefined});
+    expect(expected[1].memberAgentIds).toEqual(['agent-a']);
+    expect(original[0].memberAgentIds).toEqual(['agent-a']);
+    expect(moveMemberIn(original,'missing','agent-a')).toEqual(original);
+    expect(moveMemberIn(original,original[0].id,'agent-a')).toEqual(original);
+    invokeMock.mockClear();
+    invokeMock.mockResolvedValueOnce({groups:expected,groupsRevision:8});
+    await expect(store.moveMember(original[1].id,'agent-a')).resolves.toBe(true);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith('set_teammate_groups',{workspaceId:'move-member-test',groups:expected,expectedRevision:7});
+    invokeMock.mockResolvedValue({groups:expected,groupsRevision:8});
+    invokeMock.mockRejectedValueOnce(new Error('group revision conflict'));
+    await expect(store.moveMember(original[0].id,'agent-a')).resolves.toBe(false);
+    expect(store.groups).toEqual(expected);
+    expect(store.error).toContain('group revision conflict');
+  });
 
   it('reads the Runtime projection, fences writes, and never writes browser storage', async () => {
     vi.stubGlobal('$state', <T>(value: T) => value);

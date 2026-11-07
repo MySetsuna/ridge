@@ -193,6 +193,15 @@ export function addMemberIn(
   });
 }
 
+/** Move an existing member in one revision write, clearing its previous leadership. */
+export function moveMemberIn(groups: readonly TeammateGroup[], groupId: string, agentId: string): TeammateGroup[] {
+  const id = agentId.trim();
+  if (!id || !groups.some(group => group.id === groupId)) return [...groups];
+  const previous = groupOfAgent(groups, id);
+  if (previous?.id === groupId) return [...groups];
+  return addMemberIn(previous ? removeMemberIn(groups, previous.id, id) : groups, groupId, id);
+}
+
 /** 按**名称**查找编组（后端事件桥只知组名，不知前端 group id）；同名取首个匹配。 */
 export function findGroupByName(
   groups: readonly TeammateGroup[],
@@ -481,6 +490,7 @@ class TeammateGroupStore {
   setLeader(id: string, agentId: string | null): Promise<boolean> { return this.change(groups => setGroupLeaderIn(groups,id,agentId)); }
   removeMember(groupId: string, agentId: string): Promise<boolean> { return this.change(groups => removeMemberIn(groups,groupId,agentId)); }
   addMember(groupId: string, agentId: string): Promise<boolean> { return this.change(groups => addMemberIn(groups,groupId,agentId)); }
+  moveMember(groupId: string, agentId: string): Promise<boolean> { return this.change(groups => moveMemberIn(groups,groupId,agentId)); }
   tasksFor(groupId: string): GroupTask[] { return this.tasks.filter(task => task.groupId === groupId); }
 }
 

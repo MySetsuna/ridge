@@ -126,3 +126,9 @@
   .rg-commune-tabs [role="tab"] { padding-inline: 6px; font-size: 12px; }
   .rg-commune .member-card { padding: 8px; }
 }
+
+@container commune (max-width: 600px) {
+  .host-groups :is(button, summary, select, input:not([type="checkbox"])) { min-height: 44px; }
+  .host-groups summary { display: flex; align-items: center; }
+  .host-groups input[type="color"] { width: 44px; }
+}

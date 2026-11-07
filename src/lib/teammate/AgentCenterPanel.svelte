@@ -598,7 +598,9 @@
             </li>
           {/if}
         </ul>
-        <HostCommuneGroups members={allMembers.map(member => ({...member.profile,workspaceId:member.workspaceId}))} />
+        <HostCommuneGroups members={allMembers.map(member => ({...member.profile,workspaceId:member.workspaceId,workspaceName:member.workspaceName}))}
+          candidates={terminalAgents.filter(entry => !entry.agent.protocolConnected).map(entry => ({...entry.agent,workspaceName:entry.workspaceName}))}
+          onConnect={candidate => connectDiscovered(candidate.workspaceId,candidate.paneId)} />
         </div>
       {:else}
         <div id="commune-panel-history" role="tabpanel" aria-labelledby="commune-tab-history">

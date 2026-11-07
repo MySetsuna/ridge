@@ -116,11 +116,11 @@
         </div>
       {/if}
       {#if error}<p role="alert" class="feedback error">{error}</p>{:else if notice}<p role="status" class="feedback">{notice}</p>{/if}
-      {#if children}<details class="protocol"><summary>{$t('commune.protocolActions')}</summary><ul>{@render children()}</ul></details>{/if}
     </div>
   {:else if error}
     <p role="alert" class="feedback error collapsed-error">{error}</p>
   {/if}
+  {#if children}<div class="protocol" aria-label={$t('commune.collaboration')}><ul>{@render children()}</ul></div>{/if}
 </li>
 
 <style>

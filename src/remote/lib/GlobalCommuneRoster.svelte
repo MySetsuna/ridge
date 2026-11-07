@@ -59,7 +59,9 @@
           onAttentionChange={paneIds => onAttentionChange?.(paneIds, scope.id)} />
       {/each}
     {/key}
-    <HostCommuneGroups members={scopes.flatMap(scope => snapshots[scope.id]?.roster ?? [])} identity={ws} />
+    <HostCommuneGroups members={scopes.flatMap(scope => (snapshots[scope.id]?.roster ?? []).map(member => ({...member,workspaceName:scope.name,workspaceId:scope.id})))}
+      candidates={scopes.flatMap(scope => (snapshots[scope.id]?.discovered ?? []).filter(candidate => !candidate.protocolConnected).map(candidate => ({...candidate,workspaceName:scope.name})))}
+      onLocate={candidate => onSelectPane?.(candidate.paneId,candidate.workspaceId)} identity={ws} />
     {#if memberCount === 0}<p class="global-empty">{$t('commune.allWorkspacesEmpty')}</p>{/if}
   </div>
   {#if tab === 'history'}
