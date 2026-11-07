@@ -2,6 +2,7 @@
 #[path = "common/runtime_fixture.rs"]
 mod fixture;
 use base64::Engine;
+use futures::StreamExt;
 use fixture::{attach, rpc, start};
 use ridge_kernel::client;
 use serde_json::{json, Value};
@@ -81,6 +82,22 @@ async fn runtime_observes_real_cd_preserves_saved_fields_and_rolls_back_failed_g
         assert!(Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    // A header must update without first asking get_pane_cwd to discover the cd.
+    let observed = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let message = socket.next().await.unwrap().unwrap();
+            if let tokio_tungstenite::tungstenite::Message::Text(text) = message {
+                let event: Value = serde_json::from_str(&text).unwrap();
+                if event["type"] == "event"
+                    && event["name"] == format!("pane-cwd-changed-{}-{pane}", workspace.as_str().unwrap())
+                    && event["payload"]["cwd"].as_str().is_some_and(|cwd| std::path::Path::new(cwd) == moved)
+                {
+                    return event;
+                }
+            }
+        }
+    }).await.expect("real cd must push the pane cwd before a read request");
+    assert_eq!(std::path::Path::new(observed["payload"]["cwd"].as_str().unwrap()), moved);
     let result = rpc(&mut socket, 2, "get_pane_cwd", params.clone()).await;
     assert!(result["error"].is_null(), "{result}");
     let normalized = result["result"]

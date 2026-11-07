@@ -1,52 +1,41 @@
 {
   "version": 1,
-  "changeId": "CHG-091",
-  "specHash": "885a18a0d3db7be9fe0390596f96b7f6747bae984f98bb166a11f4c424a1da6b",
+  "changeId": "CHG-093",
+  "specHash": "f40437af46945055b6480b417d77ca30635df69585640ffeb4c6508d170527db",
   "units": [
     {
-      "id": "L4-COMMUNE-REMOTE-DELIVERY",
-      "level": "L4",
-      "nodeHash": "4a9913fc9b8eb0834c22f393c58b5099622f541ccecbecfe3cd3b98be5fb359a",
+      "id": "L3-RUNTIME-LIVE-CWD-PUSH",
+      "level": "L3",
+      "nodeHash": "fbd0236877fbde1343a682730ca8694cae00ca7fc5b5ac708ee5a8cc581ab48c",
       "codeTargets": [
-        "packages/remote/src/shared/transport/wsRemote.ts",
-        "src/remote/lib/cloudRemote.ts",
-        "src/remote/lib/CommuneWorkspaceRoster.svelte",
-        "src/remote/lib/CommuneMemberMessage.svelte",
-        "src/remote/lib/communeMemberDelivery.ts",
-        "src/lib/teammate/communeUiText.ts"
+        "packages/ridge-kernel/src/processes.rs",
+        "packages/ridge-kernel/src/server.rs"
       ],
       "testTargets": [
-        "src/remote/lib/communeMemberDelivery.test.ts",
-        "src/remote/lib/cloudRemote.test.ts",
-        "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
-        "scripts/commune-global-ui-acceptance.mjs",
-        "src/lib/stores/hosts.connect.test.ts"
+        "packages/ridge-kernel/tests/cwd_runtime.rs"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "commune-remote-delivery-ui",
+          "id": "live-cwd-runtime",
           "command": [
-            "node",
-            "scripts/commune-global-ui-acceptance.mjs"
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "cwd_runtime"
           ],
-          "description": "真实受控 ACP 进程及 Kernel 上验证手机单成员消息、丢回执同键重试、连点防重和新草稿保留，同时保持跨来源编组、历史与 Remote 权限边界"
+          "description": "真实 shell cd 后不查询 CWD 即收到原 pane 的目录变化事件，验证快照、持久化、旧进程隔离及写回失败保护"
         }
       ]
     }
   ],
   "allowedPaths": [
-    "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
-    "packages/remote/src/shared/transport/wsRemote.ts",
-    "scripts/commune-global-ui-acceptance.mjs",
-    "src/lib/stores/hosts.connect.test.ts",
-    "src/lib/teammate/communeUiText.ts",
-    "src/remote/lib/CommuneMemberMessage.svelte",
-    "src/remote/lib/CommuneWorkspaceRoster.svelte",
-    "src/remote/lib/cloudRemote.test.ts",
-    "src/remote/lib/cloudRemote.ts",
-    "src/remote/lib/communeMemberDelivery.test.ts",
-    "src/remote/lib/communeMemberDelivery.ts"
+    "packages/ridge-kernel/src/processes.rs",
+    "packages/ridge-kernel/src/server.rs",
+    "packages/ridge-kernel/tests/cwd_runtime.rs"
   ],
   "testCommand": [
     "npm",
@@ -166,6 +155,8 @@
     "changes/CHG-089.md": "f70ece267f350d8c16696b5934f50b68d55b61e6115af8ee93cf7ec39382309e",
     "changes/CHG-090.md": "b3ffdd64673f896290e8e1063b826257ad974005202a60650fdcd49f2d455500",
     "changes/CHG-091.md": "68f39e3a41f8559db0e4a79182b8812f485c1fb7989d7dca91ee52dcd31e2a0e",
+    "changes/CHG-092.md": "ab0f71c5294792c9d1145ca1d40f5ff5fc1706ecfc05c70d7eb4914d020d44b1",
+    "changes/CHG-093.md": "a59fe5e67b924db9d74c7b3a5b5daeb6e9c33d2cf091b759a6951555a586a354",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -626,7 +617,7 @@
     "packages/ridge-kernel/src/metrics.rs": "7264b4d80698aa9b46a78ca26cd2f427501eacbd4a12eb6c6e348a8ea72b92ec",
     "packages/ridge-kernel/src/orchestration_health.rs": "90a08326d5cbf71c12e5a769fac32371bbe02e3e467f7d846b4b3745f55bb42b",
     "packages/ridge-kernel/src/outbound_hosts.rs": "d592f6148fb2678668bf16c5378813f35cf4cb38efc950bef084a41fb91eea6d",
-    "packages/ridge-kernel/src/processes.rs": "4f249c1d369c025a25c2d60c0789aca246f9a6579ba0d2a6853605a91353aeef",
+    "packages/ridge-kernel/src/processes.rs": "d910bea581c1baf42ecb949b2c61873851ee2db04f2ac9156a195b901666344b",
     "packages/ridge-kernel/src/project_store.rs": "5d0d9282cd69abe654c833ca6c2fa951e74bf1c83efda0403867646cb32b7c09",
     "packages/ridge-kernel/src/projects.rs": "ece5d3a88baeeeeb01a6040197ef8e17e12781d03945fc7ca44330abeb9a15d0",
     "packages/ridge-kernel/src/pty.rs": "80e25c6797d0609ff98c87a8560aad8929376483c3761c7922ba26975a7c11b5",
@@ -638,7 +629,7 @@
     "packages/ridge-kernel/src/rtp1_session.rs": "b30d796011b03ed8ff84e8dc35cf4a66f059d4575863348797921268c5a87325",
     "packages/ridge-kernel/src/rtp1_ws.rs": "5534cac0afc60db02543ae577d863e1bb77b6377db73431adfeeda3dd0746e35",
     "packages/ridge-kernel/src/rtp1.rs": "6f962cc48ca9d131f4bf31094e8781c1139e297c8d5d657c679bfd8a4dda587b",
-    "packages/ridge-kernel/src/server.rs": "6a3bdc1fb51437f3c6595f0d707907f657096a2933ad79a8a6b53f1ae860c28d",
+    "packages/ridge-kernel/src/server.rs": "8d0c693088149017797b175bce61d16194e2520fa95f165fd250b60f15f975cd",
     "packages/ridge-kernel/src/settings.rs": "a116dbaf72067f657afeeb8b04031ccb44608f6c47604617e54d5327b848eeef",
     "packages/ridge-kernel/src/terminal_lifecycle.rs": "e6c1836f345dac0f7dba0f60441848f8b8810294bf866b45d2625cb23b9d3c9d",
     "packages/ridge-kernel/src/terminal_ops.rs": "bab6ba34704ce95458c4fd135e673ba82e7e18e4989522840f0fa7a5a6cf44f8",
@@ -661,7 +652,7 @@
     "packages/ridge-kernel/tests/conformance_runtime.rs": "2dfe70856335a9b172a40524d1bdfbb5b40339618a7b5f5c205092eac49b2352",
     "packages/ridge-kernel/tests/context_runtime.rs": "e35f9ae17b905cbdb0b5028e7ccb8254f3500f387664ddb625340c62741c8578",
     "packages/ridge-kernel/tests/controller_identity_runtime.rs": "977164ff87f57841ca85f24a9f5130dc38066fe3051ea097b66d1b6d929fb35c",
-    "packages/ridge-kernel/tests/cwd_runtime.rs": "8ab1f74305c1eea10b32fe892c77f40f823e8eafc24795594e0283c4fc758276",
+    "packages/ridge-kernel/tests/cwd_runtime.rs": "beb115e8957a348f4124f28edb651f2d1279b30f71f8a09f54d1ba7303e30cb6",
     "packages/ridge-kernel/tests/device_identity_runtime.rs": "94b062ee5e6d210676982810f8cd0e8225f3ce8f729e4a8feefb1d2d98e3d403",
     "packages/ridge-kernel/tests/dock_runtime.rs": "7e213371770e5d2a5d158ca671461746a2dc527dee9972dbfe2a4657645006cd",
     "packages/ridge-kernel/tests/execution_rejections_runtime.rs": "a9b45f70a31ff5dc4995423610211ad1b0e0f39e4224a6ba1659cc3990eea3c1",
@@ -1105,6 +1096,7 @@
     "specs/l3-commune-protocol-membership.md": "3b61a6adee2c9473febba33590a9a9d32e0bb7ecdf1e8fe5546fb340d67b043f",
     "specs/l3-perf-remote-production-diagnosis.md": "f9e9793827d4e2225d0a33f26d712887970e1288796204dc442e9f2d70bc05d1",
     "specs/l3-remote-interaction-reliability.md": "e67f22893476eaeb98692fb8be0ebabe76087883f2327b157361ab063d1727a4",
+    "specs/l3-runtime-live-cwd-push.md": "6c1fad40dddacb076a616e6d88fafbf61f568cfaae0df007302562b5957119c0",
     "specs/l3-runtime-workspace-continuity.md": "350703f12b771ad46d34aae4fa5b46d2fdadb9d4dda13290c527e144a70c7e6d",
     "specs/l3-spec-mapping-governance.md": "84c8e5ffee176e5733a352dbf85a6cb3bd2e4b454e59c7ffe4b6af308cbc82a9",
     "specs/l3-terminal-visual-input-repair.md": "b68a179f6722237d8de2c9cd96cf170a1a1e786d5974dd7ac93ed76a22e7f8df",
@@ -2568,6 +2560,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-8fdd6c3741dd",
-  "manifestHash": "8fdd6c3741ddedf901be8a0e7aa441937cf161b832f5b6a72271fa4649113554"
+  "buildId": "BUILD-706157328385",
+  "manifestHash": "706157328385be27c4a2ec4deff9a7971fe40396bdb7f83d3803d80e14e3a830"
 }

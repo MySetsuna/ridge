@@ -471,5 +471,17 @@
       "buildId": "BUILD-0b0d380e55d0",
       "specHash": "b0cf50d45c63539128875f604ca5c067f4a9c5c356e229eaaa2b7673d5872162"
     }
+  },
+  {
+    "changeId": "CHG-093",
+    "specHash": "f40437af46945055b6480b417d77ca30635df69585640ffeb4c6508d170527db",
+    "approvedAt": "2026-11-07T02:40:35.395Z",
+    "source": "completion_derived",
+    "actor": "Codex",
+    "confirmationRef": "用户明确报告并要求处理终端 cd 后 pane header CWD 不同步，复用 Runtime 既有目录契约",
+    "derivedFrom": {
+      "buildId": "BUILD-327efdda178c",
+      "specHash": "a9a88ca2a007e76dc2a5eaa2010d46116a4db44bf4567bead6ebfead2081346b"
+    }
   }
 ]

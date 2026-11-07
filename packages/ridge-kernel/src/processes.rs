@@ -4,6 +4,30 @@ use ridge_core::{CoreError, CoreResult, Ctx};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+/// Keep all pane metadata current even when no client is querying or rendering it.
+pub(crate) fn supervise(state: AppState) {
+    tokio::spawn(async move {
+        while !state.shutting_down.load(std::sync::atomic::Ordering::Acquire) {
+            let inspect = state.clone();
+            if let Err(error) = tokio::task::spawn_blocking(move || {
+                let ctx = crate::host_core::runtime_ctx(&[], true);
+                for pane in inspect.ptys.list() {
+                    if inspect.shutting_down.load(std::sync::atomic::Ordering::Acquire) { break; }
+                    let Some(workspace) = pane.workspace_id else { continue; };
+                    if let Some(Err(error)) = dispatch(&inspect, "get_pane_cwd",
+                        &json!({"workspaceId":workspace,"paneId":pane.id}), &ctx)
+                    {
+                        tracing::debug!(%error, pane=%pane.id, "live cwd observation unavailable");
+                    }
+                }
+            }).await {
+                tracing::error!(%error, "live cwd observation worker failed");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    });
+}
+
 pub(crate) fn dispatch(
     state: &AppState,
     method: &str,

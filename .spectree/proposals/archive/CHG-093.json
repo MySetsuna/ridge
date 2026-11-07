@@ -1,0 +1,36 @@
+{
+  "changeId": "CHG-093",
+  "nodes": [
+    {
+      "id": "L3-RUNTIME-LIVE-CWD-PUSH",
+      "level": "L3",
+      "title": "Runtime 主动观测并推送终端 CWD",
+      "parent": "L2-UNIFIED-CLIENT-RUNTIME",
+      "codeTargets": [
+        "packages/ridge-kernel/src/processes.rs",
+        "packages/ridge-kernel/src/server.rs"
+      ],
+      "testTargets": [
+        "packages/ridge-kernel/tests/cwd_runtime.rs"
+      ],
+      "dependsOn": [],
+      "acceptanceChecks": [
+        {
+          "id": "live-cwd-runtime",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "cwd_runtime"
+          ],
+          "description": "真实 shell cd 后不查询 CWD 即收到原 pane 的目录变化事件，验证快照、持久化、旧进程隔离及写回失败保护"
+        }
+      ],
+      "body": "# Runtime 主动观测终端 CWD\n\n用户报告终端 cd 后 pane header 仍显示旧目录。Runtime 在存活期间定期观测自身精确持有的 PTY，不依赖活跃 pane、Header 挂载或 get_pane_cwd 查询。复用现有进程实例 fence、OSC 优先/OS 回退、根目录校验及事务写回路径，成功提交后发布原 pane 的既有 cwd 业务事件与语义更新。相同目录不反复提交或推送，某 pane 读取失败不阻塞其余 pane，关停后停止观测。\n\n验收使用真实 cmd/sh 且不依赖 OSC 的 cd，从已认证连接接收精确 workspace/pane 的 cwd 事件，然后核对图、保存文件及语义快照。原有图写回失败回滚与未知字段保留断言不降低。客户端继续消费同一事件/store，禁止把 Header 文本解析或浏览器独立轮询目录作为另一事实源。"
+    }
+  ],
+  "remove": []
+}

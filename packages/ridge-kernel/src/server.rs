@@ -355,6 +355,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
     state.ptys.set_business_events(state.business_events.clone());
     let terminal_lifecycle = crate::terminal_lifecycle::start(&state);
     crate::agent_discovery::supervise(state.clone());
+    crate::processes::supervise(state.clone());
     crate::lsp::set_events(state.business_events.clone());
     let app = Router::new()
         .route("/v1/local/clients", post(crate::local_client::issue))
