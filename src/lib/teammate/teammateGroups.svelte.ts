@@ -1,6 +1,6 @@
 /** Runtime owns group definitions; legacy persistence helpers support read-only migration. */
 import type { TeammateProfile } from './teammateModel';
-import type { CommuneGroupTask } from '../../../packages/remote/src/shared/transport/wsRemote';
+import type { CommuneGroupTask, CommuneOrganizationMember } from '../../../packages/remote/src/shared/transport/wsRemote';
 // ── 数据模型 ──
 
 /** 一个手动编组：成员用稳定 agent_id 引用（D1）。 */
@@ -381,6 +381,7 @@ class TeammateGroupStore {
   private storageKey = '';
   private requestVersion = 0;
   private refreshRequested = false;
+  members = $state<CommuneOrganizationMember[]>([]);
   groups = $state<TeammateGroup[]>([]);
   dispatches = $state<CommuneGroupTask[]>([]);
   revision = $state(0);
@@ -393,7 +394,7 @@ class TeammateGroupStore {
   setGlobal(identity: unknown = 'native'): void {
     if (this.global && this.hostIdentity === identity) return;
     this.global = true; this.hostIdentity = identity; this.runtimeWorkspaceId = undefined;
-    this.requestVersion++; this.groups = []; this.dispatches = []; this.revision = 0;
+    this.requestVersion++; this.members = []; this.groups = []; this.dispatches = []; this.revision = 0;
     this.busy = false; this.error = ''; this.notice = ''; this.tasks = [];
     void this.refresh();
   }
@@ -405,7 +406,7 @@ class TeammateGroupStore {
     this.runtimeWorkspaceId = workspaceId;
     this.storageKey = storageKey;
     this.requestVersion++;
-    this.groups = []; this.dispatches = []; this.revision = 0; this.busy = false; this.error = ''; this.notice = '';
+    this.members = []; this.groups = []; this.dispatches = []; this.revision = 0; this.busy = false; this.error = ''; this.notice = '';
     this.tasks = loadPersisted(this.storageKey).tasks;
     void this.refresh(true);
   }
@@ -445,12 +446,13 @@ class TeammateGroupStore {
       if (version === this.requestVersion) this.error = String(failure);
     } finally { this.finish(version); }
   }
-  private apply(projection: {groups: TeammateGroup[]; groupsRevision: number; groupTasks?: CommuneGroupTask[]}): void {
+  private apply(projection: {groups: TeammateGroup[]; groupsRevision: number; groupTasks?: CommuneGroupTask[]; members?: CommuneOrganizationMember[]}): void {
     if (!Array.isArray(projection.groups) || !Number.isSafeInteger(projection.groupsRevision)) throw new Error('Invalid group projection');
+    if (Array.isArray(projection.members)) this.members = projection.members;
     this.groups = projection.groups; this.revision = projection.groupsRevision;
     if (Array.isArray(projection.groupTasks)) this.dispatches = projection.groupTasks;
   }
-  private async change(update: (groups: readonly TeammateGroup[]) => TeammateGroup[]): Promise<boolean> {
+  private async change(update: (groups: readonly TeammateGroup[]) => TeammateGroup[], options: {enrollments?: {candidateRef:string;groupId:string}[];archiveMemberIds?:string[];restoreMemberIds?:string[]} = {}): Promise<boolean> {
     if ((!this.runtimeWorkspaceId && !this.global) || this.busy) { this.error = '编组同步中，请稍候再改。'; return false; }
     const workspaceId = this.runtimeWorkspaceId;
     const scope = this.global ? {groupScope:'host' as const} : {workspaceId};
@@ -460,7 +462,7 @@ class TeammateGroupStore {
     this.busy = true; this.error = '';
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      const projection = await invoke<{groups: TeammateGroup[]; groupsRevision: number}>('set_teammate_groups', {...scope, groups, expectedRevision});
+      const projection = await invoke<{groups: TeammateGroup[]; groupsRevision: number}>('set_teammate_groups', {...scope, groups, expectedRevision, ...options});
       if (version === this.requestVersion) this.apply(projection);
       return true;
     } catch (failure) {
@@ -480,10 +482,22 @@ class TeammateGroupStore {
     this.busy = false;
     if (this.refreshRequested) { this.refreshRequested = false; void this.refresh(); }
   }
-  create(name: string, color: string, memberAgentIds: readonly string[]): Promise<boolean> {
+  async create(name: string, color: string, memberAgentIds: readonly string[], candidateRefs: readonly string[] = []): Promise<boolean> {
     const group = buildGroup(name,color,memberAgentIds);
-    return this.change(groups => addGroup(groups,group));
+    const saved = await this.change(groups => addGroup(groups,group), candidateRefs.length ? {enrollments:candidateRefs.map(candidateRef => ({candidateRef,groupId:group.id}))} : {});
+    if (saved) return true;
+    // A read after a lost reply may prove the exact newly assigned group already exists.
+    const confirmed = this.groups.find(current => current.id === group.id && current.name === group.name && current.color === group.color);
+    if (confirmed && memberAgentIds.every(id => confirmed.memberAgentIds.includes(id))
+      && candidateRefs.every(reference => this.members.some(member => member.candidateRef === reference && confirmed.memberAgentIds.includes(member.agentId)))) {
+      this.error = '';
+      return true;
+    }
+    return false;
   }
+  enroll(groupId: string, candidateRef: string): Promise<boolean> { return this.change(groups => [...groups], {enrollments:[{candidateRef,groupId}]}); }
+  archiveMember(agentId: string): Promise<boolean> { return this.change(groups => [...groups], {archiveMemberIds:[agentId]}); }
+  restoreMember(agentId: string): Promise<boolean> { return this.change(groups => [...groups], {restoreMemberIds:[agentId]}); }
   rename(id: string, name: string): Promise<boolean> { return this.change(groups => renameGroupIn(groups,id,name)); }
   dissolve(id: string): Promise<boolean> { return this.change(groups => removeGroupIn(groups,id)); }
   recolor(id: string, color: string): Promise<boolean> { return this.change(groups => recolorGroupIn(groups,id,color)); }

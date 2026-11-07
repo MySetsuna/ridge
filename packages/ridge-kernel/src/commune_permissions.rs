@@ -221,6 +221,10 @@ impl Permissions {
         rows.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
         Ok(json!(rows))
     }
+    pub fn has_pending(&self, agent_id: &str) -> Result<bool, String> {
+        Ok(self.0.lock().map_err(|_| "permission registry unavailable")?.values()
+            .any(|entry| entry.binding.agent_id == agent_id))
+    }
     pub fn binding(&self, id: &str) -> Option<ApprovalBinding> {
         self.0
             .lock()

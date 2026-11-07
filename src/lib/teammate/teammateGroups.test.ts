@@ -336,6 +336,48 @@ describe('persistedEquals（多 tab 卡死的第二道防线）', () => {
 describe('TeammateGroupStore runtime bridge', () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it('submits candidate enrollment with the group CAS and retains the organization projection', async () => {
+    vi.stubGlobal('$state', <T>(value:T) => value);
+    invokeMock.mockResolvedValue({groups:[],groupsRevision:0,members:[]});
+    const store = teammateGroupStore();
+    store.setGlobal({test:'organization-v3'});
+    await vi.waitFor(() => expect(store.busy).toBe(false));
+    invokeMock.mockClear();
+    invokeMock.mockImplementation(async (method:string,args:Record<string,unknown>) => {
+      expect(method).toBe('set_teammate_groups');
+      const groups=args.groups as ReturnType<typeof buildGroup>[];
+      expect(args).toMatchObject({groupScope:'host',expectedRevision:0,enrollments:[{candidateRef:'opaque-reference',groupId:groups[0].id}]});
+      expect(groups[0].memberAgentIds).toEqual([]);
+      return {groups:[{...groups[0],memberAgentIds:['runtime-assigned']}],groupsRevision:1,
+        members:[{agentId:'runtime-assigned',name:'Terminal',archived:false,workspaceId:'workspace',paneId:'pane',terminalAvailable:true,protocolConnected:false,canSend:false,canCancel:false,candidateRef:'opaque-reference'}]};
+    });
+    await expect(store.create('Organization',GROUP_COLORS[0],[],['opaque-reference'])).resolves.toBe(true);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(store.members[0]).toMatchObject({agentId:'runtime-assigned',protocolConnected:false,canSend:false});
+    expect(store.groups[0].memberAgentIds).toEqual(['runtime-assigned']);
+  });
+
+  it('reconciles a committed candidate group after ACK loss without creating a second group', async () => {
+    vi.stubGlobal('$state', <T>(value:T) => value);
+    const store = teammateGroupStore();
+    invokeMock.mockResolvedValue({groups:[],groupsRevision:0,members:[]});
+    store.setGlobal({test:'organization-lost-reply'});
+    await vi.waitFor(() => expect(store.busy).toBe(false));
+    let confirmed: unknown;
+    invokeMock.mockClear();
+    invokeMock.mockImplementation(async (method:string,args:{groups:ReturnType<typeof buildGroup>[]}) => {
+      if(method === 'set_teammate_groups') {
+        confirmed={groups:[{...args.groups[0],memberAgentIds:['assigned']}],groupsRevision:1,
+          members:[{agentId:'assigned',candidateRef:'opaque'}]};
+        throw new Error('ACK lost after commit');
+      }
+      return confirmed;
+    });
+    await expect(store.create('Terminal',GROUP_COLORS[0],[],['opaque'])).resolves.toBe(true);
+    expect(invokeMock.mock.calls.map(call => call[0])).toEqual(['set_teammate_groups','get_teammate_topology']);
+    expect(store.groups).toHaveLength(1);expect(store.members).toHaveLength(1);expect(store.error).toBe('');
+  });
+
   it('moves a member with one CAS write and retains confirmed groups on a revision conflict', async () => {
     vi.stubGlobal('$state', <T>(value:T) => value);
     const original = [

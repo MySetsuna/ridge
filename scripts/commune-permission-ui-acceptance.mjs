@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
-import { chromium } from '@playwright/test';
+import { chromium, expect } from '@playwright/test';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ridge-070-permission-ui-'));
 const kernelBinary = path.resolve(process.env.RIDGE_TEST_KERNEL_BINARY || 'target/debug/ridge-kernel.exe');
@@ -190,7 +190,7 @@ try {
     const topology=await page.evaluate(async workspaceId=>window.ownedApproval.invoke('get_teammate_topology',{workspaceId}),workspaceId);
     const member=topology.roster.find(member=>member.paneId===memberPane);assert.ok(member?.online);assert.equal(member.sessionId,descriptor.sessionId);
     await page.evaluate(()=>{window.membershipJob=window.ownedMembership.remove().then(()=>({ok:true}),error=>({error:String(error)}));});
-    await page.getByRole('dialog',{name:'移出 Commune'}).getByRole('button',{name:'移出',exact:true}).click();
+    await page.getByRole('dialog',{name:'断开协作'}).getByRole('button',{name:'断开',exact:true}).click();
     assert.deepEqual(await page.evaluate(()=>window.membershipJob),{ok:true});
     const after=await page.evaluate(async workspaceId=>window.ownedApproval.invoke('get_teammate_topology',{workspaceId}),workspaceId);
     assert.equal(after.roster.some(member=>member.paneId===memberPane),false);
@@ -202,9 +202,25 @@ try {
     assert.deepEqual(await page.evaluate(()=>window.membershipJob),{ok:true});
     const cancelled=await page.evaluate(async workspaceId=>window.ownedApproval.invoke('get_teammate_topology',{workspaceId}),workspaceId);
     assert.equal(cancelled.roster.some(member=>member.paneId===memberPane),false,'cancel must not restore removed membership');
+    await page.evaluate(async () => {
+      const {setLocale}=await import('/src/lib/i18n/locale.ts');setLocale('en');
+      window.membershipJob=window.ownedMembership.register().then(()=>({ok:true}),error=>({error:String(error)}));
+    });
+    const english=page.getByRole('dialog',{name:'Connect existing Agent session'});
+    await english.getByLabel('Choose connection file').setInputFiles({name:'invalid.json',mimeType:'application/json',buffer:Buffer.from('{invalid')});
+    await expect(english.getByRole('alert')).toContainText('Connection descriptor is not valid JSON');
+    await english.getByLabel('Choose connection file').setInputFiles({name:'existing.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(description))});
+    await english.getByLabel('Session preview').waitFor();
+    await english.getByLabel('Reuse organization member').selectOption(member.agentId);
+    await expect(english.getByLabel('Session preview')).toContainText('Previous generation');
+    const englishDimensions=await english.evaluate(el=>({width:el.clientWidth,scroll:el.scrollWidth}));
+    assert.ok(englishDimensions.scroll<=englishDimensions.width+1,'English rebind preview must fit the narrow viewport');
+    await page.screenshot({path:path.resolve('.webview2-dev-cdp/092-commune-connection-preview-en.png')});
+    await english.getByRole('button',{name:'Cancel',exact:true}).click();
+    assert.deepEqual(await page.evaluate(()=>window.membershipJob),{ok:true});
     await page.evaluate(()=>window.ownedMembership.dispose());await page.evaluate(()=>window.ownedApproval.dispose());
     assert.deepEqual(pageErrors,[]);
-    evidence.checks=['file selection rejects invalid and cross-pane descriptions without registration','Runtime rejects a stale endpoint-owner identity and the production dialog retains editable input for corrected retry','connection preview fits a narrow viewport and has no registration effect','production connection dialog registers the already-running unlisted process and original protocol session','production removal dialog removes membership through Runtime','exact original process survives removal','protocol history remains readable after removal','cancelling the reopened wizard has no membership side effect'];
+    evidence.checks=['file selection rejects invalid and cross-pane descriptions without registration','Runtime rejects a stale endpoint-owner identity and the production dialog retains editable input for corrected retry','connection preview fits a narrow viewport and has no registration effect','production connection dialog registers the already-running unlisted process and original protocol session','production removal dialog removes membership through Runtime','exact original process survives removal','protocol history remains readable after removal','cancelling the reopened wizard has no membership side effect','English connection, validation errors and explicit member rebind preview fit the narrow viewport without registration side effects'];
     evidence.result='PASS';
   }else{
   const receipt = await page.evaluate(async () => window.ownedApproval.invoke('send_agent_message', { ...window.ownedApproval.target, message: 'permission-needed', idempotency_key: crypto.randomUUID() }));

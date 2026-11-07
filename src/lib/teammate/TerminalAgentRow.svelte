@@ -6,11 +6,15 @@
   import { locateTerminal } from './locateTerminal';
   import type { DiscoveredAgent } from './teammateModel';
   import { manualTerminalInput, terminalTextBytes, terminalView, type TerminalView } from './terminalAgent';
+  import { teammateGroupStore, groupOfAgent } from './teammateGroups.svelte';
   import { t, tr } from '$lib/i18n';
 
   let { agent, workspaceName, expanded, onToggle, children }: {
     agent: DiscoveredAgent; workspaceName: string; expanded: boolean; onToggle: () => void; children?: Snippet;
   } = $props();
+  const organization = teammateGroupStore();
+  const memberId = $derived(agent.agentId ?? organization.members.find(member => member.candidateRef === agent.candidateRef && !!agent.candidateRef)?.agentId);
+  const group = $derived(memberId ? groupOfAgent(organization.groups,memberId) : undefined);
   let view = $state<TerminalView | null>(null);
   let text = $state('');
   let error = $state('');
@@ -78,7 +82,7 @@
   <div class="card-heading">
     <span class="agent-icon"><Terminal size={15} strokeWidth={1.6} /></span>
     <button class="identity" onclick={onToggle} aria-expanded={expanded}>
-      <span class="agent-name">{agent.name}</span>
+      <span class="agent-name">{agent.name}</span>{#if group}<span class="workspace" style:color={group.color}>{group.name}</span>{/if}
       <span class="workspace" title={workspaceName}>{workspaceName}</span>
     </button>
     <button class="locate" onclick={() => void locate()} title={$t('commune.terminalLocateHint')}><Crosshair size={13} />{$t('commune.locateTerminal')}</button>

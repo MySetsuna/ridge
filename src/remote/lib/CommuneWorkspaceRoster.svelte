@@ -1,5 +1,6 @@
 <script lang="ts">
   import '../../lib/teammate/communeVisual.css';
+  import { teammateGroupStore, groupOfAgent } from '$lib/teammate/teammateGroups.svelte';
   import CommuneHistory from '$lib/teammate/CommuneHistory.svelte';
   import CommuneGroupTasks from '$lib/teammate/CommuneGroupTasks.svelte';
   import CommuneMemberMessage from './CommuneMemberMessage.svelte';
@@ -68,6 +69,7 @@
   let refreshQueued = false;
   let liveRefreshDirty = false;
   let topo = $state<TeammateTopology>({ roster: [], leaderId: null, edges: [] });
+  const organization = teammateGroupStore();
   const terminalCandidates = $derived((topo.discovered ?? []).filter(candidate => candidate.workspaceId === workspaceId && !candidate.protocolConnected));
   $effect(() => { const snapshot = topo; untrack(() => onSnapshot?.(snapshot)); });
   let pending = $state<HitlPendingItem[]>([]);
@@ -474,12 +476,14 @@
   {#if subTab === 'members'}
     <!-- 成员列表：与桌面同构的监控 + 干预（状态 / 最近回复 / 单独发消息）。 -->
     {#each terminalCandidates as candidate, index (candidate.paneId + ':' + candidate.name + ':' + index)}
+      {@const memberId = candidate.agentId ?? organization.members.find(member => candidate.candidateRef && member.candidateRef === candidate.candidateRef)?.agentId}
+      {@const organizationGroup = memberId ? groupOfAgent(organization.groups,memberId) : undefined}
       <div class="member-card" data-testid="remote-terminal-agent" data-workspace-id={candidate.workspaceId} data-pane-id={candidate.paneId}>
         <div class="member-head">
           <span class="name">{candidate.name}</span><span class="tag">{$t('commune.autoDetected')}</span>
           <button class="act" onclick={() => onSelectPane?.(candidate.paneId)}>{$t('commune.locateTerminal')}</button>
         </div>
-        <p class="note">{$t('commune.connectAcpFirst')}</p>
+        <p class="note">{organizationGroup ? organizationGroup.name + ' · ' : ''}{$t('commune.groupTerminalReady')}</p>
         <pre class="reply">{candidate.recentOutput || $t('commune.terminalWaitingOutput')}</pre>
       </div>
     {/each}

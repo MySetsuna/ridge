@@ -15,7 +15,7 @@ const fixture = fs.readdirSync('target/debug/deps').filter(name => /^commune_reg
   .map(name => path.resolve('target/debug/deps', name)).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
 assert.ok(fixture, 'build commune_registration first');
 const evidence = { scope: 'Owned ACP process fixtures + real Kernel native RPC + production desktop/mobile Commune components; no external Agent/WAN claim', checks: [], result: 'RUNNING' };
-let kernel, vite, browser, endpoint;
+let kernel, vite, browser, page, endpoint;
 const until = async check => { const deadline = Date.now() + 30000; while (Date.now() < deadline) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 30)); } throw Error('owned global Commune readiness timeout'); };
 const call = async (method, url, body) => {
   const response = await fetch(`http://127.0.0.1:${endpoint.port}${url}`, { method,
@@ -48,20 +48,24 @@ try {
     assert.equal(registered.ok, true, registered.error); workspaces.push({ id: workspaceId, name });
   }
   const terminalWorkspace=(await call('POST','/v1/domain/workspaces')).workspace_id;
-  const candidateScript=path.join(root,'candidate.cjs');fs.writeFileSync(candidateScript,"process.stdout.write('OWNED_TERMINAL_CANDIDATE\\r\\n');setInterval(()=>{},1000)");
+  const terminalDescriptorPath=path.join(root,'terminal-endpoint.json');
   const terminalPane=(await call('GET',`/v1/domain/workspaces/${terminalWorkspace}`)).panes[0];
-  await call('POST','/v1/domain/ptys',{workspace_id:terminalWorkspace,pty_id:terminalPane,program:process.execPath,args:[candidateScript],cwd:root,env:{},role:'shell',cols:80,rows:24});
+  await call('POST','/v1/domain/ptys',{workspace_id:terminalWorkspace,pty_id:terminalPane,program:fixture,args:['--exact','existing_protocol_endpoint_fixture','--ignored'],cwd:root,env:{RIDGE_COMMUNE_FIXTURE:terminalDescriptorPath,RIDGE_COMMUNE_LABEL:'Terminal candidate'},role:'shell',cols:80,rows:24});
+  await until(()=>fs.existsSync(terminalDescriptorPath));
+  const terminalDescriptor=JSON.parse(fs.readFileSync(terminalDescriptorPath));
+  const terminalConnectionPath=path.join(root,'terminal-connection.json');
+  fs.writeFileSync(terminalConnectionPath,JSON.stringify({workspaceId:terminalWorkspace,paneId:terminalPane,process:terminalDescriptor.process,endpointOwner:terminalDescriptor.process,endpoint:terminalDescriptor.endpoint,sessionId:terminalDescriptor.sessionId,cwd:root}));
   const command=async(method,args,native=true)=>{const reply=await call('POST','/v1/domain/commands',{method,args,native,roots:[],connectionId:crypto.randomUUID()});assert.equal(reply.ok,true,JSON.stringify(reply));return reply.value;};
-  await command('save_agent_profile_overrides',{overrides:[{id:'owned-unregistered',processNames:[path.basename(process.execPath)],executable:'node',resumeArgv:[],yoloArgs:[]}]});
+  await command('save_agent_profile_overrides',{overrides:[{id:'owned-unregistered',processNames:[path.basename(fixture)],executable:'node',resumeArgv:[],yoloArgs:[]}]});
   workspaces.push({id:terminalWorkspace,name:'Global terminal'});
   await until(async()=>{const topology=await command('get_teammate_topology',{workspaceId:terminalWorkspace},false);return topology.discovered?.length===1;});
   const observation=(await command('get_teammate_topology',{workspaceId:terminalWorkspace},false)).discovered[0];
-  assert.deepEqual(Object.keys(observation).sort(),['connectionState','name','paneId','protocolConnected','recentOutput','workspaceId']);
+  assert.deepEqual(Object.keys(observation).sort(),['agentId','candidateRef','connectionState','name','paneId','protocolConnected','recentOutput','workspaceId']);
   assert.equal(observation.paneId,terminalPane);assert.equal(observation.protocolConnected,false);
   const denied=await call('POST','/v1/domain/commands',{method:'get_agent_terminal_view',args:{workspaceId:terminalWorkspace,paneId:terminalPane},native:false,roots:[],connectionId:crypto.randomUUID()});
   assert.equal(denied.ok,false);evidence.checks.push('Non-native real process discovery is read-only and redacted; native-only terminal interaction still denied');
   const grant = await call('POST', '/v1/local/clients', { deviceId: 'owned-global-commune', origin: devUrl });
-  browser = await chromium.launch({ headless: true }); const page = await browser.newPage({ viewport: { width: 1100, height: 950 } });
+  browser = await chromium.launch({ headless: true }); page = await browser.newPage({ viewport: { width: 1100, height: 950 } });
   const pageErrors = []; page.on('pageerror', error => pageErrors.push(error.message));
   await page.route('**/__global_commune', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><body style="height:100vh"><main id="component" style="height:100%"></main></body>' }));
   await page.exposeFunction('fixtureGrant', () => grant); await page.goto(devUrl + '/__global_commune');
@@ -100,8 +104,8 @@ try {
   await expect(page.getByTestId('commune-terminal-agent').getByRole('button',{name:/连接会话|Connect session/i})).toBeVisible();
   await globalGroups.getByTestId('commune-create-group').click();
   await globalGroups.getByRole('textbox',{name:/组名|Group name/i}).fill('Cross-source pair');
-  await expect(globalGroups.getByRole('checkbox')).toHaveCount(2);
-  for(const checkbox of await globalGroups.getByRole('checkbox').all())await checkbox.check();
+  await expect(globalGroups.locator('[data-group-member]').getByRole('checkbox')).toHaveCount(2);
+  for(const checkbox of await globalGroups.locator('[data-group-member]').getByRole('checkbox').all())await checkbox.check();
   await expect(globalGroups.getByTestId('commune-group-candidate')).toHaveCount(1);
   await expect(globalGroups.getByTestId('commune-group-candidate').getByRole('button')).toBeVisible();
   await globalGroups.locator('.builder').getByRole('button',{name:/^(Create group|创建编组)$/}).click();
@@ -112,10 +116,11 @@ try {
   await dispatch.locator('textarea').fill('ui-cross-source-once');
   await dispatch.getByRole('button').filter({hasText:/2/}).click();
   await expect(dispatch.locator('[data-group-task-id]')).toHaveCount(1);
+  await expect(dispatch.locator('[data-child-state="reply_ended"]')).toHaveCount(2);
   evidence.checks.push('One desktop builder selects members from both sources and submits a real frozen cross-source protocol task');
   await globalGroups.getByTestId('commune-create-group').click();
   await expect(globalGroups.locator('.builder [data-group-member]')).toHaveCount(2);
-  for (const checkbox of await globalGroups.locator('.builder').getByRole('checkbox').all()) await expect(checkbox).toBeDisabled();
+  for (const checkbox of await globalGroups.locator('.builder [data-group-member]').getByRole('checkbox').all()) await expect(checkbox).toBeDisabled();
   await globalGroups.getByRole('textbox',{name:/组名|Group name/i}).fill('Move destination');
   await globalGroups.locator('.builder').getByRole('button',{name:/^(Create group|创建编组)$/}).click();
   await expect(globalGroups.getByTestId('host-commune-group')).toHaveCount(2);
@@ -134,10 +139,28 @@ try {
   await expect(dispatch.locator('[data-group-task-id]')).toHaveCount(1);
   await destinationGroup.locator('.member').getByRole('combobox').selectOption(sourceId);
   await expect(originalGroup.locator('.member')).toHaveCount(2);
+  await page.evaluate(async () => {
+    const current=window.globalCommune;
+    const {teammateGroupStore}=await import('/src/lib/teammate/teammateGroups.svelte.ts');
+    const invoke=current.bridge.invoke.bind(current.bridge);
+    let release;
+    const held=new Promise(resolve=>release=resolve);
+    current.groupReadHeld=false;
+    current.bridge.invoke=async (method,args,...rest)=>{
+      if(method==='get_teammate_topology'&&args.groupScope==='host'&&!current.groupReadHeld){current.groupReadHeld=true;await held;}
+      return invoke(method,args,...rest);
+    };
+    current.releaseGroupRead=async()=>{release();await current.groupReadPromise;current.bridge.invoke=invoke;};
+    current.groupReadPromise=teammateGroupStore().refresh();
+  });
+  await expect.poll(()=>page.evaluate(()=>window.globalCommune.groupReadHeld)).toBe(true);
+  await expect(destinationGroup.getByRole('button',{name:/^(Dissolve|解散)$/})).toBeEnabled();
   await destinationGroup.getByRole('button',{name:/^(Dissolve|解散)$/}).click();
+  await expect(destinationGroup.locator('.confirmation')).toBeVisible();
+  await page.evaluate(()=>window.globalCommune.releaseGroupRead());
   await destinationGroup.locator('.confirmation').getByRole('button',{name:/^(Confirm|确认)$/}).click();
   await expect(globalGroups.getByTestId('host-commune-group')).toHaveCount(1);
-  evidence.checks.push('All assigned members remain visible; explicit move clears previous leadership and keeps the frozen dispatch; dissolve uses inline confirmation');
+  evidence.checks.push('Local dissolve confirmation remains usable during a held background read. All assigned members remain visible; explicit move clears previous leadership and keeps the frozen dispatch; dissolve uses inline confirmation');
   await page.screenshot({path:path.resolve(evidenceDir,'groups-desktop.png')});
   await page.getByTestId('commune-tab-history').click();
   await expect(page.locator('[data-history-kind="agent_message_chunk"]')).toHaveCount(2);
@@ -165,7 +188,21 @@ try {
   await expect(page.getByTestId('commune-group-candidate')).toHaveCount(1);
   await expect(page.getByTestId('commune-group-candidate').getByRole('button',{name:/定位终端|Locate terminal/})).toBeVisible();
   await page.screenshot({path:path.resolve(evidenceDir,'groups-mobile.png')});
-  await page.getByTestId('host-commune-groups').locator('.builder').getByRole('button',{name:/^(Back|返回)$/}).click();
+  await page.getByTestId('host-commune-groups').getByRole('textbox',{name:/组名|Group name/i}).fill('Terminal before connection');
+  await page.getByTestId('commune-group-candidate').getByRole('checkbox').check();
+  await page.getByTestId('host-commune-groups').locator('.builder').getByRole('button',{name:/^(Create group|创建编组)$/}).click();
+  await expect(page.getByTestId('host-commune-group')).toHaveCount(2);
+  const terminalOrganization=await page.evaluate(()=>window.globalCommune.invoke('get_teammate_topology',{groupScope:'host'}));
+  const terminalGroup=terminalOrganization.groups.find(group=>group.name==='Terminal before connection');
+  const terminalAgentId=terminalGroup.memberAgentIds[0];
+  assert.ok(terminalAgentId);
+  const terminalMember=terminalOrganization.members.find(member=>member.agentId===terminalAgentId);
+  assert.equal(terminalMember.protocolConnected,false);assert.equal(terminalMember.canSend,false);assert.equal(terminalMember.terminalAvailable,true);
+  const organizationTasks=page.getByTestId('host-commune-group').last().getByTestId('commune-group-tasks');
+  await organizationTasks.locator('summary').click();
+  await expect(organizationTasks.getByRole('checkbox')).toBeDisabled();
+  assert.equal(fs.existsSync(path.join(root,'prompt-log')),false,'group enrollment must not send protocol or terminal input');
+  evidence.checks.push('Narrow Remote groups an unconnected terminal through its opaque reference, receives one stable member and disables structured dispatch');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth > innerWidth),false,'narrow Commune must fit its viewport');
   evidence.checks.push('Narrow Remote includes ordinary terminal candidate and the same one global group authority');
   await page.locator('.member-card .msg-input').first().fill('mobile-individual-once');
@@ -250,8 +287,83 @@ try {
   evidence.checks.push('A real quiet Kernel member retirement reaches the narrow Cloud facade and removes its card without terminal frames or manual refresh');
   assert.deepEqual(pageErrors, []); evidence.checks.push('Narrow mobile production Commune aggregates the same two source sessions through the real Runtime facade; not a Cloud-network test');
   await page.screenshot({ path: path.resolve(evidenceDir,'global-mobile.png') });
+  await page.evaluate(async () => {
+    const current=window.globalCommune;current.app.$destroy();
+    const {default:Panel}=await import('/src/lib/teammate/AgentCenterPanel.svelte');
+    current.app=current.client.createClassComponent({component:Panel,target:document.getElementById('component'),props:{workspaceId:current.workspaces[2].id,visible:true}});
+  });
+  await page.setViewportSize({width:1100,height:950});
+  const authorityBeforeConnect=fs.readFileSync(path.join(root,'commune-groups.json'),'utf8');
+  await expect(page.getByTestId('commune-terminal-agent')).toHaveCount(1);
+  await page.getByTestId('commune-terminal-agent').getByRole('button',{name:/连接会话|Connect session/i}).click();
+  const wizard=page.getByRole('dialog');
+  await wizard.getByLabel('选择连接文件').setInputFiles(terminalConnectionPath);
+  await expect(wizard.getByLabel('会话预览')).toContainText(terminalDescriptor.sessionId);
+  await wizard.getByRole('button',{name:'连接',exact:true}).click();
+  await expect(wizard).toHaveCount(0);
+  await expect(page.getByTestId('commune-terminal-agent')).toHaveCount(1);
+  await expect(page.getByTestId('commune-terminal-agent').getByRole('button',{name:/连接会话|Connect session/i})).toHaveCount(0);
+  await expect(page.getByTestId('commune-terminal-agent').getByText('existing history',{exact:true})).toBeVisible();
+  const afterConnect=await page.evaluate(()=>window.globalCommune.invoke('get_teammate_topology',{groupScope:'host'}));
+  assert.equal(afterConnect.groups.find(group=>group.id===terminalGroup.id).memberAgentIds[0],terminalAgentId);
+  assert.equal(afterConnect.members.filter(member=>member.agentId===terminalAgentId).length,1);
+  assert.equal(afterConnect.members.find(member=>member.agentId===terminalAgentId).protocolConnected,true);
+  assert.equal(afterConnect.members.find(member=>member.agentId===terminalAgentId).canSend,true);
+  assert.equal(fs.readFileSync(path.join(root,'commune-groups.json'),'utf8'),authorityBeforeConnect);
+  const connectedTasks=page.getByTestId('host-commune-group').last().getByTestId('commune-group-tasks');
+  await connectedTasks.locator('summary').click();
+  await expect(connectedTasks.getByRole('checkbox')).toBeEnabled();
+  await connectedTasks.getByRole('checkbox').check();
+  await connectedTasks.locator('textarea').fill('terminal-to-protocol-once');
+  await connectedTasks.getByRole('button').filter({hasText:/1/}).click();
+  await until(()=>fs.existsSync(path.join(root,'prompt-log'))&&fs.readFileSync(path.join(root,'prompt-log'),'utf8').includes('terminal-to-protocol-once'));
+  assert.equal(fs.readFileSync(path.join(root,'prompt-log'),'utf8').split('terminal-to-protocol-once').length-1,1);
+  await expect(connectedTasks.locator('[data-group-task-id]').first()).toContainText(/回复结束|Reply ended/);
+  await page.evaluate(groupId => {
+    const current=window.globalCommune;
+    const invoke=current.bridge.invoke.bind(current.bridge);
+    current.organizationRequests=[];
+    current.bridge.invoke=async (method,args,...rest)=>{
+      if(method!=='send_agent_message'||args.groupId!==groupId||args.message!=='disconnect-during-prompt')return invoke(method,args,...rest);
+      current.organizationRequests.push(JSON.parse(JSON.stringify(args)));
+      const result=await invoke(method,args,...rest);
+      if(current.organizationRequests.length===1)throw Error('Owned organization ACK lost after commit');
+      return result;
+    };
+  },terminalGroup.id);
+  await connectedTasks.getByRole('checkbox').check();
+  await connectedTasks.locator('textarea').fill('disconnect-during-prompt');
+  await connectedTasks.getByRole('button').filter({hasText:/1/}).click();
+  await expect(connectedTasks.getByRole('alert')).toContainText('Owned organization ACK lost after commit');
+  await expect.poll(async()=>{
+    const projection=await page.evaluate(()=>window.globalCommune.invoke('get_teammate_topology',{groupScope:'host'}));
+    return projection.members.find(member=>member.agentId===terminalAgentId).canSend;
+  }).toBe(false);
+  await page.evaluate(async () => {
+    const current=window.globalCommune;current.app.$destroy();
+    const {default:Panel}=await import('/src/lib/teammate/AgentCenterPanel.svelte');
+    current.app=current.client.createClassComponent({component:Panel,target:document.getElementById('component'),props:{workspaceId:current.workspaces[2].id,visible:true}});
+  });
+  const offlineTasks=page.getByTestId('host-commune-group').last().getByTestId('commune-group-tasks');
+  await offlineTasks.locator('summary').click();
+  await expect(offlineTasks.getByRole('checkbox')).toBeDisabled();
+  await offlineTasks.getByRole('button',{name:/重试原派发确认|Retry confirmation for the original dispatch/}).click();
+  await expect(offlineTasks.getByRole('button',{name:/重试原派发确认|Retry confirmation for the original dispatch/})).toHaveCount(0);
+  const originalRequests=await page.evaluate(()=>window.globalCommune.organizationRequests);
+  assert.equal(originalRequests.length,2);assert.equal(originalRequests[0].idempotency_key,originalRequests[1].idempotency_key);
+  assert.equal(fs.readFileSync(path.join(root,'prompt-log'),'utf8').split('disconnect-during-prompt').length-1,1);
+  evidence.checks.push('Global v3 group retains an unconfirmed dispatch through actual disconnect and component remount; offline effective permissions disable new work while explicit original-key confirmation avoids replay');
+  assert.deepEqual(pageErrors,[]);
+  await page.screenshot({path:path.resolve(evidenceDir,'organization-connected-desktop.png')});
+  evidence.checks.push('Native file wizard attaches the exact existing terminal session to its Remote-enrolled agentId and original group without rewriting organization data; one real group prompt reaches that process');
   evidence.result = 'PASS';
-} catch (error) { evidence.result = 'FAIL'; evidence.error = String(error); process.exitCode = 1; }
+} catch (error) {
+  evidence.result = 'FAIL'; evidence.error = String(error); process.exitCode = 1;
+  if (page && !page.isClosed()) {
+    evidence.uiFailure = await page.getByTestId('host-commune-groups').innerText().catch(() => 'Host group surface unavailable');
+    await page.screenshot({path:path.resolve(evidenceDir,'global-ui-failure.png')}).catch(() => {});
+  }
+}
 finally {
   await browser?.close();
   if (endpoint?.pid === kernel?.pid) await call('POST', '/v1/shutdown').catch(() => {});

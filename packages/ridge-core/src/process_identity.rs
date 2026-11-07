@@ -69,14 +69,27 @@ pub fn owns_connection(
             "ACP OS-attested connection must be loopback",
         ));
     }
-    validate(owner)?;
-    if !platform::owns(owner.pid, server, client)? {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "protocol socket belongs to a different process",
-        ));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+    loop {
+        validate(owner)?;
+        match platform::owns(owner.pid, server, client) {
+            Ok(true) => return validate(owner),
+            Ok(false) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "protocol socket belongs to a different process",
+                ))
+            }
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock
+                    && std::time::Instant::now() < deadline =>
+            {
+                // Observe the same socket again. No handshake or connection retry.
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Err(error) => return Err(error),
+        }
     }
-    validate(owner)
 }
 
 #[cfg(windows)]
@@ -186,34 +199,119 @@ mod platform {
             if result != 0 {
                 return Err(io::Error::from_raw_os_error(result as i32));
             }
-            let count = table.first().copied().unwrap_or(0) as usize;
-            if count
-                .checked_mul(6)
-                .and_then(|n| n.checked_add(1))
-                .is_none_or(|n| n > table.len())
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "invalid TCP owner table",
-                ));
-            }
-            let owners: HashSet<_> = table[1..1 + count * 6]
-                .chunks_exact(6)
-                .filter(|row| {
-                    row[0] == 5
-                        && row[1] == u32::from_ne_bytes(server.ip().octets())
-                        && u16::from_be(row[2] as u16) == server.port()
-                        && row[3] == u32::from_ne_bytes(client.ip().octets())
-                        && u16::from_be(row[4] as u16) == client.port()
-                })
-                .map(|row| row[5])
-                .collect();
-            return Ok(owners.len() == 1 && owners.contains(&pid));
+            return connection_owner(&table, pid, server, client);
         }
         Err(io::Error::new(
             io::ErrorKind::WouldBlock,
             "TCP owner table changed repeatedly",
         ))
+    }
+    fn connection_owner(
+        table: &[u32],
+        pid: u32,
+        server: SocketAddrV4,
+        client: SocketAddrV4,
+    ) -> io::Result<bool> {
+        let count = table.first().copied().unwrap_or(0) as usize;
+        if count
+            .checked_mul(6)
+            .and_then(|n| n.checked_add(1))
+            .is_none_or(|n| n > table.len())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid TCP owner table",
+            ));
+        }
+        let matching = table[1..1 + count * 6]
+            .chunks_exact(6)
+            .filter(|row| {
+                row[1] == u32::from_ne_bytes(server.ip().octets())
+                    && u16::from_be(row[2] as u16) == server.port()
+                    && row[3] == u32::from_ne_bytes(client.ip().octets())
+                    && u16::from_be(row[4] as u16) == client.port()
+            })
+            .collect::<Vec<_>>();
+        if let Some(row) = matching.iter().find(|row| row[5] != 0 && row[5] != pid) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "protocol socket belongs to a different process (observed PID {})",
+                    row[5]
+                ),
+            ));
+        }
+        let owners = matching
+            .iter()
+            .filter(|row| row[0] == 5)
+            .map(|row| row[5])
+            .collect::<HashSet<_>>();
+        if owners.is_empty() || owners == HashSet::from([0]) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "protocol socket ownership is not yet observable",
+            ));
+        }
+        if owners.len() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "protocol socket ownership is ambiguous",
+            ));
+        }
+        Ok(owners.contains(&pid))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn pending_publication_never_grants_or_masks_a_foreign_owner() {
+            let server = "127.0.0.1:1001".parse::<SocketAddrV4>().unwrap();
+            let client = "127.0.0.1:1002".parse::<SocketAddrV4>().unwrap();
+            let row = |state, owner| {
+                vec![
+                    state,
+                    u32::from_ne_bytes(server.ip().octets()),
+                    u32::from(server.port().to_be()),
+                    u32::from_ne_bytes(client.ip().octets()),
+                    u32::from(client.port().to_be()),
+                    owner,
+                ]
+            };
+            let table = |rows: Vec<Vec<u32>>| {
+                let mut table = vec![rows.len() as u32];
+                table.extend(rows.into_iter().flatten());
+                table
+            };
+            assert!(connection_owner(&table(vec![row(5, 42)]), 42, server, client).unwrap());
+            for rows in [vec![], vec![row(4, 42)], vec![row(5, 0)]] {
+                assert_eq!(
+                    connection_owner(&table(rows), 42, server, client)
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::WouldBlock
+                );
+            }
+            for rows in [
+                vec![row(5, 43)],
+                vec![row(4, 43)],
+                vec![row(5, 42), row(5, 0)],
+                vec![row(5, 42), row(5, 43)],
+            ] {
+                assert_eq!(
+                    connection_owner(&table(rows), 42, server, client)
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::PermissionDenied
+                );
+            }
+            assert_eq!(
+                connection_owner(&[1], 42, server, client)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
     }
 }
 
@@ -365,6 +463,47 @@ mod tests {
         child.0.kill().unwrap();
         child.0.wait().unwrap();
         assert!(validate(&child_instance).is_err());
+    }
+
+    #[test]
+    fn connection_attestation_before_accept_keeps_the_same_socket() {
+        let current = instance(std::process::id()).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let std::net::SocketAddr::V4(server) = listener.local_addr().unwrap() else {
+            unreachable!()
+        };
+        for _ in 0..32 {
+            let socket = std::net::TcpStream::connect(server).unwrap();
+            let std::net::SocketAddr::V4(client) = socket.local_addr().unwrap() else {
+                unreachable!()
+            };
+            owns_connection(&current, server, client).unwrap();
+            let (accepted, _) = listener.accept().unwrap();
+            drop(accepted);
+            drop(socket);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unobservable_connection_times_out_without_granting_ownership() {
+        let current = instance(std::process::id()).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let std::net::SocketAddr::V4(server) = listener.local_addr().unwrap() else {
+            unreachable!()
+        };
+        let absent_client = "127.0.0.1:0".parse().unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(
+            owns_connection(&current, server, absent_client)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let mut stale = current;
+        stale.start_instance.push('x');
+        assert!(owns_connection(&stale, server, absent_client).is_err());
     }
 
     #[test]

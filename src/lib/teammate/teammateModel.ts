@@ -105,6 +105,8 @@ export interface TopologySnapshot {
 }
 
 export interface DiscoveredAgent {
+  readonly candidateRef?: string;
+  readonly agentId?: string;
   readonly workspaceId: string;
   readonly paneId: string;
   readonly name: string;
@@ -296,6 +298,8 @@ export function parseTopologySnapshot(payload: unknown): TopologySnapshot {
       && typeof process.pid === 'number' && Number.isSafeInteger(process.pid) && process.pid > 0
       && typeof process.startInstance === 'string' && process.startInstance.length > 0
       ? [{ workspaceId: row.workspaceId, paneId: row.paneId, name: row.name,
+        ...(typeof row.candidateRef === 'string' ? { candidateRef: row.candidateRef } : {}),
+        ...(typeof row.agentId === 'string' ? { agentId: row.agentId } : {}),
         process: { pid: process.pid, startInstance: process.startInstance }, reason: asString(row.reason) ?? '尚未接入会话协议',
         ...(typeof row.terminalEpoch === 'string' ? { terminalEpoch: row.terminalEpoch } : {}),
         ...(typeof row.recentOutput === 'string' ? { recentOutput: row.recentOutput } : {}),

@@ -2610,6 +2610,7 @@ mod tests {
             gateway_permissions: Default::default(),
             execution_rejections: Default::default(),
             commune: Default::default(),
+            commune_candidates: Default::default(),
             retired_workspaces: Default::default(),
             business_events: Default::default(),
             fs_watches: Default::default(),

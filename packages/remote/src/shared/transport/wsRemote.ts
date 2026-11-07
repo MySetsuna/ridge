@@ -442,7 +442,25 @@ export interface CommuneProtocolOutput {
 }
 
 /** P1 teammate 拓扑快照（roster + leader；edges 预留）。 */
+export interface CommuneOrganizationMember {
+  agentId: string;
+  name: string;
+  archived: boolean;
+  workspaceId: string | null;
+  paneId: string | null;
+  terminalAvailable: boolean;
+  protocolConnected: boolean;
+  canSend: boolean;
+  canCancel: boolean;
+  candidateRef?: string;
+  generation?: number;
+  lease?: string;
+  sessionId?: string;
+  capabilities?: readonly string[];
+}
+
 export interface TeammateTopology {
+  members?: CommuneOrganizationMember[];
   roster: TeammateRosterMember[];
   leaderId: string | null;
   edges: unknown[];
@@ -451,7 +469,7 @@ export interface TeammateTopology {
   groupsRevision?: number;
   groupTasks?: CommuneGroupTask[];
   /** Read-only terminal observations; never protocol membership or process details. */
-  discovered?: { workspaceId:string; paneId:string; name:string; connectionState:'discovered'; protocolConnected:boolean; recentOutput:string }[];
+  discovered?: { candidateRef?:string; agentId?:string; workspaceId:string; paneId:string; name:string; connectionState:'discovered'; protocolConnected:boolean; recentOutput:string }[];
 }
 
 /** P2：待裁决高危动作的脱敏快照——绝不含 action 命令全文。 */

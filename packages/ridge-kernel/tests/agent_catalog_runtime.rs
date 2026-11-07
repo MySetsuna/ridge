@@ -50,11 +50,18 @@ async fn catalog_discovers_exact_pane_process_without_inventing_membership_or_hi
   let denied=client::request_json(&owned.endpoint,"POST","/v1/domain/commands",Some(&json!({"method":method,"args":view_args,"native":false,"roots":[root],"connectionId":Uuid::new_v4()}))).unwrap();assert_eq!(denied["ok"],false,"{denied}");
  }
  let remote=client::request_json(&owned.endpoint,"POST","/v1/domain/commands",Some(&json!({"method":"get_teammate_topology","args":{"workspaceId":workspace},"native":false,"roots":[root],"connectionId":Uuid::new_v4()}))).unwrap();
- assert_eq!(remote["value"]["discovered"],json!([]),"{remote}");
+ assert_eq!(remote["value"]["discovered"][0]["candidateRef"],observed[0]["candidateRef"]);
+ assert_eq!(remote["value"]["discovered"][0]["paneId"],pane);
+ for field in ["process","terminalEpoch","endpoint","source"] {assert!(remote["value"]["discovered"][0].get(field).is_none(),"{remote}");}
+ assert!(!root.join("commune-groups.json").exists(),"discovery cannot persist organization membership");
  let history=rpc(&mut socket,4,"read_agent_recent_replies",json!({"workspaceId":workspace})).await;
  assert_eq!(history["result"],json!([]));
  let after=client::request_json(&owned.endpoint,"GET","/v1/domain/ptys",None).unwrap();
  assert_eq!(after,original,"reading observations must not create, replace or resize user processes");
+ assert!(rpc(&mut socket,29,"close_workspace",json!({"workspaceId":workspace})).await["error"].is_null());
+ let enrollment=json!({"groupScope":"host","expectedRevision":0,"groups":[{"id":"closed","name":"closed","color":"#60a5fa","memberAgentIds":[],"createdAt":1}],"enrollments":[{"candidateRef":observed[0]["candidateRef"],"groupId":"closed"}]});
+ assert!(rpc(&mut socket,30,"set_teammate_groups",enrollment).await["error"].is_object(),"closed workspace reference must fail before side effects");
+ assert!(!root.join("commune-groups.json").exists());
 }
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 async fn catalog_preserves_metadata_archives_and_refuses_corruption() {

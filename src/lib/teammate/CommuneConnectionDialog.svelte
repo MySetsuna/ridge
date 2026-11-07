@@ -1,11 +1,17 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
+  import { t, tr } from '$lib/i18n';
   import { invoke } from '@tauri-apps/api/core';
+  import type { CommuneOrganizationMember } from '../../../packages/remote/src/shared/transport/wsRemote';
   import { connectionRequest } from './communeMembership';
 
-  let { workspaceId, paneId, onfinish }: {
-    workspaceId: string; paneId: string; onfinish: () => void;
+  let { workspaceId, paneId, memberAgentId, onfinish }: {
+    workspaceId: string; paneId: string; memberAgentId?: string; onfinish: () => void;
   } = $props();
+  type NativeMember = CommuneOrganizationMember & { process?:unknown; source?:{process?:unknown} | null };
+  let selectedMember = $state(untrack(() => memberAgentId ?? ''));
+  let members = $state<NativeMember[]>([]);
+  const previousMember = $derived(members.find(member => member.agentId === selectedMember));
   let dialog: HTMLDialogElement;
   let raw = $state('');
   let source = $state('');
@@ -15,7 +21,14 @@
   let reading = $state(false);
   let readGeneration = 0;
 
-  onMount(() => dialog.showModal());
+  onMount(() => {
+    dialog.showModal();
+    let active = true;
+    void invoke<{members?:NativeMember[]}>('get_teammate_topology',{groupScope:'host'})
+      .then(projection => { if(active) members=(projection.members ?? []).filter(member => !member.archived); })
+      .catch(cause => { if(active) error=String(cause); });
+    return () => { active=false; };
+  });
   onDestroy(() => { readGeneration++; });
 
   function preview(text: string): void {
@@ -37,7 +50,7 @@
     source = file.name;
     reading = true;
     try {
-      if (file.size > 65536) throw new Error('连接描述过大，最多 64 KiB');
+      if (file.size > 65536) throw new Error(tr('commune.connectionTooLarge'));
       const text = await file.text();
       if (generation !== readGeneration) return;
       raw = text;
@@ -54,12 +67,12 @@
     reading = false;
     request = null;
     error = '';
-    source = '粘贴的连接描述';
+    source = tr('commune.connectionPasted');
   }
 
   function trapFocus(event: KeyboardEvent): void {
     if (event.key !== 'Tab') return;
-    const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button:enabled, input:enabled, textarea:enabled, summary'))
+    const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button:enabled, input:enabled, textarea:enabled, select:enabled, summary'))
       .filter(control => control.getClientRects().length > 0);
     const first = controls[0], last = controls.at(-1);
     if (event.shiftKey && document.activeElement === first) {
@@ -76,7 +89,8 @@
     connecting = true;
     error = '';
     try {
-      await invoke('register_commune_member', request);
+      const {memberAgentId: _descriptorMember, ...descriptor} = request;
+      await invoke('register_commune_member', { ...descriptor, ...(selectedMember ? {memberAgentId:selectedMember} : {}) });
       onfinish();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
@@ -91,43 +105,59 @@
 }}>
   <header>
     <span class="eyebrow">Agent's Commune</span>
-    <h2 id="commune-connect-title">连接既有 Agent 会话</h2>
-    <p>选择运行方提供的会话连接文件，确认后接入身份、对话和协作能力。</p>
+    <h2 id="commune-connect-title">{$t('commune.connectExistingAgent')}</h2>
+    <p>{$t('commune.connectionIntro')}</p>
   </header>
   <div class="body">
     <label class="file-picker">
-      <span>选择连接文件</span>
-      <span class="hint">JSON · 最大 64 KiB</span>
-      <input type="file" accept=".json,application/json" aria-label="选择连接文件" onchange={readFile} disabled={connecting} />
+      <span>{$t('commune.connectionFile')}</span>
+      <span class="hint">{$t('commune.connectionFormat')}</span>
+      <input type="file" accept=".json,application/json" aria-label={$t('commune.connectionFile')} onchange={readFile} disabled={connecting} />
     </label>
-    <p class="hint">使用原 Agent 已有会话的连接描述，最大 64 KiB。普通终端须由运行方提供可接入端点。</p>
-    {#if source}<p class="source">{reading ? '正在读取' : '连接来源'} · {source}</p>{/if}
+    <p class="hint">{$t('commune.connectionHint')}</p>
+    {#if source}<p class="source">{reading ? $t('commune.connectionReading') : $t('commune.connectionSource') } · {source}</p>{/if}
+    {#if members.length}
+      <label for="commune-member">{$t('commune.connectionReuseMember')}</label>
+      <select id="commune-member" bind:value={selectedMember} disabled={connecting}>
+        <option value="">{$t('commune.connectionAutomatic')}</option>
+        {#each members as member (member.agentId)}<option value={member.agentId} disabled={member.protocolConnected}>{member.name} · {member.workspaceId ?? $t('commune.connectionHistorical') }{member.protocolConnected ? ' · ' + $t('commune.connectionStillLive') : ''}</option>{/each}
+      </select>
+      <p class="hint">{$t('commune.connectionRebindHint')}</p>
+    {/if}
     {#if request}
-      <dl aria-label="会话预览">
-        <div><dt>协议</dt><dd>{String(request.protocol ?? 'acp')}</dd></div>
-        <div><dt>已有会话</dt><dd>{String(request.sessionId ?? '未提供，连接时核验')}</dd></div>
-        <div><dt>工作目录</dt><dd>{String(request.cwd ?? '未提供，连接时核验')}</dd></div>
-        <div><dt>目标分屏</dt><dd>{paneId}</dd></div>
+      <dl aria-label={$t('commune.connectionPreview')}>
+        <div><dt>{$t('commune.connectionProtocol')}</dt><dd>{String(request.protocol ?? 'acp')}</dd></div>
+        <div><dt>{$t('commune.connectionSession')}</dt><dd>{String(request.sessionId ?? $t('commune.connectionUnprovided'))}</dd></div>
+        <div><dt>{$t('commune.connectionCwd')}</dt><dd>{String(request.cwd ?? $t('commune.connectionUnprovided'))}</dd></div>
+        <div><dt>{$t('commune.connectionPane')}</dt><dd>{paneId}</dd></div>
+        <div><dt>{$t('commune.connectionProcess')}</dt><dd>{JSON.stringify(request.process ?? $t('commune.connectionUnprovided'))}</dd></div>
+        {#if previousMember}
+          <div><dt>{$t('commune.connectionFormerMember')}</dt><dd>{previousMember.name} · {previousMember.agentId}</dd></div>
+          <div><dt>{$t('commune.connectionFormerProcess')}</dt><dd>{JSON.stringify(previousMember.process ?? previousMember.source?.process ?? $t('commune.connectionUnrecorded'))}</dd></div>
+          <div><dt>{$t('commune.connectionFormerSource')}</dt><dd>{previousMember.workspaceId ?? $t('commune.connectionUnrecorded') } · {previousMember.paneId ?? $t('commune.connectionUnrecorded') }</dd></div>
+          <div><dt>{$t('commune.connectionFormerSession')}</dt><dd>{previousMember.sessionId ?? $t('commune.connectionNotAttached') }</dd></div>
+          <div><dt>{$t('commune.connectionFormerGeneration')}</dt><dd>{previousMember.generation ?? $t('commune.connectionNotAttached') }</dd></div>
+        {/if}
       </dl>
     {/if}
     <details>
-      <summary>高级 · 粘贴连接描述</summary>
-      <label for="commune-description">运行方提供的 JSON</label>
+      <summary>{$t('commune.connectionAdvanced')}</summary>
+      <label for="commune-description">{$t('commune.connectionJson')}</label>
       <textarea id="commune-description" bind:value={raw} oninput={editDescription} disabled={connecting} spellcheck="false"></textarea>
-      <button type="button" onclick={() => preview(raw)} disabled={connecting || reading || !raw.trim()}>预览描述</button>
+      <button type="button" onclick={() => preview(raw)} disabled={connecting || reading || !raw.trim()}>{$t('commune.connectionPreviewAction')}</button>
     </details>
     {#if error}
       <section class="error" role="alert">
-        <strong>连接未完成</strong>
+        <strong>{$t('commune.connectionFailure')}</strong>
         <p>{error}</p>
-        <p>核对原 Agent 仍在运行、连接文件及授权有效后重试。输入已保留。</p>
+        <p>{$t('commune.connectionRetryHint')}</p>
       </section>
     {/if}
   </div>
   <footer>
-    <span aria-live="polite">{connecting ? '正在核验进程与会话…' : '连接能力以 Host 核验结果为准'}</span>
-    <button type="button" onclick={onfinish} disabled={connecting}>取消</button>
-    <button type="button" class="primary" onclick={connect} disabled={!request || connecting || reading}>{connecting ? '连接中…' : '连接'}</button>
+    <span aria-live="polite">{connecting ? $t('commune.connectionValidating') : $t('commune.connectionCapabilities') }</span>
+    <button type="button" onclick={onfinish} disabled={connecting}>{$t('commune.connectionCancel')}</button>
+    <button type="button" class="primary" onclick={connect} disabled={!request || connecting || reading}>{connecting ? $t('commune.connectionConnecting') : $t('commune.connectionConnect') }</button>
   </footer>
 </dialog>
 
@@ -149,6 +179,7 @@
   summary { cursor: pointer; min-height: 30px; font-size: 12px; color: var(--rg-fg-muted); }
   details label { display: block; font-size: 12px; margin: 10px 0; }
   textarea { width: 100%; box-sizing: border-box; min-height: 130px; resize: vertical; padding: 10px; color: var(--rg-fg); background: var(--rg-bg); border: 1px solid var(--rg-border); border-radius: 7px; font: 12px/1.5 var(--rg-font-mono, monospace); }
+  select { width:100%; min-width:0; max-width:100%; box-sizing:border-box; min-height:40px; color:var(--rg-fg); background:var(--rg-bg); border:1px solid var(--rg-border); border-radius:7px; }
   button { min-height: 40px; border: 1px solid var(--rg-border); border-radius: 7px; padding: 8px 14px; background: var(--rg-bg); color: var(--rg-fg); cursor: pointer; font-size: 12px; }
   button:disabled { opacity: .45; cursor: default; }
   .primary { background: var(--rg-accent); color: var(--rg-bg); border-color: var(--rg-accent); }

@@ -70,6 +70,517 @@ async fn membership_retirement_fences_turns_preserves_process_history_and_surviv
     assert!(command(&restarted.endpoint,"read_agent_recent_replies",json!({"workspaceId":workspace,"limit":100}),true).to_string().contains("existing history"));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn organization_enrollment_is_atomic_reuses_protocol_identity_and_survives_restart() {
+    let root = std::env::temp_dir().join(format!("ridge-organization-{}", Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let groups_path = root.join("commune-groups.json");
+    let old = br#"{"version":2,"workspaces":{},"host":{"revision":0,"groups":[]}}"#;
+    fs::write(&groups_path, old).unwrap();
+    let owned = runtime_fixture::start(&root).await;
+    let binary = std::env::current_exe().unwrap();
+    command(
+        &owned.endpoint,
+        "save_agent_profile_overrides",
+        json!({"overrides":[{"id":"same-agent","processNames":[binary.file_stem().unwrap().to_string_lossy()],"executable":binary,"resumeArgv":[],"yoloArgs":[]}]}),
+        true,
+    );
+    let mut candidates = Vec::new();
+    let mut registrations = Vec::new();
+    for index in 0..2 {
+        let workspace =
+            client::request_json(&owned.endpoint, "POST", "/v1/domain/workspaces", None).unwrap()
+                ["workspace_id"]
+                .clone();
+        let detail = client::request_json(
+            &owned.endpoint,
+            "GET",
+            &format!("/v1/domain/workspaces/{}", workspace.as_str().unwrap()),
+            None,
+        )
+        .unwrap();
+        let pane = detail["panes"][0].clone();
+        let descriptor = root.join(format!("endpoint-{index}.json"));
+        let created = client::request_json(&owned.endpoint,"POST","/v1/domain/ptys",Some(&json!({"pty_id":pane,"workspace_id":workspace,"program":binary,"args":["--exact","existing_protocol_endpoint_fixture","--ignored"],"cwd":root,"env":{"RIDGE_COMMUNE_FIXTURE":descriptor},"role":"shell","cols":80,"rows":24}))).unwrap();
+        assert_eq!(created["ok"], true, "{created}");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !descriptor.exists() {
+            assert!(Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let descriptor: Value = serde_json::from_slice(&fs::read(descriptor).unwrap()).unwrap();
+        registrations.push(json!({"workspaceId":workspace,"paneId":pane,"process":descriptor["process"],"endpointOwner":descriptor["process"],"endpoint":descriptor["endpoint"],"sessionId":descriptor["sessionId"],"cwd":root}));
+        let observation = loop {
+            let topology = command(
+                &owned.endpoint,
+                "get_teammate_topology",
+                json!({"workspaceId":workspace}),
+                true,
+            );
+            if let Some(candidate) = topology["discovered"].as_array().unwrap().first() {
+                break candidate.clone();
+            }
+            assert!(Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert!(observation["candidateRef"].is_string());
+        let remote = command(
+            &owned.endpoint,
+            "get_teammate_topology",
+            json!({"workspaceId":workspace}),
+            false,
+        );
+        assert_eq!(
+            remote["discovered"][0]["candidateRef"],
+            observation["candidateRef"]
+        );
+        for field in ["process", "terminalEpoch", "endpoint", "source"] {
+            assert!(remote["discovered"][0].get(field).is_none());
+        }
+        candidates.push(observation);
+    }
+    assert_eq!(candidates[0]["name"], candidates[1]["name"]);
+    assert_ne!(candidates[0]["candidateRef"], candidates[1]["candidateRef"]);
+    assert_eq!(
+        fs::read(&groups_path).unwrap(),
+        old,
+        "discovery and projection must remain read-only"
+    );
+    assert!(
+        !root.join("agent-roster.json").exists(),
+        "terminal observations must not invent session identities"
+    );
+    let make_group =
+        |id: &str| json!({"id":id,"name":id,"color":"#60a5fa","memberAgentIds":[],"createdAt":1});
+    let enrollment = json!({"groupScope":"host","expectedRevision":0,"groups":[make_group("one")],"enrollments":[{"candidateRef":candidates[0]["candidateRef"],"groupId":"one"}]});
+    let mut forged = enrollment.clone();
+    forged["enrollments"][0]["candidateRef"] = json!(Uuid::new_v4());
+    assert_eq!(
+        command_reply(&owned.endpoint, "set_teammate_groups", forged, false)["ok"],
+        false
+    );
+    let other_root = root.join("other-runtime");
+    let other = runtime_fixture::start(&other_root).await;
+    assert_eq!(
+        command_reply(
+            &other.endpoint,
+            "set_teammate_groups",
+            enrollment.clone(),
+            false
+        )["ok"],
+        false,
+        "reference cannot cross Runtime"
+    );
+    drop(other);
+    let mut invalid = enrollment.clone();
+    invalid["groups"][0]["color"] = json!("invalid");
+    assert_eq!(
+        command_reply(&owned.endpoint, "set_teammate_groups", invalid, false)["ok"],
+        false
+    );
+    assert!(command(
+        &owned.endpoint,
+        "get_teammate_topology",
+        json!({"groupScope":"host"}),
+        true
+    )["members"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        fs::read(&groups_path).unwrap(),
+        old,
+        "failed join must create neither identity nor group reference"
+    );
+    let joined = command(
+        &owned.endpoint,
+        "set_teammate_groups",
+        enrollment.clone(),
+        false,
+    );
+    let agent_id = joined["groups"][0]["memberAgentIds"][0].clone();
+    assert!(agent_id.is_string());
+    assert_eq!(joined["members"].as_array().unwrap().len(), 1);
+    assert_eq!(joined["members"][0]["terminalAvailable"], true);
+    assert_eq!(joined["members"][0]["protocolConnected"], false);
+    assert_eq!(joined["members"][0]["canSend"], false);
+    assert!(joined["members"][0].get("lease").is_none());
+    assert!(
+        joined["members"][0].get("source").is_none(),
+        "Remote organization projection must redact process source"
+    );
+    let document: Value = serde_json::from_slice(&fs::read(&groups_path).unwrap()).unwrap();
+    assert_eq!(document["version"], 3);
+    assert_eq!(document["members"].as_object().unwrap().len(), 1);
+    assert!(fs::read_dir(&root).unwrap().flatten().any(|entry| entry
+        .file_name()
+        .to_string_lossy()
+        .starts_with("commune-groups-v2-")
+        && fs::read(entry.path()).ok().as_deref() == Some(old.as_slice())));
+    assert!(!root.join("agent-roster.json").exists());
+    // A lost reply is reconciled from the revision. Explicit retry is idempotent by source.
+    assert_eq!(
+        command_reply(
+            &owned.endpoint,
+            "set_teammate_groups",
+            enrollment.clone(),
+            false
+        )["ok"],
+        false
+    );
+    let mut retry = enrollment;
+    retry["expectedRevision"] = joined["groupsRevision"].clone();
+    retry["groups"] = joined["groups"].clone();
+    let retried = command(&owned.endpoint, "set_teammate_groups", retry, false);
+    assert_eq!(
+        retried["groups"][0]["memberAgentIds"],
+        json!([agent_id.clone()])
+    );
+    assert_eq!(retried["members"].as_array().unwrap().len(), 1);
+    {
+        let mut left = runtime_fixture::attach(&owned.endpoint).await;
+        let mut right = runtime_fixture::attach(&owned.endpoint).await;
+        let request = json!({"groupScope":"host","expectedRevision":retried["groupsRevision"],"groups":retried["groups"],"enrollments":[{"candidateRef":candidates[0]["candidateRef"],"groupId":"one"}]});
+        let (first, second) = tokio::join!(
+            runtime_fixture::rpc(&mut left, 1, "set_teammate_groups", request.clone()),
+            runtime_fixture::rpc(&mut right, 1, "set_teammate_groups", request)
+        );
+        assert_ne!(
+            first["error"].is_null(),
+            second["error"].is_null(),
+            "one CAS writer must lose"
+        );
+        let winner = if first["error"].is_null() {
+            &first
+        } else {
+            &second
+        };
+        assert_eq!(winner["result"]["members"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            winner["result"]["groups"][0]["memberAgentIds"],
+            json!([agent_id.clone()])
+        );
+    }
+    let authority = command(
+        &owned.endpoint,
+        "get_teammate_topology",
+        json!({"groupScope":"host"}),
+        true,
+    );
+    let before_invalid_edits = fs::read(&groups_path).unwrap();
+    for (field, ids, diagnostic) in [
+        (
+            "archiveMemberIds",
+            json!(["unknown"]),
+            "unknown organization member",
+        ),
+        (
+            "archiveMemberIds",
+            json!([agent_id.clone(), agent_id.clone()]),
+            "duplicate",
+        ),
+        (
+            "restoreMemberIds",
+            json!([agent_id.clone()]),
+            "already active",
+        ),
+    ] {
+        let mut request = json!({"groupScope":"host","expectedRevision":authority["groupsRevision"],"groups":authority["groups"]});
+        request[field] = ids;
+        let rejected = command_reply(&owned.endpoint, "set_teammate_groups", request, true);
+        assert_eq!(rejected["ok"], false);
+        assert!(rejected.to_string().contains(diagnostic), "{rejected}");
+        assert_eq!(fs::read(&groups_path).unwrap(), before_invalid_edits);
+    }
+    let overlap = json!({"groupScope":"host","expectedRevision":authority["groupsRevision"],"groups":authority["groups"],"archiveMemberIds":[agent_id],"restoreMemberIds":[agent_id]});
+    let rejected = command_reply(&owned.endpoint, "set_teammate_groups", overlap, true);
+    assert_eq!(rejected["ok"], false);
+    assert!(rejected
+        .to_string()
+        .contains("cannot be archived and restored together"));
+    let no_control = json!({"groupScope":"host","groupId":"one","groupRevision":retried["groups"][0]["revision"],"groupAction":"broadcast","objective":"must-not-run","idempotency_key":Uuid::new_v4(),"targets":[{"agentId":agent_id,"generation":1,"lease":"invented"}]});
+    assert_eq!(
+        command_reply(&owned.endpoint, "send_agent_message", no_control, true)["ok"],
+        false
+    );
+    assert!(!root.join("prompt-log").exists());
+    let before_attach = fs::read(&groups_path).unwrap();
+    let connected = command(
+        &owned.endpoint,
+        "register_commune_member",
+        registrations[0].clone(),
+        true,
+    );
+    assert_eq!(connected["agentId"], agent_id);
+    assert_eq!(
+        fs::read(&groups_path).unwrap(),
+        before_attach,
+        "attach must keep organization file and group references unchanged"
+    );
+    let projected = command(
+        &owned.endpoint,
+        "get_teammate_topology",
+        json!({"groupScope":"host"}),
+        false,
+    );
+    assert_eq!(projected["members"][0]["protocolConnected"], true);
+    assert_eq!(projected["members"][0]["canSend"], true);
+    let mut wrong_member = registrations[0].clone();
+    wrong_member["memberAgentId"] = json!(Uuid::new_v4());
+    assert_eq!(
+        command_reply(
+            &owned.endpoint,
+            "register_commune_member",
+            wrong_member,
+            true
+        )["ok"],
+        false
+    );
+    let target = json!({"workspaceId":registrations[0]["workspaceId"],"paneId":registrations[0]["paneId"],"agentId":agent_id,"generation":connected["generation"],"lease":connected["lease"]});
+    let mut permission_prompt = target.clone();
+    permission_prompt["message"] = json!("permission-needed");
+    permission_prompt["idempotency_key"] = json!("organization-permission");
+    let permission_delivery = command(
+        &owned.endpoint,
+        "send_agent_message",
+        permission_prompt,
+        true,
+    );
+    let pending = wait_permission(&owned.endpoint);
+    assert_eq!(pending["agentId"], agent_id);
+    assert_eq!(pending["generation"], connected["generation"]);
+    let mut blocked_rebind = registrations[1].clone();
+    blocked_rebind["memberAgentId"] = agent_id.clone();
+    assert_eq!(
+        command_reply(
+            &owned.endpoint,
+            "register_commune_member",
+            blocked_rebind,
+            true
+        )["ok"],
+        false,
+        "active original connection/task/approval must never be overwritten"
+    );
+    assert_eq!(
+        command(
+            &owned.endpoint,
+            "resolve_hitl_request",
+            json!({"id":pending["id"],"optionId":"once"}),
+            true
+        ),
+        true
+    );
+    wait_execution(
+        &owned.endpoint,
+        &json!({"workspace_id":registrations[0]["workspaceId"],"agent_id":agent_id,"generation":connected["generation"],"lease":connected["lease"]}),
+        &permission_delivery["deliveryId"],
+        "turn_ended",
+    );
+    // Enrollment and authenticated handshake share one authority, whichever commits first.
+    let mut a = runtime_fixture::attach(&owned.endpoint).await;
+    let mut b = runtime_fixture::attach(&owned.endpoint).await;
+    let mut groups = projected["groups"].as_array().unwrap().clone();
+    groups.push(make_group("two"));
+    let second_enrollment = json!({"groupScope":"host","expectedRevision":projected["groupsRevision"],"groups":groups,"enrollments":[{"candidateRef":candidates[1]["candidateRef"],"groupId":"two"}]});
+    let (enrolled, attached) = tokio::join!(
+        runtime_fixture::rpc(&mut a, 1, "set_teammate_groups", second_enrollment),
+        runtime_fixture::rpc(
+            &mut b,
+            1,
+            "register_commune_member",
+            registrations[1].clone()
+        )
+    );
+    assert!(enrolled["error"].is_null(), "{enrolled}");
+    assert!(attached["error"].is_null(), "{attached}");
+    assert_eq!(
+        enrolled["result"]["groups"][1]["memberAgentIds"],
+        json!([attached["result"]["agentId"].clone()])
+    );
+    let snapshot = command(
+        &owned.endpoint,
+        "get_teammate_topology",
+        json!({"groupScope":"host"}),
+        true,
+    );
+    assert_eq!(snapshot["members"].as_array().unwrap().len(), 2);
+    assert_ne!(
+        snapshot["members"][0]["agentId"],
+        snapshot["members"][1]["agentId"]
+    );
+    // Removing a group reference and archiving are separate from disconnecting protocol.
+    let mut empty = snapshot["groups"].clone();
+    empty[0]["memberAgentIds"] = json!([]);
+    let archive = json!({"groupScope":"host","expectedRevision":snapshot["groupsRevision"],"groups":empty,"archiveMemberIds":[agent_id]});
+    assert_eq!(
+        command_reply(
+            &owned.endpoint,
+            "set_teammate_groups",
+            archive.clone(),
+            true
+        )["ok"],
+        false,
+        "active connection blocks archival even if request removes group membership"
+    );
+    command(
+        &owned.endpoint,
+        "release_teammate_agent",
+        json!({"workspaceId":registrations[0]["workspaceId"],"paneId":registrations[0]["paneId"],"agentId":agent_id,"generation":connected["generation"],"lease":connected["lease"]}),
+        true,
+    );
+    let archived = command(&owned.endpoint, "set_teammate_groups", archive, true);
+    assert_eq!(
+        command_reply(
+            &owned.endpoint,
+            "register_commune_member",
+            registrations[0].clone(),
+            true
+        )["ok"],
+        false,
+        "automatic/exact attachment must never restore an archived member"
+    );
+    let restored = command(
+        &owned.endpoint,
+        "set_teammate_groups",
+        json!({"groupScope":"host","expectedRevision":archived["groupsRevision"],"groups":archived["groups"],"restoreMemberIds":[agent_id]}),
+        true,
+    );
+    assert_eq!(
+        restored["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|member| member["agentId"] == agent_id)
+            .unwrap()["canSend"],
+        false,
+        "restore grants no control"
+    );
+    let reconnect = command(
+        &owned.endpoint,
+        "register_commune_member",
+        registrations[0].clone(),
+        true,
+    );
+    assert_eq!(reconnect["agentId"], agent_id);
+    assert!(reconnect["generation"].as_u64() > connected["generation"].as_u64());
+    let prior_groups = fs::read(&groups_path).unwrap();
+    let history_path = root
+        .join("commune-history")
+        .join(format!("{}.jsonl", agent_id.as_str().unwrap()));
+    let prior_history = fs::read(&history_path).unwrap();
+    let pane_id = registrations[0]["paneId"].as_str().unwrap();
+    let workspace_id = registrations[0]["workspaceId"].as_str().unwrap();
+    client::request_json(
+        &owned.endpoint,
+        "DELETE",
+        &format!("/v1/domain/ptys/{pane_id}"),
+        None,
+    )
+    .unwrap();
+    let stale_join = json!({"groupScope":"host","expectedRevision":restored["groupsRevision"],"groups":restored["groups"],"enrollments":[{"candidateRef":candidates[0]["candidateRef"],"groupId":"one"}]});
+    assert_eq!(
+        command_reply(
+            &owned.endpoint,
+            "set_teammate_groups",
+            stale_join.clone(),
+            false
+        )["ok"],
+        false,
+        "exited process reference must fail before persistence"
+    );
+    assert_eq!(fs::read(&groups_path).unwrap(), prior_groups);
+    let replacement_path = root.join("replacement.json");
+    let created = client::request_json(&owned.endpoint,"POST","/v1/domain/ptys",Some(&json!({"pty_id":pane_id,"workspace_id":workspace_id,"program":binary,"args":["--exact","existing_protocol_endpoint_fixture","--ignored"],"cwd":root,"env":{"RIDGE_COMMUNE_FIXTURE":replacement_path},"role":"shell","cols":80,"rows":24}))).unwrap();
+    assert_eq!(created["ok"], true, "{created}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !replacement_path.exists() {
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let replacement: Value = serde_json::from_slice(&fs::read(replacement_path).unwrap()).unwrap();
+    let changed = command(
+        &owned.endpoint,
+        "get_teammate_topology",
+        json!({"workspaceId":workspace_id}),
+        true,
+    );
+    assert_ne!(
+        changed["discovered"][0]["candidateRef"],
+        candidates[0]["candidateRef"]
+    );
+    assert!(
+        changed["discovered"][0]["agentId"].is_null(),
+        "same pane and name must not silently rebind a new process"
+    );
+    assert_eq!(
+        command_reply(&owned.endpoint, "set_teammate_groups", stale_join, false)["ok"],
+        false,
+        "terminal recreation cannot revive old reference"
+    );
+    let mut rebind = json!({"workspaceId":workspace_id,"paneId":pane_id,"process":replacement["process"],"endpointOwner":replacement["process"],"endpoint":replacement["endpoint"],"sessionId":replacement["sessionId"],"cwd":root,"memberAgentId":agent_id});
+    loop {
+        let snapshot = command(
+            &owned.endpoint,
+            "get_teammate_topology",
+            json!({"groupScope":"host"}),
+            true,
+        );
+        if snapshot["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|member| member["agentId"] == agent_id)
+            .unwrap()["protocolConnected"]
+            == false
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    rebind["automatic"] = json!(true);
+    assert_eq!(
+        command_reply(
+            &owned.endpoint,
+            "register_commune_member",
+            rebind.clone(),
+            true
+        )["ok"],
+        false,
+        "automatic connection cannot choose an old organization member"
+    );
+    rebind["automatic"] = json!(false);
+    let rebound = command(&owned.endpoint, "register_commune_member", rebind, true);
+    assert_eq!(rebound["agentId"], agent_id);
+    assert!(rebound["generation"].as_u64() > reconnect["generation"].as_u64());
+    assert_eq!(fs::read(&groups_path).unwrap(), prior_groups);
+    assert!(
+        fs::read(&history_path).unwrap().starts_with(&prior_history),
+        "rebind must append coverage without rewriting old tasks, approvals or history"
+    );
+    drop(a);
+    drop(b);
+    drop(owned);
+    let restarted = runtime_fixture::start(&root).await;
+    let restored = command(
+        &restarted.endpoint,
+        "get_teammate_topology",
+        json!({"groupScope":"host"}),
+        true,
+    );
+    assert_eq!(restored["members"].as_array().unwrap().len(), 2);
+    assert!(restored["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|member| member["canSend"] == false && member["protocolConnected"] == false));
+    let stale = json!({"groupScope":"host","expectedRevision":restored["groupsRevision"],"groups":restored["groups"],"enrollments":[{"candidateRef":candidates[0]["candidateRef"],"groupId":"one"}]});
+    assert_eq!(
+        command_reply(&restarted.endpoint, "set_teammate_groups", stale, true)["ok"],
+        false
+    );
+}
+
 fn command_reply(endpoint: &KernelEndpoint, method: &str, args: Value, native: bool) -> Value {
     client::request_json(endpoint,"POST","/v1/domain/commands",Some(&json!({"method":method,"args":args,"native":native,"roots":[],"connectionId":Uuid::new_v4()}))).unwrap()
 }

@@ -83,8 +83,8 @@
   const terminalAgents = $derived(collectTerminalAgents($workspacesList, $agentTopologyStore));
   let expandedTerminal = $state('');
 
-  async function connectDiscovered(ownerWorkspaceId: string, paneId: string) {
-    try { await registerCommuneMember(ownerWorkspaceId, paneId); await refreshSharedState(); }
+  async function connectDiscovered(ownerWorkspaceId: string, paneId: string, memberAgentId?: string) {
+    try { await registerCommuneMember(ownerWorkspaceId, paneId, memberAgentId); await refreshSharedState(); }
     catch (error) { void alertDialog({ title: tr('commune.connectExistingAgent'), message: String(error) }); }
   }
   /** Aggregate display only; every action retains its original workspace binding. */
@@ -600,7 +600,7 @@
         </ul>
         <HostCommuneGroups members={allMembers.map(member => ({...member.profile,workspaceId:member.workspaceId,workspaceName:member.workspaceName}))}
           candidates={terminalAgents.filter(entry => !entry.agent.protocolConnected).map(entry => ({...entry.agent,workspaceName:entry.workspaceName}))}
-          onConnect={candidate => connectDiscovered(candidate.workspaceId,candidate.paneId)} />
+          onConnect={candidate => connectDiscovered(candidate.workspaceId,candidate.paneId,candidate.memberAgentId)} />
         </div>
       {:else}
         <div id="commune-panel-history" role="tabpanel" aria-labelledby="commune-tab-history">

@@ -679,6 +679,8 @@ impl McpHost for KernelMcpHost {
         agent_id: Option<&str>,
         target: Option<&Value>,
     ) -> HostResult<()> {
+        let connections = self.state.commune.try_lock().map_err(|_| HostError::InvalidParams("member mutation in progress; retry after refreshing".into()))?;
+        let connected = connections.iter().filter(|(_, session)| session.is_connected()).map(|(id, _)| id.clone()).collect();
         if agent_id.is_none() && target.is_none() {
             return Err(HostError::InvalidParams("join_group requires an exact registered member".into()));
         }
@@ -697,7 +699,7 @@ impl McpHost for KernelMcpHost {
         let group = groups.iter_mut().find(|group| group.id == id).unwrap();
         if group.member_agent_ids.contains(&member.agent_id) { return Ok(()); }
         group.member_agent_ids.push(member.agent_id.clone());
-        crate::commune_groups::replace(&self.state,&json!({"groupScope":"host","expectedRevision":snapshot.revision,"groups":groups}),false)
+        crate::commune_groups::replace(&self.state,&json!({"groupScope":"host","expectedRevision":snapshot.revision,"groups":groups}),false,&connected)
             .map_err(HostError::InvalidParams)?;
         Ok(())
     }
@@ -787,6 +789,7 @@ mod tests {
             gateway_permissions: Default::default(),
             execution_rejections: Default::default(),
             commune: Default::default(),
+            commune_candidates: Default::default(),
             retired_workspaces: Default::default(),
             business_events: Default::default(),
             fs_watches: Default::default(),

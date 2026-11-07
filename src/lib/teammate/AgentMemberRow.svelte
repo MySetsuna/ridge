@@ -10,8 +10,9 @@
 
   import { invoke } from '@tauri-apps/api/core';
   import { t, tr } from '$lib/i18n';
+  import { removeCommuneMember } from './communeMembership';
   import { locateTerminal } from './locateTerminal';
-  import { Crown, Square, Send, X, Ghost } from 'lucide-svelte';
+  import { Crown, Square, Send, X, Ghost, Unplug } from 'lucide-svelte';
   import { autoGrow } from '$lib/actions/autoGrow';
   import { memberTasksStore, recordMemberTask } from './memberTasks';
   import { showToast } from '$lib/stores/toast';
@@ -123,6 +124,18 @@
       return { text: $t('commune.running'), cls: 'text-emerald-300', dot: 'bg-emerald-400 animate-pulse', rail: 'border-l-emerald-400' };
     return { text: $t('commune.idle'), cls: 'text-[var(--rg-fg-muted)]', dot: 'bg-[var(--rg-fg-muted)]', rail: 'border-l-sky-400' };
   });
+
+  let disconnecting = $state(false);
+  async function disconnectSession(): Promise<void> {
+    if (!workspaceId || !profile || disconnecting) return;
+    disconnecting = true;
+    try {
+      await removeCommuneMember(workspaceId, profile);
+      onRefresh?.();
+    } catch (error) {
+      showToast(String(error), 'error');
+    } finally { disconnecting = false; }
+  }
 
   async function activatePane(): Promise<void> {
     if (!workspaceId || !paneId) return;
@@ -249,6 +262,13 @@
     </div>
 
     <div class="flex shrink-0 items-center gap-1">
+      {#if workspaceId && profile?.generation && profile.lease}
+        <button type="button" title={$t('commune.disconnectSession')} aria-label={$t('commune.disconnectSession')}
+          disabled={disconnecting} onclick={() => void disconnectSession()}
+          class="min-h-11 min-w-11 rounded-md p-2.5 text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--rg-accent)]/60 disabled:opacity-40">
+          <Unplug class="h-4 w-4" />
+        </button>
+      {/if}
       {#if leader && present}
         <button
           type="button"

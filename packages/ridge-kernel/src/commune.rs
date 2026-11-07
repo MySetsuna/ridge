@@ -142,10 +142,16 @@ pub async fn dispatch(
             Ok(if method == "set_hitl_enabled" { Value::Null } else { json!(enabled) })
         }
         "set_teammate_groups" => {
-            let state = state.clone();
+            let connections = state.commune.lock().await;
+            let connected = connections.iter().filter(|(_, session)| session.is_connected()).map(|(id, _)| id.clone()).collect();
+            let worker = state.clone();
             let args = args.clone();
-            tokio::task::spawn_blocking(move || crate::commune_groups::replace(&state, &args, native))
-                .await.map_err(|e| e.to_string())?
+            let mut result = tokio::task::spawn_blocking(move || crate::commune_groups::replace(&worker, &args, native, &connected))
+                .await.map_err(|e| e.to_string())??;
+            if result["groupScope"] == "host" {
+                result["members"] = crate::commune_groups::member_projection(state, &connections, native)?;
+            }
+            Ok(result)
         }
         "list_hitl_decisions" => {
             if !native {return Err("local decision history requires native trust".into());}
@@ -184,7 +190,9 @@ pub async fn dispatch(
         "get_teammate_topology" => {
             if args["groupScope"]=="host" {
                 if !args["workspaceId"].is_null(){return Err("Host groups do not have a workspace owner".into());}
+                let connections = state.commune.lock().await;
                 let mut projection=crate::commune_groups::projection(state,crate::commune_groups::HOST_GROUP_SCOPE)?;
+                projection["members"] = crate::commune_groups::member_projection(state, &connections, native)?;
                 projection["groupScope"]=json!("host");projection["roster"]=json!([]);projection["leaderId"]=Value::Null;projection["edges"]=json!([]);
                 projection["groupTasks"]=crate::commune_tasks::list(state,crate::commune_groups::HOST_GROUP_SCOPE,native)?;
                 return Ok(projection);
@@ -420,6 +428,8 @@ pub async fn dispatch(
 pub struct RegisterRequest {
     #[serde(default)]
     automatic: bool,
+    #[serde(default)]
+    member_agent_id: Option<String>,
     #[serde(default = "default_protocol")]
     protocol: String,
     #[serde(default)]
@@ -535,13 +545,110 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
                     .into(),
             );
         }
+        if request.member_agent_id.as_ref().is_some_and(|id| id != &identity.agent_id) {
+            return Err("peer/session is bound to a different member".into());
+        }
+        if state.groups.lock().map_err(|_| "group authority unavailable")?.members().get(&identity.agent_id).is_some_and(|member| member.archived) {
+            return Err("restore archived member before connecting".into());
+        }
+
+    }
+    let view = state
+        .ptys
+        .agent_terminal_view(request.pane_id, request.workspace_id, 0)
+        .map_err(|error| error.to_string())?;
+    let source = crate::commune_groups::MemberSource {
+        host_id: state.host_id.clone(),
+        workspace_id: request.workspace_id.to_string(),
+        pane_id: request.pane_id.to_string(),
+        terminal_epoch: view["terminalEpoch"]
+            .as_str()
+            .ok_or("terminal epoch unavailable")?
+            .into(),
+        process: request.process.clone(),
+    };
+    let (organization_id, organization) = {
+        let groups = state
+            .groups
+            .lock()
+            .map_err(|_| "group authority unavailable")?;
+        (groups.member_for_source(&source)?, groups.members())
+    };
+    let mut ids = std::collections::HashSet::new();
+    if let Some(identity) = &existing {
+        ids.insert(identity.agent_id.clone());
+    }
+    if let Some(id) = &organization_id {
+        ids.insert(id.clone());
+    }
+    if let Some(id) = &request.member_agent_id {
+        if request.automatic {
+            return Err("automatic attachment cannot explicitly rebind a member".into());
+        }
+        if !organization.contains_key(id) {
+            return Err("organization member not found".into());
+        }
+        ids.insert(id.clone());
+    }
+    if ids.len() > 1 {
+        return Err(
+            "peer/session and organization member identities conflict; no merge performed".into(),
+        );
+    }
+    let agent_id = ids
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    if organization
+        .get(&agent_id)
+        .is_some_and(|member| member.archived)
+    {
+        return Err("restore archived organization member before connecting".into());
+    }
+    if let Some(identity) = &existing {
         if connections
-            .get(&identity.agent_id)
+            .get(&agent_id)
             .is_some_and(|session| session.is_connected())
         {
             return Ok(
-                json!({"agentId":identity.agent_id,"generation":identity.generation,"lease":identity.lease,"sessionId":identity.session_id,"binding":identity.protocol_binding}),
+                json!({"agentId":agent_id,"generation":identity.generation,"lease":identity.lease,"sessionId":identity.session_id,"binding":identity.protocol_binding}),
             );
+        }
+    }
+    let previous = state
+        .roster
+        .lock()
+        .map_err(|_| "roster unavailable")?
+        .agent_identity(&agent_id)
+        .cloned();
+    if let Some(previous) = &previous {
+        let changed = previous.session_id != request.session_id
+            || previous.workspace_id != request.workspace_id.to_string()
+            || previous.pane_id != request.pane_id.to_string()
+            || previous.protocol_binding.as_ref().is_none_or(|binding| {
+                binding.process != request.process || binding.peer_namespace != peer_namespace
+            });
+        if changed && request.member_agent_id.is_none() {
+            return Err(
+                "member session changed; explicitly select the organization member to rebind"
+                    .into(),
+            );
+        }
+        if connections
+            .get(&agent_id)
+            .is_some_and(|session| session.is_connected() || session.is_busy())
+            || state.permissions.has_pending(&agent_id)?
+            || state
+                .mcp_state
+                .latest_runtime_receipt(&agent_id, previous.generation, &previous.lease)?
+                .is_some_and(|receipt| {
+                    matches!(
+                        receipt["execution"]["state"].as_str(),
+                        Some("running" | "dispatching")
+                    )
+                })
+        {
+            return Err("original member connection, task or approval is active; finish or disconnect it before rebinding".into());
         }
     }
     let stream = tokio::time::timeout(
@@ -556,10 +663,9 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
     };
     process_identity::owns_connection(&request.endpoint_owner, request.endpoint, client)
         .map_err(|error| error.to_string())?;
-    let agent_id = existing
-        .as_ref()
-        .map(|identity| identity.agent_id.clone())
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    if agent_id.is_empty() || agent_id.len() > 128 || !agent_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') {
+        return Err("organization member ID cannot be used as a protocol history key; preserve it for recovery".into());
+    }
     let folder = ridge_data_dir().join("commune-history");
     std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
     let history = state

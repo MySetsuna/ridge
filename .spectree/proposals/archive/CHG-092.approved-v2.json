@@ -1,0 +1,96 @@
+{
+  "remove": [],
+  "nodes": [
+    {
+      "id": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+      "body": "# Commune 统一成员与先编组后接入\n用户已明确批准 CHG-092 草案，采用既有 agentId、v3 组文件、先编组后接入及归档迁移。CHG-091、CHG-094、CHG-097、CHG-098 已分别完成消息确认、协作入口与组管理、连接文件向导、组派发意图恢复。本提案剩余范围为稳定组织成员、终端候选编组和接入后的连续性。上述已完成行为由各自规范继续约束。\n\n## 产品语义\n1. 成员表示用户编组和管理的协作者。组织成员可尚未连接协作协议，组内同时显示终端可用、协作已连接、可执行能力与限制原因。\n2. 浏览发现列表不登记成员、不写盘。用户选中终端候选并确认建组或加入组时，由 Runtime 核验当前候选并分配或复用稳定 agentId。\n3. 终端候选、组织成员、协议身份在界面合成同一成员卡。同名、同目录均不能用于合并，来源工作区和分屏始终可区分。\n4. 后续接入精确原进程的已有协议会话，沿用已登记 agentId 和原组。没有 conversation.prompt 的成员不能接收结构化任务。终端输入仍由独立人工操作入口处理。\n5. 断开协作、移出编组、归档成员为不同操作。断开只撤销既有控制连接，组织记录和组引用保留。移出组沿用现有组 CAS。归档须成员已移出活动组、无活动协议连接和待处理审批，历史保留。\n6. 组长可作为组织角色预先安排，实际发送始终检查在线绑定、能力和调用者权限。成员派发、审批及结果继续引用已冻结的真实 session、generation 和 lease。\n7. 实际 Agent 能力逐项显示。历史缺失显示覆盖范围，未观察到审批事件时说明来源未提供，普通终端输出不冒充协议历史。\n\n## 单一事实源与持久化\n采用现有 commune-groups.json 的 version 3 增量，在顶层增加 members，键为稳定 agentId。groups 的 memberAgentIds、leaderAgentId 及已有任务引用保持现有形态。agent-roster.json 继续仅持有协议身份与运行代际，不为未连接组织成员伪造 sessionId、lease 或能力。\n\nmembers 值包含 name、source、archived。name 为运行方已观察到的可读名称快照。source 可空，非空时包含 hostId、workspaceId、paneId、terminalEpoch、process，process 沿用现有 ProcessInstance 的 pid 与 startInstance。source 只保留最后核验来源，不声明该进程当前存活。archived 默认为 false。新字段的内部 Rust 类型和序列化实现由实施者决定，磁盘版本和以上语义为约束。\n\n已有协议成员登记到组织名册时直接复用其 agentId。只有既有组引用而无可核验身份的历史成员，保留原 ID 并生成来源为空的历史占位，能力均不可用。组织记录与协议身份按 agentId 合成呈现，协议会话事实仍来自当前权威 roster 与真实连接。\n\n此布局利用现有组文档的 write_atomic、归档与版本拒绝机制，避免建立第二套成员编号，也避免把不具备 session 的成员写入 commit_online_agent。新增成员和加入组落同一次文档提交。\n\n## 发现引用与权限\n发现投影增加可选 candidateRef，为 Runtime 发行的不可伪造、不可跨 Runtime 复用的 opaque 引用。它绑定 host、workspace、pane、terminalEpoch 和准确进程启动实例。刷新时可复用仍有效的引用，进程、终端代际或 Runtime 改变后失效。发行引用只使用临时内存，不持久化成员。\n\nNative 与 Remote 接收同一引用。Remote 仍不接收进程和凭据详情。引用本身不授予权限，所有写入须通过现有 set_teammate_groups、连接只读策略及可操作工作区边界校验。归档和组织登记均不开放 native-only 的 register_commune_member。\n\n旧 Host 未提供 candidateRef 时，界面明确提示需要支持该能力的 Host，继续允许管理已登记成员，禁止按名称、paneId 或目录猜测身份。\n\n## 编组写契约\n现有 set_teammate_groups 的 Host 请求保留 groupScope、expectedRevision、groups，并增加可选 enrollments 数组。每项仅含 candidateRef 和 groupId，groupId 必须属于本次 groups。候选没有客户端指定的新 agentId。\n\nRuntime 在统一成员变更串行边界内复核候选、当前协议身份与组织记录。相同精确来源已经有稳定 ID 时复用，相同候选的并发请求至多建立一条记录。无法唯一解释的既有绑定冲突直接拒绝，不自动合并 ID、组或历史。\n\n解析候选后，在本次 groups 相应成员表中加入稳定 ID，再执行既有组验证、单主组约束、修订检查和一次原子落盘。失败保留旧文档与旧投影，不留“登记成功但入组失败”的半提交。纯 legacy 请求不携带 enrollments 时沿用旧行为，不能因旧客户端缺少 members 字段删除组织名册。\n\n归档通过同一组文档变更入口的可选 archiveMemberIds 数组提出。Runtime 核验该成员不在提交后的活动组、无活动连接和审批后设置 archived。恢复通过可选 restoreMemberIds 数组明确提出，只恢复组织记录，不授予控制权；来源依然按当前事实显示。两个数组不能包含同一 ID，未知 ID、重复 ID 或未满足状态条件均拒绝整个提交。归档不删除记录，不回收其 ID。候选解析命中已归档 ID 时，须本次显式恢复，不能自动另建身份或恢复。\n\n## 协议接入与重新绑定\nregister_commune_member 沿用当前 native 信任、进程树、端点归属、已有 session、协议及鉴权校验。准确原候选已登记组织成员时，正常接入自动复用该 agentId，组文件无需改写。\n\n请求可选 memberAgentId 仅用于用户显式选择原组织成员重新绑定。默认不凭同一 pane、标题或 CWD 接续新进程。不同进程、不同 session 或代际冲突先预览差异，原连接活跃、任务执行中或审批待处理时拒绝覆盖并引导先完成既有结束流程。失联旧任务继续保留原未知结果，不能转发给新会话。\n\n身份选择、组织登记与协议登记共享当前 Runtime 成员变更串行边界，避免握手和编组并发产生两个 ID。优先复用现有 commune 连接互斥与注册校验，实施时核对完整锁顺序。接入只提交新的协议绑定和递增 generation，组织组引用仍为原 ID。既有任务、审批及历史不改写、不补发。\n\n若指定组织 ID 已归档，须先显式恢复，不能由自动发现或自动接入恢复。若认证 peer/session 已绑定另一个成员 ID，返回可审查冲突，禁止静默迁移或拼接历史。\n\n## 兼容与恢复\n1. version 1、2 文件可读取和投影，读取不触发迁移。首次显式组织编组写入时，对旧字节建立按摘要命名的归档，再一次写入完整 version 3。写入或归档失败不改变旧文件。\n2. 既有 Host、workspace、archived groups 和 legacy 原始数据完整保留。已有 agentId、groupId、任务 ID、generation、lease 和历史序列保持原值。\n3. 在写入事务中将已知协议成员和历史组引用补入 members，重复迁移按稳定 ID 幂等。损坏、重复身份或无法解释的引用不静默覆盖，保留原文件并给出诊断。\n4. 旧 Runtime 的 Document 反序列化拒绝未知字段且仅支持版本 1、2，不能重写 version 3。降级使用归档须作为明确的数据恢复操作，先保留当前 version 3，不能自动覆盖。\n5. 旧客户端可继续读取和提交原组字段。组织成员只在当前文档维护，旧请求不能删除其记录。支持新能力的客户端消费 candidateRef 与成员投影，缺省按已登记成员降级显示。\n6. Runtime 重启后组织成员与组仍在，所有运行状态重新核验。旧 candidateRef、旧进程启动实例、旧 terminalEpoch 或旧 lease 均不能提供新控制权。\n\n## 实施单元\nA. version 3 组织成员与组写事务，补齐归档、兼容和故障恢复。\nB. 可信候选引用、Native/Remote 发现投影与候选入组，复用已登记 ID。\nC. 原会话接入复用成员、显式重新绑定、并发身份唯一性和旧任务隔离。\nD. 同一成员卡和组选择器贯通 Native/Remote，按有效能力呈现操作与禁用原因，完成只读、失联、迁移失败及重试路径。\nE. 原用户 Agent 的身份、历史、一次派发、真实审批与返回原任务，分别记录 Native、LAN、Cloud、手机的实际证据。缺少实际 Agent 启动方式或真机时保持待验收。\n\n## 必须验证\n- 普通终端候选无协议 session 时可加入组织编组，成员编号稳定，结构化派发不产生任何协议或终端输入副作用。\n- 同名跨工作区成员可独立选组，Remote 通过 opaque 引用精确入组，不泄露 PID、端点或凭据。\n- 先入组再连接原已有会话，仍为同一 ID、同一组，只新增已核实能力。\n- 候选退出、PID 复用、终端重建、工作区关闭、跨 Runtime 引用、只读连接、越权和过期修订均在副作用前拒绝。\n- 入组与协议握手并发只生成一个稳定 ID；两个客户端同时入组通过 CAS 收敛，失败重试不重复登记。\n- 归档、重新绑定、断开和成员移动保持明确边界。原运行中、未知结果、审批或历史不能迁给新会话。\n- 从旧文件迁移两次、旧客户端提交、旧 Runtime 拒绝新文件、归档失败、磁盘写失败、进程重启恢复与损坏数据保护。\n- 一次入组提交失败后既无新成员也无新组引用；成功但 ACK 丢失后刷新和明确重试仍只有一条组织记录。\n- 移动成员与组长变更仍使用现有单次 CAS，组任务仍冻结原 session/generation/lease，复用 CHG-098 未确认派发保护。\n- 实际 Agent 接入后，从同一成员卡完成身份、明确覆盖范围的对话、一次任务、真实审批与结果返回。Fixture 只证明隔离实现，不能代替外部互操作、真机或 WAN。\n\n\n## 共享投影\n\nHost get_teammate_groups 在现有 groups、groupsRevision 外提供可选 members 数组。新实现返回完整组织成员投影，旧客户端可忽略。每项含 agentId、name、archived、workspaceId、paneId、terminalAvailable、protocolConnected、canSend、canCancel，以及存在真实协议绑定时的 generation、lease、sessionId、capabilities。历史来源字段可空。Native 可读取受信来源详情，Remote 不接收 source.process、端点或凭据。canSend 与 canCancel 为调用者方法权限、当前连接及对应协议能力的交集；终端可用不等于协议可用。未提供能力字段按不可用处理。\n\nget_teammate_topology 的既有协议 roster 兼容保留，发现项增加可选 candidateRef。Host 成员与发现候选、协议 roster 由同一 agentId 或经核验的精确来源合并。失联组织成员即使工作区当前未打开仍可管理其组关系。Runtime 重启和成员事件仅刷新事实，不自动登记、重绑定或派发。",
+      "testTargets": [
+        "packages/ridge-kernel/tests/commune_registration.rs",
+        "scripts/commune-global-ui-acceptance.mjs",
+        "src/lib/teammate/communeMembership.test.ts",
+        "src/lib/teammate/teammateGroups.test.ts",
+        "packages/ridge-kernel/tests/agent_catalog_runtime.rs",
+        "src/lib/teammate/communeGroupDispatch.test.ts",
+        "scripts/commune-permission-ui-acceptance.mjs",
+        "packages/ridge-kernel/src/commune_groups.rs"
+      ],
+      "codeTargets": [
+        "src/lib/teammate/AgentCenterPanel.svelte",
+        "src/lib/teammate/TerminalAgentRow.svelte",
+        "src/lib/teammate/AgentMemberRow.svelte",
+        "src/lib/teammate/HostCommuneGroups.svelte",
+        "src/lib/teammate/communeMembership.ts",
+        "src/lib/teammate/teammateGroups.svelte.ts",
+        "src/remote/lib/GlobalCommuneRoster.svelte",
+        "src/remote/lib/CommuneWorkspaceRoster.svelte",
+        "packages/ridge-kernel/src/agent_discovery.rs",
+        "packages/ridge-kernel/src/commune.rs",
+        "packages/ridge-kernel/src/commune_groups.rs",
+        "packages/remote/src/shared/transport/wsRemote.ts",
+        "src/lib/teammate/teammateModel.ts",
+        "src/lib/teammate/CommuneGroupTasks.svelte",
+        "src/lib/teammate/communeGroupDispatch.ts",
+        "src/lib/i18n/messages/commune.ts",
+        "packages/ridge-kernel/src/server.rs",
+        "packages/ridge-kernel/src/commune_permissions.rs",
+        "src/lib/teammate/CommuneConnectionDialog.svelte",
+        "packages/ridge-kernel/src/domain.rs",
+        "packages/ridge-kernel/src/kernel_mcp.rs"
+      ],
+      "parent": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+      "level": "L4",
+      "dependsOn": [],
+      "title": "Commune 稳定组织成员与先编组后接入",
+      "acceptanceChecks": [
+        {
+          "id": "organization-runtime",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "commune_registration"
+          ],
+          "description": "真实 Runtime 的候选入组、身份复用、并发、只读与旧任务隔离，fixture 不代替外部 Agent"
+        },
+        {
+          "id": "organization-storage",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--lib",
+            "commune_groups"
+          ],
+          "description": "组文档 version 1/2/3、原子提交、归档、CAS 与迁移失败保护"
+        },
+        {
+          "id": "organization-kernel-build",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--bin",
+            "ridge-kernel"
+          ],
+          "description": "以当前源构建后续 UI 使用的真实 Kernel"
+        },
+        {
+          "id": "organization-global-ui",
+          "command": [
+            "node",
+            "scripts/commune-global-ui-acceptance.mjs"
+          ],
+          "description": "Native/Remote 统一成员与候选先入组后接入、同名来源、成员移动与能力反馈"
+        }
+      ]
+    }
+  ],
+  "changeId": "CHG-092"
+}

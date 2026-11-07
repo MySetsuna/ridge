@@ -473,6 +473,18 @@
     }
   },
   {
+    "changeId": "CHG-092",
+    "specHash": "1ef1c326bf3486727eb31902b2b4c41262e92369461eee9b48fa77258414b1ca",
+    "approvedAt": "2026-11-07T07:01:16.555Z",
+    "source": "completion_derived",
+    "actor": "codex",
+    "confirmationRef": "按用户已批准的鉴权失败与重试验收范围，补齐精确连接归属尚不可观察时的有界等待，保留全部归属拒绝与进程代际校验",
+    "derivedFrom": {
+      "buildId": "BUILD-2df264d97395",
+      "specHash": "b9d782214197a99e38cbf499faad3e6b27454e929aca004e139a996b1c1ef4cf"
+    }
+  },
+  {
     "changeId": "CHG-093",
     "specHash": "f40437af46945055b6480b417d77ca30635df69585640ffeb4c6508d170527db",
     "approvedAt": "2026-11-07T02:40:35.395Z",

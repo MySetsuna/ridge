@@ -7,6 +7,23 @@ use std::{collections::{HashMap, HashSet}, sync::Mutex, time::{Duration, Instant
 use sysinfo::{ProcessesToUpdate, System};
 
 #[derive(Clone)]
+pub(crate) struct Candidate {
+    pub source: crate::commune_groups::MemberSource,
+    pub name: String,
+}
+
+pub(crate) fn resolve(state: &AppState, reference: &str) -> Result<Candidate, String> {
+    let candidate = state.commune_candidates.lock().map_err(|_| "candidate authority unavailable")?
+        .get(reference).cloned().ok_or("candidate expired; refresh discovery")?;
+    let rows = read(state, &candidate.source.workspace_id)?;
+    if !rows.as_array().into_iter().flatten().any(|row| row["candidateRef"] == reference) {
+        return Err("candidate process or terminal changed; refresh discovery".into());
+    }
+    process_identity::validate(&candidate.source.process).map_err(|error| error.to_string())?;
+    Ok(candidate)
+}
+
+#[derive(Clone)]
 struct Process { pid: u32, parent: Option<u32>, image: String, arguments: Vec<String> }
 static SNAPSHOT: Mutex<Option<(Instant, Vec<Process>)>> = Mutex::new(None);
 static ATTEMPTS:Mutex<Option<HashMap<String,(Instant,String)>>> = Mutex::new(None);
@@ -78,9 +95,32 @@ pub(crate) fn read(state: &AppState, workspace: &str) -> Result<Value,String> {
             candidate["recentOutput"]=json!(view["text"].as_str().unwrap_or("").chars().take(4096).collect::<String>());
             candidate["protocolConnected"]=json!(registered.contains(&(pty.id.to_string(),process.pid,process.start_instance.clone())));
             if let Ok(attempts)=ATTEMPTS.lock(){if let Some((_,reason))=attempts.as_ref().and_then(|attempts|attempts.get(&candidate_key(&candidate))){candidate["reason"]=json!(reason);}}
+            let source = crate::commune_groups::MemberSource {
+                host_id: state.host_id.clone(), workspace_id: workspace.to_string(),
+                pane_id: pty.id.to_string(), terminal_epoch: view["terminalEpoch"].as_str().ok_or("terminal epoch unavailable")?.into(),
+                process: process.clone(),
+            };
+            let mut references = state.commune_candidates.lock().map_err(|_| "candidate authority unavailable")?;
+            let reference = references.iter().find(|(_, value)| value.source == source).map(|(key, _)| key.clone())
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            references.insert(reference.clone(), Candidate { source, name: profile.id.clone() });
+            candidate["candidateRef"] = json!(reference);
+            drop(references);
+            let mut member_ids = state.roster.lock().map_err(|_| "roster unavailable")?.agent_identities().into_iter()
+                .filter(|identity| identity.workspace_id == workspace.to_string() && identity.pane_id == pty.id.to_string()
+                    && identity.protocol_binding.as_ref().is_some_and(|binding| binding.process == process))
+                .map(|identity| identity.agent_id.clone()).collect::<HashSet<_>>();
+            if let Some(id) = state.groups.lock().map_err(|_| "group authority unavailable")?.member_for_source(&crate::commune_groups::MemberSource {
+                host_id: state.host_id.clone(), workspace_id: workspace.to_string(), pane_id: pty.id.to_string(),
+                terminal_epoch: view["terminalEpoch"].as_str().unwrap_or("").into(), process: process.clone(),
+            })? { member_ids.insert(id); }
+            if member_ids.len() == 1 { candidate["agentId"] = json!(member_ids.into_iter().next()); }
             candidates.push(candidate);
         }
     }
+    let live = candidates.iter().filter_map(|row| row["candidateRef"].as_str()).collect::<HashSet<_>>();
+    state.commune_candidates.lock().map_err(|_| "candidate authority unavailable")?
+        .retain(|reference, candidate| candidate.source.workspace_id != workspace.to_string() || live.contains(reference.as_str()));
     candidates.sort_by_key(|row|format!("{}:{}",row["paneId"],row["process"]["pid"]));
     Ok(json!(candidates))
 }
@@ -89,7 +129,7 @@ pub(crate) fn read(state: &AppState, workspace: &str) -> Result<Value,String> {
 pub(crate) fn public_projection(rows: Value) -> Value {
     json!(rows.as_array().into_iter().flatten().map(|row| json!({
         "workspaceId":row["workspaceId"],"paneId":row["paneId"],"name":row["name"],
-        "connectionState":"discovered","protocolConnected":row["protocolConnected"]==true,
+        "connectionState":"discovered","protocolConnected":row["protocolConnected"]==true,"candidateRef":row["candidateRef"],"agentId":row["agentId"],
         "recentOutput":row["recentOutput"].as_str().unwrap_or("").chars().take(4096).collect::<String>()
     })).collect::<Vec<_>>())
 }

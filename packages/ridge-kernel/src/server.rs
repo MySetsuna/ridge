@@ -57,6 +57,7 @@ pub struct AppState {
     pub(crate) execution_rejections: Arc<crate::execution_rejections::Rejections>,
     pub(crate) gateway_permissions: Arc<crate::gateway_permissions::Gateway>,
     pub(crate) permissions: Arc<crate::commune_permissions::Permissions>,
+    pub(crate) commune_candidates: Arc<std::sync::Mutex<HashMap<String, crate::agent_discovery::Candidate>>>,
     pub(crate) commune: Arc<tokio::sync::Mutex<std::collections::HashMap<String,Arc<crate::commune_connection::Conversation>>>>,
     /// Serializes workspace retirement with legacy topology/PTY registration.
     pub(crate) retired_workspaces: Arc<std::sync::Mutex<std::collections::HashSet<Uuid>>>,
@@ -298,6 +299,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         gateway_permissions: Default::default(),
         execution_rejections: Default::default(),
         commune: Default::default(),
+        commune_candidates: Default::default(),
         retired_workspaces: Default::default(),
         business_events: Default::default(),
         fs_watches: Default::default(),
