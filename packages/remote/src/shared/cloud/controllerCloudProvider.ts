@@ -195,6 +195,12 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private connectWatchdog: ReturnType<typeof setTimeout> | null = null;
   /** host 是否在房（welcome.peerPresent / peer-join / peer-leave 维护），供超时诊断分级。 */
   private hostPresent = false;
+  private pendingRemoteIce: RTCIceCandidateInit[] = [];
+  private answerReceived = false;
+  private remoteDescriptionReady = false;
+  private localIceCount = 0;
+  private remoteIceCount = 0;
+  private rejectedIceCount = 0;
 
   // ── B3（D-GM-10）E2EE 公钥↔身份绑定状态 ──
   /** host 经已认证信令旁路转发回来的临时公钥；尚未到达为 null。 */
@@ -238,11 +244,19 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.clearConnectWatchdog();
     this.connectWatchdog = setTimeout(() => {
       this.connectWatchdog = null;
-      if (this.closed || this.state === 'connected') return;
-      let stage = '网络协商未完成（可能被 NAT/防火墙阻断）';
+      if (this.closed || this.state === 'connected' || this.state === 'error') return;
+      let stage: string;
       if (!this.hostPresent) stage = '远程主机未上线（host 未连接到中继）';
       else if (!this.offerStarted) stage = '尚未发起连接协商';
       else if (this.state === 'handshaking') stage = '加密握手未完成';
+      else if (!this.answerReceived) stage = '未收到主机 answer（请检查主机协商与中继转发）';
+      else if (!this.remoteDescriptionReady) stage = '主机 answer 尚未完成应用';
+      else if (this.pc?.iceConnectionState === 'connected' || this.pc?.iceConnectionState === 'completed') {
+        stage = 'ICE 已接通，数据通道尚未打开';
+      } else {
+        const turn = this.iceServers.some((s) => [s.urls].flat().some((url) => /^turns?:/.test(url)));
+        stage = `ICE 候选未连通（发送 ${this.localIceCount}、收到 ${this.remoteIceCount}、拒绝 ${this.rejectedIceCount}；TURN ${turn ? '已配置' : '未配置'}）`;
+      }
       this.fail(
         `连接远程桌面超时：${stage}。请确认目标主机上 Ridge / rdg remote 正在运行，然后重试。`,
         'HOST_UNREACHABLE',
@@ -309,11 +323,14 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   }
 
   private setupPeerConnection(iceServers: IceServer[]): void {
+    this.resetIceNegotiation();
     const pc = new RTCPeerConnection({ iceServers: iceServers as RTCIceServer[] });
     this.pc = pc;
 
     // 本端 ICE candidate → 经信令转发给对端（§5.1 trickle）。
     pc.onicecandidate = (ev) => {
+      if (this.pc !== pc || this.closed) return;
+      if (ev.candidate) this.localIceCount++;
       // toJSON() 是 RTCIceCandidateInit；线类型是 JsonValue（serde_json），边界处收窄。
       this.sendSignal({
         t: 'ice',
@@ -322,6 +339,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     };
 
     pc.onconnectionstatechange = () => {
+      if (this.pc !== pc || this.closed) return;
       const cs = pc.connectionState;
       if (cs === 'connected') {
         void remotePerfSamplePeerConnection(pc);
@@ -675,6 +693,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.ws = ws;
 
     ws.onmessage = (ev) => {
+      if (this.ws !== ws || this.closed) return;
       void this.onSignal(ev.data);
     };
     ws.onerror = (ev) => {
@@ -719,6 +738,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   }
 
   private async handleSignalMessage(msg: SignalIn, pc: RTCPeerConnection): Promise<void> {
+    if (pc !== this.pc || this.closed) return;
     switch (msg.t) {
       case 'welcome':
         this.handleWelcome(msg);
@@ -759,20 +779,50 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   }
 
   private async handleAnswer(pc: RTCPeerConnection, sdp: string): Promise<void> {
+    this.answerReceived = true;
+    this.remoteDescriptionReady = false;
     try {
       await pc.setRemoteDescription({ type: 'answer', sdp });
+      if (pc !== this.pc || this.closed) return;
+      while (this.pendingRemoteIce.length > 0) {
+        await this.addRemoteIce(pc, this.pendingRemoteIce.shift()!);
+        if (pc !== this.pc || this.closed) return;
+      }
+      this.remoteDescriptionReady = true;
     } catch (error) {
-      this.fail(error instanceof Error ? error.message : '处理 answer 失败', 'INTERNAL');
+      if (pc === this.pc && !this.closed) {
+        this.fail(error instanceof Error ? error.message : '处理 answer 失败', 'INTERNAL');
+      }
     }
   }
 
   private async handleIce(pc: RTCPeerConnection, candidate: unknown): Promise<void> {
     if (!candidate) return;
-    try {
-      await pc.addIceCandidate(candidate as RTCIceCandidateInit);
-    } catch {
-      // Optional ICE candidates may fail after the peer connection is already closed.
+    this.remoteIceCount++;
+    if (!this.remoteDescriptionReady) {
+      if (this.pendingRemoteIce.length >= 64) {
+        this.fail('远端 ICE 候选过多，已停止本次连接', 'INTERNAL');
+        this.teardownTransport();
+        return;
+      }
+      this.pendingRemoteIce.push(candidate as RTCIceCandidateInit);
+      return;
     }
+    await this.addRemoteIce(pc, candidate as RTCIceCandidateInit);
+  }
+
+  private async addRemoteIce(pc: RTCPeerConnection, candidate: RTCIceCandidateInit): Promise<void> {
+    try {
+      await pc.addIceCandidate(candidate);
+    } catch {
+      if (pc === this.pc && !this.closed) this.rejectedIceCount++;
+    }
+  }
+
+  private resetIceNegotiation(): void {
+    this.pendingRemoteIce = [];
+    this.answerReceived = this.remoteDescriptionReady = false;
+    this.localIceCount = this.remoteIceCount = this.rejectedIceCount = 0;
   }
 
   private handlePeerKey(pubkey: string): void {
@@ -799,9 +849,12 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.offerStarted = true;
     try {
       const offer = await pc.createOffer();
+      if (pc !== this.pc || this.closed) return;
       await pc.setLocalDescription(offer);
+      if (pc !== this.pc || this.closed) return;
       this.sendSignal({ t: 'offer', sdp: offer.sdp ?? '' });
     } catch (e: unknown) {
+      if (pc !== this.pc || this.closed) return;
       this.offerStarted = false; // 允许后续重试
       this.fail(e instanceof Error ? e.message : '创建 offer 失败', 'INTERNAL');
     }
@@ -912,6 +965,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
 
   /** 关闭 pc/dc/ws 并解绑回调（不置 closed、不 setState）——供重连重建复用。 */
   private teardownTransport(): void {
+    this.resetIceNegotiation();
     if (this.dc) {
       this.dc.onopen = this.dc.onclose = this.dc.onmessage = null;
       try { this.dc.close(); } catch { /* ignore */ }
@@ -981,37 +1035,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.clearDisconnectedWatchdog();
     this.clearIceRestartDeadline();
     this.clearConnectWatchdog();
-    if (this.dc) {
-      this.dc.onopen = this.dc.onclose = this.dc.onmessage = null;
-      try { this.dc.close(); } catch { /* ignore */ }
-      this.dc = null;
-    }
-    if (this.paneDc) {
-      this.paneDc.onopen = this.paneDc.onclose = this.paneDc.onmessage = null;
-      this.paneDc.onbufferedamountlow = null;
-      try { this.paneDc.close(); } catch { /* ignore */ }
-      this.paneDc = null;
-    }
-    if (this.pc) {
-      this.pc.onicecandidate = this.pc.ondatachannel = this.pc.onconnectionstatechange = null;
-      try { this.pc.close(); } catch { /* ignore */ }
-      this.pc = null;
-    }
-    if (this.ws) {
-      this.ws.onmessage = this.ws.onerror = this.ws.onclose = null;
-      try { this.ws.close(); } catch { /* ignore */ }
-      this.ws = null;
-    }
-    this.outbound.clear();
-    this.ephemeral = null;
-    this.session = null;
-    this.paneSession = null;
-    this.paneLaneReady = false;
-    this.paneLaneProbeSent = false;
-    this.paneReassembler.reset();
-    this.sendMsgId = 0;
-    this.paneSendMsgId = 0;
-    this.handshakeDone = false;
+    this.teardownTransport();
     this.offerStarted = false;
     // B3：清宽限计时防泄漏（bindingMode 保留供断开后诊断读取，下次 connect 再整体重置）。
     if (this.bindTimer) {

@@ -95,6 +95,7 @@ class FakePeerConnection {
   onconnectionstatechange: (() => void) | null = null;
   ondatachannel: ((ev: { channel: FakeDataChannel }) => void) | null = null;
   connectionState: RTCPeerConnectionState = 'new';
+  iceConnectionState: RTCIceConnectionState = 'new';
 
   localDescription: RTCSessionDescriptionInit | null = null;
   remoteDescription: RTCSessionDescriptionInit | null = null;
@@ -126,6 +127,7 @@ class FakePeerConnection {
     this.remoteDescription = d;
   }
   async addIceCandidate(c: RTCIceCandidateInit): Promise<void> {
+    if (!this.remoteDescription) throw new DOMException('No remote description', 'InvalidStateError');
     this.addedCandidates.push(c);
   }
   close(): void {
@@ -260,6 +262,122 @@ describe('ControllerCloudProvider', () => {
     ws.deliver({ t: 'peer-join', role: 'host' });
     await flush();
     expect(ws.sentParsed().filter((m) => m.t === 'offer')).toHaveLength(1);
+  });
+
+  it('buffers ICE before and during answer application, then drains in order', async () => {
+    const { ControllerCloudProvider } = await loadProvider();
+    const provider = new ControllerCloudProvider(CONFIG);
+    await provider.connect(HOST_DEVICE);
+    const pc = FakePeerConnection.instances[0];
+    const ws = FakeWebSocket.instances[0];
+    let apply!: () => void;
+    pc.setRemoteDescription = async (description) => {
+      await new Promise<void>((resolve) => { apply = resolve; });
+      pc.remoteDescription = description;
+    };
+    const first = { candidate: 'early', sdpMid: '0' };
+    const second = { candidate: 'while-applying', sdpMid: '0' };
+    ws.deliver({ t: 'ice', candidate: first });
+    ws.deliver({ t: 'answer', sdp: 'host-answer' });
+    ws.deliver({ t: 'ice', candidate: second });
+    await flush();
+    expect(pc.addedCandidates).toEqual([]);
+    apply();
+    await flush();
+    expect(pc.addedCandidates).toEqual([first, second]);
+    provider.disconnect();
+  });
+
+  it.each([false, true])('isolates an obsolete answer (reject=%s) and pending ICE after reconnect', async (rejected) => {
+    const { ControllerCloudProvider } = await loadProvider();
+    const errors = vi.fn();
+    const provider = new ControllerCloudProvider(CONFIG, { onError: errors });
+    await provider.connect(HOST_DEVICE);
+    const old = FakePeerConnection.instances[0];
+    const oldWs = FakeWebSocket.instances[0];
+    let settle!: () => void;
+    old.setRemoteDescription = (description) => new Promise((done, fail) => {
+      settle = () => {
+        if (rejected) fail(new Error('obsolete answer'));
+        else { old.remoteDescription = description; done(); }
+      };
+    });
+    oldWs.deliver({ t: 'ice', candidate: { candidate: 'old', sdpMid: '0' } });
+    oldWs.deliver({ t: 'answer', sdp: 'old-answer' });
+    provider.disconnect();
+    await provider.connect(HOST_DEVICE);
+    const next = FakePeerConnection.instances.at(-1)!;
+    FakeWebSocket.instances.at(-1)!.deliver({ t: 'answer', sdp: 'new-answer' });
+    settle();
+    await flush();
+    expect(next.addedCandidates).toEqual([]);
+    expect(errors).not.toHaveBeenCalled();
+    expect(provider.getState()).toBe('connecting');
+    provider.disconnect();
+  });
+
+  it('rejects an unbounded early ICE stream and closes the peer', async () => {
+    const { ControllerCloudProvider } = await loadProvider();
+    const provider = new ControllerCloudProvider(CONFIG);
+    await provider.connect(HOST_DEVICE);
+    const pc = FakePeerConnection.instances[0];
+    for (let n = 0; n < 65; n++) {
+      FakeWebSocket.instances[0].deliver({ t: 'ice', candidate: { candidate: `early-${n}`, sdpMid: '0' } });
+    }
+    await flush();
+    expect(provider.getState()).toBe('error');
+    expect(pc.connectionState).toBe('closed');
+    provider.disconnect();
+  });
+
+  it('keeps draining valid buffered candidates after one is rejected', async () => {
+    const { ControllerCloudProvider } = await loadProvider();
+    const provider = new ControllerCloudProvider(CONFIG);
+    await provider.connect(HOST_DEVICE);
+    const pc = FakePeerConnection.instances[0];
+    const add = pc.addIceCandidate.bind(pc);
+    pc.addIceCandidate = async (candidate) => {
+      if (candidate.candidate === 'invalid') throw new Error('invalid candidate');
+      await add(candidate);
+    };
+    const ws = FakeWebSocket.instances[0];
+    ws.deliver({ t: 'ice', candidate: { candidate: 'invalid', sdpMid: '0' } });
+    ws.deliver({ t: 'ice', candidate: { candidate: 'valid', sdpMid: '0' } });
+    ws.deliver({ t: 'answer', sdp: 'answer' });
+    await flush();
+    expect(pc.addedCandidates.map((c) => c.candidate)).toEqual(['valid']);
+    expect(provider.getState()).toBe('connecting');
+    provider.disconnect();
+  });
+
+  it.each([
+    ['no-answer', '未收到主机 answer'],
+    ['pending-answer', 'answer 尚未完成应用'],
+    ['ice', 'ICE 候选未连通'],
+    ['datachannel', 'ICE 已接通，数据通道尚未打开'],
+    ['handshake', '加密握手未完成'],
+  ])('reports the actual timeout stage: %s', async (stage, expected) => {
+    vi.useFakeTimers();
+    const { ControllerCloudProvider } = await loadProvider();
+    const errors = vi.fn();
+    const provider = new ControllerCloudProvider(CONFIG, { onError: errors });
+    try {
+      await provider.connect(HOST_DEVICE);
+      const ws = FakeWebSocket.instances[0];
+      const pc = FakePeerConnection.instances[0];
+      ws.deliver({ t: 'peer-join', role: 'host' });
+      await vi.advanceTimersByTimeAsync(0);
+      if (stage === 'pending-answer') pc.setRemoteDescription = () => new Promise(() => {});
+      if (stage !== 'no-answer') ws.deliver({ t: 'answer', sdp: 'answer' });
+      if (stage === 'datachannel') pc.iceConnectionState = 'connected';
+      if (stage === 'handshake') pc.channel!.fireOpen();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(errors).toHaveBeenLastCalledWith(expect.stringContaining(expected), 'HOST_UNREACHABLE');
+      expect(errors).not.toHaveBeenCalledWith(expect.stringContaining('NAT'), expect.anything());
+    } finally {
+      provider.disconnect();
+      vi.useRealTimers();
+    }
   });
 
   it('收 host answer → setRemoteDescription(answer)；trickle ICE 双向转发', async () => {

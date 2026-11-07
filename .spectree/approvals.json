@@ -567,5 +567,17 @@
       "buildId": "BUILD-fa44799abe93",
       "specHash": "e369b5f0c5ccc4b76baa77ac97119754a54db05e320f03df1ca028fe8c72003e"
     }
+  },
+  {
+    "changeId": "CHG-100",
+    "specHash": "726189ec95601403bcc6b00b51ee915e776098e34669d8b3da8613b44d15ea43",
+    "approvedAt": "2026-11-07T07:18:36.038Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "用户要求继续追查 Remote 连接超时并修复，沿用 change 元数据例外",
+    "derivedFrom": {
+      "buildId": "BUILD-ffa3f320d825",
+      "specHash": "77d75a294c244c797500aa43f53a93a412191f27de41b82df4201960a0baf7d9"
+    }
   }
 ]

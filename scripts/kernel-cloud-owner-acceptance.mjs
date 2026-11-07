@@ -14,6 +14,9 @@ const {build}=createRequire(import.meta.resolve('vite'))('esbuild');
 
 const root=await mkdtemp(join(tmpdir(),'ridge-cloud-owner-'));
 let bundle='';let host;let sharedWorkspace;const peers=new Map();let cid=0;
+// The first controller must connect using host ICE delivered before its answer.
+// Drop the reverse candidates so peer-reflexive discovery cannot mask a lost queue.
+const earlyIce={candidates:[],sent:false,count:0,timer:undefined};
 const server=http.createServer((request,response)=>{
   response.setHeader('access-control-allow-origin','*');response.setHeader('access-control-allow-headers','authorization,content-type');
   if(request.method==='OPTIONS'){response.writeHead(204);response.end();return;}
@@ -38,8 +41,12 @@ relay.on('connection',(socket,request)=>{
   else {id='owned-'+(++cid);peers.set(id,socket);if(url.searchParams.get('token')==='owned-share')send(host,{t:'workspace-scope',cid:id,token:'owned-share'});send(socket,{t:'welcome',room:'owned',role:'controller',cid:id,peerPresent:Boolean(host)});send(host,{t:'peer-join',role:'controller',cid:id});}
   socket.on('message',bytes=>{
     let message;try{message=JSON.parse(bytes);}catch{return;}
-    if(role==='controller'){if(['offer','ice','e2ee-pubkey'].includes(message.t))send(host,{...message,cid:id});}
+    if(role==='controller'){if(id==='owned-1'&&message.t==='ice')return;if(['offer','ice','e2ee-pubkey'].includes(message.t))send(host,{...message,cid:id});}
     else if(message.t==='kick')peers.get(message.cid)?.close();
+    else if(message.cid==='owned-1'&&['answer','ice'].includes(message.t)){
+      if(message.t==='ice'){if(!earlyIce.sent&&message.candidate)earlyIce.candidates.push(message);return;}
+      earlyIce.timer=setTimeout(()=>{earlyIce.count=earlyIce.candidates.length;for(const candidate of earlyIce.candidates)send(peers.get(message.cid),candidate);earlyIce.sent=true;send(peers.get(message.cid),message);},300);
+    }
     else if(['answer','ice','e2ee-pubkey'].includes(message.t))send(peers.get(message.cid),message);
   });
   socket.on('close',()=>{if(role==='host'){if(host===socket)host=undefined;for(const peer of peers.values())send(peer,{t:'peer-leave',role:'host'});}else{peers.delete(id);send(host,{t:'peer-leave',role:'controller',cid:id});}});
@@ -96,6 +103,7 @@ try {
   browser=await chromium.launch({headless:true});
   const first=await browser.newPage();await first.goto(`http://127.0.0.1:${port}`);await first.waitForFunction(()=>window.fixture);
   await first.evaluate(async code=>{window.client=await window.fixture.connect(code);},code);
+  assert.ok(earlyIce.count>0,'real host candidates must precede the answer');
   const second=await browser.newPage();await second.goto(`http://127.0.0.1:${port}`);await second.waitForFunction(()=>window.fixture);
   await second.evaluate(async code=>{window.client=await window.fixture.connect(code);},code);
   const denied=await second.evaluate(()=>window.client.rpc('get_remote_info'));assert.ok(denied.error);
@@ -195,6 +203,7 @@ try {
   await until(async()=>host===undefined,'explicit Cloud offline left relay connection alive');
   console.log('PASS: Kernel owns both Cloud roles; real browser/Rust RTC, signed E2EE, TOTP/trust resumption, loopback projection, canonical stream, same child reply, credential-free topology and explicit offline.');
 } finally {
+  clearTimeout(earlyIce.timer);
   await browser?.close();
   if(endpoint){try{await request('/v1/shutdown',{});}catch{}}
   if(child.exitCode===null&&child.signalCode===null){await Promise.race([once(child,'exit'),delay(6000)]);if(child.exitCode===null&&child.signalCode===null){const exited=once(child,'exit');child.kill();await exited;}}

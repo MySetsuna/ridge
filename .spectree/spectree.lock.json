@@ -1,171 +1,47 @@
 {
   "version": 1,
-  "changeId": "CHG-092",
-  "specHash": "1ef1c326bf3486727eb31902b2b4c41262e92369461eee9b48fa77258414b1ca",
+  "changeId": "CHG-100",
+  "specHash": "726189ec95601403bcc6b00b51ee915e776098e34669d8b3da8613b44d15ea43",
   "units": [
     {
-      "id": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+      "id": "L4-CLOUD-ICE-NEGOTIATION-RELIABILITY",
       "level": "L4",
-      "nodeHash": "21d13cc3132b945d4384ac76c85f53d65cc0730d2db7e280993c8c4726c2ba69",
+      "nodeHash": "38cdb09f4935086901c8ff4e0a0b80ce44b06e9def293a280acd88ba8c4c32d1",
       "codeTargets": [
-        "src/lib/teammate/AgentCenterPanel.svelte",
-        "src/lib/teammate/TerminalAgentRow.svelte",
-        "src/lib/teammate/AgentMemberRow.svelte",
-        "src/lib/teammate/HostCommuneGroups.svelte",
-        "src/lib/teammate/communeMembership.ts",
-        "src/lib/teammate/teammateGroups.svelte.ts",
-        "src/remote/lib/GlobalCommuneRoster.svelte",
-        "src/remote/lib/CommuneWorkspaceRoster.svelte",
-        "packages/ridge-kernel/src/agent_discovery.rs",
-        "packages/ridge-kernel/src/commune.rs",
-        "packages/ridge-kernel/src/commune_groups.rs",
-        "packages/remote/src/shared/transport/wsRemote.ts",
-        "src/lib/teammate/teammateModel.ts",
-        "src/lib/teammate/CommuneGroupTasks.svelte",
-        "src/lib/teammate/communeGroupDispatch.ts",
-        "src/lib/i18n/messages/commune.ts",
-        "packages/ridge-kernel/src/server.rs",
-        "packages/ridge-kernel/src/commune_permissions.rs",
-        "src/lib/teammate/CommuneConnectionDialog.svelte",
-        "packages/ridge-kernel/src/domain.rs",
-        "packages/ridge-kernel/src/kernel_mcp.rs",
-        "packages/ridge-core/src/process_identity.rs"
+        "packages/remote/src/shared/cloud/controllerCloudProvider.ts"
       ],
       "testTargets": [
-        "packages/ridge-kernel/tests/commune_registration.rs",
-        "scripts/commune-global-ui-acceptance.mjs",
-        "src/lib/teammate/communeMembership.test.ts",
-        "src/lib/teammate/teammateGroups.test.ts",
-        "packages/ridge-kernel/tests/agent_catalog_runtime.rs",
-        "src/lib/teammate/communeGroupDispatch.test.ts",
-        "scripts/commune-permission-ui-acceptance.mjs",
-        "packages/ridge-kernel/src/commune_groups.rs",
-        "packages/ridge-core/src/process_identity.rs"
+        "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
+        "scripts/kernel-cloud-owner-acceptance.mjs"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "organization-socket-attestation",
+          "id": "controller-ice-ordering",
           "command": [
-            "cargo",
-            "test",
-            "--locked",
-            "-p",
-            "ridge-core",
-            "process_identity"
+            "pnpm",
+            "exec",
+            "vitest",
+            "run",
+            "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts"
           ],
-          "description": "精确进程与 TCP 归属校验，未可观察状态有界等待，错误 PID 和歧义归属始终拒绝"
+          "description": "按浏览器限制验证 answer 前和应用中 ICE、队列上限、重连隔离及准确超时阶段"
         },
         {
-          "id": "organization-runtime",
-          "command": [
-            "cargo",
-            "test",
-            "--locked",
-            "-p",
-            "ridge-kernel",
-            "--test",
-            "commune_registration"
-          ],
-          "description": "真实 Runtime 的候选入组、身份复用、并发、只读与旧任务隔离，fixture 不代替外部 Agent"
-        },
-        {
-          "id": "organization-storage",
-          "command": [
-            "cargo",
-            "test",
-            "--locked",
-            "-p",
-            "ridge-kernel",
-            "--lib",
-            "commune_groups"
-          ],
-          "description": "组文档 version 1/2/3、原子提交、归档、CAS 与迁移失败保护"
-        },
-        {
-          "id": "organization-kernel-build",
-          "command": [
-            "cargo",
-            "build",
-            "--locked",
-            "-p",
-            "ridge-kernel",
-            "--bin",
-            "ridge-kernel"
-          ],
-          "description": "以当前源构建后续 UI 使用的真实 Kernel"
-        },
-        {
-          "id": "organization-global-ui",
+          "id": "kernel-browser-rtc",
           "command": [
             "node",
-            "scripts/commune-global-ui-acceptance.mjs"
+            "scripts/kernel-cloud-owner-acceptance.mjs"
           ],
-          "description": "Native/Remote 统一成员与候选先入组后接入、同名来源、成员移动与能力反馈"
-        },
-        {
-          "id": "organization-catalog",
-          "command": [
-            "cargo",
-            "test",
-            "--locked",
-            "-p",
-            "ridge-kernel",
-            "--test",
-            "agent_catalog_runtime"
-          ],
-          "description": "Native/Remote 可信发现、只读投影、来源脱敏与工作区关闭后引用失效"
-        },
-        {
-          "id": "organization-membership-ui",
-          "command": [
-            "node",
-            "scripts/commune-permission-ui-acceptance.mjs",
-            "--membership"
-          ],
-          "description": "真实 Runtime 的已有会话连接文件向导、鉴权与进程校验拒绝、修正重试和断开保留历史"
-        },
-        {
-          "id": "organization-dispatch-regression",
-          "command": [
-            "node",
-            "scripts/commune-permission-ui-acceptance.mjs"
-          ],
-          "description": "审批、协议历史、旧工作区组兼容及 CHG-098/099 的失联回执确认保护"
+          "description": "实际 Chromium 与 Rust Kernel，经候选先于 answer 的中继调度完成 RTC、加密、鉴权及原终端操作；不冒充公网实测"
         }
       ]
     }
   ],
   "allowedPaths": [
-    "packages/remote/src/shared/transport/wsRemote.ts",
-    "packages/ridge-core/src/process_identity.rs",
-    "packages/ridge-kernel/src/agent_discovery.rs",
-    "packages/ridge-kernel/src/commune.rs",
-    "packages/ridge-kernel/src/commune_groups.rs",
-    "packages/ridge-kernel/src/commune_permissions.rs",
-    "packages/ridge-kernel/src/domain.rs",
-    "packages/ridge-kernel/src/kernel_mcp.rs",
-    "packages/ridge-kernel/src/server.rs",
-    "packages/ridge-kernel/tests/agent_catalog_runtime.rs",
-    "packages/ridge-kernel/tests/commune_registration.rs",
-    "scripts/commune-global-ui-acceptance.mjs",
-    "scripts/commune-permission-ui-acceptance.mjs",
-    "src/lib/i18n/messages/commune.ts",
-    "src/lib/teammate/AgentCenterPanel.svelte",
-    "src/lib/teammate/AgentMemberRow.svelte",
-    "src/lib/teammate/CommuneConnectionDialog.svelte",
-    "src/lib/teammate/CommuneGroupTasks.svelte",
-    "src/lib/teammate/HostCommuneGroups.svelte",
-    "src/lib/teammate/TerminalAgentRow.svelte",
-    "src/lib/teammate/communeGroupDispatch.test.ts",
-    "src/lib/teammate/communeGroupDispatch.ts",
-    "src/lib/teammate/communeMembership.test.ts",
-    "src/lib/teammate/communeMembership.ts",
-    "src/lib/teammate/teammateGroups.svelte.ts",
-    "src/lib/teammate/teammateGroups.test.ts",
-    "src/lib/teammate/teammateModel.ts",
-    "src/remote/lib/CommuneWorkspaceRoster.svelte",
-    "src/remote/lib/GlobalCommuneRoster.svelte"
+    "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
+    "packages/remote/src/shared/cloud/controllerCloudProvider.ts",
+    "scripts/kernel-cloud-owner-acceptance.mjs"
   ],
   "testCommand": [
     "npm",
@@ -293,6 +169,7 @@
     "changes/CHG-097.md": "041f346f08d53d9c1daed15aa02c96a28ca7ae2d7f29afcab967440cdf4ed6c5",
     "changes/CHG-098.md": "a8a00de0ff07062fdff5f9d0b39dc922d0b7e64ad09d353932b0ebe311497c01",
     "changes/CHG-099.md": "c152356827c7bfab1216f931a588597ae163d22bd7cfd81dea1fbe5a3e2b00f8",
+    "changes/CHG-100.md": "7cb9f7fd3ecc2f65c632772a985821e4aae08da2ebff31578a65b16c6ffeafa0",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -345,8 +222,8 @@
     "packages/remote/src/shared/cloud/cloudHostPaneSource.test.ts": "b51991703158b2fb30f7bc6d2331bb3194762ea4ae6a642dc601d07eb0fd4005",
     "packages/remote/src/shared/cloud/cloudHostPaneSource.ts": "09ecaea4d36bf30ebb405af9da99c466ae27340fac17e8914e156b6ca0ff6837",
     "packages/remote/src/shared/cloud/cloudTransportLimits.ts": "70e5198aa56103a84208c8679e42a1dc1203ca122f6cccfa71644e66b21ce2de",
-    "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts": "5f2d40e24608d5f32add61034f25582d660be99a3c2b198130a9505c08d18784",
-    "packages/remote/src/shared/cloud/controllerCloudProvider.ts": "f6e3163bd0ec6a6df9b7ef74a53a0d230fba3329f8857e1503321ac27aca90c3",
+    "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts": "e6438ce9314fc0c6b5c6eb2d276c3b4ecf105a9a5c93a0d365376725aeb2a965",
+    "packages/remote/src/shared/cloud/controllerCloudProvider.ts": "efbb235605e68130d5199d6778df1947af29a41286e5a30608240c49a054dba3",
     "packages/remote/src/shared/cloud/controllerIdentity.test.ts": "ed7dedee46ed14ae7f61a6737102588430da181c3586c0edf7ff42398777e6e4",
     "packages/remote/src/shared/cloud/controllerIdentity.ts": "ffcbb970bbae87b5eeef15a89e43c38a7e703490040561972287de9e8b52867b",
     "packages/remote/src/shared/cloud/controllerInstanceId.test.ts": "3f649a43d49ebe5ef62c3b93fa815f2c30c530234f130fdaddcef9946a5a5ed3",
@@ -1011,7 +888,7 @@
     "scripts/ensure-teammate-shim.mjs": "38152e30d4c917111007131d546feeab755abf9d883ac32f5f52af508fe9df05",
     "scripts/gen-remote-icons.mjs": "4b7e412380543987bc1426544e7a43a922ae0b21d80471392498f08276cea525",
     "scripts/generate-review-pack.mjs": "123a75b869901996910573d866dd58539129715d593eec384811514c71a37b18",
-    "scripts/kernel-cloud-owner-acceptance.mjs": "93ef50801e33a6cde7894ac53fff231554eb7246dd75fdecda2a2458a3c0105b",
+    "scripts/kernel-cloud-owner-acceptance.mjs": "dcafdf7682408587f879faf2184e378faf97d97b28799e2a40ce2ffd35333531",
     "scripts/kernel-host-smoke.ps1": "16594d4b4b5354ba2da8fad434a73a218a5298fd25a10aec3ef793fce82250b6",
     "scripts/kernel-lan-owner-acceptance.mjs": "e661e9cd4c86c12678ed709f999c08f76892c311ce8c99b4099a35a6b3ccfb7f",
     "scripts/lib/cdpModuleUrl.mjs": "5e12a93497f627425b544666f4d6343b7d9b019a78fa27dc25869c5bfccc5505",
@@ -1236,6 +1113,7 @@
     "specs/l3-runtime-workspace-continuity.md": "350703f12b771ad46d34aae4fa5b46d2fdadb9d4dda13290c527e144a70c7e6d",
     "specs/l3-spec-mapping-governance.md": "84c8e5ffee176e5733a352dbf85a6cb3bd2e4b454e59c7ffe4b6af308cbc82a9",
     "specs/l3-terminal-visual-input-repair.md": "b68a179f6722237d8de2c9cd96cf170a1a1e786d5974dd7ac93ed76a22e7f8df",
+    "specs/l4-cloud-ice-negotiation-reliability.md": "9ffb24dc04927a338c4f79f37e79f04fd2b1847c03b7259f3a8dd52e7f631951",
     "specs/l4-commune-connection-wizard.md": "55e0d08a4f29a319f1eb7154228661d1e9585f54ce75ebda007858fad433b505",
     "specs/l4-commune-group-dispatch-intent.md": "29265c991a0a8cd463e077c07e8811c152d439cb13c91c09bd5f733d37689810",
     "specs/l4-commune-group-online-eligibility.md": "b2c1504eee42922418f323f556e2ac2a0c7755640178ecc267b23af3338d7b47",
@@ -2708,6 +2586,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-05b4912a3c09",
-  "manifestHash": "05b4912a3c09688aa9b58200ebd8b5152e19ff9c98c5da581e8f90fe81471575"
+  "buildId": "BUILD-4272a3e8127c",
+  "manifestHash": "4272a3e8127cb54fa6b060d3a243e7682af2e9bd86d1fe3b95a69e99b198909f"
 }
