@@ -1,8 +1,8 @@
 /**
  * teammateGroups.test.ts — 编组 store 纯逻辑单测（P3）。
  *
- * 只测**纯函数**（建组/改名/解散/移除成员/持久化往返/失联对齐/组任务历史）；runes store
- * 类经惰性单例不在此触发，故可在 node 环境（vitest 无 svelte 插件）安全运行。
+ * 覆盖纯模型与 Runtime bridge 的读写时序。store 测试以恒等 $state 替身运行于 node，
+ * 真实 Svelte 响应和生产组件交互由 commune-global-ui-acceptance.mjs 验证。
  */
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
@@ -335,6 +335,210 @@ describe('persistedEquals（多 tab 卡死的第二道防线）', () => {
 
 describe('TeammateGroupStore runtime bridge', () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+    return { promise, resolve, reject };
+  }
+
+  it('blocks writes before the first valid projection and allows explicit retry after a failed read', async () => {
+    vi.stubGlobal('$state', <T>(value: T) => value);
+    const initial = deferred<{groups: never[]; groupsRevision: number}>();
+    invokeMock.mockReset().mockReturnValueOnce(initial.promise);
+    const store = teammateGroupStore();
+    store.setGlobal({test: 'initial-retry'});
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1));
+    expect(store.refreshing).toBe(true);
+    expect(store.busy).toBe(true);
+    await expect(store.create('Too early', GROUP_COLORS[0], [])).resolves.toBe(false);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    initial.reject(new Error('read unavailable'));
+    await vi.waitFor(() => expect(store.refreshing).toBe(false));
+    expect(store.ready).toBe(false);
+    expect(store.busy).toBe(true);
+    expect(store.error).toContain('read unavailable');
+    invokeMock.mockResolvedValue({groups: [], groupsRevision: 4});
+    await store.refresh();
+    expect(store.ready).toBe(true);
+    expect(store.busy).toBe(false);
+    expect(store.error).toBe('');
+    expect(store.revision).toBe(4);
+  });
+
+  it.each(['success', 'failure'])('allows a CAS write during background reads and ignores stale read %s', async outcome => {
+    vi.stubGlobal('$state', <T>(value: T) => value);
+    const group = buildGroup('Original', GROUP_COLORS[0], []);
+    const snapshot = {groups: [group], groupsRevision: 7};
+    invokeMock.mockReset().mockResolvedValue(snapshot);
+    const store = teammateGroupStore();
+    store.setGlobal({test: `background-${outcome}`});
+    await vi.waitFor(() => expect(store.ready).toBe(true));
+    const stale = deferred<typeof snapshot>();
+    invokeMock.mockReturnValueOnce(stale.promise);
+    const reading = store.refresh();
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
+    expect(store.refreshing).toBe(true);
+    expect(store.busy).toBe(false);
+    invokeMock.mockResolvedValueOnce({groups: [{...group, name: 'Saved'}], groupsRevision: 8});
+    await expect(store.rename(group.id, 'Saved')).resolves.toBe(true);
+    expect(invokeMock).toHaveBeenLastCalledWith('set_teammate_groups', expect.objectContaining({expectedRevision: 7}));
+    if (outcome === 'success') stale.resolve(snapshot);
+    else stale.reject(new Error('stale read error'));
+    await reading;
+    expect(store.groups[0].name).toBe('Saved');
+    expect(store.revision).toBe(8);
+    expect(store.error).toBe('');
+    expect(store.refreshing).toBe(false);
+    expect(store.busy).toBe(false);
+  });
+
+  it('serializes writes and coalesces refreshes while preserving write failure after a stale read', async () => {
+    vi.stubGlobal('$state', <T>(value: T) => value);
+    const group = buildGroup('Original', GROUP_COLORS[0], []);
+    const snapshot = {groups: [group], groupsRevision: 2};
+    invokeMock.mockReset().mockResolvedValue(snapshot);
+    const store = teammateGroupStore();
+    store.setGlobal({test: 'write-conflict-and-queue'});
+    await vi.waitFor(() => expect(store.ready).toBe(true));
+    const stale = deferred<typeof snapshot>();
+    invokeMock.mockReturnValueOnce(stale.promise);
+    const reading = store.refresh();
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
+    const writing = deferred<typeof snapshot>();
+    invokeMock.mockReturnValueOnce(writing.promise);
+    const saving = store.rename(group.id, 'Rejected');
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(3));
+    expect(store.saving).toBe(true);
+    await expect(store.dissolve(group.id)).resolves.toBe(false);
+    await store.refresh();
+    await store.refresh();
+    expect(invokeMock.mock.calls.filter(call => call[0] === 'set_teammate_groups')).toHaveLength(1);
+    writing.reject(new Error('revision conflict'));
+    await expect(saving).resolves.toBe(false);
+    await vi.waitFor(() => expect(store.refreshing).toBe(false));
+    stale.reject(new Error('old transport failure'));
+    await reading;
+    expect(store.groups).toEqual([group]);
+    expect(store.busy).toBe(false);
+    expect(store.error).not.toContain('old transport failure');
+    expect(invokeMock.mock.calls.filter(call => call[0] === 'get_teammate_topology')).toHaveLength(4);
+  });
+
+  it('keeps the authoritative write error when an older background read fails later', async () => {
+    vi.stubGlobal('$state', <T>(value: T) => value);
+    const group = buildGroup('Confirmed', GROUP_COLORS[0], []);
+    const snapshot = {groups: [group], groupsRevision: 6};
+    invokeMock.mockReset().mockResolvedValue(snapshot);
+    const store = teammateGroupStore();
+    store.setGlobal({test: 'stale-error'});
+    await vi.waitFor(() => expect(store.ready).toBe(true));
+    const stale = deferred<typeof snapshot>();
+    invokeMock.mockReturnValueOnce(stale.promise);
+    const reading = store.refresh();
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
+    invokeMock.mockRejectedValueOnce(new Error('authoritative revision conflict'));
+    await expect(store.rename(group.id, 'Rejected')).resolves.toBe(false);
+    stale.reject(new Error('stale read failure'));
+    await reading;
+    expect(store.error).toContain('authoritative revision conflict');
+    expect(store.error).not.toContain('stale read failure');
+    expect(store.groups).toEqual([group]);
+    expect(store.busy).toBe(false);
+  });
+
+  it('retains confirmed data after refresh failure and merges overlapping refresh requests', async () => {
+    vi.stubGlobal('$state', <T>(value: T) => value);
+    const group = buildGroup('Confirmed', GROUP_COLORS[0], []);
+    const snapshot = {groups: [group], groupsRevision: 3};
+    invokeMock.mockReset().mockResolvedValue(snapshot);
+    const store = teammateGroupStore();
+    store.setGlobal({test: 'refresh-retry'});
+    await vi.waitFor(() => expect(store.ready).toBe(true));
+    invokeMock.mockRejectedValueOnce(new Error('offline'));
+    await store.refresh();
+    expect(store.groups).toEqual([group]);
+    expect(store.busy).toBe(false);
+    expect(store.error).toContain('offline');
+    const reading = deferred<typeof snapshot>();
+    invokeMock.mockReturnValueOnce(reading.promise);
+    const refresh = store.refresh();
+    await store.refresh();
+    await store.refresh();
+    reading.resolve(snapshot);
+    await refresh;
+    await vi.waitFor(() => expect(store.refreshing).toBe(false));
+    expect(invokeMock.mock.calls.filter(call => call[0] === 'get_teammate_topology')).toHaveLength(4);
+    expect(store.error).toBe('');
+  });
+
+  it.each([['read', false], ['read', true], ['write', false], ['write', true]] as const)('fences an old %s response after a host identity switch (failure=%s)', async (operation, failed) => {
+    vi.stubGlobal('$state', <T>(value: T) => value);
+    const group = buildGroup('Old host', GROUP_COLORS[0], []);
+    const snapshot = {groups: [group], groupsRevision: 5};
+    invokeMock.mockReset().mockResolvedValue(snapshot);
+    const store = teammateGroupStore();
+    store.setGlobal({test: `old-${operation}`});
+    await vi.waitFor(() => expect(store.ready).toBe(true));
+    const old = deferred<typeof snapshot>();
+    invokeMock.mockReturnValueOnce(old.promise);
+    const pending = operation === 'read' ? store.refresh() : store.rename(group.id, 'Late');
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
+    const next = deferred<typeof snapshot>();
+    invokeMock.mockReturnValueOnce(next.promise);
+    store.setGlobal({test: `new-${operation}`});
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(3));
+    if (failed) old.reject(new Error('old host failure'));
+    else old.resolve(snapshot);
+    const completed = await pending;
+    if (operation === 'write') expect(completed).toBe(false);
+    expect(store.ready).toBe(false);
+    expect(store.busy).toBe(true);
+    expect(store.refreshing).toBe(true);
+    expect(store.groups).toEqual([]);
+    expect(store.error).toBe('');
+    next.resolve({groups: [], groupsRevision: 1});
+    await vi.waitFor(() => expect(store.ready).toBe(true));
+    expect(store.revision).toBe(1);
+    expect(store.busy).toBe(false);
+  });
+
+  it('keeps the first legacy migration exclusive until its authoritative write completes', async () => {
+    vi.stubGlobal('$state', <T>(value: T) => value);
+    vi.stubGlobal('localStorage', {getItem: () => null} as unknown as Storage);
+    const migration = deferred<{groups: never[]; groupsRevision: number}>();
+    invokeMock.mockReset().mockResolvedValueOnce({groups: [], groupsRevision: 0}).mockReturnValueOnce(migration.promise);
+    const store = teammateGroupStore('legacy-exclusive');
+    store.setWorkspace('legacy-exclusive', null);
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith('set_teammate_groups', {workspaceId: 'legacy-exclusive', expectedRevision: 0, legacyGroups: []}));
+    expect(store.saving).toBe(true);
+    await expect(store.create('Racing', GROUP_COLORS[0], [])).resolves.toBe(false);
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    migration.resolve({groups: [], groupsRevision: 1});
+    await vi.waitFor(() => expect(store.ready).toBe(true));
+    expect(store.busy).toBe(false);
+  });
+
+  it('retries a failed first legacy migration before enabling workspace writes', async () => {
+    vi.stubGlobal('$state', <T>(value: T) => value);
+    const legacyGroups = [{id: 'old', name: 'Archived source', memberAgentIds: ['original']}];
+    vi.stubGlobal('localStorage', {getItem: () => JSON.stringify({groups: legacyGroups})} as unknown as Storage);
+    invokeMock.mockReset().mockImplementation(async (method: string) => {
+      if (method === 'set_teammate_groups') throw new Error('archive write failed');
+      return {groups: [], groupsRevision: 0};
+    });
+    const store = teammateGroupStore('legacy-retry');
+    store.setWorkspace('legacy-retry', null);
+    await vi.waitFor(() => expect(store.error).toContain('archive write failed'));
+    expect(store.busy).toBe(true);
+    invokeMock.mockClear().mockImplementation(async (method: string) => ({groups: [], groupsRevision: method === 'set_teammate_groups' ? 1 : 0}));
+    await store.refresh();
+    expect(invokeMock).toHaveBeenCalledWith('set_teammate_groups', {workspaceId: 'legacy-retry', expectedRevision: 0, legacyGroups});
+    expect(store.ready).toBe(true);
+    expect(store.busy).toBe(false);
+    expect(store.notice).toContain('旧编组已归档');
+  });
 
   it('submits candidate enrollment with the group CAS and retains the organization projection', async () => {
     vi.stubGlobal('$state', <T>(value:T) => value);

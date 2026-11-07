@@ -56,6 +56,7 @@
   const selectedIds = $derived(selected.filter(id => eligible.some(member => member.id === id)));
   let confirmingGroup = $state('');
   let confirmingMember = $state('');
+  let groupNames = $state<Record<string, string>>({});
   $effect(() => store.setGlobal(identity));
   onMount(() => {
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -73,9 +74,14 @@
   <summary>{$t('commune.groups')} · {store.groups.length}</summary>
   <p class="guide">{$t('commune.groupGuide')}</p>
   <div class="toolbar">
-    <button disabled={store.busy} onclick={() => { building=!building; selected=[]; selectedCandidates=[]; }} data-testid="commune-create-group">{$t('commune.createGroup')}</button>
-    <button disabled={store.busy} onclick={() => store.refresh()}>{$t('commune.refresh')}</button>
+    <button onclick={() => { building=!building; selected=[]; selectedCandidates=[]; }} data-testid="commune-create-group">{$t('commune.createGroup')}</button>
+    <button disabled={store.saving || store.refreshing} onclick={() => store.refresh()}>{$t('commune.refresh')}</button>
   </div>
+  <p class="sync-state" role="status" aria-live="polite" data-testid="commune-group-sync-state">
+    {#if store.saving}{$t('commune.groupSaving')}
+    {:else if store.refreshing}{$t(store.ready ? 'commune.groupRefreshing' : 'commune.groupLoading')}
+    {:else if !store.ready}{$t('commune.groupLoadRequired')}{/if}
+  </p>
   {#if store.error}<p role="alert">{store.error}</p>{/if}
   {#if building}
     <div class="builder" role="group" aria-label={$t('commune.groupSelectMembers')}>
@@ -109,14 +115,22 @@
       <p class="guide">{$t('commune.groupEmptyGuide')}</p>
       <div class="toolbar">
         <button class="primary" disabled={store.busy} onclick={create}>{$t('commune.groupCreate')}</button>
-        <button disabled={store.busy} onclick={() => building=false}>{$t('commune.groupCancel')}</button>
+        <button onclick={() => building=false}>{$t('commune.groupCancel')}</button>
       </div>
     </div>
   {/if}
   {#each store.groups as group (group.id)}
     <section class="group" style:border-left-color={group.color} data-testid="host-commune-group">
       <div class="toolbar">
-        <input value={group.name} aria-label={$t('commune.renameGroup')} disabled={store.busy} onblur={event => { const value=event.currentTarget.value.trim(); if(value && value!==group.name) void store.rename(group.id,value); }} />
+        <input value={groupNames[group.id] ?? group.name} aria-label={$t('commune.renameGroup')} disabled={store.busy}
+          oninput={event => groupNames[group.id]=event.currentTarget.value}
+          onblur={async event => {
+            const draft=event.currentTarget.value;
+            const value=draft.trim();
+            if (!value || value===group.name || await store.rename(group.id,value)) {
+              if(groupNames[group.id]===draft) delete groupNames[group.id];
+            }
+          }} />
         <input type="color" value={group.color} aria-label={$t('commune.changeColor')} disabled={store.busy} onchange={event => store.recolor(group.id,event.currentTarget.value)} />
         <button onclick={() => confirmingGroup=group.id}>{$t('commune.dissolve')}</button>
       </div>
@@ -126,7 +140,7 @@
           <button disabled={store.busy} onclick={async () => {
             if (await store.dissolve(group.id)) confirmingGroup='';
           }}>{$t('commune.confirm')}</button>
-          <button disabled={store.busy} onclick={() => confirmingGroup=''}>{$t('commune.groupCancel')}</button>
+          <button onclick={() => confirmingGroup=''}>{$t('commune.groupCancel')}</button>
         </div>
       {/if}
       {#each group.memberAgentIds as id, index (id)}
@@ -183,7 +197,7 @@
         {#if confirmingMember === member.id}<div class="confirmation">
           <p>{$t('commune.archiveMemberHint')}</p>
           <button disabled={store.busy} onclick={async () => { if(await store.archiveMember(member.id)) confirmingMember=''; }}>{$t('commune.confirm')}</button>
-          <button disabled={store.busy} onclick={() => confirmingMember=''}>{$t('commune.groupCancel')}</button>
+          <button onclick={() => confirmingMember=''}>{$t('commune.groupCancel')}</button>
         </div>{/if}
       {/each}
     </details>
@@ -206,6 +220,7 @@
   small{display:block;font-size:11px;line-height:1.5;color:var(--rg-fg-muted)}
   strong{font-weight:500}
   .guide{margin:8px 0;color:var(--rg-fg-muted);line-height:1.6}
+  .sync-state{min-height:18px;margin:0 0 8px;color:var(--rg-fg-muted);font-size:11px;line-height:1.6}
   .confirmation{padding:10px;border:1px solid var(--rg-border);border-radius:6px;line-height:1.6}
   .confirmation button{margin:6px 6px 0 0}
   .primary{border-color:var(--rg-accent);color:var(--rg-accent)}
@@ -213,4 +228,5 @@
   .identity{margin:0 0 8px;color:var(--rg-fg-muted)}
   .identity code{display:block;overflow-wrap:anywhere;margin-top:6px}
   .group{margin-top:12px;padding:10px;border:1px solid var(--rg-border);border-left:3px solid;border-radius:6px}.add{margin:2px 5px 8px 0}p[role=alert]{overflow-wrap:anywhere;color:var(--rg-fg)}
+  @media(max-width:600px){button,select,input:not([type=checkbox]){min-height:44px}button,select{min-width:44px}input[type=color]{width:44px}button{white-space:nowrap}summary{min-height:44px;box-sizing:border-box;padding-block:12px}.toolbar.member>span{flex-basis:100%}}
 </style>

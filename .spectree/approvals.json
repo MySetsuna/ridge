@@ -579,5 +579,17 @@
       "buildId": "BUILD-ffa3f320d825",
       "specHash": "77d75a294c244c797500aa43f53a93a412191f27de41b82df4201960a0baf7d9"
     }
+  },
+  {
+    "changeId": "CHG-101",
+    "specHash": "87aadc855524b1307de81c84672b7fecb6b6522023483b28710137654d12887c",
+    "approvedAt": "2026-11-07T08:27:01.325Z",
+    "source": "completion_derived",
+    "actor": "codex",
+    "confirmationRef": "用户明确允许仅补写 CHG-101 的 affects 与变更说明，再重新审批、加锁并继续实施",
+    "derivedFrom": {
+      "buildId": "BUILD-197fd91f932f",
+      "specHash": "d8bf2e90b764b58e634782288b173013c54291377e949206bee04e49496815e0"
+    }
   }
 ]

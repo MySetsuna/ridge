@@ -1,47 +1,51 @@
 {
   "version": 1,
-  "changeId": "CHG-100",
-  "specHash": "726189ec95601403bcc6b00b51ee915e776098e34669d8b3da8613b44d15ea43",
+  "changeId": "CHG-101",
+  "specHash": "87aadc855524b1307de81c84672b7fecb6b6522023483b28710137654d12887c",
   "units": [
     {
-      "id": "L4-CLOUD-ICE-NEGOTIATION-RELIABILITY",
+      "id": "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
       "level": "L4",
-      "nodeHash": "38cdb09f4935086901c8ff4e0a0b80ce44b06e9def293a280acd88ba8c4c32d1",
+      "nodeHash": "4da69abbbfd305d6002c8d97477d690cbe02e2fb0cbf17b38c9d00ac13cd0b76",
       "codeTargets": [
-        "packages/remote/src/shared/cloud/controllerCloudProvider.ts"
+        "src/lib/teammate/teammateGroups.svelte.ts",
+        "src/lib/teammate/HostCommuneGroups.svelte",
+        "src/lib/i18n/messages/commune.ts"
       ],
       "testTargets": [
-        "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
-        "scripts/kernel-cloud-owner-acceptance.mjs"
+        "src/lib/teammate/teammateGroups.test.ts",
+        "scripts/commune-global-ui-acceptance.mjs"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "controller-ice-ordering",
+          "id": "group-refresh-races",
           "command": [
             "pnpm",
             "exec",
             "vitest",
             "run",
-            "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts"
+            "src/lib/teammate/teammateGroups.test.ts"
           ],
-          "description": "按浏览器限制验证 answer 前和应用中 ICE、队列上限、重连隔离及准确超时阶段"
+          "description": "覆盖初次加载、后台读取中写入、过期读取与错误返回、写入并发拒绝、作用域切换、失败后显式重试及 legacy 迁移互斥"
         },
         {
-          "id": "kernel-browser-rtc",
+          "id": "group-refresh-ui",
           "command": [
             "node",
-            "scripts/kernel-cloud-owner-acceptance.mjs"
+            "scripts/commune-global-ui-acceptance.mjs"
           ],
-          "description": "实际 Chromium 与 Rust Kernel，经候选先于 answer 的中继调度完成 RTC、加密、鉴权及原终端操作；不冒充公网实测"
+          "description": "生产 Commune 组件在后台读取挂起时仍可编辑与提交，读取旧回包不能回退新投影，窄屏状态可读且既有编组、派发、审批和接入回归成立"
         }
       ]
     }
   ],
   "allowedPaths": [
-    "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
-    "packages/remote/src/shared/cloud/controllerCloudProvider.ts",
-    "scripts/kernel-cloud-owner-acceptance.mjs"
+    "scripts/commune-global-ui-acceptance.mjs",
+    "src/lib/i18n/messages/commune.ts",
+    "src/lib/teammate/HostCommuneGroups.svelte",
+    "src/lib/teammate/teammateGroups.svelte.ts",
+    "src/lib/teammate/teammateGroups.test.ts"
   ],
   "testCommand": [
     "npm",
@@ -170,6 +174,8 @@
     "changes/CHG-098.md": "a8a00de0ff07062fdff5f9d0b39dc922d0b7e64ad09d353932b0ebe311497c01",
     "changes/CHG-099.md": "c152356827c7bfab1216f931a588597ae163d22bd7cfd81dea1fbe5a3e2b00f8",
     "changes/CHG-100.md": "7cb9f7fd3ecc2f65c632772a985821e4aae08da2ebff31578a65b16c6ffeafa0",
+    "changes/CHG-101.md": "de0a35e4056440063d23ac286b10953608fa49d1015d9c3d5f69d3950a50eb71",
+    "changes/CHG-102.md": "d810412244195025fb403973f03f6b9e37701b087ccb2b9978153d594e0672ed",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -873,7 +879,7 @@
     "scripts/cloud-protocol-ssot.test.ts": "fdeee989232a03f5d2f7c31b51c13b10d0f6472efd4d00ebddd0e80132fbcac9",
     "scripts/cloud-terminal-system-acceptance.mjs": "f0a03609fe2eddd911450fcaa6dc05ad5622ffc1729a4fbd6ee6eb3a79a50677",
     "scripts/commune-a2a-sdk-acceptance.py": "736542a6c0f790db9fc6e20630620ebefbae39c6a2a1d54e2edb5238ce143e91",
-    "scripts/commune-global-ui-acceptance.mjs": "6c07965666877a91ca77e57d415923c9b9ea36cd6ec505719bd9b81ae6092ea3",
+    "scripts/commune-global-ui-acceptance.mjs": "27f1bb87f9d02ef51816b83bbbac86a63f60effba7270ff87553c25a24dcb3a8",
     "scripts/commune-live-history-acceptance.mjs": "7de73d4c29c8dd6c8402ffea6692c20dc6d3d2485fc1c78233df3b688ccffaa0",
     "scripts/commune-permission-ui-acceptance.mjs": "c9bb28592f7f0ae985e51c121b3d8cc009078305d6659b8b82a18ad5bb96984d",
     "scripts/commune-permission-ui-client.mjs": "06a3047d9fd1774332953d2a8141ece0dd11a50fc1597d90583ca788e8b58215",
@@ -1117,6 +1123,7 @@
     "specs/l4-commune-connection-wizard.md": "55e0d08a4f29a319f1eb7154228661d1e9585f54ce75ebda007858fad433b505",
     "specs/l4-commune-group-dispatch-intent.md": "29265c991a0a8cd463e077c07e8811c152d439cb13c91c09bd5f733d37689810",
     "specs/l4-commune-group-online-eligibility.md": "b2c1504eee42922418f323f556e2ac2a0c7755640178ecc267b23af3338d7b47",
+    "specs/l4-commune-group-responsive-state.md": "23828a3c894ecc4d0cc39ba78d310d180025ed9bc719524b156278d42e446856",
     "specs/l4-commune-group-usability.md": "b7f5bafb575bed7fe2306132822d5e5f2bbcb52557fc2143b10478544ecd116b",
     "specs/l4-commune-organization-members.md": "ce0dcd973142bcd24a8d3305126a4df1ecbab4b37842ab07419c456995c53c2b",
     "specs/l4-commune-remote-delivery.md": "43ae0e9067cebb2a70ba1f46fc92104e0d625ae80dbce045e40239cb56c08230",
@@ -2197,7 +2204,7 @@
     "src/lib/hosts/remotePaneBindings.ts": "2e4c808cd3b4b6d79285aec6d21b6e3a4cc2acbfe0485509b416b26dc59444b4",
     "src/lib/i18n/index.ts": "a8af59042b7f1c57e3bda6ebbe788b9397bb77dda16d8b591c582e09f0e005f4",
     "src/lib/i18n/locale.ts": "839d90ddf2abb58baf6db2430d6490db5db913f316023af4cad69c02d8459a65",
-    "src/lib/i18n/messages/commune.ts": "6c47312f6fe16c95450e1f97dc03df456b6b8ad78c301a1191d32a764362a911",
+    "src/lib/i18n/messages/commune.ts": "acaf9f149861d5e3c2356911b16986ad12699745ecf53ef4015600a969d0060f",
     "src/lib/i18n/messages/editor.ts": "aca76ae96415c11a982026d4f71adecc5c9b2e1a8b7874b08f62f3519be774f7",
     "src/lib/i18n/messages/explorer.ts": "abfbbcb952b109d938c953bf21bd0d8b4ac137d6fede8d63bbd218d1ddcfc73a",
     "src/lib/i18n/messages/index.ts": "df575b052745e4ccb25f88dd275c196f593017590ff0836dcf182d10befae437",
@@ -2317,14 +2324,14 @@
     "src/lib/teammate/hitlAuditFilter.ts": "e9941010cd85f0196a77a30216e8e3fd10d24582e6756016e365bc0380209aa6",
     "src/lib/teammate/hitlAuditPanel.test.ts": "e063045f1337f3d02600e9659ab2770224c68f200eb2f2d8b9e620e704634e4e",
     "src/lib/teammate/hitlAuditPanel.ts": "7195e22dff87d4856cbcabf577ee71eedd4ba2f66b69a015d8c1d4fd601ee4a1",
-    "src/lib/teammate/HostCommuneGroups.svelte": "d3c53b2e9579078a3eca20843b5fef20b6bcc143e8c215ec7c197a000d1b3e7a",
+    "src/lib/teammate/HostCommuneGroups.svelte": "90124d2dd8bc69bb1e58c863b11afb4f77d851c568b31eff4b4e65f7f088bdfe",
     "src/lib/teammate/locateTerminal.ts": "610ab7464990b6caf847a4ca52437720dfa459e9b1b745fabb672fb808cd8f1b",
     "src/lib/teammate/memberTasks.test.ts": "483e8d23b40fc9017a9e45668c972f5b1662793fa5391b77fa9ef205fd35ea2e",
     "src/lib/teammate/memberTasks.ts": "387d02aee3f991af36fc5c6565d71148c7642822521bf00794d4ba28fd6f5386",
     "src/lib/teammate/orchControlPlane.test.ts": "db6900fcd0590d4f936f5801dd1f4900460d5ddb3526a7e3a525e50ff5eff0d0",
     "src/lib/teammate/orchControlPlane.ts": "6880569909fed3fde99b8f84784b60e8bf9a3a8079e81d179e096e654d645691",
-    "src/lib/teammate/teammateGroups.svelte.ts": "4b6a089f06ef41a02ae0e6aa02159a9e25e34ace5c29acb53cc005a374272ace",
-    "src/lib/teammate/teammateGroups.test.ts": "be2c46eba5822170087a366a2f40316dd02d952a13d7da69a4873f8a33e34c1c",
+    "src/lib/teammate/teammateGroups.svelte.ts": "f0a84583f14b91ac7fa3e7d2a5829e2b7a8bd81370c4f0f47a7e3a8490d6cf54",
+    "src/lib/teammate/teammateGroups.test.ts": "ea185c1813d0fbbb170b562544211f20fb668766dfe5e75bfa87c34bea719f1b",
     "src/lib/teammate/TeammateGroupsSection.svelte": "609f36f52735f39dc3bafbe502ea2fbac1127ff2d4f469107a6cc66d66cec77a",
     "src/lib/teammate/teammateModel.test.ts": "e262b5446c1d18d951a82767e03c25bc3ed9298d05c89f7d4b7a4a1a8df6d724",
     "src/lib/teammate/teammateModel.ts": "91ec45cf2fed3e85fa13aa627cbf1deec1c194747e5856dabed513d7442efe50",
@@ -2586,6 +2593,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-4272a3e8127c",
-  "manifestHash": "4272a3e8127cb54fa6b060d3a243e7682af2e9bd86d1fe3b95a69e99b198909f"
+  "buildId": "BUILD-b6fbdea1ec80",
+  "manifestHash": "b6fbdea1ec805eb672779504d96c86f093e0653231345c867e0285c611e6de3b"
 }

@@ -381,11 +381,15 @@ class TeammateGroupStore {
   private storageKey = '';
   private requestVersion = 0;
   private refreshRequested = false;
+  private importLegacyPending = false;
   members = $state<CommuneOrganizationMember[]>([]);
   groups = $state<TeammateGroup[]>([]);
   dispatches = $state<CommuneGroupTask[]>([]);
   revision = $state(0);
-  busy = $state(false);
+  ready = $state(false);
+  refreshing = $state(false);
+  saving = $state(false);
+  get busy(): boolean { return !this.ready || this.saving; }
   error = $state('');
   notice = $state('');
   /** Historical local records are read-only; new execution lives in the Hub ledger. */
@@ -394,8 +398,10 @@ class TeammateGroupStore {
   setGlobal(identity: unknown = 'native'): void {
     if (this.global && this.hostIdentity === identity) return;
     this.global = true; this.hostIdentity = identity; this.runtimeWorkspaceId = undefined;
+    this.importLegacyPending = false;
     this.requestVersion++; this.members = []; this.groups = []; this.dispatches = []; this.revision = 0;
-    this.busy = false; this.error = ''; this.notice = ''; this.tasks = [];
+    this.ready = false; this.refreshing = false; this.saving = false; this.refreshRequested = false;
+    this.error = ''; this.notice = ''; this.tasks = [];
     void this.refresh();
   }
 
@@ -405,23 +411,29 @@ class TeammateGroupStore {
     this.global = false;
     this.runtimeWorkspaceId = workspaceId;
     this.storageKey = storageKey;
+    this.importLegacyPending = !!workspaceId;
     this.requestVersion++;
-    this.members = []; this.groups = []; this.dispatches = []; this.revision = 0; this.busy = false; this.error = ''; this.notice = '';
+    this.members = []; this.groups = []; this.dispatches = []; this.revision = 0;
+    this.ready = false; this.refreshing = false; this.saving = false; this.refreshRequested = false;
+    this.error = ''; this.notice = '';
     this.tasks = loadPersisted(this.storageKey).tasks;
     void this.refresh(true);
   }
   async refresh(importLegacy = false): Promise<void> {
     const workspaceId = this.runtimeWorkspaceId;
     if (!workspaceId && !this.global) return;
+    this.importLegacyPending ||= importLegacy && !this.global;
     const scope = this.global ? {groupScope:'host' as const} : {workspaceId};
-    if (this.busy) { this.refreshRequested = true; return; }
+    if (this.saving || this.refreshing) { this.refreshRequested = true; return; }
     const version = ++this.requestVersion;
-    this.busy = true;
+    this.refreshing = true;
     try {
       const { invoke } = await import('@tauri-apps/api/core');
+      if (version !== this.requestVersion) return;
       let projection = await invoke<{groups: TeammateGroup[]; groupsRevision: number}>('get_teammate_topology', scope);
       if (version !== this.requestVersion) return;
-      if (!this.global && importLegacy && projection.groupsRevision === 0) {
+      if (!this.global && this.importLegacyPending && projection.groupsRevision === 0) {
+        this.saving = true;
         // Retain the old browser value untouched; the Runtime archives every supplied row.
         let legacyGroups: unknown[] = [];
         const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(this.storageKey);
@@ -441,7 +453,9 @@ class TeammateGroupStore {
           }
         }
       }
-      if (version === this.requestVersion) { this.apply(projection); this.error = ''; }
+      if (version === this.requestVersion) {
+        this.apply(projection); this.importLegacyPending = false; this.error = '';
+      }
     } catch (failure) {
       if (version === this.requestVersion) this.error = String(failure);
     } finally { this.finish(version); }
@@ -451,19 +465,23 @@ class TeammateGroupStore {
     if (Array.isArray(projection.members)) this.members = projection.members;
     this.groups = projection.groups; this.revision = projection.groupsRevision;
     if (Array.isArray(projection.groupTasks)) this.dispatches = projection.groupTasks;
+    this.ready = true;
   }
   private async change(update: (groups: readonly TeammateGroup[]) => TeammateGroup[], options: {enrollments?: {candidateRef:string;groupId:string}[];archiveMemberIds?:string[];restoreMemberIds?:string[]} = {}): Promise<boolean> {
-    if ((!this.runtimeWorkspaceId && !this.global) || this.busy) { this.error = '编组同步中，请稍候再改。'; return false; }
+    if ((!this.runtimeWorkspaceId && !this.global) || this.busy) return false;
     const workspaceId = this.runtimeWorkspaceId;
     const scope = this.global ? {groupScope:'host' as const} : {workspaceId};
     const version = ++this.requestVersion;
     const groups = update(this.groups);
     const expectedRevision = this.revision;
-    this.busy = true; this.error = '';
+    // Supersede a background read before committing from the last confirmed revision.
+    this.refreshing = false; this.saving = true; this.error = '';
     try {
       const { invoke } = await import('@tauri-apps/api/core');
+      if (version !== this.requestVersion) return false;
       const projection = await invoke<{groups: TeammateGroup[]; groupsRevision: number}>('set_teammate_groups', {...scope, groups, expectedRevision, ...options});
-      if (version === this.requestVersion) this.apply(projection);
+      if (version !== this.requestVersion) return false;
+      this.apply(projection);
       return true;
     } catch (failure) {
       if (version === this.requestVersion) {
@@ -479,7 +497,7 @@ class TeammateGroupStore {
   }
   private finish(version: number): void {
     if (version !== this.requestVersion) return;
-    this.busy = false;
+    this.refreshing = false; this.saving = false;
     if (this.refreshRequested) { this.refreshRequested = false; void this.refresh(); }
   }
   async create(name: string, color: string, memberAgentIds: readonly string[], candidateRefs: readonly string[] = []): Promise<boolean> {

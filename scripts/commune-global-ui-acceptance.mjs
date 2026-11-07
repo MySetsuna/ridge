@@ -87,8 +87,14 @@ try {
     await initThemeSystem(); applyTheme(getThemeIds()[0]);
     paneTree.workspacesList.set(workspaces);
     await highlight.refreshAgentPaneHighlight({ workspaceIds: workspaces.map(workspace => workspace.id), invoke });
+    const groupReadFault={active:true};
+    const nativeInvoke=bridge.invoke.bind(bridge);
+    bridge.invoke=(method,args,...rest)=>{
+      if(groupReadFault.active&&method==='get_teammate_topology'&&args?.groupScope==='host')return Promise.reject(Error('owned initial group read unavailable'));
+      return nativeInvoke(method,args,...rest);
+    };
     const app = client.createClassComponent({ component: Panel, target: document.getElementById('component'), props: { workspaceId: workspaces[0].id, visible: true } });
-    window.globalCommune = { app, client, invoke, listen, workspaces, connection, bridge };
+    window.globalCommune = { app, client, invoke, listen, workspaces, connection, bridge, groupReadFault };
   }, workspaces);
   break;
   } catch (error) {
@@ -101,6 +107,17 @@ try {
   await expect(page.getByTestId('commune-terminal-agent')).toHaveCount(1);
   const globalGroups=page.getByTestId('host-commune-groups');await expect(globalGroups).toHaveCount(1);
   await expect(globalGroups).toHaveAttribute('open', '');
+  await expect(globalGroups.getByRole('alert')).toContainText('owned initial group read unavailable');
+  await globalGroups.getByTestId('commune-create-group').click();
+  await globalGroups.getByRole('textbox',{name:/组名|Group name/i}).fill('Draft survives initial retry');
+  await expect(globalGroups.locator('.builder').getByRole('button',{name:/^(Create group|创建编组)$/})).toBeDisabled();
+  await expect(globalGroups.getByRole('button',{name:/^(Refresh|刷新)$/})).toBeEnabled();
+  await page.evaluate(()=>window.globalCommune.groupReadFault.active=false);
+  await globalGroups.getByRole('button',{name:/^(Refresh|刷新)$/}).click();
+  await expect(globalGroups.locator('.builder').getByRole('button',{name:/^(Create group|创建编组)$/})).toBeEnabled();
+  await expect(globalGroups.getByRole('textbox',{name:/组名|Group name/i})).toHaveValue('Draft survives initial retry');
+  await globalGroups.locator('.builder').getByRole('button',{name:/^(Back|返回)$/}).click();
+  evidence.checks.push('Initial Host group read failure disables writes, retains the local form and exposes an enabled explicit refresh that recovers the authoritative revision');
   await expect(page.getByTestId('commune-terminal-agent').getByRole('button',{name:/连接会话|Connect session/i})).toBeVisible();
   await globalGroups.getByTestId('commune-create-group').click();
   await globalGroups.getByRole('textbox',{name:/组名|Group name/i}).fill('Cross-source pair');
@@ -145,22 +162,65 @@ try {
     const invoke=current.bridge.invoke.bind(current.bridge);
     let release;
     const held=new Promise(resolve=>release=resolve);
+    let releaseWrite;
+    const heldWrite=new Promise(resolve=>releaseWrite=resolve);
     current.groupReadHeld=false;
+    current.groupReadCaptured=false;
+    current.groupWriteHeld=false;
     current.bridge.invoke=async (method,args,...rest)=>{
-      if(method==='get_teammate_topology'&&args.groupScope==='host'&&!current.groupReadHeld){current.groupReadHeld=true;await held;}
+      if(method==='get_teammate_topology'&&args.groupScope==='host'&&!current.groupReadHeld){
+        current.groupReadHeld=true;
+        const snapshot=await invoke(method,args,...rest);
+        current.groupReadCaptured=true;
+        await held;
+        return snapshot;
+      }
+      if(method==='set_teammate_groups'&&args.groupScope==='host'&&!current.groupWriteHeld){
+        const snapshot=await invoke(method,args,...rest);
+        current.groupWriteHeld=true;
+        await heldWrite;
+        return snapshot;
+      }
       return invoke(method,args,...rest);
     };
+    current.releaseGroupWrite=()=>releaseWrite();
     current.releaseGroupRead=async()=>{release();await current.groupReadPromise;current.bridge.invoke=invoke;};
     current.groupReadPromise=teammateGroupStore().refresh();
   });
-  await expect.poll(()=>page.evaluate(()=>window.globalCommune.groupReadHeld)).toBe(true);
+  await expect.poll(()=>page.evaluate(()=>window.globalCommune.groupReadCaptured)).toBe(true);
+  await expect(globalGroups.getByTestId('commune-group-sync-state')).toContainText(/正在刷新|Refreshing/);
+  const groupName=destinationGroup.getByRole('textbox',{name:/Rename group|重命名编组/});
+  await expect(groupName).toBeEnabled();
+  await groupName.fill('Editable during refresh');
+  await groupName.press('Tab');
+  await expect.poll(async () => {
+    const projection=await page.evaluate(()=>window.globalCommune.invoke('get_teammate_topology',{groupScope:'host'}));
+    return projection.groups.find(group=>group.id===destinationId)?.name;
+  }).toBe('Editable during refresh');
+  await expect.poll(()=>page.evaluate(()=>window.globalCommune.groupWriteHeld)).toBe(true);
+  await expect(globalGroups.getByTestId('commune-group-sync-state')).toContainText(/正在保存|Saving/);
+  await destinationGroup.getByRole('button',{name:/^(Dissolve|解散)$/}).click();
+  await expect(destinationGroup.locator('.confirmation').getByRole('button',{name:/^(Confirm|确认)$/})).toBeDisabled();
+  await destinationGroup.locator('.confirmation').getByRole('button',{name:/^(Back|返回)$/}).click();
+  await expect(destinationGroup.locator('.confirmation')).toHaveCount(0);
+  await page.evaluate(()=>window.globalCommune.releaseGroupWrite());
+  await expect(groupName).toBeEnabled();
+  await page.evaluate(()=>window.globalCommune.releaseGroupRead());
+  await expect(groupName).toHaveValue('Editable during refresh');
+  const confirmedAfterRead=await page.evaluate(async () => {
+    const {teammateGroupStore}=await import('/src/lib/teammate/teammateGroups.svelte.ts');
+    const store=teammateGroupStore();
+    const authoritative=await window.globalCommune.invoke('get_teammate_topology',{groupScope:'host'});
+    return {revision:store.revision,authoritativeRevision:authoritative.groupsRevision,names:store.groups.map(group=>group.name)};
+  });
+  assert.equal(confirmedAfterRead.revision,confirmedAfterRead.authoritativeRevision);
+  assert.ok(confirmedAfterRead.names.includes('Editable during refresh'));
   await expect(destinationGroup.getByRole('button',{name:/^(Dissolve|解散)$/})).toBeEnabled();
   await destinationGroup.getByRole('button',{name:/^(Dissolve|解散)$/}).click();
   await expect(destinationGroup.locator('.confirmation')).toBeVisible();
-  await page.evaluate(()=>window.globalCommune.releaseGroupRead());
   await destinationGroup.locator('.confirmation').getByRole('button',{name:/^(Confirm|确认)$/}).click();
   await expect(globalGroups.getByTestId('host-commune-group')).toHaveCount(1);
-  evidence.checks.push('Local dissolve confirmation remains usable during a held background read. All assigned members remain visible; explicit move clears previous leadership and keeps the frozen dispatch; dissolve uses inline confirmation');
+  evidence.checks.push('A held old Kernel snapshot leaves rename editable and allows a real CAS write; releasing it preserves the new name and revision. All assigned members remain visible; explicit move clears previous leadership and keeps the frozen dispatch; dissolve uses inline confirmation');
   await page.screenshot({path:path.resolve(evidenceDir,'groups-desktop.png')});
   await page.getByTestId('commune-tab-history').click();
   await expect(page.locator('[data-history-kind="agent_message_chunk"]')).toHaveCount(2);
@@ -188,6 +248,18 @@ try {
   await expect(page.getByTestId('commune-group-candidate')).toHaveCount(1);
   await expect(page.getByTestId('commune-group-candidate').getByRole('button',{name:/定位终端|Locate terminal/})).toBeVisible();
   await page.screenshot({path:path.resolve(evidenceDir,'groups-mobile.png')});
+  await page.evaluate(async()=>{const {setLocale}=await import('/src/lib/i18n/locale.ts');setLocale('en');});
+  await page.setViewportSize({width:390,height:844});
+  const mobileGroups=page.getByTestId('host-commune-groups');
+  await expect(mobileGroups.locator('.builder').getByRole('button',{name:'Create group',exact:true})).toBeVisible();
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth > innerWidth),false,'English groups must fit a 390px viewport');
+  for(const button of await mobileGroups.locator('button:visible').all()){
+    assert.ok((await button.boundingBox()).height>=44,'mobile group buttons must retain 44px touch height');
+  }
+  await page.screenshot({path:path.resolve(evidenceDir,'groups-mobile-en.png')});
+  await page.evaluate(async()=>{const {setLocale}=await import('/src/lib/i18n/locale.ts');setLocale('zh');});
+  await page.setViewportSize({width:412,height:915});
+  evidence.checks.push('Chinese and English group controls fit narrow screens, retain focus and expose touch targets at least 44px high');
   await page.getByTestId('host-commune-groups').getByRole('textbox',{name:/组名|Group name/i}).fill('Terminal before connection');
   await page.getByTestId('commune-group-candidate').getByRole('checkbox').check();
   await page.getByTestId('host-commune-groups').locator('.builder').getByRole('button',{name:/^(Create group|创建编组)$/}).click();
