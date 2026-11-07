@@ -45,7 +45,7 @@ fn snapshot() -> Result<Vec<Process>, String> {
     let mut cache=SNAPSHOT.lock().map_err(|_| "Agent process observations unavailable")?;
     if let Some((at,rows))=cache.as_ref() { if at.elapsed()<Duration::from_millis(500) {return Ok(rows.clone());} }
     let mut system=System::new();system.refresh_processes(ProcessesToUpdate::All);
-    let rows=system.processes().iter().map(|(pid,process)|Process {
+    let rows=system.processes().iter().filter(|(_,process)|process.thread_kind().is_none()).map(|(pid,process)|Process {
         pid:pid.as_u32(),parent:process.parent().map(|pid|pid.as_u32()),
         image:process.exe().map(|path|path.to_string_lossy().into_owned()).unwrap_or_else(||process.name().to_string_lossy().into_owned()),
         arguments:process.cmd().iter().take(8).map(|arg|arg.to_string_lossy().into_owned()).collect(),

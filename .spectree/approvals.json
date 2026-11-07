@@ -651,5 +651,17 @@
       "buildId": "BUILD-50b5c2bdb6a2",
       "specHash": "3bd80ccbc76c24aff0af3e4c824d72e14dc5c1d78f7e71220d8071a4b360f12e"
     }
+  },
+  {
+    "changeId": "CHG-108",
+    "specHash": "075a40b294bfc1c07b1fb0cf219c8fc5778f187f57424f73ee5c69ccd58157b1",
+    "approvedAt": "2026-11-07T10:22:44.545Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "用户要求发现问题修复，完成真实测试再交付；沿用 change 元数据例外",
+    "derivedFrom": {
+      "buildId": "BUILD-832e9f861815",
+      "specHash": "3e29945f05fa0a3c19467146220b48a06150c9b1db1b84c35e59147a24867f7e"
+    }
   }
 ]

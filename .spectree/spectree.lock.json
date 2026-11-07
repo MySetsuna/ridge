@@ -1,12 +1,12 @@
 {
   "version": 1,
-  "changeId": "CHG-107",
-  "specHash": "fafd5800c6cd2f94718b5f470de762592610ecdc62a1d414ad0497b91c3bb34c",
+  "changeId": "CHG-108",
+  "specHash": "075a40b294bfc1c07b1fb0cf219c8fc5778f187f57424f73ee5c69ccd58157b1",
   "units": [
     {
-      "id": "L4-COMMUNE-EXECUTABLE-IMAGE",
+      "id": "L4-COMMUNE-LINUX-PROCESS-OBSERVATION",
       "level": "L4",
-      "nodeHash": "b8ed52ffa30a0933c066a2a76589c90764768762b703e977b497aac0c1a00764",
+      "nodeHash": "3e1c8f6b9073da296bd754bc3d900bd16aba6058b8a2eba53f9827d0f043f4dc",
       "codeTargets": [
         "packages/ridge-kernel/src/agent_discovery.rs"
       ],
@@ -16,7 +16,7 @@
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "existing-process-enrollment",
+          "id": "process-enrollment",
           "command": [
             "cargo",
             "test",
@@ -28,7 +28,7 @@
             "--",
             "--test-threads=1"
           ],
-          "description": "真实长名协议进程发现、精确登记、原终端保留与组织重启恢复"
+          "description": "真实有线程的长名进程发现、登记、原会话及组织恢复"
         }
       ]
     }
@@ -171,6 +171,7 @@
     "changes/CHG-105.md": "75423db63f94375898cddb5864e72ad8067acf7428ca1c0b74b3fc117260b266",
     "changes/CHG-106.md": "a5e121ead338ae3bddb5d81b5d6379c824f3cdb3c6d22e7e9055a6907dfaf107",
     "changes/CHG-107.md": "07d21c2b401175e968c06bd72d3b6fda1f048278a25a4c27c9c5e34d03d03cc7",
+    "changes/CHG-108.md": "25503115ad88eb18792c4a8cf77786c6b338c142f3f5c7c781bc0ab1aeddbf5c",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -572,7 +573,7 @@
     "packages/ridge-core/src/workspace/mode.rs": "c9fa4739511c4abcb2667e77a9de9d68e62690e662ed6585cd4f2359c176c4f6",
     "packages/ridge-core/src/workspace/pane_tree.rs": "598e17f6c797ee65794b9dabace3b6f16536f3d21d6a5974d5f920007022c0b4",
     "packages/ridge-kernel/Cargo.toml": "4f1941a27630f1507c26f55cf5d340ff9922f04fa54979c0e55f5f5715eaf95d",
-    "packages/ridge-kernel/src/agent_discovery.rs": "5ad4b25986ca7fbf96e39edd82e4e74e145cbd7da2998987575af62097fc4b89",
+    "packages/ridge-kernel/src/agent_discovery.rs": "c336a02f2457c86b7477acc8c298dc50ef6053a0609b2437fa2bb60fcb73d855",
     "packages/ridge-kernel/src/agent_profiles.rs": "2255c83cfbe959cb24ca4263ecf403daed18c762711dfcbfb304c575bb570f26",
     "packages/ridge-kernel/src/agent_terminal.rs": "202d4642c8765dfc70c3eed67383f4f8be7bd32e0b9b9f2e4e0a4374eb6deead",
     "packages/ridge-kernel/src/app_server.rs": "f8348145dcb5bd4f1618fbe822e4ff3e1c062f7cabd52b810c411dce673b07dc",
@@ -1125,6 +1126,7 @@
     "specs/l4-commune-group-online-eligibility.md": "b2c1504eee42922418f323f556e2ac2a0c7755640178ecc267b23af3338d7b47",
     "specs/l4-commune-group-responsive-state.md": "23828a3c894ecc4d0cc39ba78d310d180025ed9bc719524b156278d42e446856",
     "specs/l4-commune-group-usability.md": "b7f5bafb575bed7fe2306132822d5e5f2bbcb52557fc2143b10478544ecd116b",
+    "specs/l4-commune-linux-process-observation.md": "fb173d1cf434a6c10b78bf3950deedfbe34f34ea800c87a6a5253698c7d203e6",
     "specs/l4-commune-organization-members.md": "ce0dcd973142bcd24a8d3305126a4df1ecbab4b37842ab07419c456995c53c2b",
     "specs/l4-commune-remote-delivery.md": "43ae0e9067cebb2a70ba1f46fc92104e0d625ae80dbce045e40239cb56c08230",
     "specs/l4-perf-latency-bench-entry.md": "86935a5eb9927f52620529e323278781fcf871545b9fc9cec4232c01418d798c",
@@ -2593,6 +2595,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-fb61bde73324",
-  "manifestHash": "fb61bde73324f8f368f52b5abc9a1c198c1f10ee7ce84e7eb6d08b69d47418fb"
+  "buildId": "BUILD-746d6002a14c",
+  "manifestHash": "746d6002a14ccf287494de87372ccb9dcebee1dd4729568d5b5f60ff352b5608"
 }

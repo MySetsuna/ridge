@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "buildId": "BUILD-832e9f861815",
+  "changeId": "CHG-108",
+  "specHash": "3e29945f05fa0a3c19467146220b48a06150c9b1db1b84c35e59147a24867f7e",
+  "workspaceHash": "fd8e7fdc24a1c4cd683a2d744ffa0a0fdd170e4869dbc2dc201752476ced9d1b",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-COMMUNE-LINUX-PROCESS-OBSERVATION",
+      "checkId": "process-enrollment",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "commune_registration",
+        "--",
+        "--test-threads=1"
+      ],
+      "description": "真实有线程的长名进程发现、登记、原会话及组织恢复",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-07T10:22:41.602Z",
+  "diagnostics": [],
+  "eventId": "99530443-f52b-4f16-a30e-e92a18e20df6"
+}

@@ -1,0 +1,8 @@
+{
+  "changeId":"CHG-108","remove":[],"nodes":[{
+    "id":"L4-COMMUNE-LINUX-PROCESS-OBSERVATION","level":"L4","parent":"L3-COMMUNE-PROTOCOL-MEMBERSHIP","title":"Linux Agent 发现仅枚举进程而非线程",
+    "codeTargets":["packages/ridge-kernel/src/agent_discovery.rs"],"testTargets":["packages/ridge-kernel/tests/commune_registration.rs"],"dependsOn":["L4-COMMUNE-EXECUTABLE-IMAGE"],
+    "acceptanceChecks":[{"id":"process-enrollment","command":["cargo","test","--locked","-p","ridge-kernel","--test","commune_registration","--","--test-threads=1"],"description":"真实有线程的长名进程发现、登记、原会话及组织恢复"}],
+    "body":"# Linux 进程观察\n\nAgent 发现仅枚举操作系统进程。sysinfo 在 Linux 会把线程放入进程集合；必须使用其 thread_kind 区分并排除线程，不能把同一执行映像的线程视为另一个 Agent 子进程，进而用包装器去重规则错误地丢弃主进程。保留完整 exe 映像、现有进程树边界、启动实例和端点归属校验；不扩大参数采集或降低认证。其他平台继续使用平台 API 的正常进程结果。\n\n现有真实组织登记测试进程包含工作线程，须在 Windows 和 Linux 运行通过。Linux 原始失效与 sysinfo 进程、线程快照已取证；修复后还需跑实际 PTY、原协议端点、原会话和组织重启流程。不得增加等待时长、改为忽略或用模拟进程替代真实 Linux 验收。"
+  }]
+}
