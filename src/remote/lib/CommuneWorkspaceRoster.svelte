@@ -2,10 +2,11 @@
   import '../../lib/teammate/communeVisual.css';
   import CommuneHistory from '$lib/teammate/CommuneHistory.svelte';
   import CommuneGroupTasks from '$lib/teammate/CommuneGroupTasks.svelte';
+  import CommuneMemberMessage from './CommuneMemberMessage.svelte';
   import { onMount, untrack } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { t, tr } from '$lib/i18n';
-  import { ArrowDown, ArrowUp, Check, Crown, Palette, Send, ShieldAlert, X } from 'lucide-svelte';
+  import { ArrowDown, ArrowUp, Check, Crown, Palette, ShieldAlert, X } from 'lucide-svelte';
   import type {
     HitlPendingItem,
     OrchestrationHealth,
@@ -234,7 +235,6 @@
 
   // iter-62：手机端也要能分别监控/干预每个 agent（此前只有一行只读名字）。
   /** 每个成员的输入框内容 / 「最近回复」展开态（按 agent id 键）。 */
-  let msgInput = $state<Record<string, string>>({});
   let openReply = $state<Record<string, boolean>>({});
 
   /** Shared status projection keeps Remote and desktop card rails in lockstep. */
@@ -292,26 +292,6 @@
       }))
       .sort((a, b) => b.timestamp - a.timestamp)[0];
     return match;
-  }
-
-  /** 给该成员发消息：写其 pane stdin。
-   *  `\r`（CR = 回车键真实字节）结尾——`\n` 只会在 TUI 输入框里插一个换行、不提交。 */
-  async function sendTo(m: TeammateRosterMember) {
-    const text = (msgInput[m.id] ?? '').trim();
-    if (!text || !m.paneId) return;
-    try {
-      await ws.sendAgentMessage({
-        workspaceId,
-        paneId: m.paneId,
-        agentId: m.agentId ?? m.id,
-        generation: m.generation,
-        lease: m.lease,
-      }, text);
-      msgInput = { ...msgInput, [m.id]: '' };
-      resolveNote = `#${m.id}: queued`;
-    } catch (error) {
-      resolveNote = `#${m.id}: ${error instanceof Error ? error.message : String(error)}`;
-    }
   }
 
   async function decide(p: HitlPendingItem, verdict: 'approve' | 'reject') {
@@ -674,22 +654,9 @@
     {/if}
 
     <div class="msg-row">
-      <input
-        class="msg-input"
-        type="text"
-        placeholder={tr('commune.sendMessage', { name: m.name })}
-        value={msgInput[m.id] ?? ''}
-        oninput={(e) => (msgInput = { ...msgInput, [m.id]: e.currentTarget.value })}
-        onkeydown={(e) => {
-          if (e.key === 'Enter' && !e.isComposing) {
-            e.preventDefault();
-            sendTo(m);
-          }
-        }}
-      />
-      <button class="act send" title={$t('commune.send')} aria-label={$t('commune.sendToMember')} onclick={() => sendTo(m)}>
-        <Send class="w-3 h-3" />
-      </button>
+      {#key JSON.stringify([remoteSessionId(ws), workspaceId, m.paneId, m.id, m.generation, m.lease])}
+        <CommuneMemberMessage {ws} {workspaceId} member={m} />
+      {/key}
     </div>
   </div>
 {/snippet}
@@ -738,7 +705,6 @@
   .msg-row{display:flex;align-items:center;gap:6px}
   .msg-input{flex:1;min-width:0;border:1px solid var(--rg-border);border-radius:6px;background:var(--rg-bg);color:var(--rg-fg);font-size:12px;padding:5px 8px;outline:none}
   .msg-input:focus{border-color:color-mix(in srgb,var(--rg-accent) 60%,transparent)}
-  .act.send:active{color:var(--rg-accent)}
   .group{border:1px solid var(--rg-border);border-radius:8px;overflow:hidden;margin:2px 0}
   .group-bar{height:3px}
   .group-head{display:flex;align-items:center;gap:8px;padding:6px 10px}

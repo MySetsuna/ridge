@@ -370,6 +370,7 @@ export interface AgentMessageReceipt {
   deliveryReliability: string;
   terminalAccepted: boolean;
   agentAcknowledged: boolean;
+  execution?: { state?: string; reason?: string; response?: { stopReason?: string } };
 }
 
 /** Durable Agent history row shared by desktop and Remote.
@@ -556,7 +557,9 @@ export interface RemoteLink {
   changePaneShell?(workspaceId: string, paneId: string, shell: RemoteShellInfo): Promise<void>;
   sendStdin(pane: PaneRef, data: TerminalInputData, context: TerminalInputContext): void;
   /** Queue a structured Hub message; PTY remains a separate compatibility path. */
-  sendAgentMessage(target: AgentMessageTarget, message: string): Promise<AgentMessageReceipt>;
+  sendAgentMessage(target: AgentMessageTarget, message: string, idempotencyKey?: string): Promise<AgentMessageReceipt>;
+  getAgentMessageDelivery(target: AgentMessageTarget, deliveryId: string): Promise<AgentMessageReceipt>;
+  cancelAgentMessage(target: AgentMessageTarget, deliveryId: string): Promise<AgentMessageReceipt>;
   /** Reserve input order before an asynchronous source resolves. */
   enqueueStdinTask?(pane: PaneRef, task: () => Promise<TerminalInputData | null> | TerminalInputData | null, context: TerminalInputContext): boolean;
   refreshPane(
@@ -1662,6 +1665,7 @@ export class RemoteConnection implements RemoteLink {
   async sendAgentMessage(
     target: AgentMessageTarget,
     message: string,
+    idempotencyKey: string = crypto.randomUUID(),
   ): Promise<AgentMessageReceipt> {
     const data = (await this._sendAndWait(
       {
@@ -1675,7 +1679,7 @@ export class RemoteConnection implements RemoteLink {
           lease: target.lease,
           message,
           from: 'remote-ui',
-          idempotency_key: crypto.randomUUID(),
+          idempotency_key: idempotencyKey,
         },
         _reqId: ++this._reqCounter,
       },
@@ -1690,6 +1694,23 @@ export class RemoteConnection implements RemoteLink {
     if (!data._result || typeof data._result !== 'object') {
       throw new Error('Agent Hub returned an invalid receipt');
     }
+    return data._result as AgentMessageReceipt;
+  }
+
+  async getAgentMessageDelivery(target: AgentMessageTarget, deliveryId: string): Promise<AgentMessageReceipt> {
+    return this.agentMessageReceipt('get_agent_message_delivery_status', target, deliveryId);
+  }
+
+  async cancelAgentMessage(target: AgentMessageTarget, deliveryId: string): Promise<AgentMessageReceipt> {
+    return this.agentMessageReceipt('cancel_agent_message', target, deliveryId);
+  }
+
+  private async agentMessageReceipt(command: string, target: AgentMessageTarget, deliveryId: string): Promise<AgentMessageReceipt> {
+    const data = await this._sendAndWait({
+      type: 'invoke-request', cmd: command, args: { ...target, deliveryId }, _reqId: ++this._reqCounter,
+    }, 'invoke-result') as { _result?: unknown; _error?: unknown };
+    if (data._error) throw new Error(unknownText(data._error, 'remote error'));
+    if (!data._result || typeof data._result !== 'object') throw new Error('Agent Hub returned an invalid receipt');
     return data._result as AgentMessageReceipt;
   }
 

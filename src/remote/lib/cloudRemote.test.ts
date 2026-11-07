@@ -1146,9 +1146,15 @@ describe('CloudRemoteConnection bounded parity guards', () => {
     });
 
     await expect(conn.listWorkspaces()).resolves.toEqual({ workspaces: [] });
-    await expect(conn.sendAgentMessage({ ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease' }, 'hello'))
+    await expect(conn.sendAgentMessage({ ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease' }, 'hello', 'stable-intent'))
       .resolves.toMatchObject({ messageId: 'm' });
-    expect(invokeMock).toHaveBeenCalledWith('send_agent_message', expect.objectContaining({ ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease', message: 'hello' }));
+    expect(invokeMock).toHaveBeenCalledWith('send_agent_message', expect.objectContaining({ ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease', message: 'hello', idempotency_key: 'stable-intent' }));
+    invokeMock.mockResolvedValueOnce({ deliveryId: 'd', execution: { state: 'running' } });
+    await expect(conn.getAgentMessageDelivery({ ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease' }, 'd')).resolves.toMatchObject({ deliveryId: 'd' });
+    expect(invokeMock).toHaveBeenLastCalledWith('get_agent_message_delivery_status', { ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease', deliveryId: 'd' });
+    invokeMock.mockResolvedValueOnce({ deliveryId: 'd', execution: { state: 'cancelled' } });
+    await expect(conn.cancelAgentMessage({ ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease' }, 'd')).resolves.toMatchObject({ execution: { state: 'cancelled' } });
+    expect(invokeMock).toHaveBeenLastCalledWith('cancel_agent_message', { ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease', deliveryId: 'd' });
     await expect(conn.setTeammateGroups('ws1', [], 3)).resolves.toEqual({groups:[],groupsRevision:4});
     expect(invokeMock).toHaveBeenCalledWith('set_teammate_groups',{workspaceId:'ws1',groups:[],expectedRevision:3});
     await expect(conn.resumeAgentSession('ws1', 'Codex', 's', '/repo')).rejects.toThrow('Restore the Agent in its terminal');

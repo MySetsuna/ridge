@@ -200,13 +200,22 @@ describe('RemoteConnection public communication contract', () => {
 		const topology = conn.getTeammateTopology('workspace-a');
 		invoke(ws, 'get_teammate_topology', { roster: [], leaderId: null, edges: [] });
 		await expect(topology).resolves.toEqual({ roster: [], leaderId: null, edges: [] });
-		const receipt = conn.sendAgentMessage({ ...pane, agentId: 'agent-1', generation: 2, lease: 'lease-2' }, 'hello');
-		expect(ws.sent.at(-1)).toMatchObject({ args: { ...pane, agentId: 'agent-1', generation: 2, lease: 'lease-2', message: 'hello' } });
+		const target = { ...pane, agentId: 'agent-1', generation: 2, lease: 'lease-2' };
+		const receipt = conn.sendAgentMessage(target, 'hello', 'stable-intent');
+		expect(ws.sent.at(-1)).toMatchObject({ args: { ...target, message: 'hello', idempotency_key: 'stable-intent' } });
 		invoke(ws, 'send_agent_message', {
 			messageId: 'm1', deliveryId: 'd1', targetKey: 'workspace-a:pane-a', status: 'accepted',
 			deliveryAdapter: 'hub', deliveryReliability: 'durable', terminalAccepted: false, agentAcknowledged: true,
 		});
 		await expect(receipt).resolves.toMatchObject({ messageId: 'm1' });
+		const status = conn.getAgentMessageDelivery(target, 'd1');
+		expect(ws.sent.at(-1)).toMatchObject({ cmd: 'get_agent_message_delivery_status', args: { ...target, deliveryId: 'd1' } });
+		invoke(ws, 'get_agent_message_delivery_status', { deliveryId: 'd1', execution: { state: 'running' } });
+		await expect(status).resolves.toMatchObject({ execution: { state: 'running' } });
+		const cancellation = conn.cancelAgentMessage(target, 'd1');
+		expect(ws.sent.at(-1)).toMatchObject({ cmd: 'cancel_agent_message', args: { ...target, deliveryId: 'd1' } });
+		invoke(ws, 'cancel_agent_message', { deliveryId: 'd1', execution: { state: 'cancelled' } });
+		await expect(cancellation).resolves.toMatchObject({ execution: { state: 'cancelled' } });
 		const history = conn.listAgentHistory('workspace-a', 1000);
 		invoke(ws, 'read_agent_recent_replies', []);
 		await expect(history).resolves.toEqual([]);

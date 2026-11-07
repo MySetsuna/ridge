@@ -138,6 +138,47 @@ try {
   await until(()=>fs.existsSync(individualLog)&&fs.readFileSync(individualLog,'utf8').includes('mobile-individual-once'));
   assert.equal(fs.readFileSync(individualLog,'utf8').split('mobile-individual-once').length-1,1);
   evidence.checks.push('Remote individual message reaches the original ACP process once through the production connection and Kernel command parser');
+  await page.evaluate(() => {
+    const current = window.globalCommune;
+    const original = current.invoke;
+    current.deliveryKeys = []; current.droppedDeliveryAck = false;
+    current.invoke = async (command, args) => {
+      const result = await original(command, args);
+      if (command === 'send_agent_message' && args.message === 'owned-lost-ack') {
+        current.deliveryKeys.push(args.idempotency_key);
+        if (!current.droppedDeliveryAck) { current.droppedDeliveryAck = true; throw Error('Owned ACK lost after commit'); }
+      }
+      if (command === 'send_agent_message' && args.message === 'owned-delayed-ack') await new Promise(resolve => setTimeout(resolve, 650));
+      return result;
+    };
+  });
+  const memberInput = page.locator('.member-card .msg-input').first();
+  const memberSend = page.locator('.member-card .send').first();
+  await expect(memberInput).toHaveValue('');
+  await memberInput.fill('owned-lost-ack'); await memberSend.click();
+  await expect(page.getByText('Error: Owned ACK lost after commit', { exact: true })).toBeVisible();
+  await until(() => fs.readFileSync(individualLog, 'utf8').includes('owned-lost-ack'));
+  await memberInput.fill('new draft after lost ACK');
+  await memberSend.click();
+  await expect.poll(() => page.evaluate(() => window.globalCommune.deliveryKeys.length)).toBe(2);
+  await expect(memberSend).toBeEnabled();
+  await expect(page.getByText('Error: Owned ACK lost after commit', { exact: true })).toHaveCount(0);
+  await expect(memberInput).toHaveValue('new draft after lost ACK');
+  const keys = await page.evaluate(() => window.globalCommune.deliveryKeys);
+  assert.equal(keys.length, 2); assert.equal(new Set(keys).size, 1);
+  assert.equal(fs.readFileSync(individualLog, 'utf8').split('owned-lost-ack').length - 1, 1);
+  evidence.checks.push('ACK lost after real Kernel commit retries the frozen original key/text once and preserves the new draft');
+  await memberInput.fill('owned-delayed-ack'); await memberSend.click();
+  await expect(memberSend).toBeDisabled();
+  await memberInput.press('Enter');
+  await memberSend.evaluate(button => button.click());
+  await memberInput.fill('typing while sending');
+  await expect(memberSend).toBeEnabled();
+  await expect(memberInput).toHaveValue('typing while sending');
+  await until(() => fs.readFileSync(individualLog, 'utf8').includes('owned-delayed-ack'));
+  assert.equal(fs.readFileSync(individualLog, 'utf8').split('owned-delayed-ack').length - 1, 1);
+  await expect(page.locator('.member-card').first().locator('[data-delivery-state="turn_ended"]')).toBeVisible({ timeout: 10000 });
+  evidence.checks.push('A delayed real delivery ACK blocks duplicate click/Enter and retains subsequent typing');
   await page.getByRole('button', { name: /^(History|历史)$/ }).click();
   await expect(page.locator('[data-history-kind="agent_message_chunk"]')).toHaveCount(2);
   await page.evaluate(async () => {

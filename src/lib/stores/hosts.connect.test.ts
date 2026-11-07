@@ -71,6 +71,10 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 vi.mock('$lib/transport/runtimeClient', () => ({ connectPresentationRuntime: harness.runtimeConnect }));
 vi.mock('$lib/remote/cloud/legacyControllerIdentity', () => ({ readLegacyControllerSeed: vi.fn(async () => null) }));
+vi.mock('@ridge/remote/shared/cloud/apiClient', async importOriginal => ({
+  ...await importOriginal<typeof import('@ridge/remote/shared/cloud/apiClient')>(),
+  listSharedWithMe: vi.fn(async () => ({ shares: [] })),
+}));
 vi.mock('@ridge/remote/shared/cloud/auth', async importOriginal => ({
   ...await importOriginal<typeof import('@ridge/remote/shared/cloud/auth')>(),
   snapshot: () => ({ userToken: 'owned-controller', user: { username: 'owner' } }),

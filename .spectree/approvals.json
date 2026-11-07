@@ -459,5 +459,17 @@
       "buildId": "BUILD-3b9c9cae960b",
       "specHash": "528269d8f9c43a505b96ac365d1f7c4c5df7d9189eb4da200e82f3efd9180328"
     }
+  },
+  {
+    "changeId": "CHG-091",
+    "specHash": "885a18a0d3db7be9fe0390596f96b7f6747bae984f98bb166a11f4c424a1da6b",
+    "approvedAt": "2026-11-07T02:32:47.515Z",
+    "source": "completion_derived",
+    "actor": "Codex",
+    "confirmationRef": "落实已授权可靠性修复并隔离已复现门禁的外部 Cloud 请求",
+    "derivedFrom": {
+      "buildId": "BUILD-0b0d380e55d0",
+      "specHash": "b0cf50d45c63539128875f604ca5c067f4a9c5c356e229eaaa2b7673d5872162"
+    }
   }
 ]

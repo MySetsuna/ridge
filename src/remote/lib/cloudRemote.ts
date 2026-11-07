@@ -981,6 +981,7 @@ export class CloudRemoteConnection implements RemoteLink {
   async sendAgentMessage(
     target: AgentMessageTarget,
     message: string,
+    idempotencyKey: string = crypto.randomUUID(),
   ): Promise<AgentMessageReceipt> {
     return this.bridge.invoke<AgentMessageReceipt>('send_agent_message', {
       paneId: target.paneId,
@@ -990,8 +991,16 @@ export class CloudRemoteConnection implements RemoteLink {
       lease: target.lease,
       message,
       from: 'remote-ui',
-      idempotency_key: crypto.randomUUID(),
+      idempotency_key: idempotencyKey,
     });
+  }
+
+  async getAgentMessageDelivery(target: AgentMessageTarget, deliveryId: string): Promise<AgentMessageReceipt> {
+    return this.bridge.invoke<AgentMessageReceipt>('get_agent_message_delivery_status', { ...target, deliveryId });
+  }
+
+  async cancelAgentMessage(target: AgentMessageTarget, deliveryId: string): Promise<AgentMessageReceipt> {
+    return this.bridge.invoke<AgentMessageReceipt>('cancel_agent_message', { ...target, deliveryId });
   }
 
   async listAgentHistory(workspaceId: string, limit = 24, cursor?: string, query = '', textCursor?: string, assistantOnly = false): Promise<AgentHistoryReply[]> {

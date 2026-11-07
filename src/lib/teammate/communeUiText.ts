@@ -1,5 +1,6 @@
 export const communeUiText = {
   zh: {
+    individualSending: '正在确认投递…', individualPending: '投递尚未确认。重试将复用原请求，保留正在编辑的新草稿。',
     taskPrepared: '受理尚未确认', taskSubmitted: '已提交', taskQueued: '排队', taskDispatching: '派发中', taskRunning: '执行中',
     taskWaitingPermission: '待审批', taskReplyEnded: '回复结束；目标待审', taskCancelled: '已取消', taskCancelledBeforeDispatch: '派发前取消',
     taskRejected: '拒收', taskDeliveryFailed: '投递失败，未确认执行', taskUnknown: '结果未知', taskExpired: '已过期', taskReportedCompleted: '成员报告完成；待审', taskReportedFailed: '成员报告失败',
@@ -19,6 +20,7 @@ export const communeUiText = {
     reject: '拒绝', cancelGroup: '取消所属组任务', cancelTask: '取消此任务', acknowledge: '知悉', modifyAndRun: '改后执行', modify: '修改', approveContinue: '批准并继续原操作',
   },
   en: {
+    individualSending: 'Confirming delivery…', individualPending: 'Delivery is unconfirmed. Retry confirms the original request and keeps your new draft.',
     taskPrepared: 'Acceptance unconfirmed', taskSubmitted: 'Submitted', taskQueued: 'Queued', taskDispatching: 'Dispatching', taskRunning: 'Running',
     taskWaitingPermission: 'Awaiting approval', taskReplyEnded: 'Reply ended; objective needs review', taskCancelled: 'Cancelled', taskCancelledBeforeDispatch: 'Cancelled before dispatch',
     taskRejected: 'Rejected', taskDeliveryFailed: 'Delivery failed; execution unconfirmed', taskUnknown: 'Outcome unknown', taskExpired: 'Expired', taskReportedCompleted: 'Member reported completion; review needed', taskReportedFailed: 'Member reported failure',
