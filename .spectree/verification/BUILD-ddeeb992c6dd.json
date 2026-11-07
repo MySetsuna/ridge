@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "buildId": "BUILD-ddeeb992c6dd",
+  "changeId": "CHG-104",
+  "specHash": "0f4db884f79235055917105a0eff80581065ad7bc227ed85ffc101b2b40fbdcf",
+  "workspaceHash": "a45e93fe2c70c79df078d78482ac2db34f7d3cdabee0c64c5e1d45b511ad7a85",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "FAIL",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-CLOUD-RELEASE-0198",
+      "checkId": "release-version",
+      "command": [
+        "node",
+        "scripts/check-release-version.mjs"
+      ],
+      "description": "四处产品版本一致为 0.1.98，独立 crate 版本不变",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-CLOUD-RELEASE-0198",
+      "checkId": "release-version-regression",
+      "command": [
+        "node",
+        "--test",
+        "scripts/check-release-version.test.mjs"
+      ],
+      "description": "版本及 tag 契约拒绝缺失或不一致",
+      "status": "FAIL",
+      "exitCode": 1
+    }
+  ],
+  "valid": false,
+  "verifiedAt": "2026-11-07T09:31:42.662Z",
+  "diagnostics": [
+    {
+      "code": "ACCEPTANCE_E_FAILED",
+      "severity": "ERROR",
+      "message": "release-version-regression: exited with 1",
+      "nodeId": "L4-CLOUD-RELEASE-0198"
+    }
+  ],
+  "eventId": "ed287ab7-b87a-4577-91fc-d0ed13e04cd4"
+}

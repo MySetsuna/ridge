@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "03b20e1e-7dc0-4aff-979a-f1db743bb444",
+  "at": "2026-11-07T09:18:30.881Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-104",
+  "data": {
+    "title": "发布通过公网 TURN 验收的 0.1.98 桌面内核",
+    "implementation": "REQUIRED"
+  }
+}

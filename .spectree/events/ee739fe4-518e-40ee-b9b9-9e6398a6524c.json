@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "ee739fe4-518e-40ee-b9b9-9e6398a6524c",
+  "at": "2026-11-07T09:33:30.415Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-104",
+  "data": {
+    "changeId": "CHG-104",
+    "specHash": "136269ab7e907640eec9d1c752fceeab16d9bc1366e25b579adf8b5ef54c4fcc",
+    "approvedAt": "2026-11-07T09:33:30.410Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "沿用已批准发布范围；修正验收执行器为该测试实际使用的 Vitest，验收断言不变",
+    "attributionVerified": false
+  }
+}

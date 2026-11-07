@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "3cf6059f-5398-40a9-bbb3-f564df298679",
+  "at": "2026-11-07T09:34:25.447Z",
+  "type": "approval_derived",
+  "source": "local_operation",
+  "changeId": "CHG-104",
+  "data": {
+    "changeId": "CHG-104",
+    "specHash": "60d81f2a4373d6d245c322ea2c04c80c4705f0d42bc789fe17417c234c9b3087",
+    "approvedAt": "2026-11-07T09:34:25.445Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "沿用已批准发布范围；修正验收执行器为该测试实际使用的 Vitest，验收断言不变",
+    "derivedFrom": {
+      "buildId": "BUILD-32701e18ef8c",
+      "specHash": "136269ab7e907640eec9d1c752fceeab16d9bc1366e25b579adf8b5ef54c4fcc"
+    },
+    "attributionVerified": false
+  }
+}

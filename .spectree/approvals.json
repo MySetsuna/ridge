@@ -605,6 +605,18 @@
     }
   },
   {
+    "changeId": "CHG-104",
+    "specHash": "60d81f2a4373d6d245c322ea2c04c80c4705f0d42bc789fe17417c234c9b3087",
+    "approvedAt": "2026-11-07T09:34:25.445Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "沿用已批准发布范围；修正验收执行器为该测试实际使用的 Vitest，验收断言不变",
+    "derivedFrom": {
+      "buildId": "BUILD-32701e18ef8c",
+      "specHash": "136269ab7e907640eec9d1c752fceeab16d9bc1366e25b579adf8b5ef54c4fcc"
+    }
+  },
+  {
     "changeId": "CHG-105",
     "specHash": "c03e4c206f3e67c5194965f88f89148acf780cd8520e914d5d020be596bd2ff1",
     "approvedAt": "2026-11-07T09:29:24.484Z",

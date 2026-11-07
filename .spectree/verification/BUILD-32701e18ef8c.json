@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "buildId": "BUILD-32701e18ef8c",
+  "changeId": "CHG-104",
+  "specHash": "136269ab7e907640eec9d1c752fceeab16d9bc1366e25b579adf8b5ef54c4fcc",
+  "workspaceHash": "4bfca2d27c279e7b4d10e90c750160a755df90a089f49d384355b9fcef97986a",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-CLOUD-RELEASE-0198",
+      "checkId": "release-version",
+      "command": [
+        "node",
+        "scripts/check-release-version.mjs"
+      ],
+      "description": "四处产品版本一致为 0.1.98，独立 crate 版本不变",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-CLOUD-RELEASE-0198",
+      "checkId": "release-version-regression",
+      "command": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "scripts/check-release-version.test.mjs"
+      ],
+      "description": "版本及 tag 契约拒绝缺失或不一致",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-07T09:34:22.177Z",
+  "diagnostics": [],
+  "eventId": "a87d7cb9-4601-4cf7-9a38-a42a77db7865"
+}

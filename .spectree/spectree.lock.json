@@ -1,47 +1,53 @@
 {
   "version": 1,
-  "changeId": "CHG-105",
-  "specHash": "c03e4c206f3e67c5194965f88f89148acf780cd8520e914d5d020be596bd2ff1",
+  "changeId": "CHG-104",
+  "specHash": "60d81f2a4373d6d245c322ea2c04c80c4705f0d42bc789fe17417c234c9b3087",
   "units": [
     {
-      "id": "L4-CLOUD-HOST-REJOIN-SESSION",
+      "id": "L4-CLOUD-RELEASE-0198",
       "level": "L4",
-      "nodeHash": "5867247563e72876dca069ee42d9035694027a3b0d7d6adbd969e57c2cf2013f",
+      "nodeHash": "e11b0b2a0f48c1d886e9b1464d2e94aa97bf8d896850c2d251aae32097436a72",
       "codeTargets": [
-        "packages/remote/src/shared/cloud/controllerCloudProvider.ts"
+        "package.json",
+        "Cargo.lock",
+        "src-tauri/Cargo.toml",
+        "src-tauri/tauri.conf.json"
       ],
       "testTargets": [
-        "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
-        "scripts/kernel-cloud-owner-acceptance.mjs"
+        "scripts/check-release-version.mjs",
+        "scripts/check-release-version.test.mjs"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "host-rejoin-state",
+          "id": "release-version",
+          "command": [
+            "node",
+            "scripts/check-release-version.mjs"
+          ],
+          "description": "四处产品版本一致为 0.1.98，独立 crate 版本不变"
+        },
+        {
+          "id": "release-version-regression",
           "command": [
             "pnpm",
             "exec",
             "vitest",
             "run",
-            "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts"
+            "scripts/check-release-version.test.mjs"
           ],
-          "description": "主机离线使旧 RTC 与加密状态失效，退避后全量重建；旧回调不能污染新连接"
-        },
-        {
-          "id": "host-rejoin-browser",
-          "command": [
-            "node",
-            "scripts/kernel-cloud-owner-acceptance.mjs"
-          ],
-          "description": "真实浏览器与 Kernel 在主机服务重连后恢复鉴权和原终端输入；原 shell 不变"
+          "description": "版本及 tag 契约拒绝缺失或不一致"
         }
       ]
     }
   ],
   "allowedPaths": [
-    "packages/remote/src/shared/cloud/controllerCloudProvider.test.ts",
-    "packages/remote/src/shared/cloud/controllerCloudProvider.ts",
-    "scripts/kernel-cloud-owner-acceptance.mjs"
+    "Cargo.lock",
+    "package.json",
+    "scripts/check-release-version.mjs",
+    "scripts/check-release-version.test.mjs",
+    "src-tauri/Cargo.toml",
+    "src-tauri/tauri.conf.json"
   ],
   "testCommand": [
     "npm",
@@ -69,7 +75,7 @@
     ".vscode/extensions.json": "926925a0d7f8b5e0e9e84667ac901095f7ffdb83afb54de65662d6e4cfb78ad1",
     ".vscode/settings.json": "54224dc29195ac0e0ae6a3ce38d5cd7aeb390357259a37c860a28a3f1087ef71",
     "AGENTS.md": "f79dcdcc868100c55ce91dda383e287ad1283226b7a24de3fed95123864fc0bf",
-    "Cargo.lock": "db9d1c00b5d4b7faa17e1e80583e03c828b774df239cab4bb21f1f2425626d7f",
+    "Cargo.lock": "14120a6e335ed6e26bbd9ce1d404c2b5aa5c2103b49f74f4dcc2a9668098f9b1",
     "Cargo.toml": "957354d0468d8acd0df1e15ccdb5440a943a46b84f4bb0536c68edcdaf1442d6",
     "changes/BASELINE-001.md": "014956323df88e7e740dc6669f035bef10d139cb72d42de7c963ae2b1d0b1aae",
     "changes/CHG-001.md": "1108fb4f66a90c53a26b1fba64da1315e81c851d822c4a5736fd84640d9d685d",
@@ -173,7 +179,7 @@
     "changes/CHG-101.md": "de0a35e4056440063d23ac286b10953608fa49d1015d9c3d5f69d3950a50eb71",
     "changes/CHG-102.md": "67713fa4961c9cdc1c4de9f34631700b740fb233ebf6b87f3bc70a493c438da5",
     "changes/CHG-103.md": "db8ee38623c2bd64c4f26059cc039b60dc6cae66e0fed2434419adfed60afe8b",
-    "changes/CHG-104.md": "bead738ffcd80943ed57971bde1693bbad8191b670616fce733f1c74df3919fa",
+    "changes/CHG-104.md": "701f3d41deebc2ebeab89ffbae31801f80597cc419150975e6b4afd5d74f8e1b",
     "changes/CHG-105.md": "75423db63f94375898cddb5864e72ad8067acf7428ca1c0b74b3fc117260b266",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
@@ -211,7 +217,7 @@
     "docs/README_CN.md": "0c06ccd78ce669ecee57e7f5f04a8deaec30825a9fb390310c605871463759a9",
     "FINAL-REPORT-A8.md": "7f7df82021cea93d3ab23a88e39bda0d60c1df7b531d79972b3556f5e74d6d08",
     "IMPLEMENTATION-ACCEPTANCE.md": "22f532c1e959f91d0e19ec02d3cb291c1e8c737069d6894d0ddaa16b4599e75e",
-    "package.json": "b8ed8f33aa1d1c13ddab81bd7fff4aae6eb00e40fe9c4d2817d35d8d1c9574f0",
+    "package.json": "8a9cfd61d20ba7ded48204c59a63cde247113bc93468b3779ab43c774a18ed7b",
     "packages/remote/package.json": "e45f7377284d78c1d13ed18ef885cfac544fea328677a15090b365edeaebc167",
     "packages/remote/src/index.ts": "a088cec7e3a26058a52c6c3917fc5bf07f647aead3ffe1de8cbad5fb1ff0c95f",
     "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts": "7abb718851c25821146276ac974fbad2aa64e011e142e2623fe2c6a164324b08",
@@ -1120,6 +1126,7 @@
     "specs/l3-terminal-visual-input-repair.md": "b68a179f6722237d8de2c9cd96cf170a1a1e786d5974dd7ac93ed76a22e7f8df",
     "specs/l4-cloud-host-rejoin-session.md": "a297688f1db5740640420e68390fae55f5da322a4673f3206b381ba2084598ad",
     "specs/l4-cloud-ice-negotiation-reliability.md": "9ffb24dc04927a338c4f79f37e79f04fd2b1847c03b7259f3a8dd52e7f631951",
+    "specs/l4-cloud-release-0198.md": "742b446f82e2e31f92f8dbc8aa3f8360f6fdeaaecc3862a0101644c9107ebce4",
     "specs/l4-cloud-turn-credential-type.md": "541f222eb1502931431950b4cefc02880e3dfe14f19f2eb1e781f33a41c41028",
     "specs/l4-commune-connection-wizard.md": "55e0d08a4f29a319f1eb7154228661d1e9585f54ce75ebda007858fad433b505",
     "specs/l4-commune-group-dispatch-intent.md": "29265c991a0a8cd463e077c07e8811c152d439cb13c91c09bd5f733d37689810",
@@ -2510,7 +2517,7 @@
     "src-tauri/build.rs": "7c43ad9a51ca872756fdcf7d4234f228000800abb0a5498ccac649699cb438f3",
     "src-tauri/capabilities/default.json": "bdc4f0efda8502ddbf0cd0a8c8486f9fe2564715d923f3035a44c5fd318f76ef",
     "src-tauri/Cargo.lock": "1d8ec61843be943db2f3f4d6bc1b557e6603e05c9f5d0483edd5805ab9c8407b",
-    "src-tauri/Cargo.toml": "f1bcca169a6e788b1cfb33071a840f983442e84ed12fe0dbc2820e91b59da1e0",
+    "src-tauri/Cargo.toml": "4e611a327d087aae9aab1de637d3805c2fd7dcc26d7725c3b507e3517886ef22",
     "src-tauri/gen/schemas/acl-manifests.json": "6e09a8d1446e2640a18c93fdbb0fdabfb913e31af7ca946dd4b171d6796d8283",
     "src-tauri/gen/schemas/capabilities.json": "ee5989f2da424f6247baacb2e93e445a53d9265f2ab5ad453c738e001f02220d",
     "src-tauri/gen/schemas/desktop-schema.json": "1d75d79fc208fd9703b312646c8ac6ead58e9acdf90e0af236eb2aeef928c9de",
@@ -2545,7 +2552,7 @@
     "src-tauri/src/utils/cwd.rs": "93768a217ca2a882ecc21b89f64d2879b200b46740e583b2aad909b34278eb9a",
     "src-tauri/src/utils/logging.rs": "46f19900bd026d2263c77f606d9d5015849c9af9ade7fa5924ce3f18d5578ade",
     "src-tauri/src/utils/mod.rs": "8cb88ccb081fee74a039088be23f1f1e8b08b50852a28f4b1358ce3a8873b482",
-    "src-tauri/tauri.conf.json": "4f38974d2789ac1c1d6a221bd6ba7847c67f0baef56853e36541ab3467f3079e",
+    "src-tauri/tauri.conf.json": "4f20533ae864343c63df1b46e6f992a6009d4f6d548b05ad48719eb57d50c006",
     "src-tauri/tests/win_manifest_boot.rs": "31a2bb93d3c853c67dde6f31841b9e1e631290b2f9b470f192a752950fab4b31",
     "src-tauri/wix/path-env.wxs": "0b4fa57aab8854d864d5ab1bc68a7b2086491485e9b0d3785da17c58aa6faf2c",
     "static/apple-touch-icon.png": "fcf04070e1ae0e72599b39cf3c118a81c57d01dbb98b894b6ba988bda26cc01e",
@@ -2594,6 +2601,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-2695ad2ab716",
-  "manifestHash": "2695ad2ab71657cceb88842d25cc4432eb31cd8440d3ed221e7ee22be1412b60"
+  "buildId": "BUILD-609ba39a7502",
+  "manifestHash": "609ba39a750262d17408cbac5733d2f04820011829a0efd2cac2ea7fa92b9e33"
 }

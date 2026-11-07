@@ -1,0 +1,39 @@
+---
+id: L4-CLOUD-RELEASE-0198
+level: L4
+title: 0.1.98 Cloud 连接修复发布与验收
+status: LOCKED
+lifecycle: ACTIVE
+parent: L3-REMOTE-INTERACTION-RELIABILITY
+code_targets:
+  - package.json
+  - Cargo.lock
+  - src-tauri/Cargo.toml
+  - src-tauri/tauri.conf.json
+test_targets:
+  - scripts/check-release-version.mjs
+  - scripts/check-release-version.test.mjs
+acceptance_checks:
+  - id: release-version
+    command:
+      - node
+      - scripts/check-release-version.mjs
+    description: 四处产品版本一致为 0.1.98，独立 crate 版本不变
+  - id: release-version-regression
+    command:
+      - pnpm
+      - exec
+      - vitest
+      - run
+      - scripts/check-release-version.test.mjs
+    description: 版本及 tag 契约拒绝缺失或不一致
+depends_on:
+  - L4-CLOUD-HOST-REJOIN-SESSION
+  - L4-CLOUD-TURN-CREDENTIAL-TYPE
+---
+
+# 0.1.98 Cloud 连接修复发布
+
+产品四处版本同步为 0.1.98：package.json、Tauri 配置、桌面 Cargo.toml 以及 Cargo.lock 中的 ridge 包。独立 crate 不升级。以经过仓库门禁的同一提交创建 v0.1.98，使用既有 release.yml 生成四平台安装包和 CLI 草稿，保持 releaseDraft: true。使用 publish-remote.yml 发布桌面与移动 Remote，所有环境变量和秘密只由 GitHub 工作流注入。
+
+真实公网验证须使用用户批准的临时测试设备与独立 Kernel，不干扰既有终端；覆盖正常登录、真实 ICE API、host answer、E2EE、动态码与信任恢复、桌面和移动输入、文件打开、刷新、主机断线重连，以及强制公网 TURN 中继后的原终端操作。记录真实 artifact SHA、工作流 URL、发布资产版本和结果。临时设备结束后撤销并删除。首次加载资源失败或重试不能记为全绿，保留问题证据并明确验收边界。安装替换现有 Kernel 会影响运行中终端，须待安装产物可审阅后单独确认。

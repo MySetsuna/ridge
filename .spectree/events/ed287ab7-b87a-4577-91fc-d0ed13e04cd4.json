@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "id": "ed287ab7-b87a-4577-91fc-d0ed13e04cd4",
+  "at": "2026-11-07T09:31:42.664Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-104",
+  "buildId": "BUILD-ddeeb992c6dd",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-ddeeb992c6dd",
+    "changeId": "CHG-104",
+    "specHash": "0f4db884f79235055917105a0eff80581065ad7bc227ed85ffc101b2b40fbdcf",
+    "workspaceHash": "a45e93fe2c70c79df078d78482ac2db34f7d3cdabee0c64c5e1d45b511ad7a85",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "FAIL",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-CLOUD-RELEASE-0198",
+        "checkId": "release-version",
+        "command": [
+          "node",
+          "scripts/check-release-version.mjs"
+        ],
+        "description": "四处产品版本一致为 0.1.98，独立 crate 版本不变",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-CLOUD-RELEASE-0198",
+        "checkId": "release-version-regression",
+        "command": [
+          "node",
+          "--test",
+          "scripts/check-release-version.test.mjs"
+        ],
+        "description": "版本及 tag 契约拒绝缺失或不一致",
+        "status": "FAIL",
+        "exitCode": 1
+      }
+    ],
+    "valid": false,
+    "verifiedAt": "2026-11-07T09:31:42.662Z",
+    "diagnostics": [
+      {
+        "code": "ACCEPTANCE_E_FAILED",
+        "severity": "ERROR",
+        "message": "release-version-regression: exited with 1",
+        "nodeId": "L4-CLOUD-RELEASE-0198"
+      }
+    ],
+    "fileChanges": [
+      {
+        "path": "Cargo.lock",
+        "before": "db9d1c00b5d4b7faa17e1e80583e03c828b774df239cab4bb21f1f2425626d7f",
+        "after": "14120a6e335ed6e26bbd9ce1d404c2b5aa5c2103b49f74f4dcc2a9668098f9b1"
+      },
+      {
+        "path": "package.json",
+        "before": "b8ed8f33aa1d1c13ddab81bd7fff4aae6eb00e40fe9c4d2817d35d8d1c9574f0",
+        "after": "8a9cfd61d20ba7ded48204c59a63cde247113bc93468b3779ab43c774a18ed7b"
+      },
+      {
+        "path": "src-tauri/Cargo.toml",
+        "before": "f1bcca169a6e788b1cfb33071a840f983442e84ed12fe0dbc2820e91b59da1e0",
+        "after": "4e611a327d087aae9aab1de637d3805c2fd7dcc26d7725c3b507e3517886ef22"
+      },
+      {
+        "path": "src-tauri/tauri.conf.json",
+        "before": "4f38974d2789ac1c1d6a221bd6ba7847c67f0baef56853e36541ab3467f3079e",
+        "after": "4f20533ae864343c63df1b46e6f992a6009d4f6d548b05ad48719eb57d50c006"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/ed287ab7-b87a-4577-91fc-d0ed13e04cd4.log"
+  }
+}

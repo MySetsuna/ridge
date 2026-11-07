@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "cc13dc35-41f5-4414-ad0f-ed7c1c7de195",
+  "at": "2026-11-07T09:30:41.565Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-104",
+  "data": {
+    "changeId": "CHG-104",
+    "specHash": "0f4db884f79235055917105a0eff80581065ad7bc227ed85ffc101b2b40fbdcf",
+    "approvedAt": "2026-11-07T09:30:41.561Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "用户已要求验证后发布新版本，并授权沿用发布 change 元数据例外；保留现有终端，安装最终确认",
+    "attributionVerified": false
+  }
+}
