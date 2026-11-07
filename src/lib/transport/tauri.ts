@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { DataProvider, GitGraphResult, GitStatusResult, SearchResult, ScmRepoStatusRaw } from './types';
 import type { FileNode, DirectoryPage } from '$lib/stores/project';
+import { fileContentHash } from './fileContentHash';
 
 export type DataInvoke = <T>(
   method: string,
@@ -51,6 +52,11 @@ export class TauriDataProvider implements DataProvider {
   }
   async writeFile(path: string, content: string): Promise<void> {
     await this.call('write_file', { path, content });
+  }
+
+  async writeFileIfUnchanged(path: string, content: string, expectedContent: string): Promise<void> {
+    const expectedHash = await fileContentHash(expectedContent);
+    await this.call('write_file_if_unchanged', { path, content, expectedHash });
   }
   async renamePath(from: string, to: string): Promise<void> {
     await this.call('rename_path', { from, to });

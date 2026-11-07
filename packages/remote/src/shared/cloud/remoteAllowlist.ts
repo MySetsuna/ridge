@@ -25,6 +25,7 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   'path_exists',
   'read_file',
   'write_file',
+  'write_file_if_unchanged',
   'apply_file_edits',
   'rename_path',
   'delete_path',
@@ -180,6 +181,7 @@ export const MUTATING_METHODS: readonly string[] = [
   'write_terminal_input',
   // ── Filesystem writes ──
   'write_file',
+  'write_file_if_unchanged',
   'apply_file_edits',
   'rename_path',
   'delete_path',

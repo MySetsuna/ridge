@@ -1,6 +1,7 @@
 import type { DataProvider, GitGraphResult, GitStatusResult, SearchResult, ScmRepoStatusRaw } from './types';
 import type { RemoteConnection } from '@ridge/remote';
 import type { FileNode, DirectoryPage } from '$lib/stores/project';
+import { fileContentHash } from './fileContentHash';
 
 type PendingRequest = {
   resolve: (v: unknown) => void;
@@ -138,6 +139,11 @@ export class WsDataProvider implements DataProvider {
   }
   async writeFile(path: string, content: string): Promise<void> {
     await this.request<void>('write_file', { path, content });
+  }
+
+  async writeFileIfUnchanged(path: string, content: string, expectedContent: string): Promise<void> {
+    const expectedHash = await fileContentHash(expectedContent);
+    await this.request<void>('write_file_if_unchanged', { path, content, expectedHash });
   }
   async renamePath(from: string, to: string): Promise<void> {
     await this.request<void>('rename_path', { from, to });

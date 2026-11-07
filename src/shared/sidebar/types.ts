@@ -99,8 +99,9 @@ export interface SidebarProvider {
   /** Read a file's text content (viewer). `path` is absolute. */
   readFile(path: string, signal?: AbortSignal): Promise<string>;
   refreshFile?(path: string, signal?: AbortSignal): Promise<string>;
-  /** Overwrite a file's text content (editor save). `path` is absolute. */
+  /** Save text at an absolute path. */
   writeFile(path: string, content: string): Promise<void>;
+  writeFileIfUnchanged?(path: string, content: string, expectedContent: string): Promise<void>;
   /** Unified diff of a working-tree file vs HEAD. `path` is repo-relative. */
   gitDiff(path: string, signal?: AbortSignal, cached?: boolean): Promise<string>;
   refreshDiff?(path: string, signal?: AbortSignal, cached?: boolean): Promise<string>;

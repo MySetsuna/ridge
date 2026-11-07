@@ -137,9 +137,10 @@
     saving = true;
     saveError = null;
     const generation = ++saveGeneration;
-    const targetProvider = provider, targetPath = path, submitted = content;
+    const targetProvider = provider, targetPath = path, submitted = content, expected = savedContent;
     try {
-      await targetProvider.writeFile(targetPath, submitted);
+      if (!targetProvider.writeFileIfUnchanged) throw new Error('CONDITIONAL_SAVE_UNAVAILABLE');
+      await targetProvider.writeFileIfUnchanged(targetPath, submitted, expected);
       if (generation !== saveGeneration) return;
       savedContent = submitted;
       dirty = content !== submitted;
@@ -148,7 +149,12 @@
       lines = rows;
       truncated = tr2;
     } catch (e) {
-      if (generation === saveGeneration) saveError = e instanceof Error ? e.message : String(e);
+      if (generation === saveGeneration) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (message.includes('FILE_CONFLICT')) saveError = tr('mobile.viewerConflict');
+        else if (message.includes('CONDITIONAL_SAVE_UNAVAILABLE')) saveError = tr('mobile.viewerSafeSaveUnavailable');
+        else saveError = message;
+      }
     } finally {
       if (generation === saveGeneration) saving = false;
     }

@@ -1,7 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TauriDataProvider, type DataInvoke } from './tauri';
+import { createHash } from 'node:crypto';
 
 describe('TauriDataProvider injected invocation', () => {
+  it('passes the baseline to an explicit conditional command without fallback on failure', async () => {
+    const call=vi.fn(async()=>undefined);
+    const provider=new TauriDataProvider(call as DataInvoke);
+    await provider.writeFileIfUnchanged('/repo/a','next','before');
+    expect(call).toHaveBeenCalledExactlyOnceWith('write_file_if_unchanged',{path:'/repo/a',content:'next',expectedHash:createHash('sha256').update('before').digest('hex')});
+    call.mockClear();
+    call.mockRejectedValueOnce(new Error('FILE_CONFLICT'));
+    await expect(provider.writeFileIfUnchanged('/repo/a','next','before')).rejects.toThrow('FILE_CONFLICT');
+    expect(call).toHaveBeenCalledTimes(1);
+  });
   it('routes filesystem calls through the isolated invoker', async () => {
     const call = vi.fn(async (method: string) => {
       if (method === 'get_file_tree') return { path: '/shared', children: [] };

@@ -1,0 +1,18 @@
+{
+  "changeId": "CHG-096",
+  "nodes": [{
+    "id": "L4-REMOTE-CONDITIONAL-FILE-SAVE",
+    "level": "L4",
+    "title": "Remote 编辑器条件保存与冲突保护",
+    "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+    "codeTargets": ["packages/ridge-core/src/fs/commands.rs", "packages/ridge-core/src/dispatch.rs", "packages/ridge-core/src/capability.rs", "packages/remote/src/shared/cloud/remoteAllowlist.ts", "src/lib/transport/types.ts", "src/lib/transport/ws.ts", "src/lib/transport/tauri.ts", "src/shared/sidebar/types.ts", "src/remote/lib/sidebarProvider.ts", "src/remote/lib/FileViewer.svelte", "src/lib/i18n/messages/mobile.ts"],
+    "testTargets": ["packages/ridge-core/src/dispatch.rs", "packages/remote/src/shared/cloud/remoteAllowlist.test.ts", "src/lib/transport/ws.test.ts", "src/lib/transport/tauri.test.ts", "src/remote/lib/sidebarProvider.test.ts", "scripts/remote-tabs-acceptance.mjs"],
+    "dependsOn": [],
+    "acceptanceChecks": [
+      {"id":"conditional-save-core","command":["cargo","test","--locked","-p","ridge-core","conditional_save"],"description":"从 Core 正常分发入口验证条件保存、并发竞争、已提交重试、无效参数、根目录和只读权限"},
+      {"id":"conditional-save-remote-ui","command":["node","scripts/remote-tabs-acceptance.mjs"],"description":"真实 Remote 编辑组件和隔离 Kernel 上验证外部修改后的冲突、草稿保留、重新读取和明确保存，以及已有保存/断线/PWA/Git 回归"}
+    ],
+    "body": "# Remote 编辑器条件保存\n\n## 契约\n\n新增写命令 `write_file_if_unchanged`，参数 `path`、`content`、`expectedContent` 均为必填字符串。expectedContent 是编辑器最后确认读取或成功保存的完整 UTF-8 原文，空字符串也是有效前置条件。文件不存在或不可读直接失败，不隐式重建文件。\n\n当前文件与 content 完全相同时直接确认，支持提交已成功但回执丢失后的幂等重试。否则只有当前文件与 expectedContent 完全相同才沿现有文件写入实现提交。冲突错误包含稳定标记 `FILE_CONFLICT`，错误不回传文件内容。写入失败按既有 IO 错误上报，客户端保留完整草稿和最后确认快照，不报告已保存。\n\n同一 Runtime 内现有文件写、局部编辑、创建、改名、删除、复制和移动与条件保存使用同一文件变更互斥边界，在取得锁后复核根目录。只读和授权检查在副作用之前拒绝。进程外编辑在条件检查前已发生的变化可检测，此接口不声明对不参与 Runtime 互斥的进程外写入提供跨进程原子 CAS。\n\n## 客户端\n\nDataProvider 和 SidebarProvider 的 writeFile 增加可选 expectedContent。原两参数调用沿用旧命令；Remote FileViewer 始终提供其已确认快照，因此使用新命令。LAN 与 Cloud 同源，Tauri 共享调用者支持相同参数。旧 Host 不认识新命令时保留草稿并显示失败，禁止退回无条件保存。\n\n冲突提示明确说明其他端修改、草稿保留，以及复制草稿、重新读取、合并后保存的路径。显式重新读取沿用未保存确认和强制刷新。发送中继续编辑、目标切换、PWA 保存后更新保持现有 generation fence，迟到回执只能确认原目标与原提交快照。成功后才更新已保存快照和失效文件/Git 缓存。\n\n## 验收\n\n覆盖外部编辑已先提交、同一基线的两个 Runtime 保存竞争、成功后重试、内容相同、空文件、缺失文件、参数缺失、只读、越权和路径遍历。传输分别证明旧调用与条件调用的命令字段、错误透传和无静默回退。真实 UI 在冲突时保留草稿与磁盘新内容，明确重新读取后才能以新快照保存。保留断线不重放、迟到 ACK、新输入、目标切换、PWA 及 Git 验收。"
+  }],
+  "remove": []
+}

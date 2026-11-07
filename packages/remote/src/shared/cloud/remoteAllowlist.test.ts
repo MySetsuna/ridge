@@ -106,6 +106,10 @@ describe('isMutatingMethod', () => {
 });
 
 describe('mirror integrity (vs capability.rs)', () => {
+  it('classifies conditional saves as remote mutations for the read-only gate', () => {
+    expect(isRemoteAllowed('write_file_if_unchanged')).toBe(true);
+    expect(isMutatingMethod('write_file_if_unchanged')).toBe(true);
+  });
   it('admits the rebuilt terminal RPCs while protecting input from read-only sessions', () => {
     for (const method of ['write_terminal_input','get_terminal_snapshot','get_terminal_history']) expect(isRemoteAllowed(method)).toBe(true);
     expect(isMutatingMethod('write_terminal_input')).toBe(true);

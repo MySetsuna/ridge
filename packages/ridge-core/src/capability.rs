@@ -133,6 +133,7 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "path_exists",
     "read_file",
     "write_file",
+    "write_file_if_unchanged",
     "apply_file_edits",
     "rename_path",
     "delete_path",
@@ -301,6 +302,7 @@ pub const MUTATING_METHODS: &[&str] = &[
     "write_terminal_input",
     // ── Filesystem writes ──
     "write_file",
+    "write_file_if_unchanged",
     "apply_file_edits",
     "rename_path",
     "delete_path",

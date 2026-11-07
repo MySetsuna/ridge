@@ -82,6 +82,24 @@ afterEach(() => {
 });
 
 describe('remote sidebar query contract', () => {
+  it('forwards the confirmed baseline and keeps cached snapshots on a rejected save', async () => {
+    const writeFileIfUnchanged=vi.fn<NonNullable<DataProvider['writeFileIfUnchanged']>>(async()=>{ throw new Error('FILE_CONFLICT'); });
+    const dp=makeProvider({writeFileIfUnchanged});
+    const client=new TestQueryClient();
+    const sidebar=createWsSidebarProvider('/repo',dp,{queryClient:client,sessionId:96});
+    await expect(sidebar.readFile('/repo/a')).resolves.toBe('content');
+    await expect(sidebar.writeFileIfUnchanged!('/repo/a','new draft','old confirmed')).rejects.toThrow('FILE_CONFLICT');
+    expect(writeFileIfUnchanged).toHaveBeenCalledExactlyOnceWith('/repo/a','new draft','old confirmed');
+    expect(client.invalidations).toEqual([]);
+    await expect(sidebar.readFile('/repo/a')).resolves.toBe('content');
+    expect(dp.readFile).toHaveBeenCalledTimes(1);
+  });
+  it('refuses a legacy adapter instead of silently using its unconditional write', async () => {
+    const dp=makeProvider();
+    const sidebar=createWsSidebarProvider('/repo',dp);
+    await expect(sidebar.writeFileIfUnchanged!('/repo/a','draft','confirmed')).rejects.toThrow('CONDITIONAL_SAVE_UNAVAILABLE');
+    expect(dp.writeFile).not.toHaveBeenCalled();
+  });
   it('uses stable, session- and cwd-scoped keys', () => {
     expect(remoteQueryKeys.sidebarFiles(4, 'C:\\Repo\\', 'C:\\Repo\\', 1))
       .toEqual(['remote', 4, 'sidebar', '', '', '', 'files', 'c:/repo', 'c:/repo', 1]);

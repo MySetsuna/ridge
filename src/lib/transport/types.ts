@@ -44,6 +44,8 @@ export interface DataProvider {
   pathExists(path: string): Promise<boolean>;
   readFile(path: string, signal?: AbortSignal): Promise<string>;
   writeFile(path: string, content: string): Promise<void>;
+  /** Explicit capability so legacy adapters cannot silently ignore the baseline. */
+  writeFileIfUnchanged?(path: string, content: string, expectedContent: string): Promise<void>;
   renamePath(from: string, to: string): Promise<void>;
   deletePath(path: string): Promise<void>;
   createFile(path: string): Promise<void>;

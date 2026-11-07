@@ -308,6 +308,18 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&file_path, content).map_err(|e| format!("写入文件失败: {}", e))
 }
 
+/// Check the SHA-256 precondition under the caller's Core filesystem mutation lock.
+pub fn write_file_if_unchanged(path: String, content: String, expected: String) -> Result<(), String> {
+    let current = std::fs::read_to_string(&path)
+        .map_err(|error| format!("读取保存前置条件失败: {error}"))?;
+    if current == content { return Ok(()); }
+    use sha2::Digest;
+    if format!("{:x}", sha2::Sha256::digest(current.as_bytes())) != expected {
+        return Err("FILE_CONFLICT: file changed since it was read".into());
+    }
+    write_file(path, content)
+}
+
 /// A single Monaco `IModelContentChange`. Offsets/lengths are **UTF-16 code
 /// units** (JS string semantics), NOT bytes or Unicode scalar values.
 #[derive(Debug, serde::Deserialize)]

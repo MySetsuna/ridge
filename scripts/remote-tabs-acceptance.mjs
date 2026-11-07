@@ -51,7 +51,7 @@ try {
   await page.goto(url);await page.locator('input[inputmode="numeric"]').waitFor();
   await page.evaluate(async moduleUrl=>{
     const {WsDataProvider}=await import(moduleUrl);window.probe={counts:{},gates:{},fail:{},pending:{},completed:{},calls:{}};
-    for(const method of ['getFileTree','readFile','writeFile','gitStatus','gitGraph','gitDiffFile','searchFiles','gitStage','gitUnstage','gitCommit']){
+    for(const method of ['getFileTree','readFile','writeFile','writeFileIfUnchanged','gitStatus','gitGraph','gitDiffFile','searchFiles','gitStage','gitUnstage','gitCommit']){
       const original=WsDataProvider.prototype[method];WsDataProvider.prototype[method]=async function(...args){
         const key=method+':'+args[0];window.probe.counts[key]=(window.probe.counts[key]??0)+1;
         window.probe.dp=this;
@@ -106,7 +106,7 @@ try {
   evidence.checks.push('Four warm files/search/Git cycles add no file-tree, search, Git status or graph RPC');
   await tab(0);await page.getByRole('button',{name:'inner.txt',exact:true}).click();
   await page.locator('.v-header button[title]').filter({has:page.locator('svg.lucide-pencil')}).click();
-  await page.locator('.editor').fill('SUBMITTED\n');const saveKey='writeFile:'+path.join(cwd,'nested','inner.txt');
+  await page.locator('.editor').fill('SUBMITTED\n');const saveKey='writeFileIfUnchanged:'+path.join(cwd,'nested','inner.txt');
   await page.evaluate(key=>window.probe.hold=key,saveKey);await page.locator('.v-header button').filter({has:page.locator('svg.lucide-save')}).click();
   await page.waitForFunction(key=>window.probe.pending[key],saveKey);await page.locator('.editor').fill('NEWER_UNSAVED\n');
   await expect(page.locator('.v-header button[aria-label]')).toBeDisabled();await page.evaluate(key=>{window.probe.hold=undefined;window.probe.gates[key]();},saveKey);
@@ -127,6 +127,34 @@ try {
   evidence.checks.push('Late save ACK confirms the submitted snapshot only; subsequent typing remains dirty and requires a second explicit save');
   await page.getByRole('button',{name:'inner.txt',exact:true}).click();
   await page.locator('.v-header button').filter({has:page.locator('svg.lucide-pencil')}).click();
+  await page.locator('.editor').fill('STALE_CONDITIONAL_DRAFT\n');
+  fs.writeFileSync(path.join(cwd,'nested','inner.txt'),'EXTERNAL_EDITOR_CONTENT\n');
+  await page.locator('.v-header button').filter({has:page.locator('svg.lucide-save')}).click();
+  await expect(page.locator('.v-saveerr')).toContainText(/草稿已保留|draft is preserved/);
+  await expect(page.locator('.editor')).toHaveValue('STALE_CONDITIONAL_DRAFT\n');
+  assert.equal(fs.readFileSync(path.join(cwd,'nested','inner.txt'),'utf8'),'EXTERNAL_EDITOR_CONTENT\n');
+  await page.screenshot({path:path.join(evidenceDir,'file-conflict-protection.png')});
+  page.once('dialog',dialog=>dialog.accept());
+  await page.locator('.v-header button').filter({has:page.locator('svg.lucide-refresh-cw')}).click();
+  await expect(page.locator('.v-body')).toContainText('EXTERNAL_EDITOR_CONTENT');
+  await page.locator('.v-header button').filter({has:page.locator('svg.lucide-pencil')}).click();
+  await page.locator('.editor').fill('MERGED_CONDITIONAL_SAVE\n');
+  await page.locator('.v-header button').filter({has:page.locator('svg.lucide-save')}).click();
+  await expect(page.locator('.dirty-dot')).toHaveCount(0);
+  assert.equal(fs.readFileSync(path.join(cwd,'nested','inner.txt'),'utf8'),'MERGED_CONDITIONAL_SAVE\n');
+  evidence.checks.push('Conditional save rejects a real external edit, preserves the mobile draft and newer disk content, then saves only after explicit reload and merge');
+  await page.locator('.editor').fill('LEGACY_ADAPTER_DRAFT\n');
+  const legacyWrites=await page.evaluate(key=>{
+    window.probe.dp.writeFileIfUnchanged=undefined;
+    return window.probe.counts[key]??0;
+  },'writeFile:'+path.join(cwd,'nested','inner.txt'));
+  await page.locator('.v-header button').filter({has:page.locator('svg.lucide-save')}).click();
+  await expect(page.locator('.v-saveerr')).toContainText(/不支持条件保存|does not support conditional saves/);
+  await expect(page.locator('.editor')).toHaveValue('LEGACY_ADAPTER_DRAFT\n');
+  assert.equal(await page.evaluate(key=>window.probe.counts[key]??0,'writeFile:'+path.join(cwd,'nested','inner.txt')),legacyWrites);
+  assert.equal(fs.readFileSync(path.join(cwd,'nested','inner.txt'),'utf8'),'MERGED_CONDITIONAL_SAVE\n');
+  await page.evaluate(()=>{delete window.probe.dp.writeFileIfUnchanged;});
+  evidence.checks.push('An injected legacy adapter without conditional-save capability preserves its draft and invokes no unconditional write');
   await page.locator('.editor').fill('UPDATE_BUFFER\n');
   const guardedUpdate=await page.evaluate(async()=>{
     const updates=await import('/lib/pwaUpdate.ts');window.pwaProbe={updates,reloads:0};

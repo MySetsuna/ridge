@@ -163,6 +163,13 @@ export function createWsSidebarProvider(
     normalizeRemotePath(root),
   ];
 
+  const invalidateFileWrite = (path: string): Promise<void> => invalidate(
+    remoteQueryKeys.sidebarFile(sessionId, root, path, scope),
+    remoteQueryKeys.sidebarDiff(sessionId, root, path, scope),
+    remoteQueryKeys.sidebarGit(sessionId, root, scope),
+    searchPrefix(),
+  );
+
   const readGraph = async (signal?: AbortSignal): Promise<GitGraph> => {
     if (dp.gitGraph) {
       const graph = await dp.gitGraph(root, signal);
@@ -407,15 +414,13 @@ export function createWsSidebarProvider(
 
     async writeFile(path: string, content: string): Promise<void> {
       await dp.writeFile(path, content);
-      // A file write changes its read/diff snapshots, Git status, and any
-      // search result rooted at this repository. Keep unrelated directories
-      // and Graph history cached.
-      await invalidate(
-        remoteQueryKeys.sidebarFile(sessionId, root, path, scope),
-        remoteQueryKeys.sidebarDiff(sessionId, root, path, scope),
-        remoteQueryKeys.sidebarGit(sessionId, root, scope),
-        searchPrefix(),
-      );
+      await invalidateFileWrite(path);
+    },
+
+    async writeFileIfUnchanged(path: string, content: string, expectedContent: string): Promise<void> {
+      if (!dp.writeFileIfUnchanged) throw new Error('CONDITIONAL_SAVE_UNAVAILABLE');
+      await dp.writeFileIfUnchanged(path, content, expectedContent);
+      await invalidateFileWrite(path);
     },
 
     async gitStage(paths: string[], signal?: AbortSignal): Promise<void> {

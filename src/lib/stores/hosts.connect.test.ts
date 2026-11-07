@@ -74,6 +74,7 @@ vi.mock('$lib/remote/cloud/legacyControllerIdentity', () => ({ readLegacyControl
 vi.mock('@ridge/remote/shared/cloud/apiClient', async importOriginal => ({
   ...await importOriginal<typeof import('@ridge/remote/shared/cloud/apiClient')>(),
   listSharedWithMe: vi.fn(async () => ({ shares: [] })),
+  listWorkspaceShares: vi.fn(async () => ({ shares: [] })),
 }));
 vi.mock('@ridge/remote/shared/cloud/auth', async importOriginal => ({
   ...await importOriginal<typeof import('@ridge/remote/shared/cloud/auth')>(),

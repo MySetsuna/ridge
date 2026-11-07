@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { fileContentHash } from './fileContentHash';
 import type { RemoteConnection } from '@ridge/remote';
 import { WsDataProvider } from './ws';
 
@@ -24,6 +26,40 @@ function fakeConnection() {
 }
 
 describe('WsDataProvider lifecycle', () => {
+  it('hashes empty, Unicode, BOM and CRLF baselines as exact UTF-8', async () => {
+    for (const text of ['', '\uFEFF原文\r\n', 'before']) {
+      expect(await fileContentHash(text)).toBe(createHash('sha256').update(text,'utf8').digest('hex'));
+    }
+  });
+  it('keeps the wire precondition bounded when the previous file is large', async () => {
+    const connection=fakeConnection();
+    connection.send.mockImplementation((payload:{_reqId:number})=>queueMicrotask(()=>connection.emitMessage({_reqId:payload._reqId,_result:null})));
+    const provider=new WsDataProvider(connection as unknown as RemoteConnection);
+    await provider.writeFileIfUnchanged('/repo/large','new text','x'.repeat(2*1024*1024));
+    const request=connection.send.mock.calls[0][0] as Record<string,unknown>;
+    expect(String(request.expectedHash)).toHaveLength(64);
+    expect(JSON.stringify(request).length).toBeLessThan(512);
+    provider.dispose();
+  });
+  it('uses the explicit conditional command and never falls back after a conflict or unsupported command', async () => {
+    const connection=fakeConnection();
+    connection.send.mockImplementation((payload:{_reqId:number})=>queueMicrotask(()=>connection.emitMessage({_reqId:payload._reqId,_result:null})));
+    const provider=new WsDataProvider(connection as unknown as RemoteConnection);
+    await provider.writeFileIfUnchanged('/repo/a','next','before');
+    expect(connection.send).toHaveBeenLastCalledWith(expect.objectContaining({method:'write_file_if_unchanged',path:'/repo/a',content:'next',expectedHash:createHash('sha256').update('before').digest('hex')}));
+    expect(connection.send.mock.calls.at(-1)?.[0]).not.toHaveProperty('expectedContent');
+    await provider.writeFile('/repo/a','legacy');
+    expect(connection.send).toHaveBeenLastCalledWith(expect.objectContaining({method:'write_file',path:'/repo/a',content:'legacy'}));
+    connection.send.mockClear();
+    connection.send.mockImplementation((payload:{_reqId:number})=>queueMicrotask(()=>connection.emitMessage({_reqId:payload._reqId,_error:'FILE_CONFLICT'})));
+    await expect(provider.writeFileIfUnchanged('/repo/a','next','before')).rejects.toThrow('FILE_CONFLICT');
+    expect(connection.send).toHaveBeenCalledTimes(1);
+    connection.send.mockClear();
+    connection.send.mockImplementation((payload:{_reqId:number})=>queueMicrotask(()=>connection.emitMessage({_reqId:payload._reqId,_error:'command not available'})));
+    await expect(provider.writeFileIfUnchanged('/repo/a','next','before')).rejects.toThrow('command not available');
+    expect(connection.send).toHaveBeenCalledTimes(1);
+    provider.dispose();
+  });
   it('rejects a new offline read/write immediately without queueing or replaying it', async () => {
     const connection=fakeConnection();const provider=new WsDataProvider(connection as unknown as RemoteConnection);
     connection.emitState('disconnected');await expect(provider.writeFile('/repo/a','unsaved')).rejects.toThrow('not connected');

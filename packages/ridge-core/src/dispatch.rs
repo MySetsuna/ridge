@@ -172,7 +172,17 @@ pub fn validate_request(method: &str, args: &Value, ctx: &Ctx) -> CoreResult<Str
     }
 }
 
+static FILE_MUTATIONS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn dispatch_admitted(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
+    // Serialize cooperating filesystem mutations, then recheck roots after waiting.
+    let _file_mutation = if matches!(method, "write_file" | "write_file_if_unchanged" | "apply_file_edits"
+        | "rename_path" | "delete_path" | "create_file" | "create_directory" | "copy_path" | "move_path")
+    {
+        let guard = FILE_MUTATIONS.lock().map_err(|_| CoreError::internal("filesystem mutation lock unavailable"))?;
+        sandbox_guard(method, &args, ctx.capabilities().root_scope())?;
+        Some(guard)
+    } else { None };
     // Entry after protocol admission (admit_desktop_method) + capability check.
     // 2. Path-traversal guard.
 
@@ -500,6 +510,20 @@ fn dispatch_admitted(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> 
                 .map_err(CoreError::internal)?;
             Ok(Value::Null)
         }
+        "write_file_if_unchanged" => {
+            for key in ["path", "content", "expectedHash"] {
+                if !args[key].is_string() {
+                    return Err(CoreError::InvalidArgs(format!("{key} must be a string")));
+                }
+            }
+            let expected = s(&args, "expectedHash");
+            if expected.len() != 64 || !expected.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
+                return Err(CoreError::InvalidArgs("expectedHash must be a lowercase SHA-256 hex digest".into()));
+            }
+            fs_commands::write_file_if_unchanged(s(&args, "path"), s(&args, "content"), expected)
+                .map_err(CoreError::internal)?;
+            Ok(Value::Null)
+        }
         "apply_file_edits" => {
             let edits: Vec<fs_commands::TextEdit> =
                 serde_json::from_value(args.get("edits").cloned().unwrap_or(Value::Null))
@@ -557,6 +581,7 @@ fn dispatch_admitted(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> 
 
 #[cfg(test)]
 mod tests {
+    use sha2::Digest;
     use super::*;
     use crate::capability::CapabilitySet;
     use crate::commands::settings::{HostStateAccessor, UserDefaultCwdStore};
@@ -756,6 +781,81 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn conditional_save_preserves_conflicts_and_confirms_a_committed_retry() {
+        let root = tmp_nonrepo("conditional_save");
+        let file = root.join("draft.txt");
+        let (ctx, _) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default().with_roots([&root]));
+        std::fs::write(&file, "原文\r\n").unwrap();
+        let save = |content: &str, expected: &str| dispatch("write_file_if_unchanged",
+            serde_json::json!({"path":file,"content":content,"expectedHash":format!("{:x}",sha2::Sha256::digest(expected.as_bytes()))}), &ctx);
+        save("首次保存\n", "原文\r\n").unwrap();
+        save("首次保存\n", "原文\r\n").unwrap();
+        std::fs::write(&file, "OTHER_EDITOR").unwrap();
+        assert!(save("STALE_DRAFT", "首次保存\n").unwrap_err().to_string().contains("FILE_CONFLICT"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "OTHER_EDITOR");
+        save("", "OTHER_EDITOR").unwrap();
+        save("EMPTY_BASE", "").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "EMPTY_BASE");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn conditional_save_allows_one_winner_for_concurrent_requests_from_the_same_baseline() {
+        let root = tmp_nonrepo("conditional_save_concurrent");
+        let file = root.join("draft.txt");
+        std::fs::write(&file, "BASE").unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let workers: Vec<_> = (0..8).map(|index| {
+            let file = file.clone();
+            let root = root.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let (ctx, _) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default().with_roots([&root]));
+                barrier.wait();
+                dispatch("write_file_if_unchanged", serde_json::json!({"path":file,"content":format!("WRITER_{index}"),"expectedHash":format!("{:x}",sha2::Sha256::digest(b"BASE"))}), &ctx)
+            })
+        }).collect();
+        let results: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        for failure in results.into_iter().filter_map(Result::err) {
+            assert!(failure.to_string().contains("FILE_CONFLICT"));
+        }
+        assert!(std::fs::read_to_string(file).unwrap().starts_with("WRITER_"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn conditional_save_requires_exact_arguments_and_existing_authority_before_io() {
+        let root = tmp_nonrepo("conditional_save_authority");
+        let file = root.join("draft.txt");
+        std::fs::write(&file, "BASE").unwrap();
+        let request = serde_json::json!({"path":file,"content":"NEW","expectedHash":format!("{:x}",sha2::Sha256::digest(b"BASE"))});
+        let (read_ctx, _) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::from_methods(["read_file"]));
+        assert!(crate::capability::is_mutating("write_file_if_unchanged"));
+        assert_eq!(dispatch("write_file_if_unchanged", request.clone(), &read_ctx).unwrap_err().kind_tag(), "capability_denied");
+        let (ctx, _) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default().with_roots([&root]));
+        let mut missing = request.clone();
+        missing.as_object_mut().unwrap().remove("expectedHash");
+        assert_eq!(dispatch("write_file_if_unchanged", missing, &ctx).unwrap_err().kind_tag(), "invalid_args");
+        let mut invalid = request.clone();
+        invalid["expectedHash"] = serde_json::json!("not-a-hash");
+        assert_eq!(dispatch("write_file_if_unchanged", invalid, &ctx).unwrap_err().kind_tag(), "invalid_args");
+        let mut outside = request.clone();
+        outside["path"] = serde_json::json!(std::env::temp_dir().join("ridge-save-outside.txt"));
+        assert_eq!(dispatch("write_file_if_unchanged", outside, &ctx).unwrap_err().kind_tag(), "outside_sandbox");
+        let mut traversal = request.clone();
+        traversal["path"] = serde_json::json!(root.join("..").join("draft.txt"));
+        assert_eq!(dispatch("write_file_if_unchanged", traversal, &ctx).unwrap_err().kind_tag(), "path_traversal");
+        let missing_file = root.join("not-created.txt");
+        let mut absent = request;
+        absent["path"] = serde_json::json!(missing_file);
+        assert!(dispatch("write_file_if_unchanged", absent, &ctx).is_err());
+        assert!(!missing_file.exists());
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "BASE");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     // ── Git 只读收口（R0 样板 A）──
