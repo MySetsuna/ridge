@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "7fb059ba-c77f-4217-85a1-e5d0622170b5",
+  "at": "2026-11-07T10:23:55.486Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-109",
+  "data": {
+    "title": "发布通过公网和 Linux 回归的 0.1.99 连接修复",
+    "implementation": "REQUIRED"
+  }
+}

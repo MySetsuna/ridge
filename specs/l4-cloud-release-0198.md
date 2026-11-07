@@ -1,7 +1,7 @@
 ---
 id: L4-CLOUD-RELEASE-0198
 level: L4
-title: 0.1.98 Cloud 连接修复发布与验收
+title: Cloud 连接修复版本发布与验收
 status: LOCKED
 lifecycle: ACTIVE
 parent: L3-REMOTE-INTERACTION-RELIABILITY
@@ -18,7 +18,7 @@ acceptance_checks:
     command:
       - node
       - scripts/check-release-version.mjs
-    description: 四处产品版本一致为 0.1.98，独立 crate 版本不变
+    description: 四处产品版本一致为 0.1.99，独立 crate 版本不变
   - id: release-version-regression
     command:
       - pnpm
@@ -29,11 +29,15 @@ acceptance_checks:
     description: 版本及 tag 契约拒绝缺失或不一致
 depends_on:
   - L4-CLOUD-HOST-REJOIN-SESSION
+  - L4-CLOUD-MOBILE-REAUTH-GATE
   - L4-CLOUD-TURN-CREDENTIAL-TYPE
+  - L4-COMMUNE-LINUX-PROCESS-OBSERVATION
 ---
 
-# 0.1.98 Cloud 连接修复发布
+# Cloud 连接修复版本发布
 
-产品四处版本同步为 0.1.98：package.json、Tauri 配置、桌面 Cargo.toml 以及 Cargo.lock 中的 ridge 包。独立 crate 不升级。以经过仓库门禁的同一提交创建 v0.1.98，使用既有 release.yml 生成四平台安装包和 CLI 草稿，保持 releaseDraft: true。使用 publish-remote.yml 发布桌面与移动 Remote，所有环境变量和秘密只由 GitHub 工作流注入。
+产品四处版本同步为 0.1.99：package.json、Tauri 配置、桌面 Cargo.toml 及 Cargo.lock 的 ridge 包，独立 crate 不升级。v0.1.98 保留，不移动已有 tag。以同一通过仓库门禁的提交创建 v0.1.99，通过既有 release.yml 生成四平台桌面安装包和 CLI 草稿，保持 releaseDraft: true。通过 publish-remote.yml 发布桌面、移动 Remote；环境变量与秘密只由 GitHub 工作流注入。
 
-真实公网验证须使用用户批准的临时测试设备与独立 Kernel，不干扰既有终端；覆盖正常登录、真实 ICE API、host answer、E2EE、动态码与信任恢复、桌面和移动输入、文件打开、刷新、主机断线重连，以及强制公网 TURN 中继后的原终端操作。记录真实 artifact SHA、工作流 URL、发布资产版本和结果。临时设备结束后撤销并删除。首次加载资源失败或重试不能记为全绿，保留问题证据并明确验收边界。安装替换现有 Kernel 会影响运行中终端，须待安装产物可审阅后单独确认。
+修复包含 Kernel TURN Password 类型、早到 ICE、主机重入后完整加密会话重建、移动端重连鉴权门，以及 Linux 完整映像与线程排除。Windows 和 Linux 的真实 Kernel 回归、仓库测试与版本契约均须通过。桌面、移动的实际公网 ICE/answer、加密鉴权、终端输入、文件打开、刷新和主机重连已在独立 Kernel 验证，其中强制 TURN 中继须以实际 relay candidate 和原 shell 执行标记取证。发布后复核 Remote artifact 版本、SHA、工作流及安装包来源。真实手机触控环境仍由后续设备提供，浏览器移动布局不可冒充真机。
+
+临时设备结束后撤销、删除并清理独立 Kernel，正式 Kernel 与用户现有终端不因测试重启。安装替换须在产物可审阅后确认。首次资源加载重试、尺寸 RPC 超时及未验收的设备能力保留证据，不宣称所有 Remote 功能全面通过。

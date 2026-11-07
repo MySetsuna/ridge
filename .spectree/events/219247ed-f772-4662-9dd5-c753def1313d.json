@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "id": "219247ed-f772-4662-9dd5-c753def1313d",
+  "at": "2026-11-07T10:24:56.859Z",
+  "type": "applied",
+  "source": "local_operation",
+  "changeId": "CHG-109",
+  "data": {
+    "added": [],
+    "changed": [
+      "L4-CLOUD-RELEASE-0198"
+    ],
+    "retiring": [],
+    "patch": {
+      "changeId": "CHG-109",
+      "nodes": [
+        {
+          "id": "L4-CLOUD-RELEASE-0198",
+          "level": "L4",
+          "title": "Cloud 连接修复版本发布与验收",
+          "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+          "codeTargets": [
+            "package.json",
+            "Cargo.lock",
+            "src-tauri/Cargo.toml",
+            "src-tauri/tauri.conf.json"
+          ],
+          "testTargets": [
+            "scripts/check-release-version.mjs",
+            "scripts/check-release-version.test.mjs"
+          ],
+          "dependsOn": [
+            "L4-CLOUD-HOST-REJOIN-SESSION",
+            "L4-CLOUD-MOBILE-REAUTH-GATE",
+            "L4-CLOUD-TURN-CREDENTIAL-TYPE",
+            "L4-COMMUNE-LINUX-PROCESS-OBSERVATION"
+          ],
+          "body": "# Cloud 连接修复版本发布\n\n产品四处版本同步为 0.1.99：package.json、Tauri 配置、桌面 Cargo.toml 及 Cargo.lock 的 ridge 包，独立 crate 不升级。v0.1.98 保留，不移动已有 tag。以同一通过仓库门禁的提交创建 v0.1.99，通过既有 release.yml 生成四平台桌面安装包和 CLI 草稿，保持 releaseDraft: true。通过 publish-remote.yml 发布桌面、移动 Remote；环境变量与秘密只由 GitHub 工作流注入。\n\n修复包含 Kernel TURN Password 类型、早到 ICE、主机重入后完整加密会话重建、移动端重连鉴权门，以及 Linux 完整映像与线程排除。Windows 和 Linux 的真实 Kernel 回归、仓库测试与版本契约均须通过。桌面、移动的实际公网 ICE/answer、加密鉴权、终端输入、文件打开、刷新和主机重连已在独立 Kernel 验证，其中强制 TURN 中继须以实际 relay candidate 和原 shell 执行标记取证。发布后复核 Remote artifact 版本、SHA、工作流及安装包来源。真实手机触控环境仍由后续设备提供，浏览器移动布局不可冒充真机。\n\n临时设备结束后撤销、删除并清理独立 Kernel，正式 Kernel 与用户现有终端不因测试重启。安装替换须在产物可审阅后确认。首次资源加载重试、尺寸 RPC 超时及未验收的设备能力保留证据，不宣称所有 Remote 功能全面通过。",
+          "acceptanceChecks": [
+            {
+              "id": "release-version",
+              "command": [
+                "node",
+                "scripts/check-release-version.mjs"
+              ],
+              "description": "四处产品版本一致为 0.1.99，独立 crate 版本不变"
+            },
+            {
+              "id": "release-version-regression",
+              "command": [
+                "pnpm",
+                "exec",
+                "vitest",
+                "run",
+                "scripts/check-release-version.test.mjs"
+              ],
+              "description": "版本及 tag 契约拒绝缺失或不一致"
+            }
+          ]
+        }
+      ],
+      "remove": []
+    }
+  }
+}

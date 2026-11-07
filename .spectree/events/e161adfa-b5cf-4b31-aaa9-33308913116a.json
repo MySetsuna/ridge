@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "e161adfa-b5cf-4b31-aaa9-33308913116a",
+  "at": "2026-11-07T10:24:57.981Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-109",
+  "data": {
+    "changeId": "CHG-109",
+    "specHash": "4dbfe7498e60df721c654cac99dc59a3db151e48047ff4b4cd921cda3854010a",
+    "approvedAt": "2026-11-07T10:24:57.978Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "沿用用户发布授权及元数据例外；0.1.98 门禁失败后使用新版本，不移动旧 tag",
+    "attributionVerified": false
+  }
+}
