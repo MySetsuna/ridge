@@ -1,0 +1,33 @@
+{
+  "remove": [],
+  "nodes": [
+    {
+      "id": "L3-COMMUNE-MEMBER-EXPERIENCE",
+      "body": "# 重整 Commune 成员接入、协作入口与编组体验\n\n用户指出“协议操作”难以理解、已有会话接入却无法使用身份/历史/派发/审批、列表已有成员但编组无候选。本变更集中规划和实施这些产品闭环，优先级高于文件/PWA和外围视觉改造。\n\n## 已核对缺口\n\n1. TerminalAgentRow 将连接入口及已连接成员的派发、审批折叠在“协议操作”内。用户须先展开终端交互，再展开协作内容。\n2. 桌面和 Remote 的成员计数含 discovered，HostCommuneGroups 却仅接收 protocol roster。编组后端又要求 protocol_binding。看到的人数与可编组人数不同。\n3. 建组列表排除任何已有组的成员，既不显示所属组，也不提供移动入口。空态无法说明原因。\n4. 自动接入已有 supervisor，但依赖 Agent profile.connection 的 protocol、autoConnect 与运行方 descriptorFile。配置和人工接入仍是 JSON。自动识别普通 CLI 并不等于已完成精确 session 接入。\n5. Runtime 已有 ACP/app-server 会话握手、真实身份、协议历史、Hub 派发和权限桥。实际用户所用会话的能力与全链路覆盖仍须验收，不能用 fixture 宣称全部外部 Agent 可用。\n\n## 推荐实施顺序\n\n1. 统一成员呈现和操作层级，提供成员名、来源、当前目录、会话状态和各项能力。身份和能力详情放高级信息。正常操作直接命名“发送任务”“查看对话”“待审批”“加入编组”。\n2. 完成会话接入向导。已取得可信描述时自动填充并校验，缺少描述、无匹配 session、鉴权失败、历史读取不支持分别给出原因与可执行下一步。正常路径无需手写 JSON。保留既有进程、已有会话和 native-only 登记边界。\n3. 身份、历史、派发和审批逐项建立真实 Agent 验收矩阵。连接完成即呈现已核实的能力与状态；协议历史覆盖不足显示起点和缺失范围，外部执行未提供审批事件时明确说明。不能用终端末屏冒充对话历史，不能用终端文本注入冒充结构化派发。\n4. 编组向导显示全部成员及所属组、能力和限制原因。组织成员与派发资格分别表达。推荐允许终端成员加入组织编组，在显式用户操作时建立稳定成员记录；后续精确接入绑定到同一记录，保留编组，任务冻结实际会话代际。此项涉及成员/组持久化契约，须单独定版和迁移设计后应用权威规范。现有单主组约束先保留，增加明确移动操作。\n5. 组详情提供添加成员、调整组长、发送共同任务、逐员分工、审阅目标、确认派发、逐员进度、待审批和结果汇总。先打通完整用户旅程，随后统一桌面/手机布局、触控和视觉。\n\n## 最低验收\n\n真实已有会话接入后，同一成员卡能验证身份、查看明确覆盖范围的对话、发送一次任务、处理真实工具审批并返回原任务；不新建替身会话。两个跨工作区同名成员精确区分。普通终端成员、已连接成员、已归组成员、失联成员均可在建组界面找到并解释可操作性。组织编组先于协议连接的成员，在接入后仍属原组。无派发能力成员不产生协议或终端输入副作用。Remote 使用 Host 已核实状态，保留权限边界。实际外部 Agent、真实手机与 LAN/Cloud 路由分别记录，缺失则标待验收。\n\n## 当前状态\n\n产品规划草案，尚未应用其成员身份和组织编组契约。消息防重与回执修复已由 CHG-091 独立完成。CWD 同步缺陷由 CHG-093 修复。\n",
+      "testTargets": [
+        "packages/ridge-kernel/tests/commune_registration.rs",
+        "scripts/commune-global-ui-acceptance.mjs",
+        "src/lib/teammate/communeMembership.test.ts",
+        "src/lib/teammate/teammateGroups.test.ts"
+      ],
+      "codeTargets": [
+        "src/lib/teammate/AgentCenterPanel.svelte",
+        "src/lib/teammate/TerminalAgentRow.svelte",
+        "src/lib/teammate/AgentMemberRow.svelte",
+        "src/lib/teammate/HostCommuneGroups.svelte",
+        "src/lib/teammate/communeMembership.ts",
+        "src/lib/teammate/teammateGroups.svelte.ts",
+        "src/remote/lib/GlobalCommuneRoster.svelte",
+        "src/remote/lib/CommuneWorkspaceRoster.svelte",
+        "packages/ridge-kernel/src/agent_discovery.rs",
+        "packages/ridge-kernel/src/commune.rs",
+        "packages/ridge-kernel/src/commune_groups.rs"
+      ],
+      "parent": "L2-UNIFIED-CLIENT-RUNTIME",
+      "level": "L3",
+      "dependsOn": [],
+      "title": "Commune 统一成员、会话接入与编组闭环"
+    }
+  ],
+  "changeId": "CHG-092"
+}
