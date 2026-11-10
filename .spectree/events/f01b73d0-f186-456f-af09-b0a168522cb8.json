@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "f01b73d0-f186-456f-af09-b0a168522cb8",
+  "at": "2026-11-10T06:42:47.311Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-114",
+  "data": {
+    "title": "修复空 Runtime 首次启动工作区初始化",
+    "implementation": "REQUIRED"
+  }
+}

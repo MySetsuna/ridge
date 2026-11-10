@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "0bf2e474-d4bc-489c-bab9-2217231ae087",
+  "at": "2026-11-10T06:43:20.078Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-114",
+  "data": {
+    "changeId": "CHG-114",
+    "specHash": "cb64907665fff54858d2da33d620e205ac611b719e304876e18a0cc6867ecef4",
+    "approvedAt": "2026-11-10T06:43:20.066Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "user-continue-root-cause-fix-and-e2e",
+    "attributionVerified": false
+  }
+}

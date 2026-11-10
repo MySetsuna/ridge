@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "id": "7eee82b7-25ca-483f-8b96-8fe5094a4bc6",
+  "at": "2026-11-10T06:45:11.204Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-114",
+  "buildId": "BUILD-937cb6c65971",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-937cb6c65971",
+    "changeId": "CHG-114",
+    "specHash": "cb64907665fff54858d2da33d620e205ac611b719e304876e18a0cc6867ecef4",
+    "workspaceHash": "fc50b7575e77e145899dd3a9ad2e12b5163cf356a8820dc8d4a7775351e5f769",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "NOT_DECLARED",
+    "acceptanceResults": [],
+    "valid": true,
+    "verifiedAt": "2026-11-10T06:45:11.201Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "src/lib/stores/paneTree.coverage.test.ts",
+        "before": "ae3773e197fe36551952c39fa1e0005ae30e79db207edaba18b8194f23b45f11",
+        "after": "1f8a62b9263334384300ffbb318cd43c60e64cb1cd55f49258b38f963779768d"
+      },
+      {
+        "path": "src/lib/stores/paneTree.ts",
+        "before": "0bd7db00e90de50673a1ec410fa00add165cf850be68793f15e9abed4631360b",
+        "after": "a8e049f8489fff9f9024f8e7bf2e26868e748de1d1a1e5543d315f988f966177"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/7eee82b7-25ca-483f-8b96-8fe5094a4bc6.log"
+  }
+}

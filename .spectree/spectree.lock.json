@@ -1,89 +1,74 @@
 {
   "version": 1,
-  "changeId": "CHG-113",
-  "specHash": "505fe9cdbe8ef4d79007c4f11b8bee38cf1805112a9d906b7f13ff5bb407b20c",
+  "changeId": "CHG-114",
+  "specHash": "f0ac8f9f892f22e447bc347bd00de14139becb1abc1020ecbff3731f6cf7926b",
   "units": [
     {
-      "id": "L3-OBS-SRC-LIB-MONACO-c2b128b2",
+      "id": "L3-RUNTIME-WORKSPACE-CONTINUITY",
       "level": "L3",
-      "nodeHash": "693dbfe2f0f1108fb83d2f8ab476d767753ee99d117b9336fe04d2073c539d0e",
+      "nodeHash": "7a81e81988f8642128915c32109225aea996b5401e28b5d4b2803932e34a5e35",
       "codeTargets": [
-        "src/lib/monaco/ridgeTheme.ts",
-        "src/lib/monaco/workers.ts"
+        "packages/ridge-kernel/src/host.rs",
+        "packages/ridge-kernel/src/client.rs",
+        "packages/ridge-kernel/src/domain.rs",
+        "packages/ridge-kernel/src/kernel_mcp.rs",
+        "packages/ridge-kernel/src/workspace_commands.rs",
+        "packages/ridge-kernel/src/workspace_files.rs",
+        "packages/ridge-kernel/src/workspace_autosave.rs",
+        "packages/ridge-core/src/fs/commands.rs",
+        "src/lib/stores/fileExplorer.ts",
+        "src/lib/components/FileTree.svelte",
+        "src/lib/components/Explorer.svelte",
+        "src/lib/stores/paneTree.ts",
+        "packages/ridge-core/src/workspace/file.rs"
       ],
-      "testTargets": [],
-      "status": "LOCKED",
-      "interfaceSignatures": [
-        "export function ridgeMonacoThemeId(themeId: string): string",
-        "export function applyRidgeMonacoTheme(themeId: string, themeType?: 'dark' | 'light'): void",
-        "export function setupMonacoWorkers(): void"
-      ]
+      "testTargets": [
+        "packages/ridge-kernel/tests/runtime_workspace_continuity.rs",
+        "packages/ridge-kernel/tests/common/runtime_fixture.rs",
+        "packages/ridge-kernel/tests/cwd_runtime.rs",
+        "packages/ridge-kernel/tests/terminal_lifecycle_runtime.rs",
+        "src/lib/stores/fileExplorer.test.ts",
+        "src/lib/stores/paneTree.test.ts",
+        "src/lib/stores/paneTree.coverage.test.ts",
+        "packages/ridge-kernel/tests/workspace_file_owner.rs"
+      ],
+      "status": "LOCKED"
     },
     {
-      "id": "L4-MONACO-TRUSTED-STYLES",
+      "id": "L4-RUNTIME-EMPTY-WORKSPACE-BOOT",
       "level": "L4",
-      "nodeHash": "5f29f703b5393e7f9c69dc19e8bc54480a3da3246d97c7a5038127719c884e72",
+      "nodeHash": "76ac71c08b12cfb178982d5ac2fdb35547da844da7836243b9a4bdeef04e4c73",
       "codeTargets": [
-        "src/lib/monaco/trustedThemeStyles.ts",
-        "src/lib/monaco/ridgeTheme.ts",
-        "scripts/monaco-trusted-styles.mjs",
-        "vite.config.js"
+        "src/lib/stores/paneTree.ts"
       ],
       "testTargets": [
-        "scripts/monaco-trusted-styles.test.mjs",
-        "scripts/monaco-csp-e2e.mjs",
-        "src/lib/monaco/ridgeTheme.test.ts",
-        "scripts/app-csp.test.mjs"
-      ],
-      "status": "LOCKED",
-      "acceptanceChecks": [
-        {
-          "id": "monaco-csp-browser",
-          "command": [
-            "node",
-            "scripts/monaco-csp-e2e.mjs"
-          ],
-          "description": "真实 Chromium 在严格 CSP 下编辑、diff、主题切换及样式生命周期；未授权样式继续拒绝"
-        }
-      ]
-    },
-    {
-      "id": "L4-OBS-SRC-LIB-MONACO-RIDGETHEME-TS-321e01db",
-      "level": "L4",
-      "nodeHash": "a2909fbe70498cf147eb06a619c65428282649528b2df53edcdeadc71a34de4c",
-      "codeTargets": [
-        "src/lib/monaco/ridgeTheme.ts"
-      ],
-      "testTargets": [
-        "src/lib/monaco/ridgeTheme.test.ts"
-      ],
-      "status": "LOCKED",
-      "interfaceSignatures": [
-        "export function applyRidgeMonacoTheme(themeId: string, themeType?: 'dark' | 'light'): void",
-        "export function ridgeMonacoThemeId(themeId: string): string"
-      ]
-    },
-    {
-      "id": "TEST-OBS-SRC-LIB-MONACO-RIDGETHEME-TEST-TS-3b597c0b",
-      "level": "TEST",
-      "nodeHash": "c59190a2c57614deda0e0ba0c0555f7cb2468555b61a587cebc6393b29bbf0fd",
-      "codeTargets": [],
-      "testTargets": [
-        "src/lib/monaco/ridgeTheme.test.ts"
+        "src/lib/stores/paneTree.coverage.test.ts"
       ],
       "status": "LOCKED"
     }
   ],
   "allowedPaths": [
-    "scripts/app-csp.test.mjs",
-    "scripts/monaco-csp-e2e.mjs",
-    "scripts/monaco-trusted-styles.mjs",
-    "scripts/monaco-trusted-styles.test.mjs",
-    "src/lib/monaco/ridgeTheme.test.ts",
-    "src/lib/monaco/ridgeTheme.ts",
-    "src/lib/monaco/trustedThemeStyles.ts",
-    "src/lib/monaco/workers.ts",
-    "vite.config.js"
+    "packages/ridge-core/src/fs/commands.rs",
+    "packages/ridge-core/src/workspace/file.rs",
+    "packages/ridge-kernel/src/client.rs",
+    "packages/ridge-kernel/src/domain.rs",
+    "packages/ridge-kernel/src/host.rs",
+    "packages/ridge-kernel/src/kernel_mcp.rs",
+    "packages/ridge-kernel/src/workspace_autosave.rs",
+    "packages/ridge-kernel/src/workspace_commands.rs",
+    "packages/ridge-kernel/src/workspace_files.rs",
+    "packages/ridge-kernel/tests/common/runtime_fixture.rs",
+    "packages/ridge-kernel/tests/cwd_runtime.rs",
+    "packages/ridge-kernel/tests/runtime_workspace_continuity.rs",
+    "packages/ridge-kernel/tests/terminal_lifecycle_runtime.rs",
+    "packages/ridge-kernel/tests/workspace_file_owner.rs",
+    "src/lib/components/Explorer.svelte",
+    "src/lib/components/FileTree.svelte",
+    "src/lib/stores/fileExplorer.test.ts",
+    "src/lib/stores/fileExplorer.ts",
+    "src/lib/stores/paneTree.coverage.test.ts",
+    "src/lib/stores/paneTree.test.ts",
+    "src/lib/stores/paneTree.ts"
   ],
   "testCommand": [
     "npm",
@@ -225,6 +210,7 @@
     "changes/CHG-111.md": "3d9acaa4a0d0f04bbf87611b367221d2dbcb4f56a809af356a31439e7dcc1657",
     "changes/CHG-112.md": "098c3bf5d8217a1b3232eb3152460149f1cda19c34da40c3e2a3756f3d96a5ee",
     "changes/CHG-113.md": "ae22742df76f1531ac289ea3d69e6650f1641f3b486272dd7cc0860f7d30317c",
+    "changes/CHG-114.md": "f773e57fa647f32a43902b40ff0e1b2bb27ed119cc5c3449b077dc9f69550d47",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -839,10 +825,10 @@
     "packages/ridge-term-font/Cargo.toml": "1875b6650b95cdb2f0d8feb504ff77443f2f59f9d8a1c9fab50fe496ef8c74d2",
     "packages/ridge-term-font/pkg/.gitignore": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
     "packages/ridge-term-font/pkg/package.json": "46d5668ed074ab524e8cf8387e6001b50cca0d6c222889ae6bb258baeffd3f90",
-    "packages/ridge-term-font/pkg/ridge_term_font_bg.wasm": "b4c1e690aded5435bc1c4d67a417a1be122994100b8d535be0c8dd8277dad527",
+    "packages/ridge-term-font/pkg/ridge_term_font_bg.wasm": "e8e55c3f006b22a34906682c73ad6dd38c257b6de0406668dec39b2468d44b69",
     "packages/ridge-term-font/pkg/ridge_term_font_bg.wasm.d.ts": "ef9821cdbdadd2ed4c1a9212610659d5895aa84ddcd6fdf8bca1415963c21533",
     "packages/ridge-term-font/pkg/ridge_term_font.d.ts": "7131da25ce02e8fd3f1614a7de6fa193035270db8fedce726e1d269547924097",
-    "packages/ridge-term-font/pkg/ridge_term_font.js": "b8d24a5406c39ca610bcf3193af4bd1d1ffc96d3755656c1077a8d3ff68e988a",
+    "packages/ridge-term-font/pkg/ridge_term_font.js": "76a75793f5ea89fd9474b1b73b261631436377623b3f51b4111a6245cdb7459a",
     "packages/ridge-term-font/src/browser.rs": "307af863cb3d4613ce379e4e145f81394503ff21af5378dfa8db763786db8242",
     "packages/ridge-term-font/src/lib.rs": "0dcc9bb6f418190018443ba1caf0f57903c215104eb28360603e0293b33672e7",
     "packages/ridge-term-font/src/rasterizer.rs": "61ab15cd5633fc799714ead9798b1f0af253c7615bca442976a209afe0e6d6aa",
@@ -850,10 +836,10 @@
     "packages/ridge-term-render/Cargo.toml": "7eef19c7b74261a39136ee8843858bdffc885c19c56fdfe71e0cfd91fe11d705",
     "packages/ridge-term-render/pkg/.gitignore": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
     "packages/ridge-term-render/pkg/package.json": "12abf47f9a3f2bde28951583a1cffd71a2bf13faa4cea7ae6b1282048b5d3236",
-    "packages/ridge-term-render/pkg/ridge_term_render_bg.wasm": "bb08257e2c2b02919bf6c7bd06f65e476e1f4edc0107f770bb73afcad9c6b2f6",
-    "packages/ridge-term-render/pkg/ridge_term_render_bg.wasm.d.ts": "417a92b093aa30c3ef4066db728d021dba768d629d46e3076d9b7d1cb0192525",
-    "packages/ridge-term-render/pkg/ridge_term_render.d.ts": "98c97f9655b3c72ba31f651d792765a7360a539555f08a3815598bf1abf68ca3",
-    "packages/ridge-term-render/pkg/ridge_term_render.js": "c0ae17cdc88ed14610f49e8050678d85ce56f5dc9d219c7f28f85087b33d2fa1",
+    "packages/ridge-term-render/pkg/ridge_term_render_bg.wasm": "f1621b5a29e2aa5929d91043b99c10581b0ced538cfbb9cffc1d0a1cdae56315",
+    "packages/ridge-term-render/pkg/ridge_term_render_bg.wasm.d.ts": "fe07fbff140fd113377eab76a4e395e1b70a3d960e5b15d211d010ef0e7519c9",
+    "packages/ridge-term-render/pkg/ridge_term_render.d.ts": "2921c504f7f759fafc03c550a34ea461c40e3618e7b6d9394a59d39eae2542b1",
+    "packages/ridge-term-render/pkg/ridge_term_render.js": "68176b7b8f405e6d820c06bf052858041060cb0d6f2605ef417586dc0ebf0cb4",
     "packages/ridge-term-render/src/lib.rs": "8bb8f17195661e4f68125135b4073392495d81865631fc5038a27a3ebe69e328",
     "packages/ridge-tmux/Cargo.toml": "bfe61e6bc1c34cd27db58dcb2ddf6ef2167270a7ea601612bc8e8a9eca4deff3",
     "packages/ridge-tmux/src/http.rs": "3db88c833101d394f5fda59020d9ff0382b503be69a554590259be08a5ad50b0",
@@ -1190,6 +1176,7 @@
     "specs/l4-remote-conditional-file-save.md": "b1e2499b02a0a17fa950ee4519188ea115b5834da16f134396c0ac63ed8ad57f",
     "specs/l4-remote-pwa-edit-protection.md": "de2d74877a2b6738abf58c6c0388ab0eac67bcf515dfeac0b1a01e20b67b1872",
     "specs/l4-ridge-mcp-sidecar-windows-x64.md": "d1670206a676daa0e7bc9841ad226637b512af9e020eb834a38092c92ffe9824",
+    "specs/l4-runtime-empty-workspace-boot.md": "4a838e7b606d624a8036d2a9a52c12afc7e4e2b71f81760df716df0cfc963cd8",
     "specs/migration/L2-OBS-CARGO-TOML-2e9d962a.md": "661c8fa4621b6ba8c1c814e5b5186c31cf8f1840f9ba4d359c6ef660c0fdef52",
     "specs/migration/L2-OBS-CLAUDE-e026f56c.md": "d91cbc151823db2c0e9f80f348febcd60827108d9ce918c84d3b87f17e145fcd",
     "specs/migration/L2-OBS-GITHUB-bdcc6a2a.md": "a2951b39c448db645ee07a6730fef420b1ce4fdb9f4da8d78ada39e4a785d522",
@@ -2332,10 +2319,10 @@
     "src/lib/stores/imagePreviewVersion.ts": "84844589a0e102a4f989a808d55eac6256b46d63996e9cac2d6620bb8668b792",
     "src/lib/stores/paneGitStatus.test.ts": "de6486ad5bf5216a275649e02a8b2523f18d1cc1384e907b1ec7469cebf48eed",
     "src/lib/stores/paneGitStatus.ts": "f8301dc06621b19caaf636471b0da8f06390acaaffb84d5654a7ef499ed4659f",
-    "src/lib/stores/paneTree.coverage.test.ts": "ae3773e197fe36551952c39fa1e0005ae30e79db207edaba18b8194f23b45f11",
+    "src/lib/stores/paneTree.coverage.test.ts": "1f8a62b9263334384300ffbb318cd43c60e64cb1cd55f49258b38f963779768d",
     "src/lib/stores/paneTree.runtime.test.ts": "9f28583d8f26de417e3d169fd150920a642340c98029152162a4fb8589445e6f",
     "src/lib/stores/paneTree.test.ts": "d1627ceffb2de55ab2d48af4838254f035c6a21d1278c4ee0a1943fd6bb4bc3b",
-    "src/lib/stores/paneTree.ts": "0bd7db00e90de50673a1ec410fa00add165cf850be68793f15e9abed4631360b",
+    "src/lib/stores/paneTree.ts": "a8e049f8489fff9f9024f8e7bf2e26868e748de1d1a1e5543d315f988f966177",
     "src/lib/stores/processGuardPolicy.test.ts": "37b3ee62f183fbd7eaad417edcdd38a56294366e7f05aa993cb7531db0719ed8",
     "src/lib/stores/processGuardPolicy.ts": "7fcbcdd08fcd1c1d3d7e5c748a7088ca53fad00f05c4c2b63784cc2db46c5ba4",
     "src/lib/stores/project.test.ts": "18474a6a6c34322b0fd8f38aa1123e3537253fe81102146307cb4d3fe926ced1",
@@ -2654,6 +2641,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-fc29d52c0a12",
-  "manifestHash": "fc29d52c0a129580190046d0edd06bf7d7a9fe346adaa8592dc34d4e6fdf5523"
+  "buildId": "BUILD-e678a27f0b1d",
+  "manifestHash": "e678a27f0b1dc6d204075ab04c4ba76f0a08f2db730de11e0f4f002953f56ac2"
 }

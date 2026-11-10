@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "e616983b-5de0-4a05-9b53-c8212152b067",
+  "at": "2026-11-10T06:47:54.615Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-114",
+  "buildId": "BUILD-e678a27f0b1d",
+  "data": {
+    "previousBuildId": "BUILD-937cb6c65971",
+    "testEvidence": {
+      "buildId": "BUILD-937cb6c65971",
+      "workspaceHash": "fc50b7575e77e145899dd3a9ad2e12b5163cf356a8820dc8d4a7775351e5f769",
+      "verifiedAt": "2026-11-10T06:45:11.201Z",
+      "eventId": "7eee82b7-25ca-483f-8b96-8fe5094a4bc6"
+    },
+    "absorbed": [
+      "changes/CHG-114.md",
+      "specs/l4-runtime-empty-workspace-boot.md",
+      "src/lib/stores/paneTree.coverage.test.ts",
+      "src/lib/stores/paneTree.ts"
+    ],
+    "activated": [
+      "L4-RUNTIME-EMPTY-WORKSPACE-BOOT"
+    ],
+    "archived": []
+  }
+}

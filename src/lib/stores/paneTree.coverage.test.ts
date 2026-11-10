@@ -52,6 +52,21 @@ function mockRefreshCommands(active = 'ws-a') {
 }
 
 describe('paneTree workspace mutation branches', () => {
+  it('accepts an authoritative empty Runtime without querying or creating a workspace', async () => {
+    core.invoke.mockImplementation(async (command: string) => {
+      if (command === 'list_workspaces' || command === 'list_workspace_save_info') return [];
+      if (command === 'get_active_workspace_id') throw new Error('client workspace unavailable');
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    await expect(paneTree.refreshWorkspaces()).resolves.toBeUndefined();
+    expect(get(paneTree.workspacesList)).toEqual([]);
+    expect(get(paneTree.activeWorkspaceId)).toBe('');
+    expect(core.invoke).not.toHaveBeenCalledWith('get_active_workspace_id');
+    expect(core.invoke).not.toHaveBeenCalledWith('create_workspace');
+    expect(core.invoke.mock.calls.some(([command]) => command === 'get_pane_layout_for')).toBe(false);
+  });
+
   it.each([false, true])('keeps a completed user switch after an obsolete refresh (failure: %s)', async (failure) => {
     let releaseLayout!: (value: typeof layout) => void;
     let rejectLayout!: (reason: Error) => void;

@@ -1383,6 +1383,9 @@ export async function refreshWorkspaces(options: RefreshWorkspacesOptions = {}) 
     // itself, which would hold up later tab clicks behind a slow layout read.
     await Promise.all([pendingSwitch, refreshWorkspaceSaveInfo()]);
     if (!isCurrent()) return;
+    // A fresh Runtime has no selection yet. Let startup create its default
+    // workspace only after this authoritative empty-list refresh succeeds.
+    if (list.length === 0) return;
     let active: string;
     if (options.workspaceId) {
       active = options.workspaceId;
