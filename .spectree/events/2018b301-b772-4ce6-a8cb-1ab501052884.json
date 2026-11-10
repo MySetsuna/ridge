@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "2018b301-b772-4ce6-a8cb-1ab501052884",
+  "at": "2026-11-10T10:50:47.343Z",
+  "type": "approval_derived",
+  "source": "local_operation",
+  "changeId": "CHG-121",
+  "data": {
+    "changeId": "CHG-121",
+    "specHash": "6f251cb7bba60d2d79d5333ed3adb4406a11e033eebafadbb150d9813c7576ed",
+    "approvedAt": "2026-11-10T10:50:47.341Z",
+    "source": "completion_derived",
+    "actor": "codex",
+    "confirmationRef": "user-authorized-release-and-metadata-exception",
+    "derivedFrom": {
+      "buildId": "BUILD-2e0b8f183844",
+      "specHash": "82462e93f29a7eaa3c6cd4675f6eea0414e0fda360eadb8525861c6ca2b255a7"
+    },
+    "attributionVerified": false
+  }
+}

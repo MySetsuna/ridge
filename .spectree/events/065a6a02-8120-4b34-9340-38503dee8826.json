@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "065a6a02-8120-4b34-9340-38503dee8826",
+  "at": "2026-11-10T10:47:26.236Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-121",
+  "data": {
+    "title": "汇总 Remote 连接与终端修复为 0.1.100 四平台草稿",
+    "implementation": "REQUIRED"
+  }
+}
