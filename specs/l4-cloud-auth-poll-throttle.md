@@ -1,0 +1,20 @@
+---
+id: L4-CLOUD-AUTH-POLL-THROTTLE
+level: L4
+title: 认证轮询限流恢复与取消
+status: LOCKED
+lifecycle: ACTIVE
+parent: L3-OBS-PACKAGES-REMOTE-SRC-SHARED-CLOUD-52c9de8f
+code_targets:
+  - packages/remote/src/shared/cloud/auth.ts
+test_targets:
+  - packages/remote/src/shared/cloud/auth.test.ts
+---
+
+# 认证轮询限流恢复与取消
+
+已发起的浏览器登录与已绑定的设备配对，遇到明确 RATE_LIMITED 响应后保留原请求身份，等待退避后继续轮询，并降低该次会话后续轮询频率，为同一 IP 的浏览器批准保留认证桶余量。服务端认证限流仍执行既有规则。除明确限流响应外的错误继续显式传播；创建授权请求、创建配对码与绑定设备沿现有调用次数执行。
+
+整体授权期限及取消继续生效，退避等待有界于剩余期限，取消释放等待器及监听器，后续不再轮询。登录唤醒信号不能提前结束被限流后的冷却等待。
+
+定向测试控制时钟验证同一请求在限流后成功、冷却期无请求、到期无后续调用、取消立即结束，以及设备配对仅重试轮询且不重复创建或绑定。运行 npm test、lint、typecheck 与 SpecTree verify，真实公网正常授权与终端控制继续验收。

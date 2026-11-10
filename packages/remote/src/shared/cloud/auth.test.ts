@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { get } from 'svelte/store';
 
 const storage: Record<string, string> = {};
@@ -43,6 +43,8 @@ const user = {
   checkedInToday: false,
 };
 
+afterEach(() => vi.useRealTimers());
+
 beforeEach(() => {
   for (const key of Object.keys(storage)) delete storage[key];
   mockApi.login.mockReset();
@@ -61,6 +63,102 @@ beforeEach(() => {
 });
 
 describe('cloud auth state predicates and persistence', () => {
+  it('does not create credentials after the caller has already cancelled', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(auth.loginViaBrowser({ signal: controller.signal })).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    await expect(auth.activateThisDevice('laptop', undefined, controller.signal)).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    expect(mockApi.authRequest).not.toHaveBeenCalled();
+    expect(mockApi.deviceCode).not.toHaveBeenCalled();
+    expect(mockApi.deviceActivate).not.toHaveBeenCalled();
+  });
+
+  it('stops before opening the browser or binding a device when progress cancels', async () => {
+    mockApi.authRequest.mockResolvedValue({ request_code: 'REQ', poll_token: 'POLL', authorize_url: 'https://ridge.example/auth', expires_in: 60, interval: 2 });
+    vi.mocked(window.open).mockClear();
+    const login = new AbortController();
+    await expect(auth.loginViaBrowser({ signal: login.signal, onProgress: () => login.abort() }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    expect(window.open).not.toHaveBeenCalled();
+    expect(mockApi.authPoll).not.toHaveBeenCalled();
+
+    storage['ridge.cloud.userToken'] = 'u';
+    mockApi.deviceCode.mockResolvedValue({ pairing_code: 'PAIR', poll_token: 'POLL', expires_in: 60 });
+    const pairing = new AbortController();
+    await expect(auth.activateThisDevice('laptop', () => pairing.abort(), pairing.signal))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    expect(mockApi.deviceActivate).not.toHaveBeenCalled();
+    expect(mockApi.devicePoll).not.toHaveBeenCalled();
+  });
+
+  it('backs off a rate-limited login poll without issuing another authorization request', async () => {
+    vi.useFakeTimers();
+    mockApi.authRequest.mockResolvedValue({ request_code: 'REQ', poll_token: 'POLL', authorize_url: 'https://ridge.example/auth', expires_in: 60, interval: 2 });
+    let firstPoll!: () => void;
+    const started = new Promise<void>(resolve => { firstPoll = resolve; });
+    mockApi.authPoll.mockImplementationOnce(async () => {
+      firstPoll();
+      throw new mockApi.ApiError('RATE_LIMITED', 'limited');
+    }).mockResolvedValueOnce({ status: 'approved', token: 'recovered', user });
+    let wake: (() => void) | undefined;
+    const result = auth.loginViaBrowser({ onWake: callback => { wake = callback; return () => {}; } })
+      .then(value => ({ value }), error => ({ error }));
+    await started;
+    await vi.advanceTimersByTimeAsync(0);
+    wake?.();
+    await vi.advanceTimersByTimeAsync(11_999);
+    expect(mockApi.authPoll).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(result).resolves.toMatchObject({ value: { userToken: 'recovered' } });
+    expect(mockApi.authRequest).toHaveBeenCalledTimes(1);
+    expect(mockApi.authPoll.mock.calls).toEqual([['POLL'], ['POLL']]);
+  });
+
+  it.each(['abort', 'expiry'])('ends a limited login on %s without another poll', async reason => {
+    vi.useFakeTimers();
+    mockApi.authRequest.mockResolvedValue({ request_code: 'REQ', poll_token: 'POLL', authorize_url: 'https://ridge.example/auth', expires_in: 1, interval: 2 });
+    let firstPoll!: () => void;
+    const started = new Promise<void>(resolve => { firstPoll = resolve; });
+    mockApi.authPoll.mockImplementation(async () => {
+      firstPoll();
+      throw new mockApi.ApiError('RATE_LIMITED', 'limited');
+    });
+    const controller = new AbortController();
+    const result = auth.loginViaBrowser({ signal: controller.signal })
+      .then(value => ({ value }), error => ({ error }));
+    await started;
+    await vi.advanceTimersByTimeAsync(0);
+    if (reason === 'abort') controller.abort();
+    else await vi.advanceTimersByTimeAsync(1_000);
+    await expect(result).resolves.toMatchObject({ error: { code: reason === 'abort' ? 'INVALID_INPUT' : 'AUTH_REQUEST_EXPIRED' } });
+    expect(mockApi.authPoll).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('retries only a denied device poll while preserving the original pairing', async () => {
+    vi.useFakeTimers();
+    auth.cloudAuth.set({ userToken: 'u', user, deviceToken: null, deviceName: null });
+    storage['ridge.cloud.userToken'] = 'u';
+    mockApi.deviceCode.mockResolvedValue({ pairing_code: 'PAIR', poll_token: 'POLL', expires_in: 60 });
+    mockApi.deviceActivate.mockResolvedValue(undefined);
+    let firstPoll!: () => void;
+    const started = new Promise<void>(resolve => { firstPoll = resolve; });
+    mockApi.devicePoll.mockImplementationOnce(async () => {
+      firstPoll();
+      throw new mockApi.ApiError('RATE_LIMITED', 'limited');
+    }).mockResolvedValueOnce({ status: 'bound', token: 'device-token', device_name: 'laptop' });
+    const result = auth.activateThisDevice('laptop').then(value => ({ value }), error => ({ error }));
+    await started;
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(11_999);
+    expect(mockApi.devicePoll).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(result).resolves.toMatchObject({ value: { deviceToken: 'device-token' } });
+    expect(mockApi.deviceCode).toHaveBeenCalledTimes(1);
+    expect(mockApi.deviceActivate).toHaveBeenCalledTimes(1);
+    expect(mockApi.devicePoll.mock.calls).toEqual([['POLL'], ['POLL']]);
+  });
+
   it('reads safe defaults, derives account flags, and builds public entry domains', () => {
     const empty = auth.snapshot();
     expect(empty).toEqual({ userToken: null, user: null, deviceToken: null, deviceName: null });

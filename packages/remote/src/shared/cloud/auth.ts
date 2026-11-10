@@ -23,6 +23,8 @@ const LS_DEVICE_NAME = 'ridge.cloud.deviceName';
 const POLL_INTERVAL_MS = 2000;
 /** 配对轮询总超时上限（配对码 TTL 600s，留一点余量）。 */
 const POLL_TIMEOUT_MS = 600_000;
+// Leave capacity in the shared auth bucket for the browser's approval request.
+const RATE_LIMIT_POLL_INTERVAL_MS = 12_000;
 
 export interface CloudAuthState {
   userToken: string | null;
@@ -193,16 +195,18 @@ export interface BrowserLoginOptions {
  */
 export async function loginViaBrowser(opts: BrowserLoginOptions = {}): Promise<CloudAuthState> {
   const { onProgress, signal, onWake } = opts;
+  if (signal?.aborted) throw new api.ApiError('INVALID_INPUT', '已取消');
 
   // 1. 发起授权请求。
   const req = await api.authRequest('desktop');
   onProgress?.({ authorizeUrl: req.authorize_url, requestCode: req.request_code });
+  if (signal?.aborted) throw new api.ApiError('INVALID_INPUT', '已取消');
 
   // 2. 用默认浏览器打开授权页。
   await openExternalUrl(req.authorize_url);
 
   // 3. 轮询直到批准 / 过期 / 超时。
-  const intervalMs = Math.max(1, req.interval) * 1000;
+  let intervalMs = Math.max(1, req.interval) * 1000;
   const deadline = Date.now() + Math.min(POLL_TIMEOUT_MS, req.expires_in * 1000);
 
   // `ridge://auth-focus` 事件 → 提前结束当前等待，立即再轮询一次。
@@ -213,16 +217,26 @@ export async function loginViaBrowser(opts: BrowserLoginOptions = {}): Promise<C
     // eslint-disable-next-line no-constant-condition
     while (true) {
       if (signal?.aborted) throw new api.ApiError('INVALID_INPUT', '已取消');
-      if (Date.now() > deadline) throw new api.ApiError('AUTH_REQUEST_EXPIRED', '登录授权超时');
+      if (Date.now() >= deadline) throw new api.ApiError('AUTH_REQUEST_EXPIRED', '登录授权超时');
 
-      const poll = await api.authPoll(req.poll_token);
+      let poll: api.AuthPollResult;
+      try {
+        poll = await api.authPoll(req.poll_token);
+      } catch (error) {
+        if (!(error instanceof api.ApiError) || error.code !== 'RATE_LIMITED') throw error;
+        intervalMs = Math.max(intervalMs, RATE_LIMIT_POLL_INTERVAL_MS);
+        const waitMs = Math.min(intervalMs, Math.max(0, deadline - Date.now()));
+        await delay(waitMs, signal);
+        continue;
+      }
       if (poll.status === 'approved') {
         return update((s) => ({ ...s, userToken: poll.token, user: poll.user }));
       }
       if (poll.status === 'expired') {
         throw new api.ApiError('AUTH_REQUEST_EXPIRED', '登录授权已过期');
       }
-      await waitable(intervalMs, signal, (resolve) => { wake = resolve; });
+      const waitMs = Math.min(intervalMs, Math.max(0, deadline - Date.now()));
+      await waitable(waitMs, signal, (resolve) => { wake = resolve; });
       wake = null;
     }
   } finally {
@@ -253,6 +267,7 @@ function waitable(
   signal: AbortSignal | undefined,
   register: (resolve: () => void) => void,
 ): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new api.ApiError('INVALID_INPUT', '已取消'));
   return new Promise((resolve, reject) => {
     let done = false;
     const finish = () => {
@@ -356,24 +371,36 @@ export async function activateThisDevice(
   onProgress?: (p: DeviceActivationProgress) => void,
   signal?: AbortSignal,
 ): Promise<CloudAuthState> {
+  if (signal?.aborted) throw new api.ApiError('INVALID_INPUT', '已取消');
   const state = readInitialState();
   if (!state.userToken) throw new api.ApiError('UNAUTHORIZED', '需先登录');
 
   // 1. 取配对码
   const code = await api.deviceCode();
   onProgress?.({ pairingCode: code.pairing_code, expiresIn: code.expires_in });
+  if (signal?.aborted) throw new api.ApiError('INVALID_INPUT', '已取消');
 
   // 2. 用 user token 绑定（传本机 device_name）
   await api.deviceActivate(state.userToken, code.pairing_code, deviceName);
 
   // 3. 轮询取回 device JWT
   const deadline = Date.now() + Math.min(POLL_TIMEOUT_MS, code.expires_in * 1000);
+  let intervalMs = POLL_INTERVAL_MS;
   // eslint-disable-next-line no-constant-condition
   while (true) {
     if (signal?.aborted) throw new api.ApiError('INVALID_INPUT', '已取消');
-    if (Date.now() > deadline) throw new api.ApiError('PAIRING_EXPIRED', '配对超时');
+    if (Date.now() >= deadline) throw new api.ApiError('PAIRING_EXPIRED', '配对超时');
 
-    const poll = await api.devicePoll(code.poll_token);
+    let poll: api.DevicePollResult;
+    try {
+      poll = await api.devicePoll(code.poll_token);
+    } catch (error) {
+      if (!(error instanceof api.ApiError) || error.code !== 'RATE_LIMITED') throw error;
+      intervalMs = Math.max(intervalMs, RATE_LIMIT_POLL_INTERVAL_MS);
+      const waitMs = Math.min(intervalMs, Math.max(0, deadline - Date.now()));
+      await delay(waitMs, signal);
+      continue;
+    }
     if (poll.status === 'bound') {
       return update((s) => ({
         ...s,
@@ -388,20 +415,11 @@ export async function activateThisDevice(
     if (poll.status === 'expired') {
       throw new api.ApiError('PAIRING_EXPIRED', '配对码已过期');
     }
-    await delay(POLL_INTERVAL_MS, signal);
+    const waitMs = Math.min(intervalMs, Math.max(0, deadline - Date.now()));
+    await delay(waitMs, signal);
   }
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const id = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(id);
-        reject(new api.ApiError('INVALID_INPUT', '已取消'));
-      },
-      { once: true },
-    );
-  });
+  return waitable(ms, signal, () => {});
 }

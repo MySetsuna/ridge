@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "f548de38-36b5-4f3e-b5fb-620b005035a1",
+  "at": "2026-11-10T07:55:34.322Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-116",
+  "data": {
+    "changeId": "CHG-116",
+    "specHash": "686de554aa657e988d9e9c3b65d6a003293be5300dc7a71a26bb454ed78e7745",
+    "approvedAt": "2026-11-10T07:55:34.318Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "user-complete-remote-connection-reliability",
+    "attributionVerified": false
+  }
+}

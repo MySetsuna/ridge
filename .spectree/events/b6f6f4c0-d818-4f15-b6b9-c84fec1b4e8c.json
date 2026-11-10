@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "b6f6f4c0-d818-4f15-b6b9-c84fec1b4e8c",
+  "at": "2026-11-10T08:02:25.287Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-116",
+  "buildId": "BUILD-1736fcc08474",
+  "data": {
+    "previousBuildId": "BUILD-327ac4e6c823",
+    "testEvidence": {
+      "buildId": "BUILD-327ac4e6c823",
+      "workspaceHash": "99d280b0a934851e35f39ff7244f87c9b783ba4d477b1743ea0d3266fc3951fa",
+      "verifiedAt": "2026-11-10T08:00:00.705Z",
+      "eventId": "a53adbd1-2d92-4303-9807-8dc76b4b7d88"
+    },
+    "absorbed": [
+      "changes/CHG-116.md",
+      "packages/remote/src/shared/cloud/auth.test.ts",
+      "packages/remote/src/shared/cloud/auth.ts",
+      "specs/l4-cloud-auth-poll-throttle.md"
+    ],
+    "activated": [
+      "L4-CLOUD-AUTH-POLL-THROTTLE"
+    ],
+    "archived": []
+  }
+}

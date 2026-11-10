@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "id": "a53adbd1-2d92-4303-9807-8dc76b4b7d88",
+  "at": "2026-11-10T08:00:00.708Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-116",
+  "buildId": "BUILD-327ac4e6c823",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-327ac4e6c823",
+    "changeId": "CHG-116",
+    "specHash": "686de554aa657e988d9e9c3b65d6a003293be5300dc7a71a26bb454ed78e7745",
+    "workspaceHash": "99d280b0a934851e35f39ff7244f87c9b783ba4d477b1743ea0d3266fc3951fa",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "NOT_DECLARED",
+    "acceptanceResults": [],
+    "valid": true,
+    "verifiedAt": "2026-11-10T08:00:00.705Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "packages/remote/src/shared/cloud/auth.test.ts",
+        "before": "f6ce4d4d03bbb7f2826a389404bc203f88e8bb5a513a1d1759a5ab9b3bd1c860",
+        "after": "126825a97384f596afc1adbbf4500005916a87a9c3db8c4677b94d7850c6b61a"
+      },
+      {
+        "path": "packages/remote/src/shared/cloud/auth.ts",
+        "before": "feb10a1746dae97a250a9949c16dfc0010b7fee3b6aa4610921b4e314469ddf4",
+        "after": "03149085a7ffe9f1279ecea086db4c7e9749716f7032a048e49b55602f1b15f6"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/a53adbd1-2d92-4303-9807-8dc76b4b7d88.log"
+  }
+}

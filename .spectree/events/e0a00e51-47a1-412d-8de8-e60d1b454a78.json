@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "e0a00e51-47a1-412d-8de8-e60d1b454a78",
+  "at": "2026-11-10T07:55:29.965Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-116",
+  "data": {
+    "title": "登录与设备配对轮询遇限流后保持可恢复",
+    "implementation": "REQUIRED"
+  }
+}
