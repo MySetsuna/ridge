@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "buildId": "BUILD-b4e6562315a8",
+  "changeId": "CHG-123",
+  "specHash": "165e21826dc3447dff6069061fdafd0bdcd1d92fffb35102518ca5f28d74d031",
+  "workspaceHash": "bfb7c2f5d3a4e3134f27d6e83052efed8584086bf79281fc1f9f502a41c56d53",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-REMOTE-PROTOCOL-SOURCE-VERIFICATION",
+      "checkId": "protocol-source-bytes",
+      "command": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "packages/remote/src/shared/cloud/signaling/drift.test.ts"
+      ],
+      "description": "固定源版本、生成绑定、信令 fixture、终端 fixture 与 Rust codec 逐字节一致，CI 缺源失败",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-10T13:32:18.917Z",
+  "diagnostics": [],
+  "eventId": "d1210368-55c0-42ae-8359-3c041a0466b6"
+}

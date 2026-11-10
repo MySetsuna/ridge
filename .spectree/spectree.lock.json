@@ -1,39 +1,41 @@
 {
   "version": 1,
-  "changeId": "CHG-122",
-  "specHash": "0a31ef554d585923208ec057e1fd0996cd5d1294d86b17a444bd9e95b323d852",
+  "changeId": "CHG-123",
+  "specHash": "1a70abc61a3ef04cf91b21d41ef80a3c79b30c37bef5b93d43c545cb12a330ab",
   "units": [
     {
-      "id": "L4-REMOTE-CLIPBOARD-SOURCE-ISOLATION",
+      "id": "L4-REMOTE-PROTOCOL-SOURCE-VERIFICATION",
       "level": "L4",
-      "nodeHash": "042cc563db4aee8adf543fead7bdd4ab7ec401af10f0b694be848ba0987827f1",
+      "nodeHash": "231ea66fbac9b971af2ef3a0ed10ff9db914e52ec01e77b09ed6702801642df9",
       "codeTargets": [
-        "packages/remote/src/shared/terminal/clipboardImage.ts",
-        ".github/workflows/publish-remote.yml"
+        ".github/workflows/publish-remote.yml",
+        ".github/workflows/release.yml",
+        "packages/remote/src/shared/cloud/signaling/SOURCE_REV"
       ],
       "testTargets": [
-        "packages/remote/src/shared/terminal/clipboardImage.test.ts"
+        "packages/remote/src/shared/cloud/signaling/drift.test.ts"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "clipboard-both-builds",
+          "id": "protocol-source-bytes",
           "command": [
             "pnpm",
             "exec",
             "vitest",
             "run",
-            "packages/remote/src/shared/terminal/clipboardImage.test.ts"
+            "packages/remote/src/shared/cloud/signaling/drift.test.ts"
           ],
-          "description": "真实编译布尔构建标志的原生和 Web 产物，默认命令执行两种来源与失败路径"
+          "description": "固定源版本、生成绑定、信令 fixture、终端 fixture 与 Rust codec 逐字节一致，CI 缺源失败"
         }
       ]
     }
   ],
   "allowedPaths": [
     ".github/workflows/publish-remote.yml",
-    "packages/remote/src/shared/terminal/clipboardImage.test.ts",
-    "packages/remote/src/shared/terminal/clipboardImage.ts"
+    ".github/workflows/release.yml",
+    "packages/remote/src/shared/cloud/signaling/SOURCE_REV",
+    "packages/remote/src/shared/cloud/signaling/drift.test.ts"
   ],
   "testCommand": [
     "npm",
@@ -48,8 +50,8 @@
     ".env.local": "5e24dd1c2c435d03c9d0bdf277e8039fd24d511666b1d3d740d568d631ad9079",
     ".gitattributes": "9857ff9bdb1e263152be695c970a8e9d2c94576dbf709ee02f12d780e0958df4",
     ".github/workflows/deploy-pages.yml": "68c4c2a838c45ec4927f108a20e46db9cd79543049566530307d5fe556c1d8cb",
-    ".github/workflows/publish-remote.yml": "fa86d6d59f9fb97534265753a02765cdd2a586740f0bf615c8cc4828fa2c1648",
-    ".github/workflows/release.yml": "6b72ad4e2da0f5567adedb38cff8da5e7f647078add226b7968a415ea438aad6",
+    ".github/workflows/publish-remote.yml": "f664af1891aeea987c2accb7f2cfec1ee0768e25004d567c9a35437519e99a5b",
+    ".github/workflows/release.yml": "6adfc32b20787bd7c7d94801d50ff9c7ae9ee5e40092613aaf2860fb77a61943",
     ".github/workflows/rtp1-kernel-e2e.yml": "97ac6cc2b49e62a0affa64672db537462c8a1fd59c268561ce691d6e1ecf5a8b",
     ".gitignore": "ca02fc69e48ce2e209f41670b3f12cfa7c88263a1be4fc634212b519193d7b52",
     ".mcp.json": "8a016cf6fb0eae77086d97254c4e34e5ef1c8335aab2076f6e9531085630b533",
@@ -184,6 +186,7 @@
     "changes/CHG-120.md": "97de78e556e11e610092f0a4e22d2633dc1ad1b24196411bc29080ec4c66235a",
     "changes/CHG-121.md": "5684b75b0ea5534c0a882b21e23dd421fafaedd35db59937e19642ecf62aec8a",
     "changes/CHG-122.md": "11a86c1b4dd8efc7b1bc5f7fa60aeb20a4df976363804b7fea6a8c9db0550292",
+    "changes/CHG-123.md": "9915fa842febe720168285b5da578627ca53b3ba2b1c83c2a255866352b1a4ca",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -256,7 +259,7 @@
     "packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts": "d92b87ec5f4a31f09151d8cb4396eb9209a020cc21f57d33f43ff8f4760f2d2b",
     "packages/remote/src/shared/cloud/ridgeCloudProvider.ts": "dad3d0964f507c9311c97d4cfe73d5bcf417a5fe0b2bd0103f07af04c9b251bc",
     "packages/remote/src/shared/cloud/signaling/conformance.test.ts": "33f3f6f9ec4f578b11470f6d896cbce90931398d6822b85e73d504480600da4b",
-    "packages/remote/src/shared/cloud/signaling/drift.test.ts": "53b4f092297319b6f3255396d2952121c73b3e21d42382ee7e3d751ec9b79c1e",
+    "packages/remote/src/shared/cloud/signaling/drift.test.ts": "f177257c4c5fae9d5806596572cc5fa96948585915da2c1979c91174f6ed9bbf",
     "packages/remote/src/shared/cloud/signaling/fixtures/answer_cid.json": "4ca841d0778781f7d606459d92f6797b9a18dc7bd8cc4273354abeab5e030e3a",
     "packages/remote/src/shared/cloud/signaling/fixtures/e2ee_pubkey_cid.json": "1451bab0dc2d4f8a2c2dc48fce0e61680c5d48fd1acde7ddae3bf6aa5dbcde81",
     "packages/remote/src/shared/cloud/signaling/fixtures/e2ee_pubkey_no_cid.json": "0ca4a5a3fb4770c2a0e9835284c4488781b2a4a9c791dc646e67cb92f725c981",
@@ -303,7 +306,7 @@
     "packages/remote/src/shared/cloud/signaling/generated/WireLine.ts": "bb3a525f1f1d4103cfbc472b4bfc8307b6d2e64cb923904b45196423b0e9161c",
     "packages/remote/src/shared/cloud/signaling/generated/WireSavedCursor.ts": "cea2804443f42cd0f4a47fd586fb1ccfa7fe7237c1ef336fa99fa4d410045542",
     "packages/remote/src/shared/cloud/signaling/index.ts": "bacaa5d993bf64ab526ff643e6d2c6c0d866364e847c8fdc78dbe4d8c27b5e20",
-    "packages/remote/src/shared/cloud/signaling/SOURCE_REV": "40490697e657950d468dd4e854be77fb80c747e0e9eea70077980c689feb2683",
+    "packages/remote/src/shared/cloud/signaling/SOURCE_REV": "673be64b4a58387e79fb095b33e55067675822128a0b3d525d043780e48a5f91",
     "packages/remote/src/shared/cloud/weakNetLab.test.ts": "86064c747f044a03ebf98c5f87813b00fe59b9c70df622df5fe9dbeb35166fcd",
     "packages/remote/src/shared/cloud/workspaceScope.test.ts": "8b06d895a62b3d6dcfa57cf66b8eefccd10c021dbad9e8b3fc33f1bac92b812c",
     "packages/remote/src/shared/cloud/workspaceScope.ts": "6ef7e48d7de517bc1b78e09e470a0a1c2b00051e45c4436e1f9a60ab63b92be1",
@@ -1153,6 +1156,7 @@
     "specs/l4-remote-conditional-file-save.md": "b1e2499b02a0a17fa950ee4519188ea115b5834da16f134396c0ac63ed8ad57f",
     "specs/l4-remote-initial-input-continuity.md": "96820104d3b4d23249a56ef3d2c36aa62ad252b1c275c0c9d6de9c0c7d87c5b1",
     "specs/l4-remote-preconnection-update.md": "33144fc540c3b063a413874a612c8f3455c4e90bfeb9c602096156e9de15ca9f",
+    "specs/l4-remote-protocol-source-verification.md": "bbdaaf49f6aa9908100ba26be703a833c494d170c6b4f60cac7e94cfe526c180",
     "specs/l4-remote-pwa-edit-protection.md": "de2d74877a2b6738abf58c6c0388ab0eac67bcf515dfeac0b1a01e20b67b1872",
     "specs/l4-remote-pwa-ui-routing.md": "72fdc047e7dc6bdefaa982c723e288454d447a293a659bbe044e8a095dc419b3",
     "specs/l4-remote-workspace-pane-continuity.md": "65d1590623dd0928b8e2809fcab2f4c61aea8164f07a10b5b0c2f44884796e1f",
@@ -2625,6 +2629,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-20ab7513c5f5",
-  "manifestHash": "20ab7513c5f5a18e0c466805912f8b95c542ba6bfeeedf84d24c1334b2a161a0"
+  "buildId": "BUILD-8b54f7074354",
+  "manifestHash": "8b54f70743546ed64574bd42c4d0443abebe03297b8dc19d3aaa8959d75c7b71"
 }

@@ -60,11 +60,33 @@ jobs:
       - name: Check release version contract
         run: node scripts/check-release-version.mjs
 
-      - name: Terminal clipboard build regressions
+      - name: Read signaling source revision
+        if: ${{ inputs.rollback != true && inputs.no_build != true }}
+        id: signaling_source
+        shell: bash
+        run: |
+          revision="$(cat packages/remote/src/shared/cloud/signaling/SOURCE_REV)"
+          if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid signaling SOURCE_REV" >&2
+            exit 1
+          fi
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "RIDGE_SIGNALING_REPO=$GITHUB_WORKSPACE/.ridge-signaling-source" >> "$GITHUB_ENV"
+
+      - name: Check out signaling protocol source
+        if: ${{ inputs.rollback != true && inputs.no_build != true }}
+        uses: actions/checkout@v4
+        with:
+          repository: MySetsuna/ridge-signaling
+          ref: ${{ steps.signaling_source.outputs.revision }}
+          path: .ridge-signaling-source
+          persist-credentials: false
+
+      - name: Remote clipboard and protocol regressions
         if: ${{ inputs.rollback != true && inputs.no_build != true }}
         run: |
           pnpm exec svelte-kit sync
-          pnpm exec vitest run packages/remote/src/shared/terminal/clipboardImage.test.ts
+          pnpm exec vitest run packages/remote/src/shared/terminal/clipboardImage.test.ts packages/remote/src/shared/cloud/signaling/drift.test.ts
 
       - name: Build wasm terminal kernel
         if: ${{ inputs.rollback != true && inputs.no_build != true }}

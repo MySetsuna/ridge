@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "0cfea697-7e39-4080-9e51-d2fd398a67e9",
+  "at": "2026-11-10T13:16:20.496Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-123",
+  "data": {
+    "title": "固定协议源的可重现检出并强制发布前漂移验证",
+    "implementation": "REQUIRED"
+  }
+}

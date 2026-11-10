@@ -5,8 +5,8 @@
 // 一致），并校验 `SOURCE_REV` === 源 `git rev-parse HEAD`。任一不符即失败，提示运行
 // `pnpm sync:signaling`。
 //
-// 同级缺席（CI / 未 checkout）→ 整组 skip：CI 零依赖，仍由 conformance.test.ts 对照 vendored
-// fixtures 守住线形。
+// 本地同级缺席可跳过源对照，conformance 仍验证 vendored fixtures。
+// CI 必须检出 SOURCE_REV 并配置 RIDGE_SIGNALING_REPO，缺源时门禁失败。
 
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
@@ -34,6 +34,13 @@ const VENDORED_TERMINAL_CODEC = join(
 );
 
 const siblingPresent = existsSync(srcRepo);
+const sourceRequired = process.env.CI === 'true' || process.env.CI === '1';
+
+it('CI provides the pinned protocol source instead of silently skipping drift checks', () => {
+  expect(!sourceRequired || siblingPresent,
+    'CI requires ridge-signaling at SOURCE_REV; check it out and set RIDGE_SIGNALING_REPO.',
+  ).toBe(true);
+});
 
 function bindingFiles(dir: string, prefix = ''): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {

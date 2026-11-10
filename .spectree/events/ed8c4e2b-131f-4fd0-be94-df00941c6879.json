@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "id": "ed8c4e2b-131f-4fd0-be94-df00941c6879",
+  "at": "2026-11-10T13:20:26.807Z",
+  "type": "applied",
+  "source": "local_operation",
+  "changeId": "CHG-123",
+  "data": {
+    "added": [
+      "L4-REMOTE-PROTOCOL-SOURCE-VERIFICATION"
+    ],
+    "changed": [],
+    "retiring": [],
+    "patch": {
+      "changeId": "CHG-123",
+      "nodes": [
+        {
+          "id": "L4-REMOTE-PROTOCOL-SOURCE-VERIFICATION",
+          "level": "L4",
+          "title": "协议源的可重现检出与强制 CI 漂移验证",
+          "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+          "codeTargets": [
+            ".github/workflows/publish-remote.yml",
+            ".github/workflows/release.yml",
+            "packages/remote/src/shared/cloud/signaling/SOURCE_REV"
+          ],
+          "testTargets": [
+            "packages/remote/src/shared/cloud/signaling/drift.test.ts"
+          ],
+          "body": "Remote 使用的生成绑定、信令 fixture、终端 fixture 和 Rust codec 必须可由 SOURCE_REV 对应的公共协议源检出并逐字节对照。SOURCE_REV 是这组 vendored 来源的固定版本声明。发布前和 release 前端测试先从同一声明读取并校验完整提交 ID，再检出该提交并配置 RIDGE_SIGNALING_REPO。固定提交不可用或对照不符时，CI 失败并停止后续构建、上传。\n\nCI 为 true 或 1 时必须有协议源目录，禁止以源目录缺席为由只报告成功的跳过项。本地开发可继续使用同级协议仓库或显式配置目录，缺席时沿用原有可选源对照。正常新构建的 Remote 发布在已有剪贴板回归中加入协议漂移对照。回滚和直接复用既有产物保持原执行路径。声明及检出只涉及公共协议数据，GitHub 工作流使用既有认证，额外仓库检出关闭凭据持久化。\n\ncanonical 协议源的文本 hex golden fixture 按 LF 检出，使 Windows autocrlf 检出的工作文件与 Linux、vendored 内容一致。此轮引用 d21f7f39d2fcfe308c1d8f21b4579c49b080741b，该提交只为既有协议源补齐 hex 检出属性，协议模型、终端字节格式和 Rust 消费方既有锁定声明沿用原契约。协议源的本地已提交改动发布到 codex/terminal-input-identity 独立分支，保留远端默认分支的独立历史。\n\n验收须证明 CI 缺源失败、固定公共提交的新检出通过、fixture 内容篡改失败，并保留字节比较断言。协议源全部特性 Rust 回归及默认 npm test、lint、typecheck、SpecTree verify 通过。实际 GitHub Remote 发布须运行固定源检出、剪贴板和协议回归，再核验发布指纹。本组验证覆盖来源完整性与测试门禁，实际 Windows 主机、真实设备、外部 Agent 和网络路径仍按各自运行环境验收。",
+          "acceptanceChecks": [
+            {
+              "id": "protocol-source-bytes",
+              "command": [
+                "pnpm",
+                "exec",
+                "vitest",
+                "run",
+                "packages/remote/src/shared/cloud/signaling/drift.test.ts"
+              ],
+              "description": "固定源版本、生成绑定、信令 fixture、终端 fixture 与 Rust codec 逐字节一致，CI 缺源失败"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

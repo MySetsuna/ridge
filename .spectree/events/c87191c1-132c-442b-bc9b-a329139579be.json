@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "id": "c87191c1-132c-442b-bc9b-a329139579be",
+  "at": "2026-11-10T13:34:07.505Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-123",
+  "buildId": "BUILD-8b54f7074354",
+  "data": {
+    "previousBuildId": "BUILD-b4e6562315a8",
+    "testEvidence": {
+      "buildId": "BUILD-b4e6562315a8",
+      "workspaceHash": "bfb7c2f5d3a4e3134f27d6e83052efed8584086bf79281fc1f9f502a41c56d53",
+      "verifiedAt": "2026-11-10T13:32:18.917Z",
+      "eventId": "d1210368-55c0-42ae-8359-3c041a0466b6"
+    },
+    "absorbed": [
+      ".github/workflows/publish-remote.yml",
+      ".github/workflows/release.yml",
+      "changes/CHG-123.md",
+      "packages/remote/src/shared/cloud/signaling/SOURCE_REV",
+      "packages/remote/src/shared/cloud/signaling/drift.test.ts",
+      "specs/l4-remote-protocol-source-verification.md"
+    ],
+    "activated": [
+      "L4-REMOTE-PROTOCOL-SOURCE-VERIFICATION"
+    ],
+    "archived": []
+  }
+}

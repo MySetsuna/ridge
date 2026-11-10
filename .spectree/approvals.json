@@ -827,5 +827,17 @@
       "buildId": "BUILD-ce0bb652fd29",
       "specHash": "9aa60070c49ab0b1182bc6bf1607a58c7b28bec0e7a1d8ec270d2b99779bed35"
     }
+  },
+  {
+    "changeId": "CHG-123",
+    "specHash": "1a70abc61a3ef04cf91b21d41ef80a3c79b30c37bef5b93d43c545cb12a330ab",
+    "approvedAt": "2026-11-10T13:34:07.483Z",
+    "source": "completion_derived",
+    "actor": "codex",
+    "confirmationRef": "user-authorized-remote-completion-and-metadata-exception",
+    "derivedFrom": {
+      "buildId": "BUILD-b4e6562315a8",
+      "specHash": "165e21826dc3447dff6069061fdafd0bdcd1d92fffb35102518ca5f28d74d031"
+    }
   }
 ]
