@@ -278,7 +278,7 @@ let foregroundProcessRunning = false;
 let foregroundPollTimer: ReturnType<typeof setInterval> | null = null;
 
 async function refreshForegroundRunning(): Promise<void> {
-	if (!alive || !isTauri()) return;
+	if (!alive || WEB_REMOTE || remotePaneBinding(paneId) || !isTauri()) return;
 	try {
 		const name = await invoke<string | null>('get_pane_foreground_process', {
 			workspaceId,
@@ -299,7 +299,7 @@ async function refreshForegroundRunning(): Promise<void> {
 }
 
 function startForegroundPoll(): void {
-	if (foregroundPollTimer !== null || !isTauri()) return;
+	if (foregroundPollTimer !== null || WEB_REMOTE || remotePaneBinding(paneId) || !isTauri()) return;
 	void refreshForegroundRunning();
 	foregroundPollTimer = setInterval(() => void refreshForegroundRunning(), FG_POLL_INTERVAL_MS);
 }

@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "id": "7ea2884b-d372-48df-a0a0-23cac709f72e",
+  "at": "2026-11-10T05:38:24.799Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-112",
+  "buildId": "BUILD-89626bf1824c",
+  "data": {
+    "previousBuildId": "BUILD-444e91e8e500",
+    "testEvidence": {
+      "buildId": "BUILD-444e91e8e500",
+      "workspaceHash": "690fdf102cb80a9b41f2c12c8b16179ab5216fe3ba38c826aaa62edeb6addc02",
+      "verifiedAt": "2026-11-10T05:36:56.188Z",
+      "eventId": "ed16f6a0-7836-4f30-9a1e-1c9dd3e0383b"
+    },
+    "absorbed": [
+      "changes/CHG-112.md",
+      "src/lib/components/RidgePane.svelte"
+    ],
+    "activated": [],
+    "archived": []
+  }
+}

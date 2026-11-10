@@ -39,3 +39,6 @@ A desktop context menu opened while an inline TUI signal is live grants that pan
 本地及 Remote 桌面窗格按明确 workspaceId/paneId 启动，依次确保 PTY 存在、注册快照并同步尺寸、激活；组件失效后不得继续激活。任何启动失败须呈现可操作错误，重试沿用同一身份与既有 PTY，不关闭或重复创建已运行终端，不重放键盘输入。启动中重复重试必须合并或禁用。历史预取不先于关键终端启动；失败不阻止终端使用。
 
 验收以启动顺序、创建与订阅失败阻断后续激活、组件卸载隔离和相同身份重试的测试为准；真实公网补验终端输入、刷新、主机重连及原 child PID 保留。原有上下文菜单租约测试继续约束 TUI 输入归属。
+
+
+本机前台进程查询保持 native-only 权限。浏览器 Remote 和原生界面中的外部主机窗格，不得启动本机进程轮询，也不得为消除拒绝错误扩大 Remote allowlist。原生本机活动窗格继续使用现有轮询与提示标记；Remote 沿用终端模式和协议提示状态。验收：公网 Remote 稳定交互期间不再每秒发送 get_pane_foreground_process，本机进程权限拒绝测试保持有效，原生本机调用仍可工作。

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "c12f9a4b-2fd3-4a1f-a611-c3b31526374f",
+  "at": "2026-11-10T05:32:22.374Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-112",
+  "data": {
+    "title": "停止 Remote 与外部窗格调用本机进程轮询",
+    "implementation": "REQUIRED"
+  }
+}
