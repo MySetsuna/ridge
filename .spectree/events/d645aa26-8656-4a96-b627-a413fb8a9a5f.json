@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "id": "d645aa26-8656-4a96-b627-a413fb8a9a5f",
+  "at": "2026-11-10T07:47:23.418Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-115",
+  "buildId": "BUILD-4c05d807a18c",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-4c05d807a18c",
+    "changeId": "CHG-115",
+    "specHash": "14534aefc508da2602c1eb2d8113460a6822cc02d8db35f5981c191a26d15c52",
+    "workspaceHash": "9b5fdf47ee546b80c84b54878fa8b130fc8d070b07c63a447f1b40188a45936e",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "PASS",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-REMOTE-PWA-UI-ROUTING",
+        "checkId": "mobile-pwa-build",
+        "command": [
+          "npm",
+          "run",
+          "build:remote:mobile"
+        ],
+        "description": "验证实际生成 SW 的移动外壳键、缓存迁移与现有 PWA 门禁",
+        "status": "PASS",
+        "exitCode": 0
+      }
+    ],
+    "valid": true,
+    "verifiedAt": "2026-11-10T07:47:23.415Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "changes/CHG-115.md",
+        "before": "e922aa2fdeec0234485aa68a748092d0c33e5d01f8e783997071820bd9a495a4",
+        "after": "3021335e93bbc4b6821ea4b72784f7ebdb07b9d69cbb3a645dbfacf51b12eca2"
+      },
+      {
+        "path": "scripts/verify-remote-pwa-build.mjs",
+        "before": "8f1a265d875ad100fe1c8b7839031e91be19255b0056ac8777cc1f1bdc12789a",
+        "after": "7c3fd9f003353e8ae2ac98c5805919894e078d959fc826a2cb594e5402f9fea3"
+      },
+      {
+        "path": "vite.remote.config.js",
+        "before": "874f69876a4286aef673e3a2e0bef0b615d24f1157b69737ce7f03109bf91737",
+        "after": "2291fd472cab6ccec0ea398949a19c03caf91e9ef86694f9142653999dd96f1a"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/d645aa26-8656-4a96-b627-a413fb8a9a5f.log"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "83bec647-64a0-4807-bc6a-d86955ef78b2",
+  "at": "2026-11-10T07:39:19.228Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-115",
+  "data": {
+    "changeId": "CHG-115",
+    "specHash": "14534aefc508da2602c1eb2d8113460a6822cc02d8db35f5981c191a26d15c52",
+    "approvedAt": "2026-11-10T07:39:19.217Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "user-remote-root-cause-repair-and-real-e2e",
+    "attributionVerified": false
+  }
+}

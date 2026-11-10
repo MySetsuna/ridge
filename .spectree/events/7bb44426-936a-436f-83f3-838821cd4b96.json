@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "7bb44426-936a-436f-83f3-838821cd4b96",
+  "at": "2026-11-10T07:48:31.823Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-115",
+  "buildId": "BUILD-0ec26a1096a1",
+  "data": {
+    "previousBuildId": "BUILD-4c05d807a18c",
+    "testEvidence": {
+      "buildId": "BUILD-4c05d807a18c",
+      "workspaceHash": "9b5fdf47ee546b80c84b54878fa8b130fc8d070b07c63a447f1b40188a45936e",
+      "verifiedAt": "2026-11-10T07:47:23.415Z",
+      "eventId": "d645aa26-8656-4a96-b627-a413fb8a9a5f"
+    },
+    "absorbed": [
+      "changes/CHG-115.md",
+      "scripts/verify-remote-pwa-build.mjs",
+      "specs/l4-remote-pwa-ui-routing.md",
+      "vite.remote.config.js"
+    ],
+    "activated": [
+      "L4-REMOTE-PWA-UI-ROUTING"
+    ],
+    "archived": []
+  }
+}

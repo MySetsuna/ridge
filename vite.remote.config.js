@@ -108,6 +108,14 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // Migrate caches whose HTML or scripts were fetched under another UI's UA.
+        cacheId: 'ridge-mobile-v2',
+        manifestTransforms: [async (manifest) => ({
+          manifest: manifest.map((entry) => entry.url === 'index.html'
+            ? { ...entry, url: 'index.html?ui=mobile' }
+            : entry),
+          warnings: [],
+        })],
         globPatterns: ['**/*'],
         // §perf: exclude wasm from precache (6 MB = 96% of install cost).
         // Runtime caching below makes it offline-capable after first use.
@@ -133,7 +141,7 @@ export default defineConfig({
         //     固定返回错误 UI 壳」bug（Goal #2）。离线时 `?ui=desktop` 退化为「请连
         //     网后使用桌面版」错误页（由浏览器默认 + index.html 的 nopin 标头），
         //     不强塞 mobile 壳。
-        navigateFallback: 'index.html',
+        navigateFallback: 'index.html?ui=mobile',
         navigateFallbackDenylist: [
           /^\/ws/,
           /^\/info/,
@@ -146,7 +154,7 @@ export default defineConfig({
           /^\/assets\//,
           // ?ui=desktop 必须直达网络，否则离线下 SW 命中 mobile 缓存 → 用户
           // 进桌面失败却看见 mobile 壳（看起来「能进」实际错壳，更难诊断）。
-          /[?&]ui=desktop(?:&|$)/,
+          /[?&]ui=(?:desktop|mobile)(?:&|$)/,
         ],
       },
       // No service worker during `pnpm dev:remote` — avoids stale-cache pain

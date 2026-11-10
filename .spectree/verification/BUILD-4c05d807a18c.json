@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "buildId": "BUILD-4c05d807a18c",
+  "changeId": "CHG-115",
+  "specHash": "14534aefc508da2602c1eb2d8113460a6822cc02d8db35f5981c191a26d15c52",
+  "workspaceHash": "9b5fdf47ee546b80c84b54878fa8b130fc8d070b07c63a447f1b40188a45936e",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-REMOTE-PWA-UI-ROUTING",
+      "checkId": "mobile-pwa-build",
+      "command": [
+        "npm",
+        "run",
+        "build:remote:mobile"
+      ],
+      "description": "验证实际生成 SW 的移动外壳键、缓存迁移与现有 PWA 门禁",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-10T07:47:23.415Z",
+  "diagnostics": [],
+  "eventId": "d645aa26-8656-4a96-b627-a413fb8a9a5f"
+}

@@ -41,6 +41,8 @@ const checks = {
   manifestScopeRoot: manifest.scope === '/' && manifest.start_url === '/',
   manifestIconsPresent: requiredIcons.every((icon) => existsSync(join(DIST, icon))),
   serviceWorkerGenerated: /precacheAndRoute|precache|workbox/i.test(serviceWorker),
+  mobileShellPinned: (serviceWorker.match(/index\.html\?ui=mobile/g) || []).length >= 2,
+  mobileCacheMigrated: serviceWorker.includes('ridge-mobile-v2'),
   safeAreaCssPresent: false,
   noInAppInstallHook: true,
   noDesktopFontRpc: true,

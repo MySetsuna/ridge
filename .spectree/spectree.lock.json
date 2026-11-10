@@ -1,74 +1,55 @@
 {
   "version": 1,
-  "changeId": "CHG-114",
-  "specHash": "f0ac8f9f892f22e447bc347bd00de14139becb1abc1020ecbff3731f6cf7926b",
+  "changeId": "CHG-115",
+  "specHash": "a77f58682427e9c20dd8322548041ef9ac5dbc7b119d5c7969efb3d2f8876b8b",
   "units": [
     {
-      "id": "L3-RUNTIME-WORKSPACE-CONTINUITY",
+      "id": "L3-OBS-VITE-REMOTE-CONFIG-JS-9b1a8a99",
       "level": "L3",
-      "nodeHash": "7a81e81988f8642128915c32109225aea996b5401e28b5d4b2803932e34a5e35",
+      "nodeHash": "bb791c821638d72ff086c92cd4d104d963369916a96ff4688b771c5c48fc7d93",
       "codeTargets": [
-        "packages/ridge-kernel/src/host.rs",
-        "packages/ridge-kernel/src/client.rs",
-        "packages/ridge-kernel/src/domain.rs",
-        "packages/ridge-kernel/src/kernel_mcp.rs",
-        "packages/ridge-kernel/src/workspace_commands.rs",
-        "packages/ridge-kernel/src/workspace_files.rs",
-        "packages/ridge-kernel/src/workspace_autosave.rs",
-        "packages/ridge-core/src/fs/commands.rs",
-        "src/lib/stores/fileExplorer.ts",
-        "src/lib/components/FileTree.svelte",
-        "src/lib/components/Explorer.svelte",
-        "src/lib/stores/paneTree.ts",
-        "packages/ridge-core/src/workspace/file.rs"
+        "vite.remote.config.js"
       ],
-      "testTargets": [
-        "packages/ridge-kernel/tests/runtime_workspace_continuity.rs",
-        "packages/ridge-kernel/tests/common/runtime_fixture.rs",
-        "packages/ridge-kernel/tests/cwd_runtime.rs",
-        "packages/ridge-kernel/tests/terminal_lifecycle_runtime.rs",
-        "src/lib/stores/fileExplorer.test.ts",
-        "src/lib/stores/paneTree.test.ts",
-        "src/lib/stores/paneTree.coverage.test.ts",
-        "packages/ridge-kernel/tests/workspace_file_owner.rs"
-      ],
+      "testTargets": [],
       "status": "LOCKED"
     },
     {
-      "id": "L4-RUNTIME-EMPTY-WORKSPACE-BOOT",
+      "id": "L4-OBS-VITE-REMOTE-CONFIG-JS-9b1a8a99",
       "level": "L4",
-      "nodeHash": "76ac71c08b12cfb178982d5ac2fdb35547da844da7836243b9a4bdeef04e4c73",
+      "nodeHash": "69ce3b72459ff583d7ae71b15c9628906092d8ce503721f52e9e52bda4c3cbb6",
       "codeTargets": [
-        "src/lib/stores/paneTree.ts"
+        "vite.remote.config.js"
+      ],
+      "testTargets": [],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-REMOTE-PWA-UI-ROUTING",
+      "level": "L4",
+      "nodeHash": "342cc9da07042f61c5bc8bd1b977bd26777539082f33e12b4e918c1414816898",
+      "codeTargets": [
+        "vite.remote.config.js"
       ],
       "testTargets": [
-        "src/lib/stores/paneTree.coverage.test.ts"
+        "scripts/verify-remote-pwa-build.mjs"
       ],
-      "status": "LOCKED"
+      "status": "LOCKED",
+      "acceptanceChecks": [
+        {
+          "id": "mobile-pwa-build",
+          "command": [
+            "npm",
+            "run",
+            "build:remote:mobile"
+          ],
+          "description": "验证实际生成 SW 的移动外壳键、缓存迁移与现有 PWA 门禁"
+        }
+      ]
     }
   ],
   "allowedPaths": [
-    "packages/ridge-core/src/fs/commands.rs",
-    "packages/ridge-core/src/workspace/file.rs",
-    "packages/ridge-kernel/src/client.rs",
-    "packages/ridge-kernel/src/domain.rs",
-    "packages/ridge-kernel/src/host.rs",
-    "packages/ridge-kernel/src/kernel_mcp.rs",
-    "packages/ridge-kernel/src/workspace_autosave.rs",
-    "packages/ridge-kernel/src/workspace_commands.rs",
-    "packages/ridge-kernel/src/workspace_files.rs",
-    "packages/ridge-kernel/tests/common/runtime_fixture.rs",
-    "packages/ridge-kernel/tests/cwd_runtime.rs",
-    "packages/ridge-kernel/tests/runtime_workspace_continuity.rs",
-    "packages/ridge-kernel/tests/terminal_lifecycle_runtime.rs",
-    "packages/ridge-kernel/tests/workspace_file_owner.rs",
-    "src/lib/components/Explorer.svelte",
-    "src/lib/components/FileTree.svelte",
-    "src/lib/stores/fileExplorer.test.ts",
-    "src/lib/stores/fileExplorer.ts",
-    "src/lib/stores/paneTree.coverage.test.ts",
-    "src/lib/stores/paneTree.test.ts",
-    "src/lib/stores/paneTree.ts"
+    "scripts/verify-remote-pwa-build.mjs",
+    "vite.remote.config.js"
   ],
   "testCommand": [
     "npm",
@@ -211,6 +192,7 @@
     "changes/CHG-112.md": "098c3bf5d8217a1b3232eb3152460149f1cda19c34da40c3e2a3756f3d96a5ee",
     "changes/CHG-113.md": "ae22742df76f1531ac289ea3d69e6650f1641f3b486272dd7cc0860f7d30317c",
     "changes/CHG-114.md": "f773e57fa647f32a43902b40ff0e1b2bb27ed119cc5c3449b077dc9f69550d47",
+    "changes/CHG-115.md": "175e65969a12f52b21f8ff7ff4388611d0b9a6ea89214e7e65be494fc33f95ed",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -1007,7 +989,7 @@
     "scripts/tls-host.mjs": "546412b6413afa8277b6be4b8f36b671e256724ff518c1b07dd33a4709b39baa",
     "scripts/validate-remote-smoke-evidence.mjs": "9f6a9c4481a70f7d7e208bc93d77ac5e936a3b5f916bcb6b5acb5f050618bc41",
     "scripts/validate-remote-smoke-evidence.test.mjs": "3f826e810a75c2cae2ddf145bf8e7225fa5f48e8047279a06f8b280d892970a6",
-    "scripts/verify-remote-pwa-build.mjs": "8f1a265d875ad100fe1c8b7839031e91be19255b0056ac8777cc1f1bdc12789a",
+    "scripts/verify-remote-pwa-build.mjs": "7c3fd9f003353e8ae2ac98c5805919894e078d959fc826a2cb594e5402f9fea3",
     "site/.nojekyll": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "site/404.html": "35d93af27883e2fe456d901100a337d36d8259f11cf031505a1136a0462a7a12",
     "site/assets/favicon.svg": "357c808d1c105885c5752d8d9fc7bbfcbd6809e6c88f940cc29a132f0c9640c6",
@@ -1175,6 +1157,7 @@
     "specs/l4-perf-latency-bench-entry.md": "86935a5eb9927f52620529e323278781fcf871545b9fc9cec4232c01418d798c",
     "specs/l4-remote-conditional-file-save.md": "b1e2499b02a0a17fa950ee4519188ea115b5834da16f134396c0ac63ed8ad57f",
     "specs/l4-remote-pwa-edit-protection.md": "de2d74877a2b6738abf58c6c0388ab0eac67bcf515dfeac0b1a01e20b67b1872",
+    "specs/l4-remote-pwa-ui-routing.md": "72fdc047e7dc6bdefaa982c723e288454d447a293a659bbe044e8a095dc419b3",
     "specs/l4-ridge-mcp-sidecar-windows-x64.md": "d1670206a676daa0e7bc9841ad226637b512af9e020eb834a38092c92ffe9824",
     "specs/l4-runtime-empty-workspace-boot.md": "4a838e7b606d624a8036d2a9a52c12afc7e4e2b71f81760df716df0cfc963cd8",
     "specs/migration/L2-OBS-CARGO-TOML-2e9d962a.md": "661c8fa4621b6ba8c1c814e5b5186c31cf8f1840f9ba4d359c6ef660c0fdef52",
@@ -2634,13 +2617,13 @@
     "tools/soak-harness/src/main.rs": "5c12a2800cc4819896fe08e56ff0a83091d9582ec254bb6e2e4c98133d5fde1f",
     "tsconfig.json": "3543fe49263e8b2cf7990aa1dcdedbe2de6619242063ac5c6e12f3518d2bc111",
     "vite.config.js": "51eb916feef58116d0cad4f3fe08320ac17ef83c309d20eb8a2219f21d7b3cee",
-    "vite.remote.config.js": "874f69876a4286aef673e3a2e0bef0b615d24f1157b69737ce7f03109bf91737",
+    "vite.remote.config.js": "2291fd472cab6ccec0ea398949a19c03caf91e9ef86694f9142653999dd96f1a",
     "vitest.config.ts": "a83524d634d658577279fe3f018772e7c23b8ab1e09c19ab2840cf4761642be3",
     "wdio.conf.ts": "d0fcf9d44d0c5aeef0465b0afb094dd300ad2160bbc2f8f86ba824b4272e0b20",
     "wdio.frame.conf.ts": "9dd731eb731ba8fa78a4580dff28e014b9c06dc9a74e6d316ecc0219bcd825fd",
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-e678a27f0b1d",
-  "manifestHash": "e678a27f0b1dc6d204075ab04c4ba76f0a08f2db730de11e0f4f002953f56ac2"
+  "buildId": "BUILD-0ec26a1096a1",
+  "manifestHash": "0ec26a1096a13557199fcd279eeb5d5ee043beecff7a17dc12281babe38c2d86"
 }

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "94af7e18-04b7-43ed-9e12-5c20d47a8fd8",
+  "at": "2026-11-10T07:38:33.744Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-115",
+  "data": {
+    "title": "修复移动 PWA 缓存混入桌面外壳与跨 UI 静态资源分流",
+    "implementation": "REQUIRED"
+  }
+}

@@ -731,5 +731,17 @@
       "buildId": "BUILD-937cb6c65971",
       "specHash": "cb64907665fff54858d2da33d620e205ac611b719e304876e18a0cc6867ecef4"
     }
+  },
+  {
+    "changeId": "CHG-115",
+    "specHash": "a77f58682427e9c20dd8322548041ef9ac5dbc7b119d5c7969efb3d2f8876b8b",
+    "approvedAt": "2026-11-10T07:48:31.790Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "user-remote-root-cause-repair-and-real-e2e",
+    "derivedFrom": {
+      "buildId": "BUILD-4c05d807a18c",
+      "specHash": "14534aefc508da2602c1eb2d8113460a6822cc02d8db35f5981c191a26d15c52"
+    }
   }
 ]
