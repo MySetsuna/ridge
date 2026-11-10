@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "buildId": "BUILD-ce0bb652fd29",
+  "changeId": "CHG-122",
+  "specHash": "9aa60070c49ab0b1182bc6bf1607a58c7b28bec0e7a1d8ec270d2b99779bed35",
+  "workspaceHash": "acbfc2952827e76f843ddace6ba4a7ef14abc2be41b48859437843a972e5dc3c",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-REMOTE-CLIPBOARD-SOURCE-ISOLATION",
+      "checkId": "clipboard-both-builds",
+      "command": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "packages/remote/src/shared/terminal/clipboardImage.test.ts"
+      ],
+      "description": "真实编译布尔构建标志的原生和 Web 产物，默认命令执行两种来源与失败路径",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-10T12:58:51.250Z",
+  "diagnostics": [],
+  "eventId": "778b07a1-cf8c-4c86-a804-fcb1d896deae"
+}

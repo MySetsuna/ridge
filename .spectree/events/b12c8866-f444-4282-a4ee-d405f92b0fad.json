@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "b12c8866-f444-4282-a4ee-d405f92b0fad",
+  "at": "2026-11-10T13:00:25.074Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-122",
+  "buildId": "BUILD-20ab7513c5f5",
+  "data": {
+    "previousBuildId": "BUILD-ce0bb652fd29",
+    "testEvidence": {
+      "buildId": "BUILD-ce0bb652fd29",
+      "workspaceHash": "acbfc2952827e76f843ddace6ba4a7ef14abc2be41b48859437843a972e5dc3c",
+      "verifiedAt": "2026-11-10T12:58:51.250Z",
+      "eventId": "778b07a1-cf8c-4c86-a804-fcb1d896deae"
+    },
+    "absorbed": [
+      ".github/workflows/publish-remote.yml",
+      "changes/CHG-122.md",
+      "packages/remote/src/shared/terminal/clipboardImage.test.ts",
+      "specs/l4-remote-clipboard-source-isolation.md"
+    ],
+    "activated": [
+      "L4-REMOTE-CLIPBOARD-SOURCE-ISOLATION"
+    ],
+    "archived": []
+  }
+}

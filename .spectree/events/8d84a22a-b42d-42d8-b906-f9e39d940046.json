@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "8d84a22a-b42d-42d8-b906-f9e39d940046",
+  "at": "2026-11-10T12:49:40.894Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-122",
+  "data": {
+    "title": "约束原生与 Web 构建的终端剪贴板来源并消除条件漏测",
+    "implementation": "REQUIRED"
+  }
+}

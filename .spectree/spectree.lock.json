@@ -1,53 +1,39 @@
 {
   "version": 1,
-  "changeId": "CHG-121",
-  "specHash": "6f251cb7bba60d2d79d5333ed3adb4406a11e033eebafadbb150d9813c7576ed",
+  "changeId": "CHG-122",
+  "specHash": "0a31ef554d585923208ec057e1fd0996cd5d1294d86b17a444bd9e95b323d852",
   "units": [
     {
-      "id": "L4-CLOUD-RELEASE-0198",
+      "id": "L4-REMOTE-CLIPBOARD-SOURCE-ISOLATION",
       "level": "L4",
-      "nodeHash": "9efb0a7d388fc526aec511e43d3f3f33f10eceebf6828e8e8919dd6d33d0a870",
+      "nodeHash": "042cc563db4aee8adf543fead7bdd4ab7ec401af10f0b694be848ba0987827f1",
       "codeTargets": [
-        "package.json",
-        "Cargo.lock",
-        "src-tauri/Cargo.toml",
-        "src-tauri/tauri.conf.json"
+        "packages/remote/src/shared/terminal/clipboardImage.ts",
+        ".github/workflows/publish-remote.yml"
       ],
       "testTargets": [
-        "scripts/check-release-version.mjs",
-        "scripts/check-release-version.test.mjs"
+        "packages/remote/src/shared/terminal/clipboardImage.test.ts"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "release-version",
-          "command": [
-            "node",
-            "scripts/check-release-version.mjs"
-          ],
-          "description": "四处产品版本一致为 0.1.100，独立 crate 版本保持兼容"
-        },
-        {
-          "id": "release-version-regression",
+          "id": "clipboard-both-builds",
           "command": [
             "pnpm",
             "exec",
             "vitest",
             "run",
-            "scripts/check-release-version.test.mjs"
+            "packages/remote/src/shared/terminal/clipboardImage.test.ts"
           ],
-          "description": "版本及 tag 契约拒绝缺失或不一致"
+          "description": "真实编译布尔构建标志的原生和 Web 产物，默认命令执行两种来源与失败路径"
         }
       ]
     }
   ],
   "allowedPaths": [
-    "Cargo.lock",
-    "package.json",
-    "scripts/check-release-version.mjs",
-    "scripts/check-release-version.test.mjs",
-    "src-tauri/Cargo.toml",
-    "src-tauri/tauri.conf.json"
+    ".github/workflows/publish-remote.yml",
+    "packages/remote/src/shared/terminal/clipboardImage.test.ts",
+    "packages/remote/src/shared/terminal/clipboardImage.ts"
   ],
   "testCommand": [
     "npm",
@@ -62,7 +48,7 @@
     ".env.local": "5e24dd1c2c435d03c9d0bdf277e8039fd24d511666b1d3d740d568d631ad9079",
     ".gitattributes": "9857ff9bdb1e263152be695c970a8e9d2c94576dbf709ee02f12d780e0958df4",
     ".github/workflows/deploy-pages.yml": "68c4c2a838c45ec4927f108a20e46db9cd79543049566530307d5fe556c1d8cb",
-    ".github/workflows/publish-remote.yml": "4178b56b2adf3fd041ab0ccbc72c7aaac0192675f115386968b9e4ab116d42cb",
+    ".github/workflows/publish-remote.yml": "fa86d6d59f9fb97534265753a02765cdd2a586740f0bf615c8cc4828fa2c1648",
     ".github/workflows/release.yml": "6b72ad4e2da0f5567adedb38cff8da5e7f647078add226b7968a415ea438aad6",
     ".github/workflows/rtp1-kernel-e2e.yml": "97ac6cc2b49e62a0affa64672db537462c8a1fd59c268561ce691d6e1ecf5a8b",
     ".gitignore": "ca02fc69e48ce2e209f41670b3f12cfa7c88263a1be4fc634212b519193d7b52",
@@ -197,6 +183,7 @@
     "changes/CHG-119.md": "bf65966eaba506f82ffe47b263b8577438651dea05d6cabdf96294c0614be8ee",
     "changes/CHG-120.md": "97de78e556e11e610092f0a4e22d2633dc1ad1b24196411bc29080ec4c66235a",
     "changes/CHG-121.md": "5684b75b0ea5534c0a882b21e23dd421fafaedd35db59937e19642ecf62aec8a",
+    "changes/CHG-122.md": "11a86c1b4dd8efc7b1bc5f7fa60aeb20a4df976363804b7fea6a8c9db0550292",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -334,7 +321,7 @@
     "packages/remote/src/shared/reconnectPolicy.ts": "c1368f6d3effe74af6d5c04f02b88a597ff9773adc99c7632c11231a02e34468",
     "packages/remote/src/shared/teammate/hitlAuditRemote.test.ts": "a5125fd182e374496134d9c1ce2eb7e5e82c1942934c6fe8129cb42f8ad82bf3",
     "packages/remote/src/shared/teammate/hitlAuditRemote.ts": "51a5c27b58a8b943b3fc88df0be21650ffaed2163f4e148f012b5adce3a0fc23",
-    "packages/remote/src/shared/terminal/clipboardImage.test.ts": "8a3bf5e0967ba42ffa091508dfb687c8a9c50f9f2061bf3ee2cc7ebc344e9690",
+    "packages/remote/src/shared/terminal/clipboardImage.test.ts": "eea1e451e0de48a8f2027900d45cc5cf8e6f0b627ae47c2e3083fd42c049d1c2",
     "packages/remote/src/shared/terminal/clipboardImage.ts": "260d4a75b7768fdce283ca673444aee3f48acc9a8b9f3ce13e143034c9309cfa",
     "packages/remote/src/shared/terminal/cssColor.ts": "b0096318ec4e3994b5fef3240b75114e3584ec84daeed7b894e3ee9c61c0664a",
     "packages/remote/src/shared/terminal/dropPaste.test.ts": "55da4e772a962c170509cfde8eaa56f3d1d504eb4d84e4fa6cad8e2fd4950aa0",
@@ -1162,6 +1149,7 @@
     "specs/l4-commune-remote-delivery.md": "43ae0e9067cebb2a70ba1f46fc92104e0d625ae80dbce045e40239cb56c08230",
     "specs/l4-monaco-trusted-styles.md": "61dc83ef5ea96a7ffb2ee4e7ee02be802f56ce9babc2bdd1460aabda35c43dfe",
     "specs/l4-perf-latency-bench-entry.md": "86935a5eb9927f52620529e323278781fcf871545b9fc9cec4232c01418d798c",
+    "specs/l4-remote-clipboard-source-isolation.md": "f556b8a9d944e3d764a0a3f5c1821da5895f16159156ab9137adb70ba9b510f6",
     "specs/l4-remote-conditional-file-save.md": "b1e2499b02a0a17fa950ee4519188ea115b5834da16f134396c0ac63ed8ad57f",
     "specs/l4-remote-initial-input-continuity.md": "96820104d3b4d23249a56ef3d2c36aa62ad252b1c275c0c9d6de9c0c7d87c5b1",
     "specs/l4-remote-preconnection-update.md": "33144fc540c3b063a413874a612c8f3455c4e90bfeb9c602096156e9de15ca9f",
@@ -2637,6 +2625,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-71f3901f4684",
-  "manifestHash": "71f3901f4684b556d0410770bd75cb97966ef9e35f548e0b6a41dfd7bcf90500"
+  "buildId": "BUILD-20ab7513c5f5",
+  "manifestHash": "20ab7513c5f5a18e0c466805912f8b95c542ba6bfeeedf84d24c1334b2a161a0"
 }

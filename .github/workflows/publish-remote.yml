@@ -60,6 +60,12 @@ jobs:
       - name: Check release version contract
         run: node scripts/check-release-version.mjs
 
+      - name: Terminal clipboard build regressions
+        if: ${{ inputs.rollback != true && inputs.no_build != true }}
+        run: |
+          pnpm exec svelte-kit sync
+          pnpm exec vitest run packages/remote/src/shared/terminal/clipboardImage.test.ts
+
       - name: Build wasm terminal kernel
         if: ${{ inputs.rollback != true && inputs.no_build != true }}
         run: node packages/ridge-term/build.mjs

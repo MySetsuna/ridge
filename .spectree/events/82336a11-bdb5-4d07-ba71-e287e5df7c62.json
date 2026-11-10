@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "id": "82336a11-bdb5-4d07-ba71-e287e5df7c62",
+  "at": "2026-11-10T12:57:12.575Z",
+  "type": "proposed",
+  "source": "local_operation",
+  "changeId": "CHG-122",
+  "data": {
+    "proposal": {
+      "changeId": "CHG-122",
+      "nodes": [
+        {
+          "id": "L4-REMOTE-CLIPBOARD-SOURCE-ISOLATION",
+          "level": "L4",
+          "title": "终端图片剪贴板的来源与构建隔离",
+          "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+          "codeTargets": [
+            "packages/remote/src/shared/terminal/clipboardImage.ts",
+            ".github/workflows/publish-remote.yml"
+          ],
+          "testTargets": [
+            "packages/remote/src/shared/terminal/clipboardImage.test.ts"
+          ],
+          "body": "终端主动粘贴图片时，原生构建读取本机宿主剪贴板，Web 构建读取控制端浏览器剪贴板，再把图片字节交给已鉴权的宿主保存并返回绝对路径。Web 端无图片、API 不支持或拒绝授权时返回空结果，原生宿主剪贴板读取保持隔离。浏览器图片读取或宿主保存失败按既有错误传播契约交给入口处理。原生 paste 事件中的图片两种构建均支持，文件须在事件有效期间同步取得，再异步读取字节与保存。\n\n构建标志是生产编译时布尔常量。默认测试必须分别编译同一权威实现的原生及 Web 产物，执行两种来源、事件图片及失败路径，消除依赖当前测试环境标志的整分支跳过。测试仅替换外部剪贴板和主机保存端口，字节编码、来源选择及错误传播执行真实生产源。默认 npm test 自动包含本组回归。正常新构建的 Remote 发布须在产物构建与上传以前执行同组测试，失败停止发布。现有回滚和直接复用产物流程沿用原路径。\n\n验收使用真实 Vite 构建器分别定义布尔 false 与 true，执行生成产物，校验原生命令、Web 客户端读取、空结果、API 缺失、授权拒绝、准确字节、读取失败及宿主保存失败。运行全量 npm test、lint、typecheck 与 SpecTree verify，并观察实际 GitHub Remote 发布前置测试成功、产物来源及用户域名版本。隔离单元回归证明编译与业务分支，真实系统剪贴板权限、设备及公网会话由对应环境单独验收。",
+          "acceptanceChecks": [
+            {
+              "id": "clipboard-both-builds",
+              "command": [
+                "pnpm",
+                "exec",
+                "vitest",
+                "run",
+                "packages/remote/src/shared/terminal/clipboardImage.test.ts"
+              ],
+              "description": "真实编译布尔构建标志的原生和 Web 产物，默认命令执行两种来源与失败路径"
+            }
+          ]
+        }
+      ],
+      "createdAt": "2026-11-10T12:57:12.574Z"
+    }
+  }
+}

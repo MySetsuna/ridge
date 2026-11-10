@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "id": "778b07a1-cf8c-4c86-a804-fcb1d896deae",
+  "at": "2026-11-10T12:58:51.252Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-122",
+  "buildId": "BUILD-ce0bb652fd29",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-ce0bb652fd29",
+    "changeId": "CHG-122",
+    "specHash": "9aa60070c49ab0b1182bc6bf1607a58c7b28bec0e7a1d8ec270d2b99779bed35",
+    "workspaceHash": "acbfc2952827e76f843ddace6ba4a7ef14abc2be41b48859437843a972e5dc3c",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "PASS",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-REMOTE-CLIPBOARD-SOURCE-ISOLATION",
+        "checkId": "clipboard-both-builds",
+        "command": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "packages/remote/src/shared/terminal/clipboardImage.test.ts"
+        ],
+        "description": "真实编译布尔构建标志的原生和 Web 产物，默认命令执行两种来源与失败路径",
+        "status": "PASS",
+        "exitCode": 0
+      }
+    ],
+    "valid": true,
+    "verifiedAt": "2026-11-10T12:58:51.250Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": ".github/workflows/publish-remote.yml",
+        "before": "4178b56b2adf3fd041ab0ccbc72c7aaac0192675f115386968b9e4ab116d42cb",
+        "after": "fa86d6d59f9fb97534265753a02765cdd2a586740f0bf615c8cc4828fa2c1648"
+      },
+      {
+        "path": "changes/CHG-122.md",
+        "before": "2ad6b79e2ff20f63111797c65d0c9b9cc530c5daaa61588226d8bf44203d48a9",
+        "after": "ad9daa27384b51fad3f796d3aea737de1c2a693659c246912911061c2bb99d2d"
+      },
+      {
+        "path": "packages/remote/src/shared/terminal/clipboardImage.test.ts",
+        "before": "8a3bf5e0967ba42ffa091508dfb687c8a9c50f9f2061bf3ee2cc7ebc344e9690",
+        "after": "eea1e451e0de48a8f2027900d45cc5cf8e6f0b627ae47c2e3083fd42c049d1c2"
+      },
+      {
+        "path": "specs/l4-remote-clipboard-source-isolation.md",
+        "before": "23624dfde29bcceda1211f9e694f8a46ec8e07337e546cbcc29c80757b20fa1a",
+        "after": "b2992a35e160ef4e09a2da1fbf5f964750cb93a4a06b58a1314d2ccba69709f5"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/778b07a1-cf8c-4c86-a804-fcb1d896deae.log"
+  }
+}
