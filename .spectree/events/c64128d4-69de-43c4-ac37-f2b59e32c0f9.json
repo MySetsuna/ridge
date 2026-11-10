@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "c64128d4-69de-43c4-ac37-f2b59e32c0f9",
+  "at": "2026-11-10T08:35:05.918Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-117",
+  "data": {
+    "changeId": "CHG-117",
+    "specHash": "a17e1860627cc5b3c069f011d5466ef865251d47587170fe474bef267af7a12a",
+    "approvedAt": "2026-11-10T08:35:05.903Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "user-fix-pane-render-freeze-and-complete-e2e",
+    "attributionVerified": false
+  }
+}

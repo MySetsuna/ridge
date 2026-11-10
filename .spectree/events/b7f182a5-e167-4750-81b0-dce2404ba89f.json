@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "b7f182a5-e167-4750-81b0-dce2404ba89f",
+  "at": "2026-11-10T08:34:15.417Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-117",
+  "data": {
+    "title": "清理终端视口移动收缩后的残影并同步当前帧失效状态",
+    "implementation": "REQUIRED"
+  }
+}

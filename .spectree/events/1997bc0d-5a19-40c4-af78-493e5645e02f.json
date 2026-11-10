@@ -1,0 +1,557 @@
+{
+  "version": 1,
+  "id": "1997bc0d-5a19-40c4-af78-493e5645e02f",
+  "at": "2026-11-10T08:53:48.229Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-117",
+  "buildId": "BUILD-a1d6ef2957bd",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-a1d6ef2957bd",
+    "changeId": "CHG-117",
+    "specHash": "a17e1860627cc5b3c069f011d5466ef865251d47587170fe474bef267af7a12a",
+    "workspaceHash": "a0d3c16b4f8834aaf1a263a219ddac79db80dec7f3de980dc2e8116ae1ece880",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "FAIL",
+    "acceptanceResults": [
+      {
+        "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+        "checkId": "architecture-docs",
+        "command": [
+          "node",
+          "scripts/check-architecture-docs.mjs"
+        ],
+        "description": "检查当前导览内部链接、必需契约与入口引用，历史副本明确标识且旧导览按原文归档",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L3-CLI-INDEPENDENT-TERMINAL-CREATION",
+        "checkId": "cli-terminal-creation-e2e",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-cli",
+          "--test",
+          "cli_terminal_create_e2e"
+        ],
+        "description": "真实 Kernel 上四个 CLI 入口的创建、鉴权及上线失败、部分写入回滚、丢包和并发重试验收",
+        "status": "FAIL",
+        "exitCode": 101
+      },
+      {
+        "nodeId": "L3-CLI-INDEPENDENT-TERMINAL-CREATION",
+        "checkId": "local-grant-expiry",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-remote",
+          "--lib",
+          "expired_local_grants_reject_replay_without_affecting_live_grants"
+        ],
+        "description": "共享授权验证器拒绝真实过期记录及其重放，保留同时有效的授权",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L3-RUNTIME-LIVE-CWD-PUSH",
+        "checkId": "live-cwd-runtime",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "cwd_runtime"
+        ],
+        "description": "真实 shell cd 后不查询 CWD 即收到原 pane 的目录变化事件，验证快照、持久化、旧进程隔离及写回失败保护",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L3-SPEC-MAPPING-GOVERNANCE",
+        "checkId": "spec-mapping-audit",
+        "command": [
+          "node",
+          "scripts/check-spec-mappings.mjs"
+        ],
+        "description": "核对 98 份 Git 源证据、所有节点处置、现役测试路径及审计零失效目标",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-CLOUD-RELEASE-0198",
+        "checkId": "release-version",
+        "command": [
+          "node",
+          "scripts/check-release-version.mjs"
+        ],
+        "description": "四处产品版本一致为 0.1.99，独立 crate 版本不变",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-CLOUD-RELEASE-0198",
+        "checkId": "release-version-regression",
+        "command": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "scripts/check-release-version.test.mjs"
+        ],
+        "description": "版本及 tag 契约拒绝缺失或不一致",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-CONNECTION-WIZARD",
+        "checkId": "connection-kernel-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--bin",
+          "ridge-kernel"
+        ],
+        "description": "构建当前 Runtime 供真实接入验收使用",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-CONNECTION-WIZARD",
+        "checkId": "connection-fixture-build",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--no-run"
+        ],
+        "description": "构建隔离的已运行 ACP 会话端点",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-CONNECTION-WIZARD",
+        "checkId": "connection-ui",
+        "command": [
+          "node",
+          "scripts/commune-permission-ui-acceptance.mjs",
+          "--membership"
+        ],
+        "description": "真实 Chromium 文件选择、预览、错误重试、取消与既有会话注册及移出，不新建替身会话",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-EXECUTABLE-IMAGE",
+        "checkId": "existing-process-enrollment",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--",
+          "--test-threads=1"
+        ],
+        "description": "真实长名协议进程发现、精确登记、原终端保留与组织重启恢复",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-DISPATCH-INTENT",
+        "checkId": "group-intent-kernel-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--bin",
+          "ridge-kernel"
+        ],
+        "description": "构建现有组派发幂等与冻结目标的真实 Runtime",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-DISPATCH-INTENT",
+        "checkId": "group-intent-fixture-build",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--no-run"
+        ],
+        "description": "构建既有 ACP 会话 fixture",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-DISPATCH-INTENT",
+        "checkId": "group-intent-ui",
+        "command": [
+          "node",
+          "scripts/commune-permission-ui-acceptance.mjs"
+        ],
+        "description": "真实组任务在提交后回执丢失、输入新草稿和组件重挂后，确认原派发不重复执行并保留新输入；回归审批、取消和产物",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY",
+        "checkId": "online-kernel-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--bin",
+          "ridge-kernel"
+        ],
+        "description": "构建当前真实 Runtime",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY",
+        "checkId": "online-fixture-build",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--no-run"
+        ],
+        "description": "构建连接可断开但原进程保活的已有 ACP fixture",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY",
+        "checkId": "online-group-ui",
+        "command": [
+          "node",
+          "scripts/commune-permission-ui-acceptance.mjs"
+        ],
+        "description": "真实连接断开后离线成员不能新选；已提交丢失回执的组派发仍能确认原请求，不重复执行；回归审批、组分工和产物",
+        "status": "FAIL",
+        "exitCode": null,
+        "error": "spawnSync node ETIMEDOUT"
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
+        "checkId": "group-refresh-races",
+        "command": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "src/lib/teammate/teammateGroups.test.ts"
+        ],
+        "status": "NOT_RUN",
+        "exitCode": null,
+        "error": "verification budget exhausted"
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
+        "checkId": "group-refresh-ui",
+        "command": [
+          "node",
+          "scripts/commune-global-ui-acceptance.mjs"
+        ],
+        "status": "NOT_RUN",
+        "exitCode": null,
+        "error": "verification budget exhausted"
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-USABILITY",
+        "checkId": "commune-group-usability-ui",
+        "command": [
+          "node",
+          "scripts/commune-global-ui-acceptance.mjs"
+        ],
+        "status": "NOT_RUN",
+        "exitCode": null,
+        "error": "verification budget exhausted"
+      },
+      {
+        "nodeId": "L4-COMMUNE-LINUX-PROCESS-OBSERVATION",
+        "checkId": "process-enrollment",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--",
+          "--test-threads=1"
+        ],
+        "status": "NOT_RUN",
+        "exitCode": null,
+        "error": "verification budget exhausted"
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-socket-attestation",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-core",
+          "process_identity"
+        ],
+        "status": "NOT_RUN",
+        "exitCode": null,
+        "error": "verification budget exhausted"
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-runtime",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration"
+        ],
+        "status": "NOT_RUN",
+        "exitCode": null,
+        "error": "verification budget exhausted"
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-storage",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--lib",
+          "commune_groups"
+        ],
+        "status": "NOT_RUN",
+        "exitCode": null,
+        "error": "verification budget exhausted"
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-kernel-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--bin",
+          "ridge-kernel"
+        ],
+        "status": "NOT_RUN",
+        "exitCode": null,
+        "error": "verification budget exhausted"
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-global-ui",
+        "command": [
+          "node",
+          "scripts/commune-global-ui-acceptance.mjs"
+        ],
+        "status": "NOT_RUN",
+        "exitCode": null,
+        "error": "verification budget exhausted"
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-catalog",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "agent_catalog_runtime"
+        ],
+        "status": "NOT_RUN",
+        "exitCode": null,
+        "error": "verification budget exhausted"
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-membership-ui",
+        "command": [
+          "node",
+          "scripts/commune-permission-ui-acceptance.mjs",
+          "--membership"
+        ],
+        "status": "NOT_RUN",
+        "exitCode": null,
+        "error": "verification budget exhausted"
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-dispatch-regression",
+        "command": [
+          "node",
+          "scripts/commune-permission-ui-acceptance.mjs"
+        ],
+        "status": "NOT_RUN",
+        "exitCode": null,
+        "error": "verification budget exhausted"
+      },
+      {
+        "nodeId": "L4-COMMUNE-REMOTE-DELIVERY",
+        "checkId": "commune-remote-delivery-ui",
+        "command": [
+          "node",
+          "scripts/commune-global-ui-acceptance.mjs"
+        ],
+        "status": "NOT_RUN",
+        "exitCode": null,
+        "error": "verification budget exhausted"
+      }
+    ],
+    "valid": false,
+    "verifiedAt": "2026-11-10T08:53:48.223Z",
+    "diagnostics": [
+      {
+        "code": "ACCEPTANCE_E_FAILED",
+        "severity": "ERROR",
+        "message": "cli-terminal-creation-e2e:    Compiling ridge-core v0.1.0 (C:\\code\\wind\\packages\\ridge-core)\n   Compiling ridge-term-font v0.1.0 (C:\\code\\wind\\packages\\ridge-term-font)\n   Compiling ridge-remote v0.1.0 (C:\\code\\wind\\packages\\ridge-remote)\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\n   Compiling ridge-term v0.1.0 (C:\\code\\wind\\packages\\ridge-term)\nwarning: unused import: `std::cell::RefCell`\n  --> packages\\ridge-term\\src\\lib.rs:37:5\n   |\n37 | use std::cell::RefCell;\n   |     ^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default\n\nwarning: unused import: `wasm_bindgen::prelude::*`\n  --> packages\\ridge-term\\src\\lib.rs:39:5\n   |\n39 | use wasm_bindgen::prelude::*;\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `crate::input::KeyEvent`\n  --> packages\\ridge-term\\src\\lib.rs:54:5\n   |\n54 | use crate::input::KeyEvent;\n   |     ^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `crate::search::SearchState`\n  --> packages\\ridge-term\\src\\lib.rs:55:5\n   |\n55 | use crate::search::SearchState;\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused imports: `Pos`, `RangeAbs`, `Range`, and `Selection`\n  --> packages\\ridge-term\\src\\lib.rs:56:24\n   |\n56 | use crate::selection::{Pos, Range, RangeAbs, Selection};\n   |                        ^^^  ^^^^^  ^^^^^^^^  ^^^^^^^^^\n\nwarning: unused import: `crate::term::Terminal`\n  --> packages\\ridge-term\\src\\lib.rs:57:5\n   |\n57 | use crate::term::Terminal;\n   |     ^^^^^^^^^^^^^^^^^^^^^\n\nwarning: function `append_render_scroll_ops` is never used\n   --> packages\\ridge-term\\src\\lib.rs:247:4\n    |\n247 | fn append_render_scroll_ops(\n    |    ^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: constant `SHELL_HISTORY_STICKY_MS` is never used\n   --> packages\\ridge-term\\src\\lib.rs:537:7\n    |\n537 | const SHELL_HISTORY_STICKY_MS: i64 = 0;\n    |       ^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: `ridge-term` (lib) generated 8 warnings (run `cargo fix --lib -p ridge-term` to apply 6 suggestions)\n   Compiling ridge-acp v0.1.0 (C:\\code\\wind\\packages\\ridge-acp)\n   Compiling ridge-tmux v0.1.0 (C:\\code\\wind\\packages\\ridge-tmux)\n   Compiling ridge-kernel v0.1.0 (C:\\code\\wind\\packages\\ridge-kernel)\nwarning: function `read_http_response` is never used\n    --> packages\\ridge-kernel\\src\\client.rs:1378:4\n     |\n1378 | fn read_http_response(stream: &mut TcpStream) -> Result<(String, Vec<u8>), String> {\n     |    ^^^^^^^^^^^^^^^^^^\n     |\n     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: function `builtin_agent_profiles` is never used\n  --> packages\\ridge-kernel\\src\\domain.rs:56:8\n   |\n56 | pub fn builtin_agent_profiles() -> Value {\n   |        ^^^^^^^^^^^^^^^^^^^^^^\n\n   Compiling ridge-mcp-bridge v0.1.0 (C:\\code\\wind\\packages\\ridge-mcp-bridge)\nwarning: `ridge-kernel` (lib) generated 2 warnings\n   Compiling ridge-cli v0.1.0 (C:\\code\\wind\\packages\\ridge-cli)\nwarning: unused import: `ridge_kernel::host_core::*`\n --> packages\\ridge-cli\\src\\core_host.rs:2:9\n  |\n2 | pub use ridge_kernel::host_core::*;\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default\n\nwarning: unused import: `ridge_kernel::cloud::e2ee::*`\n --> packages\\ridge-cli\\src\\e2ee.rs:2:9\n  |\n2 | pub use ridge_kernel::cloud::e2ee::*;\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `ridge_kernel::host_fs::*`\n --> packages\\ridge-cli\\src\\fs_reuse.rs:2:9\n  |\n2 | pub use ridge_kernel::host_fs::*;\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `ridge_kernel::host::*`\n --> packages\\ridge-cli\\src\\kernel_host_impl.rs:2:9\n  |\n2 | pub use ridge_kernel::host::*;\n  |         ^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `ridge_kernel::cloud::key_binding::*`\n --> packages\\ridge-cli\\src\\key_binding.rs:2:9\n  |\n2 | pub use ridge_kernel::cloud::key_binding::*;\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `ridge_kernel::cloud::mux::*`\n --> packages\\ridge-cli\\src\\mux.rs:2:9\n  |\n2 | pub use ridge_kernel::cloud::mux::*;\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `ridge_kernel::cloud::protocol::*`\n --> packages\\ridge-cli\\src\\protocol.rs:2:9\n  |\n2 | pub use ridge_kernel::cloud::protocol::*;\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `ridge_remote::rpc::*`\n --> packages\\ridge-cli\\src\\rpc.rs:2:9\n  |\n2 | pub use ridge_remote::rpc::*;\n  |         ^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `ridge_kernel::cloud::rtc::*`\n --> packages\\ridge-cli\\src\\rtc.rs:2:9\n  |\n2 | pub use ridge_kernel::cloud::rtc::*;\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused imports: `ReplayRequest` and `ResyncRequest`\n  --> packages\\ridge-cli\\src\\rtp1_kernel_client.rs:23:27\n   |\n23 |     PingFrame, PongFrame, ReplayRequest, ResizeRequest, ResyncRequest, SessionEvent,\n   |                           ^^^^^^^^^^^^^                 ^^^^^^^^^^^^^\n\nwarning: unused import: `ridge_kernel::cloud::session_control::*`\n --> packages\\ridge-cli\\src\\session_control.rs:2:9\n  |\n2 | pub use ridge_kernel::cloud::session_control::*;\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `ridge_kernel::cloud::signaling::*`\n --> packages\\ridge-cli\\src\\signaling.rs:2:9\n  |\n2 | pub use ridge_kernel::cloud::signaling::*;\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused variable: `pane`\n   --> packages\\ridge-cli\\src\\tui\\lan_session.rs:573:5\n    |\n573 |     pane: &Arc<Mutex<View>>,\n    |     ^^^^ help: if this is intentional, prefix it with an underscore: `_pane`\n    |\n    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default\n\nwarning: unused variable: `last_size`\n   --> packages\\ridge-cli\\src\\tui\\lan_session.rs:574:5\n    |\n574 |     last_size: &Arc<Mutex<(u16, u16)>>,\n    |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_last_size`\n\nwarning: unused variable: `seq`\n   --> packages\\ridge-cli\\src\\tui\\lan_session.rs:575:5\n    |\n575 |     seq: &Arc<AtomicU64>,\n    |     ^^^ help: if this is intentional, prefix it with an underscore: `_seq`\n\nwarning: fields `window_start`, `window`, and `max_bytes` are never read\n  --> packages\\ridge-cli\\src\\batching.rs:26:5\n   |\n23 | pub struct BatchingBuffer {\n   |            -------------- fields in this struct\n...\n26 |     window_start: Option<Instant>,\n   |     ^^^^^^^^^^^^\n27 |     window: Duration,\n   |     ^^^^^^\n28 |     max_bytes: usize,\n   |     ^^^^^^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: methods `push_at`, `push`, `should_flush_at`, `should_flush`, `deadline`, and `take` are never used\n   --> packages\\ridge-cli\\src\\batching.rs:48:12\n    |\n 31 | impl BatchingBuffer {\n    | ------------------- methods in this implementation\n...\n 48 |     pub fn push_at(&mut self, bytes: &[u8], now: Instant) {\n    |            ^^^^^^^\n...\n 59 |     pub fn push(&mut self, bytes: &[u8]) {\n    |            ^^^^\n...\n 76 |     pub fn should_flush_at(&self, now: Instant) -> bool {\n    |            ^^^^^^^^^^^^^^^\n...\n 90 |     pub fn should_flush(&self) -> bool {\n    |            ^^^^^^^^^^^^\n...\n 95 |     pub fn deadline(&self) -> Option<Instant> {\n    |            ^^^^^^^^\n...\n100 |     pub fn take(&mut self) -> Option<Vec<u8>> {\n    |            ^^^^\n\nwarning: method `signaling_ws_url` is never used\n  --> packages\\ridge-cli\\src\\config.rs:82:12\n   |\n75 | impl AuthFile {\n   | ------------- method in this implementation\n...\n82 |     pub fn signaling_ws_url(&self) -> String {\n   |            ^^^^^^^^^^^^^^^^\n\nwarning: constant `MAX_BACKOFF` is never used\n  --> packages\\ridge-cli\\src\\daemon.rs:19:7\n   |\n19 | const MAX_BACKOFF: Duration = Duration::from_secs(30);\n   |       ^^^^^^^^^^^\n\nwarning: constant `MIN_BACKOFF` is never used\n  --> packages\\ridge-cli\\src\\daemon.rs:20:7\n   |\n20 | const MIN_BACKOFF: Duration = Duration::from_secs(2);\n   |       ^^^^^^^^^^^\n\nwarning: struct `FatalSignalError` is never constructed\n  --> packages\\ridge-cli\\src\\daemon.rs:25:8\n   |\n25 | struct FatalSignalError {\n   |        ^^^^^^^^^^^^^^^^\n\nwarning: struct `StatusGuard` is never constructed\n  --> packages\\ridge-cli\\src\\daemon.rs:48:8\n   |\n48 | struct StatusGuard;\n   |        ^^^^^^^^^^^\n\nwarning: constant `FATAL_SIGNAL_CODES` is never used\n   --> packages\\ridge-cli\\src\\daemon.rs:159:7\n    |\n159 | const FATAL_SIGNAL_CODES: &[&str] = &[\n    |       ^^^^^^^^^^^^^^^^^^\n\nwarning: function `fatal_hint` is never used\n   --> packages\\ridge-cli\\src\\daemon.rs:167:4\n    |\n167 | fn fatal_hint(code: &str) -> &'static str {\n    |    ^^^^^^^^^^\n\nwarning: function `fetch_ice_servers` is never used\n --> packages\\ridge-cli\\src\\ice.rs:3:14\n  |\n3 | pub async fn fetch_ice_servers(client:&reqwest::Client,token:&str)->Vec<IceServerConfig> {\n  |              ^^^^^^^^^^^^^^^^^\n\nwarning: function `read_kernel_pid` is never used\n  --> packages\\ridge-cli\\src\\kernel_ctl.rs:24:8\n   |\n24 | pub fn read_kernel_pid() -> Option<u32> {\n   |        ^^^^^^^^^^^^^^^\n\nwarning: field `is_trial` is never read\n  --> packages\\ridge-cli\\src\\login_flow.rs:44:5\n   |\n36 | struct UserBrief {\n   |        --------- field in this struct\n...\n44 |     is_trial: bool,\n   |     ^^^^^^^^\n   |\n   = note: `UserBrief` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis\n\nwarning: constant `REMOTE_PTY_BINDING_SCHEMA` is never used\n  --> packages\\ridge-cli\\src\\pty.rs:16:7\n   |\n16 | const REMOTE_PTY_BINDING_SCHEMA: u32 = 1;\n   |       ^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: constant `REMOTE_PTY_BINDING_FILE_ENV` is never used\n  --> packages\\ridge-cli\\src\\pty.rs:17:7\n   |\n17 | const REMOTE_PTY_BINDING_FILE_ENV: &str = \"RIDGE_REMOTE_PTY_BINDING_FILE\";\n   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: constant `REMOTE_PTY_PROFILE` is never used\n  --> packages\\ridge-cli\\src\\pty.rs:18:7\n   |\n18 | const REMOTE_PTY_PROFILE: &str = \"cloud-remote\";\n   |       ^^^^^^^^^^^^^^^^^^\n\nwarning: struct `RemotePtyBinding` is never constructed\n  --> packages\\ridge-cli\\src\\pty.rs:22:8\n   |\n22 | struct RemotePtyBinding {\n   |        ^^^^^^^^^^^^^^^^\n\nwarning: struct `PtyBridge` is never constructed\n  --> packages\\ridge-cli\\src\\pty.rs:29:12\n   |\n29 | pub struct PtyBridge {\n   |            ^^^^^^^^^\n\nwarning: enum `PtyBackend` is never used\n  --> packages\\ridge-cli\\src\\pty.rs:33:6\n   |\n33 | enum PtyBackend {\n   |      ^^^^^^^^^^\n\nwarning: associated items `spawn`, `spawn_kernel`, `write_input`, and `resize` are never used\n   --> packages\\ridge-cli\\src\\pty.rs:49:12\n    |\n 48 | impl PtyBridge {\n    | -------------- associated items in this implementation\n 49 |     pub fn spawn(\n    |            ^^^^^\n...\n 75 |     fn spawn_kernel(\n    |        ^^^^^^^^^^^^\n...\n176 |     pub fn write_input(&self, data: &[u8]) -> Result<()> {\n    |            ^^^^^^^^^^^\n...\n186 |     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {\n    |            ^^^^^^\n\nwarning: function `remote_pty_binding_path` is never used\n   --> packages\\ridge-cli\\src\\pty.rs:197:4\n    |\n197 | fn remote_pty_binding_path() -> Result<PathBuf> {\n    |    ^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: function `read_remote_pty_binding` is never used\n   --> packages\\ridge-cli\\src\\pty.rs:206:4\n    |\n206 | fn read_remote_pty_binding(path: &PathBuf) -> Option<RemotePtyBinding> {\n    |    ^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: function `write_remote_pty_binding` is never used\n   --> packages\\ridge-cli\\src\\pty.rs:212:4\n    |\n212 | fn write_remote_pty_binding(path: &PathBuf, binding: &RemotePtyBinding) -> Result<()> {\n    |    ^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: function `is_live_pty` is never used\n   --> packages\\ridge-cli\\src\\pty.rs:229:4\n    |\n229 | fn is_live_pty(pty: &ridge_kernel::client::KernelPtyInfo) -> bool {\n    |    ^^^^^^^^^^^\n\nwarning: function `select_kernel_pty` is never used\n   --> packages\\ridge-cli\\src\\pty.rs:239:4\n    |\n239 | fn select_kernel_pty<'a>(\n    |    ^^^^^^^^^^^^^^^^^\n\nwarning: `ridge-cli` (bin \"ridge\") generated 39 warnings (run `cargo fix --bin \"ridge\" -p ridge-cli` to apply 15 suggestions)\nerror: failed to remove file `C:\\code\\wind\\target\\debug\\ridge.exe`\n\nCaused by:\n  拒绝访问。 (os error 5)\n",
+        "nodeId": "L3-CLI-INDEPENDENT-TERMINAL-CREATION"
+      },
+      {
+        "code": "ACCEPTANCE_E_FAILED",
+        "severity": "ERROR",
+        "message": "online-group-ui: spawnSync node ETIMEDOUT",
+        "nodeId": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY"
+      },
+      {
+        "code": "ACCEPTANCE_E_NOT_RUN",
+        "severity": "ERROR",
+        "message": "acceptance check was not executed: group-refresh-races",
+        "nodeId": "L4-COMMUNE-GROUP-RESPONSIVE-STATE"
+      },
+      {
+        "code": "ACCEPTANCE_E_NOT_RUN",
+        "severity": "ERROR",
+        "message": "acceptance check was not executed: group-refresh-ui",
+        "nodeId": "L4-COMMUNE-GROUP-RESPONSIVE-STATE"
+      },
+      {
+        "code": "ACCEPTANCE_E_NOT_RUN",
+        "severity": "ERROR",
+        "message": "acceptance check was not executed: commune-group-usability-ui",
+        "nodeId": "L4-COMMUNE-GROUP-USABILITY"
+      },
+      {
+        "code": "ACCEPTANCE_E_NOT_RUN",
+        "severity": "ERROR",
+        "message": "acceptance check was not executed: process-enrollment",
+        "nodeId": "L4-COMMUNE-LINUX-PROCESS-OBSERVATION"
+      },
+      {
+        "code": "ACCEPTANCE_E_NOT_RUN",
+        "severity": "ERROR",
+        "message": "acceptance check was not executed: organization-socket-attestation",
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS"
+      },
+      {
+        "code": "ACCEPTANCE_E_NOT_RUN",
+        "severity": "ERROR",
+        "message": "acceptance check was not executed: organization-runtime",
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS"
+      },
+      {
+        "code": "ACCEPTANCE_E_NOT_RUN",
+        "severity": "ERROR",
+        "message": "acceptance check was not executed: organization-storage",
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS"
+      },
+      {
+        "code": "ACCEPTANCE_E_NOT_RUN",
+        "severity": "ERROR",
+        "message": "acceptance check was not executed: organization-kernel-build",
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS"
+      },
+      {
+        "code": "ACCEPTANCE_E_NOT_RUN",
+        "severity": "ERROR",
+        "message": "acceptance check was not executed: organization-global-ui",
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS"
+      },
+      {
+        "code": "ACCEPTANCE_E_NOT_RUN",
+        "severity": "ERROR",
+        "message": "acceptance check was not executed: organization-catalog",
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS"
+      },
+      {
+        "code": "ACCEPTANCE_E_NOT_RUN",
+        "severity": "ERROR",
+        "message": "acceptance check was not executed: organization-membership-ui",
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS"
+      },
+      {
+        "code": "ACCEPTANCE_E_NOT_RUN",
+        "severity": "ERROR",
+        "message": "acceptance check was not executed: organization-dispatch-regression",
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS"
+      },
+      {
+        "code": "ACCEPTANCE_E_NOT_RUN",
+        "severity": "ERROR",
+        "message": "acceptance check was not executed: commune-remote-delivery-ui",
+        "nodeId": "L4-COMMUNE-REMOTE-DELIVERY"
+      }
+    ],
+    "fileChanges": [
+      {
+        "path": "packages/remote/src/shared/terminal/manager.test.ts",
+        "before": "228b9af396931ce47574693a7cbaba345d5be39aead568c5ea7b3e911ec2ecab",
+        "after": "6f053e4b647885c30ca15c4b7c2bf14165d0eb561bad3164d4c3b474c634c4a8"
+      },
+      {
+        "path": "packages/remote/src/shared/terminal/manager.ts",
+        "before": "2aa0c0cba2873c1ea289551b70bf397b1a96247168a2f26fcdd1e2abceefce17",
+        "after": "3dfc87122e7f3639b8a13f2c94089f18a47c7c0fca8448b2b61034be9778e946"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/1997bc0d-5a19-40c4-af78-493e5645e02f.log"
+  }
+}

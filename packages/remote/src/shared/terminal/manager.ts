@@ -1725,6 +1725,12 @@ export class TerminalManager {
 				: undefined,
 		});
 		if (!geometry) return;
+		const previousViewport = entry.viewport;
+		const viewport = geometry.viewportDevice;
+		if (previousViewport && (previousViewport.x !== viewport.x || previousViewport.y !== viewport.y
+			|| previousViewport.w !== viewport.w || previousViewport.h !== viewport.h)) {
+			this._invalidateHost();
+		}
 		entry.geometry = geometry;
 		entry.geometryVisualOffsetY = this._sharedRemoteMode
 			? (entry.visualOffsetY ?? 0)
@@ -5444,11 +5450,6 @@ export class TerminalManager {
 			this._lastMemorySweepAt = perfNow;
 			this.reclaimTerminalMemory();
 		}
-		const host = this._globalHostHandle() as unknown as { needsFullSeed?: () => boolean } | null;
-		let hostNeedsSeed = false;
-		try { hostNeedsSeed = host?.needsFullSeed?.() === true; } catch { /* old wasm bundle */ }
-		const surfaceJustWiped = this._hostInvalidatePending || hostNeedsSeed;
-		this._hostInvalidatePending = false;
 		const frameOrder = this._renderOrder();
 		const feedOrder = this._feedOrder();
 		this._drainQueuedDeltaFrames(feedOrder);
@@ -5457,6 +5458,11 @@ export class TerminalManager {
 		// milliseconds. Anchor hold/sync deadlines after it, not at RAF entry.
 		const framePerfNow = performance.now();
 		const dirty = this._collectHostDirty(frameOrder, dateNow);
+		const host = this._globalHostHandle() as unknown as { needsFullSeed?: () => boolean } | null;
+		let hostNeedsSeed = false;
+		try { hostNeedsSeed = host?.needsFullSeed?.() === true; } catch { /* old wasm bundle */ }
+		const surfaceJustWiped = this._hostInvalidatePending || hostNeedsSeed;
+		this._hostInvalidatePending = false;
 		return {
 			frameOrder, feedOrder, dateNow, perfNow: framePerfNow, surfaceJustWiped,
 			...dirty,

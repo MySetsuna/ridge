@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "id": "a6238a10-29ee-4b57-9384-2b03a60a6997",
+  "at": "2026-11-10T08:58:43.605Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-117",
+  "buildId": "BUILD-ae2ef88a8e78",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-ae2ef88a8e78",
+    "changeId": "CHG-117",
+    "specHash": "801640feebcbfc7b7be62d93870728e071ed289ec0d9c77e0d69f2db05fb2bda",
+    "workspaceHash": "59d3cd0c32633611299fb69d066285dea11896a0b5ddbafea4ed7b7eb8861335",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "NOT_DECLARED",
+    "acceptanceResults": [],
+    "valid": true,
+    "verifiedAt": "2026-11-10T08:58:43.605Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "changes/CHG-117.md",
+        "before": "60a2c8c0064c6a14079f645707c4e3df372a51095900db9c210ad857f2c6ee73",
+        "after": "f5377b4372d53069e6525c1f3c94a1b4941ea4cda4d39ecfecdf0a0836fc69c6"
+      },
+      {
+        "path": "packages/remote/src/shared/terminal/manager.test.ts",
+        "before": "228b9af396931ce47574693a7cbaba345d5be39aead568c5ea7b3e911ec2ecab",
+        "after": "6f053e4b647885c30ca15c4b7c2bf14165d0eb561bad3164d4c3b474c634c4a8"
+      },
+      {
+        "path": "packages/remote/src/shared/terminal/manager.ts",
+        "before": "2aa0c0cba2873c1ea289551b70bf397b1a96247168a2f26fcdd1e2abceefce17",
+        "after": "3dfc87122e7f3639b8a13f2c94089f18a47c7c0fca8448b2b61034be9778e946"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/a6238a10-29ee-4b57-9384-2b03a60a6997.log"
+  }
+}

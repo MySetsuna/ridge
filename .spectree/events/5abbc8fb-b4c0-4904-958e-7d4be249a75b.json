@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "5abbc8fb-b4c0-4904-958e-7d4be249a75b",
+  "at": "2026-11-10T08:59:16.823Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-117",
+  "buildId": "BUILD-48667eac33e9",
+  "data": {
+    "previousBuildId": "BUILD-ae2ef88a8e78",
+    "testEvidence": {
+      "buildId": "BUILD-ae2ef88a8e78",
+      "workspaceHash": "59d3cd0c32633611299fb69d066285dea11896a0b5ddbafea4ed7b7eb8861335",
+      "verifiedAt": "2026-11-10T08:58:43.605Z",
+      "eventId": "a6238a10-29ee-4b57-9384-2b03a60a6997"
+    },
+    "absorbed": [
+      "changes/CHG-117.md",
+      "packages/remote/src/shared/terminal/manager.test.ts",
+      "packages/remote/src/shared/terminal/manager.ts",
+      "specs/l4-terminal-viewport-repaint.md"
+    ],
+    "activated": [
+      "L4-TERMINAL-VIEWPORT-REPAINT"
+    ],
+    "archived": []
+  }
+}

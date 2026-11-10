@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "id": "93eadef4-49d8-4e8f-bf62-06818c706040",
+  "at": "2026-11-10T08:35:04.356Z",
+  "type": "applied",
+  "source": "local_operation",
+  "changeId": "CHG-117",
+  "data": {
+    "added": [
+      "L4-TERMINAL-VIEWPORT-REPAINT"
+    ],
+    "changed": [],
+    "retiring": [],
+    "patch": {
+      "changeId": "CHG-117",
+      "nodes": [
+        {
+          "id": "L4-TERMINAL-VIEWPORT-REPAINT",
+          "level": "L4",
+          "title": "共享终端视口结构变更与同帧重绘",
+          "parent": "L3-TERMINAL-VISUAL-INPUT-REPAIR",
+          "codeTargets": [
+            "packages/remote/src/shared/terminal/manager.ts"
+          ],
+          "testTargets": [
+            "packages/remote/src/shared/terminal/manager.test.ts"
+          ],
+          "body": "# 共享终端视口结构变更与同帧重绘\n\nPane 的共享表面视口发生偏移或尺寸变化时，旧绘制区域须经现有 host 失效机制清理，所有仍可见 pane 在同一 compositor 帧得到重绘。几何相同的重复计算保持零额外表面清理。失效标志应在本帧队列处理和几何更新完成后消费，避免本帧已清屏却仍按旧 dirty 集合遗漏邻接内容。\n\n用既有 manager fixture 覆盖共享网格收缩和平移、重复相同几何以及 dirty 收集过程中触发失效。公网复验真实终端输出、主机重连、不同尺寸控制方及画布残影区域；区分终端内核数据、命令落盘和实际画面证据。运行 npm test、lint、typecheck 与 SpecTree verify。"
+        }
+      ],
+      "remove": []
+    }
+  }
+}

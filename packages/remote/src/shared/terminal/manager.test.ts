@@ -381,6 +381,41 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(isDirty).toHaveBeenCalledOnce();
 	});
 
+	it('clears the old host region when a shared grid recenters and skips unchanged geometry', () => {
+		const { fixture, internal } = makeManager();
+		const host = { invalidate: vi.fn(), beginFrame: vi.fn(() => true) };
+		internal.globalHost = { canvas: fixture.pane.canvas, host };
+		internal._sharedRemoteMode = true;
+		internal._recomputeViewport(fixture.pane);
+		const previous = fixture.pane.viewport;
+		host.invalidate.mockClear();
+
+		fixture.kernel.rows.mockReturnValue(10);
+		fixture.kernel.cols.mockReturnValue(40);
+		internal._recomputeViewport(fixture.pane);
+		expect(fixture.pane.viewport).not.toEqual(previous);
+		expect(host.invalidate).toHaveBeenCalledOnce();
+		expect(internal._hostInvalidatePending).toBe(true);
+
+		internal._recomputeViewport(fixture.pane);
+		expect(host.invalidate).toHaveBeenCalledOnce();
+	});
+
+	it('includes geometry invalidation raised during dirty collection in the current frame', () => {
+		const { fixture, internal } = makeManager();
+		const host = { invalidate: vi.fn(), beginFrame: vi.fn(() => true), needsFullSeed: vi.fn(() => false) };
+		internal.globalHost = { canvas: fixture.pane.canvas, host };
+		internal._hostInvalidatePending = false;
+		vi.spyOn(internal, '_collectHostDirty').mockImplementation(() => {
+			internal._invalidateHost();
+			return { dirtyByPane: new Map([[PANE, false]]), activeWsId: fixture.pane.workspaceId };
+		});
+
+		const frame = internal._newRafFrame(100, Date.now());
+		expect(frame.surfaceJustWiped).toBe(true);
+		expect(internal._hostInvalidatePending).toBe(false);
+	});
+
 	it('keeps remote feed callbacks on the bounded compositor queue', () => {
 		const { manager, fixture, internal } = makeManager();
 		const bytes = new Uint8Array([1, 2, 3]);
