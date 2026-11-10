@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "id": "6c1055ae-b306-4d65-ad4e-f01f4df6d1d7",
+  "at": "2026-11-10T09:13:13.046Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-118",
+  "buildId": "BUILD-70a976546d07",
+  "data": {
+    "previousBuildId": "BUILD-828623ce4d66",
+    "testEvidence": {
+      "buildId": "BUILD-828623ce4d66",
+      "workspaceHash": "671a467d1ebd50e5ce010cb57b97f2a98b7cf1f195aec0ed70cb7729f596d59d",
+      "verifiedAt": "2026-11-10T09:12:24.711Z",
+      "eventId": "b0964621-ed5d-490b-a760-671ab9288561"
+    },
+    "absorbed": [
+      "changes/CHG-118.md",
+      "specs/l4-remote-workspace-pane-continuity.md",
+      "src/remote/MainApp.svelte",
+      "src/remote/MainApp.test.ts",
+      "src/remote/lib/cloudRemote.test.ts",
+      "src/remote/lib/cloudRemote.ts",
+      "src/remote/lib/mobileRemoteUiState.svelte.ts",
+      "src/remote/lib/mobileRemoteUiState.test.ts"
+    ],
+    "activated": [
+      "L4-REMOTE-WORKSPACE-PANE-CONTINUITY"
+    ],
+    "archived": []
+  }
+}

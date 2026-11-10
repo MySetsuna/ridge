@@ -722,6 +722,18 @@ describe('CloudRemoteConnection panes', () => {
 });
 
 describe('CloudRemoteConnection workspaces', () => {
+  it('preserves embedded pane membership and leaves legacy membership unspecified', async () => {
+    const conn = await connected();
+    const panes = [{ id: 'pane-a', cwd: '/a' }, { id: 'pane-b', cwd: '/b' }];
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'list_workspaces') return [{ id: 'ws1', name: 'One', panes }, { id: 'ws2' }];
+      if (cmd === 'get_active_workspace_id') return 'ws1';
+    });
+    const result = await conn.listWorkspaces();
+    expect(result.workspaces[0].panes).toEqual(panes);
+    expect(result.workspaces[1].panes).toBeUndefined();
+  });
+
   it('listWorkspaces maps the active flag from get_active_workspace_id', async () => {
     const conn = await connected();
     const { workspaces } = await conn.listWorkspaces();

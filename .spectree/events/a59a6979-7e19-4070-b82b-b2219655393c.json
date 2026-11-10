@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "a59a6979-7e19-4070-b82b-b2219655393c",
+  "at": "2026-11-10T09:11:17.136Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-118",
+  "data": {
+    "changeId": "CHG-118",
+    "specHash": "5d02885f569a6838cde50d0db3787917919d4df2969736eec8ef12ae6a919c96",
+    "approvedAt": "2026-11-10T09:11:17.131Z",
+    "source": "cli",
+    "actor": "codex",
+    "confirmationRef": "user-authorized-remote-reliability-and-change-metadata-exception",
+    "attributionVerified": false
+  }
+}

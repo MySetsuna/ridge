@@ -767,5 +767,17 @@
       "buildId": "BUILD-ae2ef88a8e78",
       "specHash": "801640feebcbfc7b7be62d93870728e071ed289ec0d9c77e0d69f2db05fb2bda"
     }
+  },
+  {
+    "changeId": "CHG-118",
+    "specHash": "30c426702971076b2137f4a88b6d746d434959705ee8d01b6c6ea1d91c5efb01",
+    "approvedAt": "2026-11-10T09:13:13.024Z",
+    "source": "completion_derived",
+    "actor": "codex",
+    "confirmationRef": "user-authorized-remote-reliability-and-change-metadata-exception",
+    "derivedFrom": {
+      "buildId": "BUILD-828623ce4d66",
+      "specHash": "5d02885f569a6838cde50d0db3787917919d4df2969736eec8ef12ae6a919c96"
+    }
   }
 ]

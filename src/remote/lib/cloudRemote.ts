@@ -49,6 +49,7 @@ import {
 interface BackendWorkspace {
   id: string;
   name?: string | null;
+  panes?: PaneInfo[];
 }
 
 /** Host `get_active_theme_entry` / `get_theme_data` theme row (subset we use). */
@@ -971,6 +972,7 @@ export class CloudRemoteConnection implements RemoteLink {
       id: w.id,
       name: w.name ?? undefined,
       active: w.id === activeId,
+      panes: w.panes,
     }));
     return { workspaces };
   }

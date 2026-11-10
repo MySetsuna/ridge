@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "36d2ea11-60c4-4f9b-9aa5-7bf7d4d5f0fa",
+  "at": "2026-11-10T09:05:11.444Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-118",
+  "data": {
+    "title": "保留 Cloud 工作区 pane 快照并防止元数据刷新清空终端选择",
+    "implementation": "REQUIRED"
+  }
+}

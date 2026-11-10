@@ -1,24 +1,32 @@
 {
   "version": 1,
-  "changeId": "CHG-117",
-  "specHash": "a3cf65ba3882ba9663d1d99318724e6067c64450ea8370c5244402b552dbdde4",
+  "changeId": "CHG-118",
+  "specHash": "30c426702971076b2137f4a88b6d746d434959705ee8d01b6c6ea1d91c5efb01",
   "units": [
     {
-      "id": "L4-TERMINAL-VIEWPORT-REPAINT",
+      "id": "L4-REMOTE-WORKSPACE-PANE-CONTINUITY",
       "level": "L4",
-      "nodeHash": "e9eaec3e23f644d02d156b1a1ea6cef786ac04948eaec905effc17a7281b6c7e",
+      "nodeHash": "07de85b9a0f245db2d5482db1863ba003aa854e22d1ca1545c3bb6a9f1a9b21f",
       "codeTargets": [
-        "packages/remote/src/shared/terminal/manager.ts"
+        "src/remote/MainApp.svelte",
+        "src/remote/lib/cloudRemote.ts",
+        "src/remote/lib/mobileRemoteUiState.svelte.ts"
       ],
       "testTargets": [
-        "packages/remote/src/shared/terminal/manager.test.ts"
+        "src/remote/MainApp.test.ts",
+        "src/remote/lib/cloudRemote.test.ts",
+        "src/remote/lib/mobileRemoteUiState.test.ts"
       ],
       "status": "LOCKED"
     }
   ],
   "allowedPaths": [
-    "packages/remote/src/shared/terminal/manager.test.ts",
-    "packages/remote/src/shared/terminal/manager.ts"
+    "src/remote/MainApp.svelte",
+    "src/remote/MainApp.test.ts",
+    "src/remote/lib/cloudRemote.test.ts",
+    "src/remote/lib/cloudRemote.ts",
+    "src/remote/lib/mobileRemoteUiState.svelte.ts",
+    "src/remote/lib/mobileRemoteUiState.test.ts"
   ],
   "testCommand": [
     "npm",
@@ -164,6 +172,7 @@
     "changes/CHG-115.md": "175e65969a12f52b21f8ff7ff4388611d0b9a6ea89214e7e65be494fc33f95ed",
     "changes/CHG-116.md": "7e4a014717f5e5cc5578a8bbb1d34cc9183e8b35ffeb75af5d5d227d168a96a1",
     "changes/CHG-117.md": "5ed339925ed037a32d27f085dfdbdbdd0e17dbc90aa61e57b0fe9ca24baa95e4",
+    "changes/CHG-118.md": "ddd04c2aed19ee21ae358a00ef38deaa51410be396fc40252d2abbcb350706dc",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -1130,6 +1139,7 @@
     "specs/l4-remote-conditional-file-save.md": "b1e2499b02a0a17fa950ee4519188ea115b5834da16f134396c0ac63ed8ad57f",
     "specs/l4-remote-pwa-edit-protection.md": "de2d74877a2b6738abf58c6c0388ab0eac67bcf515dfeac0b1a01e20b67b1872",
     "specs/l4-remote-pwa-ui-routing.md": "72fdc047e7dc6bdefaa982c723e288454d447a293a659bbe044e8a095dc419b3",
+    "specs/l4-remote-workspace-pane-continuity.md": "65d1590623dd0928b8e2809fcab2f4c61aea8164f07a10b5b0c2f44884796e1f",
     "specs/l4-ridge-mcp-sidecar-windows-x64.md": "d1670206a676daa0e7bc9841ad226637b512af9e020eb834a38092c92ffe9824",
     "specs/l4-runtime-empty-workspace-boot.md": "4a838e7b606d624a8036d2a9a52c12afc7e4e2b71f81760df716df0cfc963cd8",
     "specs/l4-terminal-viewport-repaint.md": "e8f1c81143d8cb8ec4245a7f489519cb83ec6a2aa5a87b06f70fdca670f879ea",
@@ -2422,8 +2432,8 @@
     "src/remote/lib/agentNavigation.ts": "86cce58a815a667ecc01dce4333518000697e2e4b272a02caddc02a1ebc6746b",
     "src/remote/lib/clipboard.test.ts": "193c8770ebe7a5ffe239fbb126ebedb63de7c3c1797b88e3081811852dd90538",
     "src/remote/lib/clipboard.ts": "eb5114470fff3122d310d8b7af8fdb1130c4e380943208684748ec9efd062463",
-    "src/remote/lib/cloudRemote.test.ts": "b83fbb92906f9e64c33510dd81b18c2b105f95912bd79d74e6bf3f8b4bd0ed7d",
-    "src/remote/lib/cloudRemote.ts": "bcc2b0da977aa2e7c3444018bea70047e43511769600296fab6cc34c0985e23e",
+    "src/remote/lib/cloudRemote.test.ts": "fbac3f0a7b2286061ba92b50bd9148e4d3dc00fda7eb9b26edcc05dbc1140392",
+    "src/remote/lib/cloudRemote.ts": "9c392bfc72555a105b58fd3d4559606f47370f4a51ad3f1c21d53eeab2376bd7",
     "src/remote/lib/communeMemberDelivery.test.ts": "0212f399efbf2becb4b0d0dc24503bc89c3b023303f58f4cda4f9489d78c419c",
     "src/remote/lib/communeMemberDelivery.ts": "86abb070221786a225f1695c58dfae714d12c238e2f14fc4eec1e51e0b437e5e",
     "src/remote/lib/CommuneMemberMessage.svelte": "3a1e091140da8f90a76710d69d8f583bb8ba390ee51f25c428f384ad6b521ad1",
@@ -2438,7 +2448,8 @@
     "src/remote/lib/keyboardOffset.ts": "8e3cb63c03a276e2bfce4c7538811d84bd87931b693f21c3360f9578acaac669",
     "src/remote/lib/listenerCleanup.test.ts": "3b57100f028b77cdc5006bedb53121bb1eba4ab4d69130c98a4d16ec4f0dd4e5",
     "src/remote/lib/listenerCleanup.ts": "5104940490316de81494b2ecbfcbf9f88bfdef45bc00375e5b7196e369c10430",
-    "src/remote/lib/mobileRemoteUiState.svelte.ts": "724ff3a0b291814bb76ea06ff7fe7f53e25df0531565b2f8d1e4ea445944f479",
+    "src/remote/lib/mobileRemoteUiState.svelte.ts": "0f175bf3bddccc934da03d0aac4d14a2ea4371d7f981c3e8445f37e42f94f97a",
+    "src/remote/lib/mobileRemoteUiState.test.ts": "8dbdeb2681ee86b2c29f81b9f268581fd6e90332cefeb06682ece24cabd402b3",
     "src/remote/lib/modState.svelte.ts": "323442b0d07431821c8f063e48fcca9acd7e2010efe7f659a37d84786870cda5",
     "src/remote/lib/paneFeedScheduler.test.ts": "ae8c028f5a9890bc530462761b7105487faf76c3501f14dcc210ed628f75b364",
     "src/remote/lib/paneFeedScheduler.ts": "d5625afdbe2827e634e5e0b85fa6d5b2777ed84fa6cc3046b42a92e0f0735bfc",
@@ -2482,8 +2493,8 @@
     "src/remote/lib/WorkspaceTree.test.ts": "2bc782a46108952860366e1502741c409b347ed43c7d8856b46ad51c06864ba0",
     "src/remote/main.test.ts": "642393d572e77be6f64e6976197d5104aa8db32a963629beb942ed99cec71e86",
     "src/remote/main.ts": "c80e3785691d42b05874c33c0f4e0c61fc1418f5e9323e09fa188664096c6249",
-    "src/remote/MainApp.svelte": "19ff0add6a77d8b7398328f942ac71f733881f349fa89754971b5e52c7e73bff",
-    "src/remote/MainApp.test.ts": "eb48a9d957b0b7f4a6eee1556826c9828841126f53404b83b5fd63992de82af3",
+    "src/remote/MainApp.svelte": "494fa95d9e89d70aaed2a9afeba3692ee6f92764debddde80f10b2fb421d5032",
+    "src/remote/MainApp.test.ts": "c0db26dd9d890636a1b355075fdfbfe8ae171952d429fd6df994d99383e408fa",
     "src/remote/public/apple-touch-icon.png": "fcf04070e1ae0e72599b39cf3c118a81c57d01dbb98b894b6ba988bda26cc01e",
     "src/remote/public/favicon.png": "7b0d863efa5a660174ce0242b3b356c70cd952eceda2589da50819aa82cc02ac",
     "src/remote/public/fonts/flags.woff2": "85c0857c03f3bfa9971b5bccdafd4337bade1f76accc74002c0f1de466cf4702",
@@ -2597,6 +2608,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-48667eac33e9",
-  "manifestHash": "48667eac33e958290573e254be880dfa6a4f1d3738caa7af4e2b1f4d65547f7b"
+  "buildId": "BUILD-70a976546d07",
+  "manifestHash": "70a976546d07d64db8758ab3963f05366132ee364119369ff677d5e0380be36d"
 }

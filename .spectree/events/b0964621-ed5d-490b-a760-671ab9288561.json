@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "id": "b0964621-ed5d-490b-a760-671ab9288561",
+  "at": "2026-11-10T09:12:24.713Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-118",
+  "buildId": "BUILD-828623ce4d66",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-828623ce4d66",
+    "changeId": "CHG-118",
+    "specHash": "5d02885f569a6838cde50d0db3787917919d4df2969736eec8ef12ae6a919c96",
+    "workspaceHash": "671a467d1ebd50e5ce010cb57b97f2a98b7cf1f195aec0ed70cb7729f596d59d",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "NOT_DECLARED",
+    "acceptanceResults": [],
+    "valid": true,
+    "verifiedAt": "2026-11-10T09:12:24.711Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "specs/l4-remote-workspace-pane-continuity.md",
+        "before": "b1cc54030b6aa986cb750bdf08c3cf6de2a8e8bcf1385e4271ad067b246f8032",
+        "after": "aa346d4ceae92ede260b4ef0f81fdd5136f57b80ecb281f02da29ab8e91f655a"
+      },
+      {
+        "path": "src/remote/MainApp.svelte",
+        "before": "19ff0add6a77d8b7398328f942ac71f733881f349fa89754971b5e52c7e73bff",
+        "after": "494fa95d9e89d70aaed2a9afeba3692ee6f92764debddde80f10b2fb421d5032"
+      },
+      {
+        "path": "src/remote/MainApp.test.ts",
+        "before": "eb48a9d957b0b7f4a6eee1556826c9828841126f53404b83b5fd63992de82af3",
+        "after": "c0db26dd9d890636a1b355075fdfbfe8ae171952d429fd6df994d99383e408fa"
+      },
+      {
+        "path": "src/remote/lib/cloudRemote.test.ts",
+        "before": "b83fbb92906f9e64c33510dd81b18c2b105f95912bd79d74e6bf3f8b4bd0ed7d",
+        "after": "fbac3f0a7b2286061ba92b50bd9148e4d3dc00fda7eb9b26edcc05dbc1140392"
+      },
+      {
+        "path": "src/remote/lib/cloudRemote.ts",
+        "before": "bcc2b0da977aa2e7c3444018bea70047e43511769600296fab6cc34c0985e23e",
+        "after": "9c392bfc72555a105b58fd3d4559606f47370f4a51ad3f1c21d53eeab2376bd7"
+      },
+      {
+        "path": "src/remote/lib/mobileRemoteUiState.svelte.ts",
+        "before": "724ff3a0b291814bb76ea06ff7fe7f53e25df0531565b2f8d1e4ea445944f479",
+        "after": "0f175bf3bddccc934da03d0aac4d14a2ea4371d7f981c3e8445f37e42f94f97a"
+      },
+      {
+        "path": "src/remote/lib/mobileRemoteUiState.test.ts",
+        "before": null,
+        "after": "8dbdeb2681ee86b2c29f81b9f268581fd6e90332cefeb06682ece24cabd402b3"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/b0964621-ed5d-490b-a760-671ab9288561.log"
+  }
+}

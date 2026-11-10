@@ -1,5 +1,4 @@
-import type { RemotePanel } from '@ridge/remote';
-import type { PaneRef } from '@ridge/remote';
+import type { PaneInfo, PaneRef, RemotePanel, WorkspaceInfo } from '@ridge/remote';
 
 export type RemoteViewer = {
   kind: 'file' | 'diff';
@@ -50,6 +49,16 @@ export class MobileRemoteUiState {
   activePaneRef(): PaneRef | null {
     const { workspaceId, paneId } = this.activeLocation;
     return workspaceId && paneId ? { workspaceId, paneId } : null;
+  }
+
+  reconcileWorkspace(workspace: Pick<WorkspaceInfo, 'id' | 'panes'>, knownPanes?: readonly PaneInfo[]): void {
+    const currentPaneId = workspace.id === this.activeWorkspaceId ? this.activePaneId : null;
+    const panes = workspace.panes ?? knownPanes;
+    if (!panes) {
+      this.navigate(workspace.id, currentPaneId);
+      return;
+    }
+    this.navigate(workspace.id, panes.find(pane => pane.id === currentPaneId)?.id ?? panes[0]?.id ?? null);
   }
 
   navigate(workspaceId: string, paneId: string | null): void {

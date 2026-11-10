@@ -75,7 +75,8 @@ describe('remote Agent attention monitor', () => {
     expect(source).toContain('if (!pane) return;');
     expect(source).toContain('if (!activation || activation.key !== key) return;');
     expect(source).toContain('async function refreshWorkspaces()');
-    expect(source).toContain('ui.navigate(restoredWorkspaceId, restoredPaneId);');
+    expect(source.match(/ui\.reconcileWorkspace\(/g)).toHaveLength(3);
+    expect(source).toContain('remoteQueryKeys.panes(sessionId(), restoredWorkspaceId)');
     expect(source).toContain('bootRestoreDone = true;');
     expect(source).not.toMatch(/if\s*\(\s*savedActiveWs\s*\)\s*\{\s*\n\s*ui\.navigate\(savedActiveWs,/);
   });

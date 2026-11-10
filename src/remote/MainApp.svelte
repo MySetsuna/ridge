@@ -794,10 +794,9 @@
           next = after;
           const a2 = after.find(w => w.active);
           const restoredWorkspaceId = a2 ? a2.id : savedActiveWs;
-          const restoredPaneId = a2?.panes?.some((pane) => pane.id === ui.activePaneId)
-            ? ui.activePaneId
-            : a2?.panes?.[0]?.id ?? null;
-          ui.navigate(restoredWorkspaceId, restoredPaneId);
+          ui.reconcileWorkspace(a2 ?? { id: restoredWorkspaceId }, queryClient.getQueryData(
+            remoteQueryKeys.panes(sessionId(), restoredWorkspaceId),
+          ));
           bootRestoreDone = true;
           return;
         }
@@ -807,10 +806,9 @@
       }
       if (!isCurrent()) return;
       if (hostActive) {
-        const paneId = hostActive.panes?.some((pane) => pane.id === ui.activePaneId)
-          ? ui.activePaneId
-          : hostActive.panes?.[0]?.id ?? null;
-        ui.navigate(hostActive.id, paneId);
+        ui.reconcileWorkspace(hostActive, queryClient.getQueryData(
+          remoteQueryKeys.panes(sessionId(), hostActive.id),
+        ));
       }
     } catch { /* ignore */ }
   }
@@ -979,10 +977,9 @@
         // Before that, refreshWorkspaces() owns the restore decision, so a
         // proactive push must not clobber the workspace we're about to restore.
         if (active && bootRestoreDone) {
-          const paneId = active.panes?.some((pane) => pane.id === ui.activePaneId)
-            ? ui.activePaneId
-            : active.panes?.[0]?.id ?? null;
-          ui.navigate(active.id, paneId);
+          ui.reconcileWorkspace(active, queryClient.getQueryData(
+            remoteQueryKeys.panes(sessionId(), active.id),
+          ));
         }
       }
       if (msg.type === 'switch-workspace-result') {
