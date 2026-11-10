@@ -204,7 +204,7 @@
      needs the same notch contract as MainApp's connection banner.  Overflow is
      intentional: a long host/error detail must remain scrollable instead of
      being clipped behind the notch or a short mobile viewport. */
-  .screen{position:fixed;inset:0;background:var(--rg-bg);display:flex;flex-direction:column;align-items:center;justify-content:safe center;padding:24px;box-sizing:border-box;overflow-y:auto;overscroll-behavior:contain}
+  .screen{position:fixed;inset:var(--rg-preconnect-update-height,0px) 0 0;background:var(--rg-bg);display:flex;flex-direction:column;align-items:center;justify-content:safe center;padding:24px;box-sizing:border-box;overflow-y:auto;overscroll-behavior:contain}
   @supports (padding-top:constant(safe-area-inset-top)) {
     .screen{padding-top:calc(24px + constant(safe-area-inset-top));padding-right:max(24px,constant(safe-area-inset-right));padding-bottom:calc(24px + constant(safe-area-inset-bottom));padding-left:max(24px,constant(safe-area-inset-left))}
   }

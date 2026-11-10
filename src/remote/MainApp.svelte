@@ -54,7 +54,8 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { createAgentNavigator } from './lib/agentNavigation';
   import { MobileRemoteUiState } from './lib/mobileRemoteUiState.svelte';
-  import { applyPwaUpdate, deferPwaUpdate, pwaUpdateBlocked, pwaUpdateBusy, pwaUpdateDeferred, pwaUpdateError, pwaUpdateReady, pwaUpdateSaving } from './lib/pwaUpdate';
+  import { pwaUpdateDeferred, pwaUpdateReady } from './lib/pwaUpdate';
+  import PwaUpdateBanner from './lib/PwaUpdateBanner.svelte';
   import {
     dedupeRemoteItems,
     mergeRemoteItems,
@@ -1333,19 +1334,7 @@
 <div class="app-root" class:embedded style:--rg-pwa-update-height={$pwaUpdateReady && !$pwaUpdateDeferred ? `${pwaBannerHeight}px` : '0px'}>
   {#if agentNavigationError}<p role="alert" style="position:absolute;top:48px;left:12px;right:12px;z-index:100;padding:12px;background:var(--rg-surface);color:var(--rg-fg)">{agentNavigationError}</p>{/if}
 
-  {#if $pwaUpdateReady && !$pwaUpdateDeferred}
-    <div class="pwa-update-banner" role="status" bind:offsetHeight={pwaBannerHeight}>
-      <span>{$pwaUpdateSaving ? $t('mobile.updateSaving') : $pwaUpdateBlocked ? $t('mobile.updateEditsProtected') : $t('mobile.updateReady')}</span>
-      {#if $pwaUpdateBlocked}
-        <button class="conn-action" disabled={$pwaUpdateBusy || $pwaUpdateSaving} onclick={() => void applyPwaUpdate('save')}>{$t('mobile.updateSave')}</button>
-        <button class="conn-action" disabled={$pwaUpdateBusy || $pwaUpdateSaving} onclick={() => void applyPwaUpdate('discard')}>{$t('mobile.updateDiscard')}</button>
-      {:else}
-        <button class="conn-action" disabled={$pwaUpdateBusy} onclick={() => void applyPwaUpdate()}>{$t('mobile.updateApply')}</button>
-      {/if}
-      <button class="conn-action" disabled={$pwaUpdateBusy} onclick={deferPwaUpdate}>{$t('mobile.updateLater')}</button>
-      {#if $pwaUpdateError}<span role="alert">{$pwaUpdateError}</span>{/if}
-    </div>
-  {/if}
+  <PwaUpdateBanner bind:height={pwaBannerHeight} />
   {#if linkError}
     <button class="link-error" onclick={() => linkError = ''} aria-label="关闭路径错误">{linkError}</button>
   {/if}
@@ -1675,9 +1664,6 @@
     :global(html[data-ridge-pwa="standalone"]) .conn-banner-safe{margin-top:max(64px,env(safe-area-inset-top,0px))}
   }
   .conn-banner.lost{background:var(--rg-ansi-red,#cf222e)}
-  .pwa-update-banner{position:relative;z-index:1000;display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:10px;padding:8px 12px;background:var(--rg-surface);color:var(--rg-fg);border-bottom:1px solid var(--rg-border);font-size:12px;font-weight:500}
-  .pwa-update-banner .conn-action{min-height:44px;padding:6px 10px;background:var(--rg-bg);color:var(--rg-fg);border-color:var(--rg-border)}
-  .pwa-update-banner .conn-action:hover{background:var(--rg-surface)}
   .conn-msg{flex:0 1 auto}
   .conn-action{flex-shrink:0;border:1px solid rgba(255,255,255,.7);background:rgba(255,255,255,.15);color:#fff;font-size:12px;font-weight:600;border-radius:6px;padding:3px 10px;cursor:pointer}
   .conn-action:hover{background:rgba(255,255,255,.28)}

@@ -1,40 +1,46 @@
 {
   "version": 1,
-  "changeId": "CHG-119",
-  "specHash": "0586ba4f721855c488a1c9bccf6093cb1777601023bc6e3754cb55d5fcfe7f62",
+  "changeId": "CHG-120",
+  "specHash": "14b815e0299f3df49010a7dff79b6b01ad1d13b5cc4d96ba4fd0e4d91a76d5d7",
   "units": [
     {
-      "id": "L4-REMOTE-INITIAL-INPUT-CONTINUITY",
+      "id": "L4-REMOTE-PRECONNECTION-UPDATE",
       "level": "L4",
-      "nodeHash": "478a38fad755a034fe9a2020febe5c74b3f328a9b9c7b4aa6e6fc0fc14f84a26",
+      "nodeHash": "a2faf113da6d4c778073980edb0554ec2c2e8bbb625a68145428dc180ee1a4ca",
       "codeTargets": [
-        "src/remote/lib/TerminalCanvas.svelte",
-        "src/remote/lib/remoteInput.ts"
+        "src/remote/App.svelte",
+        "src/remote/MainApp.svelte",
+        "src/remote/AuthScreen.svelte",
+        "src/remote/CloudAuthScreen.svelte",
+        "src/remote/lib/PwaUpdateBanner.svelte"
       ],
       "testTargets": [
-        "src/remote/lib/TerminalCanvas.test.ts",
-        "src/remote/lib/remoteInput.test.ts",
-        "scripts/remote-startup-input-e2e.mjs"
+        "src/remote/pwaInstallScope.test.ts",
+        "src/remote/lib/pwaUpdate.test.ts",
+        "scripts/remote-pwa-gate-e2e.mjs"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "initial-input-real-pty",
+          "id": "preconnection-sw-update",
           "command": [
             "node",
-            "scripts/remote-startup-input-e2e.mjs"
+            "scripts/remote-pwa-gate-e2e.mjs"
           ],
-          "description": "构建真实移动 Remote 和 CLI，以隔离 Kernel/PTY 验证附着前后延迟输入完整到达且执行一次"
+          "description": "真实生成 SW 在前台认证门等待、稍后、应用并激活重载，覆盖 LAN 与 Cloud 失败页"
         }
       ]
     }
   ],
   "allowedPaths": [
-    "scripts/remote-startup-input-e2e.mjs",
-    "src/remote/lib/TerminalCanvas.svelte",
-    "src/remote/lib/TerminalCanvas.test.ts",
-    "src/remote/lib/remoteInput.test.ts",
-    "src/remote/lib/remoteInput.ts"
+    "scripts/remote-pwa-gate-e2e.mjs",
+    "src/remote/App.svelte",
+    "src/remote/AuthScreen.svelte",
+    "src/remote/CloudAuthScreen.svelte",
+    "src/remote/MainApp.svelte",
+    "src/remote/lib/PwaUpdateBanner.svelte",
+    "src/remote/lib/pwaUpdate.test.ts",
+    "src/remote/pwaInstallScope.test.ts"
   ],
   "testCommand": [
     "npm",
@@ -182,6 +188,7 @@
     "changes/CHG-117.md": "5ed339925ed037a32d27f085dfdbdbdd0e17dbc90aa61e57b0fe9ca24baa95e4",
     "changes/CHG-118.md": "ddd04c2aed19ee21ae358a00ef38deaa51410be396fc40252d2abbcb350706dc",
     "changes/CHG-119.md": "bf65966eaba506f82ffe47b263b8577438651dea05d6cabdf96294c0614be8ee",
+    "changes/CHG-120.md": "97de78e556e11e610092f0a4e22d2633dc1ad1b24196411bc29080ec4c66235a",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -941,6 +948,7 @@
     "scripts/remote-gc-e2e.mjs": "01a7cad8e306293c564af94cf12c359c7db8f8bfdf329f2d6287b16d86ed33f8",
     "scripts/remote-interaction-acceptance.mjs": "8234abef55867076371f510bbb9375433d855c3d35be392d463819a8853f98d9",
     "scripts/remote-leak-trace.mjs": "19cc71a04f6e6acbac4a2fe236fe556e87763fb2b4dea9bdfbde9e65f0589c72",
+    "scripts/remote-pwa-gate-e2e.mjs": "6290eccfe2624f45439c6babd42feb0b7f7cf037099beb91f07e737989b72dc5",
     "scripts/remote-runtime-last-error-attribution.mjs": "ff5f76bf44a7f25f83091d7978a57d7b570acff6a7100427279e489dac2138bc",
     "scripts/remote-runtime-last-error-attribution.test.ts": "631b6b2d18d477a8967824b001e30a3875070ad2904efe6059b946ec528ccf22",
     "scripts/remote-startup-input-e2e.mjs": "27965e6ff99acbf429add08ae7b5d4f53ec7446e2842272981059a8d70e13453",
@@ -1148,6 +1156,7 @@
     "specs/l4-perf-latency-bench-entry.md": "86935a5eb9927f52620529e323278781fcf871545b9fc9cec4232c01418d798c",
     "specs/l4-remote-conditional-file-save.md": "b1e2499b02a0a17fa950ee4519188ea115b5834da16f134396c0ac63ed8ad57f",
     "specs/l4-remote-initial-input-continuity.md": "96820104d3b4d23249a56ef3d2c36aa62ad252b1c275c0c9d6de9c0c7d87c5b1",
+    "specs/l4-remote-preconnection-update.md": "33144fc540c3b063a413874a612c8f3455c4e90bfeb9c602096156e9de15ca9f",
     "specs/l4-remote-pwa-edit-protection.md": "de2d74877a2b6738abf58c6c0388ab0eac67bcf515dfeac0b1a01e20b67b1872",
     "specs/l4-remote-pwa-ui-routing.md": "72fdc047e7dc6bdefaa982c723e288454d447a293a659bbe044e8a095dc419b3",
     "specs/l4-remote-workspace-pane-continuity.md": "65d1590623dd0928b8e2809fcab2f4c61aea8164f07a10b5b0c2f44884796e1f",
@@ -2431,13 +2440,13 @@
     "src/lib/utils/withTimeout.test.ts": "43a2f84620a55be5f396bf6efab7732b70cc10b221906368c259df7f8ce0f406",
     "src/lib/utils/withTimeout.ts": "13ca1507e120fbe75d4b0128214302d1c38a2e540870ce2fb45b80d2632ec89c",
     "src/lib/workspace/shareWorkspace.ts": "bebad8415872f3380e5c3ff1222948ffa263ae7f94af2e05488dc73d76096adb",
-    "src/remote/App.svelte": "1945042455b274e483ee68da58ea4e57147e18750ea8d042308b022982225687",
+    "src/remote/App.svelte": "2a4b24bb089a2b49a215ec7bad2e5bd3b3f032a2ecb153d89293553038258974",
     "src/remote/authDeviceBinding.test.ts": "75d47f38d04b7ebe214441110f9ca5d904e2c38447f3b7e01bb756255f87e889",
-    "src/remote/AuthScreen.svelte": "3caf6ad38fddd0d2bcc92d757f2e3d48e01b71e310dffd20cf0c2740de293471",
+    "src/remote/AuthScreen.svelte": "c9fa2124439f18475e102e5aa959a21196bf4881156b8e646c1d25f56f38cc81",
     "src/remote/BottomTabBar.svelte": "a073881f3ebdbf7def38664df60b4472c294436901250665a5ff6a4fbb3a942b",
     "src/remote/BottomTabBar.test.ts": "d78b6d6c310b569d3d08e11bba1fd6dcc4ab39fbc5bf07940cd78e5abdf49d90",
     "src/remote/CertTrustGuide.svelte": "930e9c637cabe467ae63922bf811de6370c7bd587447980ded0882cca6a47a73",
-    "src/remote/CloudAuthScreen.svelte": "e00fad59477ca010512b6c7bd79cb1ca59d8089ad9d0375dacd2ae4fa580f5f4",
+    "src/remote/CloudAuthScreen.svelte": "f22a4f2d6a5e11506629feb570751b0bc9ab4d855a904ad69b8430ca1924429b",
     "src/remote/index.html": "0572bceaeffcbc9a6fae11055223a8742f65ec4cac921c514a2fca69b38f6b06",
     "src/remote/lib/agentNavigation.test.ts": "679e6fe8761cf1956e96e4b91046220c2ddea31b31fda1c172d6f5f6854aa965",
     "src/remote/lib/agentNavigation.ts": "86cce58a815a667ecc01dce4333518000697e2e4b272a02caddc02a1ebc6746b",
@@ -2471,6 +2480,7 @@
     "src/remote/lib/paneSwitchBuffer.ts": "a4177e2a663faa3e8ac5c43dcadce38d8465c4482a34c9409d89f2980a319507",
     "src/remote/lib/pwaUpdate.test.ts": "6589013e2d35b6245ec67757938f640c8a1889e951f2df4caec35237110eebab",
     "src/remote/lib/pwaUpdate.ts": "59438c598abd9350c2364ee693a66a32935531460727c46f9d0ca986df42986b",
+    "src/remote/lib/PwaUpdateBanner.svelte": "70dd98a71e59aa8e7a395b7fda28a6446bf81b9e9697ad008d041d15568b78b9",
     "src/remote/lib/remoteGitActions.test.ts": "d2f4a89ac5eac79ecdf21098ce0db7397ca10c98e98a35fd292c182da675ed88",
     "src/remote/lib/remoteGitActions.ts": "7277d9068eaeff58410b43a84ef184be38c68705d614cc5fb7ae29dd21bee6e0",
     "src/remote/lib/RemoteGitPanel.svelte": "d2ad05651e590c271bba442bc6d5c36656c94395836ca0dfb53a808c341b31de",
@@ -2504,7 +2514,7 @@
     "src/remote/lib/WorkspaceTree.test.ts": "2bc782a46108952860366e1502741c409b347ed43c7d8856b46ad51c06864ba0",
     "src/remote/main.test.ts": "642393d572e77be6f64e6976197d5104aa8db32a963629beb942ed99cec71e86",
     "src/remote/main.ts": "c80e3785691d42b05874c33c0f4e0c61fc1418f5e9323e09fa188664096c6249",
-    "src/remote/MainApp.svelte": "494fa95d9e89d70aaed2a9afeba3692ee6f92764debddde80f10b2fb421d5032",
+    "src/remote/MainApp.svelte": "4f68ca8395def253a6be0b29b30e1abdbdadb811a6a491a7237effe896dbe2b6",
     "src/remote/MainApp.test.ts": "c0db26dd9d890636a1b355075fdfbfe8ae171952d429fd6df994d99383e408fa",
     "src/remote/public/apple-touch-icon.png": "fcf04070e1ae0e72599b39cf3c118a81c57d01dbb98b894b6ba988bda26cc01e",
     "src/remote/public/favicon.png": "7b0d863efa5a660174ce0242b3b356c70cd952eceda2589da50819aa82cc02ac",
@@ -2512,7 +2522,7 @@
     "src/remote/public/icon-192.png": "db4522541aba65360218355d3e01781ed82e1d472dcafa36b5d87207ef5a052b",
     "src/remote/public/icon-512.png": "ca5aa13cbe7eeb9d078722cf99de19017996e3b8b4f431bd8376b07ee64236a2",
     "src/remote/public/icon-maskable-512.png": "c72c42d5ee1b48504ea8dbd247cf37f38feedc7458a38339992e07947e3f0132",
-    "src/remote/pwaInstallScope.test.ts": "ee3d316f42f8bd7ac8fdbdf5c91015e15bb8c5104a853da4dbdd83b7555d148f",
+    "src/remote/pwaInstallScope.test.ts": "44fc4ced54436c839d6514073ff30657ba46edb4e814adffb0bbe3ddb178cf7d",
     "src/remote/queryPolicy.test.ts": "d4629c52d95ff05d08d96a9731f808a903252a6bac00d1ea2ff4b3fc726837a4",
     "src/remote/runtimeMessagingScope.test.ts": "9957ccc70acc2a7f87d0eda8ada173df1807522845f9a6534ad5a9e9a79987cc",
     "src/remote/svelte.config.js": "38f4ed7a7ec5e5c793b4f3809b8f85876ce2ee232392e56c25c2d076e30370a4",
@@ -2619,6 +2629,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-50366c7bf592",
-  "manifestHash": "50366c7bf5928b40eb77554fd08abe1d3d256a40dadeda7c109e212f121c5066"
+  "buildId": "BUILD-614d2581b7f6",
+  "manifestHash": "614d2581b7f68794ba3ca4722c661fa88adf9071bfaa0e565e51eadc666a8df3"
 }

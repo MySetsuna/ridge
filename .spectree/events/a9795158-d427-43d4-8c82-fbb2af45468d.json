@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "id": "a9795158-d427-43d4-8c82-fbb2af45468d",
+  "at": "2026-11-10T10:46:26.825Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-120",
+  "buildId": "BUILD-614d2581b7f6",
+  "data": {
+    "previousBuildId": "BUILD-5d1b3953dfa3",
+    "testEvidence": {
+      "buildId": "BUILD-5d1b3953dfa3",
+      "workspaceHash": "19dc8dcf21fcd9811130f312e9d1b661ab9dc6977ab4e3a4652c1b051aa2fd2e",
+      "verifiedAt": "2026-11-10T10:45:26.968Z",
+      "eventId": "9d70b35d-198d-4d38-9ade-e05b0df4b213"
+    },
+    "absorbed": [
+      "changes/CHG-120.md",
+      "scripts/remote-pwa-gate-e2e.mjs",
+      "specs/l4-remote-preconnection-update.md",
+      "src/remote/App.svelte",
+      "src/remote/AuthScreen.svelte",
+      "src/remote/CloudAuthScreen.svelte",
+      "src/remote/MainApp.svelte",
+      "src/remote/lib/PwaUpdateBanner.svelte",
+      "src/remote/pwaInstallScope.test.ts"
+    ],
+    "activated": [
+      "L4-REMOTE-PRECONNECTION-UPDATE"
+    ],
+    "archived": []
+  }
+}

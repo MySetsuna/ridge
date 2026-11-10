@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const mainSource = readFileSync(new URL('./MainApp.svelte', import.meta.url), 'utf8');
+const appSource = readFileSync(new URL('./App.svelte', import.meta.url), 'utf8');
+const updateSource = readFileSync(new URL('./lib/PwaUpdateBanner.svelte', import.meta.url), 'utf8');
 const indexSource = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
 const authSource = readFileSync(new URL('./AuthScreen.svelte', import.meta.url), 'utf8');
 const cloudAuthSource = readFileSync(new URL('./CloudAuthScreen.svelte', import.meta.url), 'utf8');
@@ -11,6 +13,24 @@ const bootstrapSource = readFileSync(new URL('./main.ts', import.meta.url), 'utf
 const configSource = readFileSync(new URL('../../vite.remote.config.js', import.meta.url), 'utf8');
 
 describe('Remote PWA installation scope', () => {
+  it('shares update actions across the preconnection and connected screens without loading MainApp early', () => {
+    expect(appSource).toContain('{#if !mainAppVisible}');
+    for (const source of [appSource, mainSource]) {
+      expect(source).toContain('<PwaUpdateBanner bind:height={pwaBannerHeight} />');
+      expect(source).not.toContain("applyPwaUpdate('discard')");
+    }
+    expect(appSource).toContain("retryableLazyImport(() => import('./MainApp.svelte'))");
+    expect(mainSource).toContain('style:--rg-pwa-update-height=');
+    expect(updateSource).toContain("applyPwaUpdate('save')");
+    expect(updateSource).toContain("applyPwaUpdate('discard')");
+    expect(updateSource).toContain('onclick={deferPwaUpdate}');
+    expect(updateSource).toContain('disabled={$pwaUpdateBusy || $pwaUpdateSaving}');
+    expect(updateSource).toContain('min-height:44px');
+    for (const source of [authSource, cloudAuthSource, appSource]) {
+      expect(source).toContain('inset:var(--rg-preconnect-update-height,0px) 0 0');
+    }
+  });
+
   it('leaves installation to browser-native UI without an in-app prompt', () => {
     for (const token of ['PwaInstallAction', 'beforeinstallprompt', 'appinstalled', 'deferredPrompt']) {
       expect(mainSource).not.toContain(token);

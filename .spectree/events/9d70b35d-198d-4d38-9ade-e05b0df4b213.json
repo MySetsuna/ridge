@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "id": "9d70b35d-198d-4d38-9ade-e05b0df4b213",
+  "at": "2026-11-10T10:45:26.969Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-120",
+  "buildId": "BUILD-5d1b3953dfa3",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-5d1b3953dfa3",
+    "changeId": "CHG-120",
+    "specHash": "db631e6f83014585d0027cf077df4839d631ab9bf7a2c19a8931c73988cb7d2f",
+    "workspaceHash": "19dc8dcf21fcd9811130f312e9d1b661ab9dc6977ab4e3a4652c1b051aa2fd2e",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "PASS",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-REMOTE-PRECONNECTION-UPDATE",
+        "checkId": "preconnection-sw-update",
+        "command": [
+          "node",
+          "scripts/remote-pwa-gate-e2e.mjs"
+        ],
+        "description": "真实生成 SW 在前台认证门等待、稍后、应用并激活重载，覆盖 LAN 与 Cloud 失败页",
+        "status": "PASS",
+        "exitCode": 0
+      }
+    ],
+    "valid": true,
+    "verifiedAt": "2026-11-10T10:45:26.968Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "scripts/remote-pwa-gate-e2e.mjs",
+        "before": null,
+        "after": "6290eccfe2624f45439c6babd42feb0b7f7cf037099beb91f07e737989b72dc5"
+      },
+      {
+        "path": "src/remote/App.svelte",
+        "before": "1945042455b274e483ee68da58ea4e57147e18750ea8d042308b022982225687",
+        "after": "2a4b24bb089a2b49a215ec7bad2e5bd3b3f032a2ecb153d89293553038258974"
+      },
+      {
+        "path": "src/remote/AuthScreen.svelte",
+        "before": "3caf6ad38fddd0d2bcc92d757f2e3d48e01b71e310dffd20cf0c2740de293471",
+        "after": "c9fa2124439f18475e102e5aa959a21196bf4881156b8e646c1d25f56f38cc81"
+      },
+      {
+        "path": "src/remote/CloudAuthScreen.svelte",
+        "before": "e00fad59477ca010512b6c7bd79cb1ca59d8089ad9d0375dacd2ae4fa580f5f4",
+        "after": "f22a4f2d6a5e11506629feb570751b0bc9ab4d855a904ad69b8430ca1924429b"
+      },
+      {
+        "path": "src/remote/MainApp.svelte",
+        "before": "494fa95d9e89d70aaed2a9afeba3692ee6f92764debddde80f10b2fb421d5032",
+        "after": "4f68ca8395def253a6be0b29b30e1abdbdadb811a6a491a7237effe896dbe2b6"
+      },
+      {
+        "path": "src/remote/lib/PwaUpdateBanner.svelte",
+        "before": null,
+        "after": "70dd98a71e59aa8e7a395b7fda28a6446bf81b9e9697ad008d041d15568b78b9"
+      },
+      {
+        "path": "src/remote/pwaInstallScope.test.ts",
+        "before": "ee3d316f42f8bd7ac8fdbdf5c91015e15bb8c5104a853da4dbdd83b7555d148f",
+        "after": "44fc4ced54436c839d6514073ff30657ba46edb4e814adffb0bbe3ddb178cf7d"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/9d70b35d-198d-4d38-9ade-e05b0df4b213.log"
+  }
+}

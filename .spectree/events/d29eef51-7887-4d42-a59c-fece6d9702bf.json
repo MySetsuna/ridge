@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "d29eef51-7887-4d42-a59c-fece6d9702bf",
+  "at": "2026-11-10T10:32:03.168Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-120",
+  "data": {
+    "title": "补齐 Remote 连接前更新入口并共享编辑保护提示",
+    "implementation": "REQUIRED"
+  }
+}

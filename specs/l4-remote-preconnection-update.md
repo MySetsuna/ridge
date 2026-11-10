@@ -1,0 +1,32 @@
+---
+id: L4-REMOTE-PRECONNECTION-UPDATE
+level: L4
+title: Remote 全连接阶段的 PWA 更新入口
+status: LOCKED
+lifecycle: ACTIVE
+parent: L3-REMOTE-INTERACTION-RELIABILITY
+code_targets:
+  - src/remote/App.svelte
+  - src/remote/MainApp.svelte
+  - src/remote/AuthScreen.svelte
+  - src/remote/CloudAuthScreen.svelte
+  - src/remote/lib/PwaUpdateBanner.svelte
+test_targets:
+  - src/remote/pwaInstallScope.test.ts
+  - src/remote/lib/pwaUpdate.test.ts
+  - scripts/remote-pwa-gate-e2e.mjs
+acceptance_checks:
+  - id: preconnection-sw-update
+    command:
+      - node
+      - scripts/remote-pwa-gate-e2e.mjs
+    description: 真实生成 SW 在前台认证门等待、稍后、应用并激活重载，覆盖 LAN 与 Cloud 失败页
+depends_on:
+  - L4-REMOTE-PWA-EDIT-PROTECTION
+---
+
+移动 Remote 的更新提示在尚未连接的 LAN 认证、Cloud 登录失败、连接错误、界面加载错误及已连接页面均可达。连接前和连接后的提示互斥，使用同一组件和原有更新执行器。立即更新、稍后、保存后更新、显式丢弃、保存中禁用和失败重试沿用编辑保护契约。未连接时的提示不依赖 MainApp、终端渲染器或主机协商成功。
+
+提示按实际高度让位，窄屏可换行，操作命中区至少 44px 高。认证及错误页保留可滚动和已有安全区保护，避免提示覆盖输入或重试。背景自动更新和稍后语义保持原契约，更新入口增加不授予连接或设备权限。
+
+真实 Chromium 加载生产构建与生成的 Workbox SW，在隔离 HTTP 宿主服务同一生成 worker 的两个字节版本，验证前台认证门未进入 MainApp 时新版本真实等待、提示可操作、稍后保持等待、显式应用后实际激活并重载。分别覆盖 LAN 认证及使用只读 401 fixture 的 Cloud 失败页，检查短视口布局和仍然懒加载的终端资源。既有编辑保护单元回归继续覆盖保存、丢弃、失败、并发和新脏编辑器。运行 npm test、lint、typecheck、移动构建与 SpecTree verify。

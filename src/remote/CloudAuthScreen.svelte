@@ -288,7 +288,7 @@
   /* Cloud gate renders the initial connect/reconnect failure state before
      MainApp exists.  Reserve all display cutout insets and allow diagnostics
      to scroll on short PWA viewports rather than hiding them under a notch. */
-  .screen{position:fixed;inset:0;background:var(--rg-bg);display:flex;flex-direction:column;align-items:center;justify-content:safe center;padding:24px;box-sizing:border-box;overflow-y:auto;overscroll-behavior:contain}
+  .screen{position:fixed;inset:var(--rg-preconnect-update-height,0px) 0 0;background:var(--rg-bg);display:flex;flex-direction:column;align-items:center;justify-content:safe center;padding:24px;box-sizing:border-box;overflow-y:auto;overscroll-behavior:contain}
   @supports (padding-top:constant(safe-area-inset-top)) {
     .screen{padding-top:calc(24px + constant(safe-area-inset-top));padding-right:max(24px,constant(safe-area-inset-right));padding-bottom:calc(24px + constant(safe-area-inset-bottom));padding-left:max(24px,constant(safe-area-inset-left))}
   }

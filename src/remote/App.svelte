@@ -9,6 +9,8 @@
   import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
   import { onDestroy } from 'svelte';
   import { retryableLazyImport } from './lib/retryableLazyImport';
+  import PwaUpdateBanner from './lib/PwaUpdateBanner.svelte';
+  import { pwaUpdateDeferred, pwaUpdateReady } from './lib/pwaUpdate';
 
   // §mobile-cloud (design 2026-06-16): the mobile app now has TWO transports —
   //   - LAN:   RemoteConnection (WebSocket, self-signed TLS) — phone on same network.
@@ -58,6 +60,8 @@
   const loadCloudAuthScreen = retryableLazyImport(() => import('./CloudAuthScreen.svelte'));
   const loadMainApp = retryableLazyImport(() => import('./MainApp.svelte'));
   let loadError = $state(false);
+  let pwaBannerHeight = $state(0);
+  const mainAppVisible = $derived(!loadError && verified && !!ws && !!MainAppComp);
   let alive = true;
   onDestroy(() => { alive = false; ws?.disconnect(); });
 
@@ -112,8 +116,12 @@
 </script>
 
 <QueryClientProvider client={queryClient}>
+  <div style:--rg-preconnect-update-height={!mainAppVisible && $pwaUpdateReady && !$pwaUpdateDeferred ? `${pwaBannerHeight}px` : '0px'}>
+  {#if !mainAppVisible}
+    <PwaUpdateBanner bind:height={pwaBannerHeight} />
+  {/if}
   {#if loadError}
-    <div role="alert" class="flex flex-col items-center justify-center gap-3 min-h-[100dvh]">
+    <div role="alert" class="preconnect-screen load-error">
       <p>界面加载失败，请重试。</p>
       <button onclick={() => { loadError = false; }}>重试</button>
     </div>
@@ -126,23 +134,29 @@
           onfallbacklan={fallbackToLan}
         />
       {:else}
-        <div class="flex items-center justify-center min-h-[100dvh]">…</div>
+        <div class="preconnect-screen">…</div>
       {/if}
     {:else if ws && MainAppComp}
       <MainAppComp {ws} />
     {:else if ws}
-      <div class="flex items-center justify-center min-h-[100dvh]">…</div>
+      <div class="preconnect-screen">…</div>
     {/if}
   {:else if !verified}
     {#if AuthScreenComp}
       <AuthScreenComp ws={lanWs!} onverified={handleLanVerified} />
     {:else}
-      <div class="flex items-center justify-center min-h-[100dvh]">…</div>
+      <div class="preconnect-screen">…</div>
     {/if}
   {:else if ws && MainAppComp}
     <MainAppComp {ws} />
   {:else if ws}
-    <div class="flex items-center justify-center min-h-[100dvh]">…</div>
+    <div class="preconnect-screen">…</div>
   {/if}
   {/if}
+  </div>
 </QueryClientProvider>
+
+<style>
+  .preconnect-screen{position:fixed;inset:var(--rg-preconnect-update-height,0px) 0 0;display:flex;align-items:center;justify-content:safe center;padding:24px;overflow-y:auto}
+  .load-error{flex-direction:column;gap:12px}
+</style>
