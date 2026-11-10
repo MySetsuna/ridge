@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "id": "20ab2c88-56ce-456a-ac0a-27b7eae04b17",
+  "at": "2026-11-10T06:23:26.191Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-113",
+  "buildId": "BUILD-fc29d52c0a12",
+  "data": {
+    "previousBuildId": "BUILD-2d1c8bc38eed",
+    "testEvidence": {
+      "buildId": "BUILD-2d1c8bc38eed",
+      "workspaceHash": "8361332d3dcff3708f14be6654e16146af590dd8e26bff3cdcf1b41b56ec8c2c",
+      "verifiedAt": "2026-11-10T06:19:03.282Z",
+      "eventId": "0dc625e6-964a-44d3-bfe2-a4236e5a466e"
+    },
+    "absorbed": [
+      "changes/CHG-113.md",
+      "scripts/monaco-csp-e2e.mjs",
+      "scripts/monaco-trusted-styles.mjs",
+      "scripts/monaco-trusted-styles.test.mjs",
+      "specs/l4-monaco-trusted-styles.md",
+      "src/lib/monaco/ridgeTheme.ts",
+      "src/lib/monaco/trustedThemeStyles.ts",
+      "vite.config.js"
+    ],
+    "activated": [
+      "L4-MONACO-TRUSTED-STYLES"
+    ],
+    "archived": []
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "buildId": "BUILD-2d1c8bc38eed",
+  "changeId": "CHG-113",
+  "specHash": "a1bbf9e36b850a11477c1de2cd74181707c784a0899265679cfb1f367bd36c76",
+  "workspaceHash": "8361332d3dcff3708f14be6654e16146af590dd8e26bff3cdcf1b41b56ec8c2c",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-MONACO-TRUSTED-STYLES",
+      "checkId": "monaco-csp-browser",
+      "command": [
+        "node",
+        "scripts/monaco-csp-e2e.mjs"
+      ],
+      "description": "真实 Chromium 在严格 CSP 下编辑、diff、主题切换及样式生命周期；未授权样式继续拒绝",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-10T06:19:03.282Z",
+  "diagnostics": [],
+  "eventId": "0dc625e6-964a-44d3-bfe2-a4236e5a466e"
+}

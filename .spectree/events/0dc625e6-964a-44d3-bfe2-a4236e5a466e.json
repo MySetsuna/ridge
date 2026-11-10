@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "id": "0dc625e6-964a-44d3-bfe2-a4236e5a466e",
+  "at": "2026-11-10T06:19:03.283Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-113",
+  "buildId": "BUILD-2d1c8bc38eed",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-2d1c8bc38eed",
+    "changeId": "CHG-113",
+    "specHash": "a1bbf9e36b850a11477c1de2cd74181707c784a0899265679cfb1f367bd36c76",
+    "workspaceHash": "8361332d3dcff3708f14be6654e16146af590dd8e26bff3cdcf1b41b56ec8c2c",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "PASS",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-MONACO-TRUSTED-STYLES",
+        "checkId": "monaco-csp-browser",
+        "command": [
+          "node",
+          "scripts/monaco-csp-e2e.mjs"
+        ],
+        "description": "真实 Chromium 在严格 CSP 下编辑、diff、主题切换及样式生命周期；未授权样式继续拒绝",
+        "status": "PASS",
+        "exitCode": 0
+      }
+    ],
+    "valid": true,
+    "verifiedAt": "2026-11-10T06:19:03.282Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "scripts/monaco-csp-e2e.mjs",
+        "before": null,
+        "after": "e9f41c984f22fcf427502c18aba8ee6d0faaaa03dc6a53d2d86a500be5453bf5"
+      },
+      {
+        "path": "scripts/monaco-trusted-styles.mjs",
+        "before": null,
+        "after": "bb66e35ea0b9e06e93757537778cb1f29a710f070d984feb302a62753c024d33"
+      },
+      {
+        "path": "scripts/monaco-trusted-styles.test.mjs",
+        "before": null,
+        "after": "d284b1a3a6380e2359b94b5d46e88d2ba8b8d082fa3577fe21a06ffe85544d14"
+      },
+      {
+        "path": "src/lib/monaco/ridgeTheme.ts",
+        "before": "4cb0d48adbc98166c1cc0896b066559803d2fb72cf4fac3a6fbc18db873744bc",
+        "after": "5060f761c1252c0f0b9a5bec97e5750f13564253b2fdf5ef204ac5307d02b6dc"
+      },
+      {
+        "path": "src/lib/monaco/trustedThemeStyles.ts",
+        "before": "c9add370f3662963490dccd9930bdef6524ea42590d2431c5b202100ca7dbd05",
+        "after": "816eb17c256e2cb0ceab4d3f390a8c669bb615c06800829ca558b6168778aac1"
+      },
+      {
+        "path": "vite.config.js",
+        "before": "6a96b23b519d01f12c7b7aa5645c1abe5821da5111c877c4eb16ebff64756cfe",
+        "after": "51eb916feef58116d0cad4f3fe08320ac17ef83c309d20eb8a2219f21d7b3cee"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/0dc625e6-964a-44d3-bfe2-a4236e5a466e.log"
+  }
+}

@@ -1,122 +1,89 @@
 {
   "version": 1,
-  "changeId": "CHG-112",
-  "specHash": "91298ce11de4005f8c85669b090573f0506e6cf11960319d670b26b5a73b6a2f",
+  "changeId": "CHG-113",
+  "specHash": "505fe9cdbe8ef4d79007c4f11b8bee38cf1805112a9d906b7f13ff5bb407b20c",
   "units": [
     {
-      "id": "L4-OBS-SRC-LIB-COMPONENTS-RIDGEPANE-SVELTE-c57efa11",
-      "level": "L4",
-      "nodeHash": "a4339b931e95f3f282d39afe709b92e65bc3f4f0d29810f6b48bd75c86e37dda",
+      "id": "L3-OBS-SRC-LIB-MONACO-c2b128b2",
+      "level": "L3",
+      "nodeHash": "693dbfe2f0f1108fb83d2f8ab476d767753ee99d117b9336fe04d2073c539d0e",
       "codeTargets": [
-        "src/lib/components/RidgePane.svelte",
-        "src/lib/terminal/paneStartup.ts"
+        "src/lib/monaco/ridgeTheme.ts",
+        "src/lib/monaco/workers.ts"
       ],
-      "testTargets": [
-        "src/lib/terminal/paneStartup.test.ts",
-        "src/lib/components/customTheme.test.ts",
-        "src/lib/components/explorerPaste.test.ts",
-        "src/lib/components/GitGraph.test.ts",
-        "src/lib/components/inputBufferTracker.test.ts",
-        "src/lib/components/interactionContracts.test.ts",
-        "src/lib/components/SettingsPanel.test.ts",
-        "src/lib/components/SidebarLazyMount.test.ts",
-        "src/lib/components/SplitContainer.test.ts"
-      ],
-      "status": "LOCKED"
+      "testTargets": [],
+      "status": "LOCKED",
+      "interfaceSignatures": [
+        "export function ridgeMonacoThemeId(themeId: string): string",
+        "export function applyRidgeMonacoTheme(themeId: string, themeType?: 'dark' | 'light'): void",
+        "export function setupMonacoWorkers(): void"
+      ]
     },
     {
-      "id": "TEST-OBS-SRC-LIB-COMPONENTS-CUSTOMTHEME-TEST-TS-0b73284d",
-      "level": "TEST",
-      "nodeHash": "08624b4cab96bbf0083c4f04d912734d5b3f76fffa7c5e40956d2fe0bb9fcf4d",
-      "codeTargets": [],
-      "testTargets": [
-        "src/lib/components/customTheme.test.ts"
+      "id": "L4-MONACO-TRUSTED-STYLES",
+      "level": "L4",
+      "nodeHash": "5f29f703b5393e7f9c69dc19e8bc54480a3da3246d97c7a5038127719c884e72",
+      "codeTargets": [
+        "src/lib/monaco/trustedThemeStyles.ts",
+        "src/lib/monaco/ridgeTheme.ts",
+        "scripts/monaco-trusted-styles.mjs",
+        "vite.config.js"
       ],
-      "status": "LOCKED"
+      "testTargets": [
+        "scripts/monaco-trusted-styles.test.mjs",
+        "scripts/monaco-csp-e2e.mjs",
+        "src/lib/monaco/ridgeTheme.test.ts",
+        "scripts/app-csp.test.mjs"
+      ],
+      "status": "LOCKED",
+      "acceptanceChecks": [
+        {
+          "id": "monaco-csp-browser",
+          "command": [
+            "node",
+            "scripts/monaco-csp-e2e.mjs"
+          ],
+          "description": "真实 Chromium 在严格 CSP 下编辑、diff、主题切换及样式生命周期；未授权样式继续拒绝"
+        }
+      ]
     },
     {
-      "id": "TEST-OBS-SRC-LIB-COMPONENTS-EXPLORERPASTE-TEST-TS-e29ef2f9",
-      "level": "TEST",
-      "nodeHash": "5ea41e7f3e18f821a298d65192f969462393f5cdefe1c0ce9c9c4341a3eb1bb3",
-      "codeTargets": [],
-      "testTargets": [
-        "src/lib/components/explorerPaste.test.ts"
+      "id": "L4-OBS-SRC-LIB-MONACO-RIDGETHEME-TS-321e01db",
+      "level": "L4",
+      "nodeHash": "a2909fbe70498cf147eb06a619c65428282649528b2df53edcdeadc71a34de4c",
+      "codeTargets": [
+        "src/lib/monaco/ridgeTheme.ts"
       ],
-      "status": "LOCKED"
+      "testTargets": [
+        "src/lib/monaco/ridgeTheme.test.ts"
+      ],
+      "status": "LOCKED",
+      "interfaceSignatures": [
+        "export function applyRidgeMonacoTheme(themeId: string, themeType?: 'dark' | 'light'): void",
+        "export function ridgeMonacoThemeId(themeId: string): string"
+      ]
     },
     {
-      "id": "TEST-OBS-SRC-LIB-COMPONENTS-GITGRAPH-TEST-TS-69aabbd2",
+      "id": "TEST-OBS-SRC-LIB-MONACO-RIDGETHEME-TEST-TS-3b597c0b",
       "level": "TEST",
-      "nodeHash": "24c146c48701eb490a19a4a453c420c02130d1b44180eebc6a0d10110ac74181",
+      "nodeHash": "c59190a2c57614deda0e0ba0c0555f7cb2468555b61a587cebc6393b29bbf0fd",
       "codeTargets": [],
       "testTargets": [
-        "src/lib/components/GitGraph.test.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "TEST-OBS-SRC-LIB-COMPONENTS-INPUTBUFFERTRACKER-TEST-TS-a37220a2",
-      "level": "TEST",
-      "nodeHash": "6234a7dd8afaab35192d1eacffc714de479d824214aaccb1b44bf9591622a4b5",
-      "codeTargets": [],
-      "testTargets": [
-        "src/lib/components/inputBufferTracker.test.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "TEST-OBS-SRC-LIB-COMPONENTS-INTERACTIONCONTRACTS-TEST-TS-6ff9d90a",
-      "level": "TEST",
-      "nodeHash": "480d10359a813b5e09e15eb4a1c16dcc1dca4baf215e8512ab2669bbcfe1cc18",
-      "codeTargets": [],
-      "testTargets": [
-        "src/lib/components/interactionContracts.test.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "TEST-OBS-SRC-LIB-COMPONENTS-SETTINGSPANEL-TEST-TS-a77c4772",
-      "level": "TEST",
-      "nodeHash": "44d7c911b3a0d2afd5ef497196f80be05b2f80f0faa429befd5f7446a7431688",
-      "codeTargets": [],
-      "testTargets": [
-        "src/lib/components/SettingsPanel.test.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "TEST-OBS-SRC-LIB-COMPONENTS-SIDEBARLAZYMOUNT-TEST-TS-a0bebf5d",
-      "level": "TEST",
-      "nodeHash": "ff8b36c2a8ab13c866dd32d16a839cd72ff6c8054c2f161e0042b00d14a10b02",
-      "codeTargets": [],
-      "testTargets": [
-        "src/lib/components/SidebarLazyMount.test.ts"
-      ],
-      "status": "LOCKED"
-    },
-    {
-      "id": "TEST-OBS-SRC-LIB-COMPONENTS-SPLITCONTAINER-TEST-TS-1932765d",
-      "level": "TEST",
-      "nodeHash": "bbb3008356ef3dfcf089b6a1b5a662175edbdd150501510cfceeef59ce0bed1b",
-      "codeTargets": [],
-      "testTargets": [
-        "src/lib/components/SplitContainer.test.ts"
+        "src/lib/monaco/ridgeTheme.test.ts"
       ],
       "status": "LOCKED"
     }
   ],
   "allowedPaths": [
-    "src/lib/components/GitGraph.test.ts",
-    "src/lib/components/RidgePane.svelte",
-    "src/lib/components/SettingsPanel.test.ts",
-    "src/lib/components/SidebarLazyMount.test.ts",
-    "src/lib/components/SplitContainer.test.ts",
-    "src/lib/components/customTheme.test.ts",
-    "src/lib/components/explorerPaste.test.ts",
-    "src/lib/components/inputBufferTracker.test.ts",
-    "src/lib/components/interactionContracts.test.ts",
-    "src/lib/terminal/paneStartup.test.ts",
-    "src/lib/terminal/paneStartup.ts"
+    "scripts/app-csp.test.mjs",
+    "scripts/monaco-csp-e2e.mjs",
+    "scripts/monaco-trusted-styles.mjs",
+    "scripts/monaco-trusted-styles.test.mjs",
+    "src/lib/monaco/ridgeTheme.test.ts",
+    "src/lib/monaco/ridgeTheme.ts",
+    "src/lib/monaco/trustedThemeStyles.ts",
+    "src/lib/monaco/workers.ts",
+    "vite.config.js"
   ],
   "testCommand": [
     "npm",
@@ -257,6 +224,7 @@
     "changes/CHG-110.md": "1c09d8eab391f7f963a1627a93aa2c0bd28326f952728d58184226cce64fbd1b",
     "changes/CHG-111.md": "3d9acaa4a0d0f04bbf87611b367221d2dbcb4f56a809af356a31439e7dcc1657",
     "changes/CHG-112.md": "098c3bf5d8217a1b3232eb3152460149f1cda19c34da40c3e2a3756f3d96a5ee",
+    "changes/CHG-113.md": "ae22742df76f1531ac289ea3d69e6650f1641f3b486272dd7cc0860f7d30317c",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -996,6 +964,9 @@
     "scripts/local-runtime-client-acceptance.mjs": "4775d6f8b3919c3cfe3fbe7cdc2fdfc5296cbadcb754e662ae5e6eb4a31fd562",
     "scripts/m53-product-acceptance.mjs": "b973d04a2d55532901428954952ba5670fd13001d92a70537836c98a73af7359",
     "scripts/mobile-keyboard-e2e.mjs": "967f95a7834c5c98fc32ef4e7bed070b32f29fde6bae617f1d6ff0990e3090dc",
+    "scripts/monaco-csp-e2e.mjs": "e9f41c984f22fcf427502c18aba8ee6d0faaaa03dc6a53d2d86a500be5453bf5",
+    "scripts/monaco-trusted-styles.mjs": "bb66e35ea0b9e06e93757537778cb1f29a710f070d984feb302a62753c024d33",
+    "scripts/monaco-trusted-styles.test.mjs": "d284b1a3a6380e2359b94b5d46e88d2ba8b8d082fa3577fe21a06ffe85544d14",
     "scripts/normalize-lcov.mjs": "5c952f930019ecd6a01372d0b834a50f4eae9aae5d587abd63423fbc0ecbf056",
     "scripts/perf-bench.ps1": "d80716d62dedcec475cc0c6454642a3920f619a8cefec436fb5ff350214965d6",
     "scripts/perf-compare.ps1": "d4959cf5ebd761f34ee880963295c44a2bb6b1e841a7ef04897749e99fab1b76",
@@ -1214,6 +1185,7 @@
     "specs/l4-commune-linux-process-observation.md": "fb173d1cf434a6c10b78bf3950deedfbe34f34ea800c87a6a5253698c7d203e6",
     "specs/l4-commune-organization-members.md": "ce0dcd973142bcd24a8d3305126a4df1ecbab4b37842ab07419c456995c53c2b",
     "specs/l4-commune-remote-delivery.md": "43ae0e9067cebb2a70ba1f46fc92104e0d625ae80dbce045e40239cb56c08230",
+    "specs/l4-monaco-trusted-styles.md": "61dc83ef5ea96a7ffb2ee4e7ee02be802f56ce9babc2bdd1460aabda35c43dfe",
     "specs/l4-perf-latency-bench-entry.md": "86935a5eb9927f52620529e323278781fcf871545b9fc9cec4232c01418d798c",
     "specs/l4-remote-conditional-file-save.md": "b1e2499b02a0a17fa950ee4519188ea115b5834da16f134396c0ac63ed8ad57f",
     "specs/l4-remote-pwa-edit-protection.md": "de2d74877a2b6738abf58c6c0388ab0eac67bcf515dfeac0b1a01e20b67b1872",
@@ -2305,8 +2277,8 @@
     "src/lib/lsp/lspClient.test.ts": "80b23c13e892fbebfd8e1b831f662203ed0a7e6ae66a87099cd09107f8f50ffd",
     "src/lib/lsp/lspClient.ts": "616939f898f0b47b7308e45b5a439e04c3f4a7f46b94523886c6b91b82c9e0d8",
     "src/lib/monaco/ridgeTheme.test.ts": "a99281cb7ca24400624b3a0b58e97855eeabba13ebabc8c775ad519dbc6601ca",
-    "src/lib/monaco/ridgeTheme.ts": "4cb0d48adbc98166c1cc0896b066559803d2fb72cf4fac3a6fbc18db873744bc",
-    "src/lib/monaco/trustedThemeStyles.ts": "c9add370f3662963490dccd9930bdef6524ea42590d2431c5b202100ca7dbd05",
+    "src/lib/monaco/ridgeTheme.ts": "5060f761c1252c0f0b9a5bec97e5750f13564253b2fdf5ef204ac5307d02b6dc",
+    "src/lib/monaco/trustedThemeStyles.ts": "816eb17c256e2cb0ceab4d3f390a8c669bb615c06800829ca558b6168778aac1",
     "src/lib/monaco/workers.ts": "b828bda28161c0fbff807a3b7520c7a30d09cf5a1d13815865932bf82eb6219b",
     "src/lib/plugins/globalStatus/GlobalStatusPanel.svelte": "9531dca13f5fa78106497428eb9ff494fd6c49036f353b05858ae94085535235",
     "src/lib/plugins/index.ts": "9849cac682f489afc264abcbdabd8ff94ac6d73173c6c29052152e63edf6b605",
@@ -2674,7 +2646,7 @@
     "tools/soak-harness/Cargo.toml": "2725d511b26abddc2ba75d12233abdef42f39a43f4a084c60b2ad3ad6346ed52",
     "tools/soak-harness/src/main.rs": "5c12a2800cc4819896fe08e56ff0a83091d9582ec254bb6e2e4c98133d5fde1f",
     "tsconfig.json": "3543fe49263e8b2cf7990aa1dcdedbe2de6619242063ac5c6e12f3518d2bc111",
-    "vite.config.js": "6a96b23b519d01f12c7b7aa5645c1abe5821da5111c877c4eb16ebff64756cfe",
+    "vite.config.js": "51eb916feef58116d0cad4f3fe08320ac17ef83c309d20eb8a2219f21d7b3cee",
     "vite.remote.config.js": "874f69876a4286aef673e3a2e0bef0b615d24f1157b69737ce7f03109bf91737",
     "vitest.config.ts": "a83524d634d658577279fe3f018772e7c23b8ab1e09c19ab2840cf4761642be3",
     "wdio.conf.ts": "d0fcf9d44d0c5aeef0465b0afb094dd300ad2160bbc2f8f86ba824b4272e0b20",
@@ -2682,6 +2654,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-89626bf1824c",
-  "manifestHash": "89626bf1824c65ed64c622295b5d0634aea7b521109f0e0c72ef9b0dd7ab8b33"
+  "buildId": "BUILD-fc29d52c0a12",
+  "manifestHash": "fc29d52c0a129580190046d0edd06bf7d7a9fe346adaa8592dc34d4e6fdf5523"
 }

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "119f9e76-bfb2-4fb7-8d17-ae633e4b2c97",
+  "at": "2026-11-10T05:46:09.184Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-113",
+  "data": {
+    "title": "以 CSSOM 接通 Monaco 主题、动态样式与严格 CSP",
+    "implementation": "REQUIRED"
+  }
+}

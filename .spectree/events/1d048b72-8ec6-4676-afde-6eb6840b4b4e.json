@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "id": "1d048b72-8ec6-4676-afde-6eb6840b4b4e",
+  "at": "2026-11-10T05:49:09.710Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-113",
+  "data": {
+    "changeId": "CHG-113",
+    "specHash": "a1bbf9e36b850a11477c1de2cd74181707c784a0899265679cfb1f367bd36c76",
+    "approvedAt": "2026-11-10T05:49:09.706Z",
+    "source": "cli",
+    "actor": "unattributed",
+    "attributionVerified": false
+  }
+}

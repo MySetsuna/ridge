@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 // runtime by vite's bundler-style resolver.
 import tailwindcss from '@tailwindcss/vite';
 import { syncGeneratedCsp } from './scripts/sync-generated-csp.mjs';
+import { trustedMonacoStyles } from './scripts/monaco-trusted-styles.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -42,6 +43,7 @@ export default defineConfig(({ mode }) => {
 
   return {
   plugins: [
+    trustedMonacoStyles(),
     sveltekit(),
     {
       name: 'ridge-generated-csp',
