@@ -1,32 +1,40 @@
 {
   "version": 1,
-  "changeId": "CHG-118",
-  "specHash": "30c426702971076b2137f4a88b6d746d434959705ee8d01b6c6ea1d91c5efb01",
+  "changeId": "CHG-119",
+  "specHash": "0586ba4f721855c488a1c9bccf6093cb1777601023bc6e3754cb55d5fcfe7f62",
   "units": [
     {
-      "id": "L4-REMOTE-WORKSPACE-PANE-CONTINUITY",
+      "id": "L4-REMOTE-INITIAL-INPUT-CONTINUITY",
       "level": "L4",
-      "nodeHash": "07de85b9a0f245db2d5482db1863ba003aa854e22d1ca1545c3bb6a9f1a9b21f",
+      "nodeHash": "478a38fad755a034fe9a2020febe5c74b3f328a9b9c7b4aa6e6fc0fc14f84a26",
       "codeTargets": [
-        "src/remote/MainApp.svelte",
-        "src/remote/lib/cloudRemote.ts",
-        "src/remote/lib/mobileRemoteUiState.svelte.ts"
+        "src/remote/lib/TerminalCanvas.svelte",
+        "src/remote/lib/remoteInput.ts"
       ],
       "testTargets": [
-        "src/remote/MainApp.test.ts",
-        "src/remote/lib/cloudRemote.test.ts",
-        "src/remote/lib/mobileRemoteUiState.test.ts"
+        "src/remote/lib/TerminalCanvas.test.ts",
+        "src/remote/lib/remoteInput.test.ts",
+        "scripts/remote-startup-input-e2e.mjs"
       ],
-      "status": "LOCKED"
+      "status": "LOCKED",
+      "acceptanceChecks": [
+        {
+          "id": "initial-input-real-pty",
+          "command": [
+            "node",
+            "scripts/remote-startup-input-e2e.mjs"
+          ],
+          "description": "构建真实移动 Remote 和 CLI，以隔离 Kernel/PTY 验证附着前后延迟输入完整到达且执行一次"
+        }
+      ]
     }
   ],
   "allowedPaths": [
-    "src/remote/MainApp.svelte",
-    "src/remote/MainApp.test.ts",
-    "src/remote/lib/cloudRemote.test.ts",
-    "src/remote/lib/cloudRemote.ts",
-    "src/remote/lib/mobileRemoteUiState.svelte.ts",
-    "src/remote/lib/mobileRemoteUiState.test.ts"
+    "scripts/remote-startup-input-e2e.mjs",
+    "src/remote/lib/TerminalCanvas.svelte",
+    "src/remote/lib/TerminalCanvas.test.ts",
+    "src/remote/lib/remoteInput.test.ts",
+    "src/remote/lib/remoteInput.ts"
   ],
   "testCommand": [
     "npm",
@@ -173,6 +181,7 @@
     "changes/CHG-116.md": "7e4a014717f5e5cc5578a8bbb1d34cc9183e8b35ffeb75af5d5d227d168a96a1",
     "changes/CHG-117.md": "5ed339925ed037a32d27f085dfdbdbdd0e17dbc90aa61e57b0fe9ca24baa95e4",
     "changes/CHG-118.md": "ddd04c2aed19ee21ae358a00ef38deaa51410be396fc40252d2abbcb350706dc",
+    "changes/CHG-119.md": "bf65966eaba506f82ffe47b263b8577438651dea05d6cabdf96294c0614be8ee",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -934,6 +943,7 @@
     "scripts/remote-leak-trace.mjs": "19cc71a04f6e6acbac4a2fe236fe556e87763fb2b4dea9bdfbde9e65f0589c72",
     "scripts/remote-runtime-last-error-attribution.mjs": "ff5f76bf44a7f25f83091d7978a57d7b570acff6a7100427279e489dac2138bc",
     "scripts/remote-runtime-last-error-attribution.test.ts": "631b6b2d18d477a8967824b001e30a3875070ad2904efe6059b946ec528ccf22",
+    "scripts/remote-startup-input-e2e.mjs": "27965e6ff99acbf429add08ae7b5d4f53ec7446e2842272981059a8d70e13453",
     "scripts/remote-state-e2e.mjs": "9bde8a49c790d0bf9c4011c0ba99604216bd55f64bb9f5605a4f4d3d8a5b78f6",
     "scripts/remote-tabs-acceptance.mjs": "0b9ed2e493e5c9e708589ca48a6fbf2c15a9854feab061f4e995abbcce662a90",
     "scripts/remote-verify-fix.mjs": "c487b5e5c7a3d70c8165d9b6021ead61404e7f4e186d24978f5af675e24e5899",
@@ -1137,6 +1147,7 @@
     "specs/l4-monaco-trusted-styles.md": "61dc83ef5ea96a7ffb2ee4e7ee02be802f56ce9babc2bdd1460aabda35c43dfe",
     "specs/l4-perf-latency-bench-entry.md": "86935a5eb9927f52620529e323278781fcf871545b9fc9cec4232c01418d798c",
     "specs/l4-remote-conditional-file-save.md": "b1e2499b02a0a17fa950ee4519188ea115b5834da16f134396c0ac63ed8ad57f",
+    "specs/l4-remote-initial-input-continuity.md": "96820104d3b4d23249a56ef3d2c36aa62ad252b1c275c0c9d6de9c0c7d87c5b1",
     "specs/l4-remote-pwa-edit-protection.md": "de2d74877a2b6738abf58c6c0388ab0eac67bcf515dfeac0b1a01e20b67b1872",
     "specs/l4-remote-pwa-ui-routing.md": "72fdc047e7dc6bdefaa982c723e288454d447a293a659bbe044e8a095dc419b3",
     "specs/l4-remote-workspace-pane-continuity.md": "65d1590623dd0928b8e2809fcab2f4c61aea8164f07a10b5b0c2f44884796e1f",
@@ -2464,8 +2475,8 @@
     "src/remote/lib/remoteGitActions.ts": "7277d9068eaeff58410b43a84ef184be38c68705d614cc5fb7ae29dd21bee6e0",
     "src/remote/lib/RemoteGitPanel.svelte": "d2ad05651e590c271bba442bc6d5c36656c94395836ca0dfb53a808c341b31de",
     "src/remote/lib/RemoteGitPanel.test.ts": "2d270083f202c795f51a61710533d11ff15ab403cbad1e65fcd7fa3ea61019fe",
-    "src/remote/lib/remoteInput.test.ts": "3808b367b274171051b7c591482e99ff22b59c638553145e4aeb4e8b523c77a3",
-    "src/remote/lib/remoteInput.ts": "348bfb1597d3db212651d6842cc102703368113c99d721cb7812c5e61c9b8d8e",
+    "src/remote/lib/remoteInput.test.ts": "77af1f1fd36862a2b31d9a493408626c0284792e6ed8f1c53888f697619864dd",
+    "src/remote/lib/remoteInput.ts": "b2b6299ccbd14ad68eaf3727a26e300374972f368972c9ba86b7c6a9a0ba7e7c",
     "src/remote/lib/remoteQueries.test.ts": "db03fe5475eae62feee04753b91138a00ab22eef01566a2507231af04494ec8f",
     "src/remote/lib/remoteQueries.ts": "6d668bf5897fa9084ce2034df5981a4761e4e92fbf634ff37c839d2c165d7f7e",
     "src/remote/lib/remoteSession.test.ts": "546f17ca94939af25e8b09d9d7654c8df7deda09adcd9e38ec5d08bed2557a3d",
@@ -2482,8 +2493,8 @@
     "src/remote/lib/SidebarTeamRoster.test.ts": "e11326f800ba7c1f46e55b474582bb5e510afe1443291dfae42106fadc6adbd3",
     "src/remote/lib/teamRosterScope.test.ts": "3e92991e10a3c39f2733132f86834555f0ce41cc0e6f324fd1bd75a389479582",
     "src/remote/lib/teamRosterScope.ts": "fee9ffda95569021e91a9a04338e0ad43b767d9eafe8eaca41ca262c8efd691b",
-    "src/remote/lib/TerminalCanvas.svelte": "7463070d2086d02b9827a7beade6ceff2dbcb4ee887c552fcd7661b6cdee6be1",
-    "src/remote/lib/TerminalCanvas.test.ts": "f033e000c06f308fa7b34a4e0b385577714d5da6b37a567cf1967be8e57f911c",
+    "src/remote/lib/TerminalCanvas.svelte": "69057d81f90b9e4e569bc1c32562e3e3e476ef49de39ac14b41b7c59cd2d13bb",
+    "src/remote/lib/TerminalCanvas.test.ts": "6ad7597e91ee67e97d53725eb44c61b0637693ca7816728d6b4f62ca9f412fa5",
     "src/remote/lib/theme.test.ts": "939219c5bcbd6531c78b2b305adf1f4360e9c733df098741991d9b20dd85386a",
     "src/remote/lib/theme.ts": "3b39a0d04af832665252509f707a7bbda597af81fd82c4ca4258a78d607647d9",
     "src/remote/lib/treeState.svelte.ts": "afae681d5a697e0b3aacd83cbf0738bddb0ad13c06d4401dd9f36867fb344398",
@@ -2608,6 +2619,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-70a976546d07",
-  "manifestHash": "70a976546d07d64db8758ab3963f05366132ee364119369ff677d5e0380be36d"
+  "buildId": "BUILD-50366c7bf592",
+  "manifestHash": "50366c7bf5928b40eb77554fd08abe1d3d256a40dadeda7c109e212f121c5066"
 }

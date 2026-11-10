@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "id": "6b76e1a4-06e5-4ded-b291-b209aeaba98e",
+  "at": "2026-11-10T10:15:26.107Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-119",
+  "buildId": "BUILD-50366c7bf592",
+  "data": {
+    "previousBuildId": "BUILD-2122c2dd8c21",
+    "testEvidence": {
+      "buildId": "BUILD-2122c2dd8c21",
+      "workspaceHash": "59638ee37580daaced82cc7f6fe27e79061017f3058f7f10b5557d5e26f73421",
+      "verifiedAt": "2026-11-10T10:13:27.983Z",
+      "eventId": "ab82c199-8871-4986-97d0-a5f2eb367073"
+    },
+    "absorbed": [
+      "changes/CHG-119.md",
+      "scripts/remote-startup-input-e2e.mjs",
+      "specs/l4-remote-initial-input-continuity.md",
+      "src/remote/lib/TerminalCanvas.svelte",
+      "src/remote/lib/TerminalCanvas.test.ts",
+      "src/remote/lib/remoteInput.test.ts",
+      "src/remote/lib/remoteInput.ts"
+    ],
+    "activated": [
+      "L4-REMOTE-INITIAL-INPUT-CONTINUITY"
+    ],
+    "archived": []
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "id": "ab82c199-8871-4986-97d0-a5f2eb367073",
+  "at": "2026-11-10T10:13:27.985Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-119",
+  "buildId": "BUILD-2122c2dd8c21",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-2122c2dd8c21",
+    "changeId": "CHG-119",
+    "specHash": "3a9b49dbb77e5cbd0739ac88d3e7b8093d259509cfd26c11574a79cf9f03fcaa",
+    "workspaceHash": "59638ee37580daaced82cc7f6fe27e79061017f3058f7f10b5557d5e26f73421",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "PASS",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-REMOTE-INITIAL-INPUT-CONTINUITY",
+        "checkId": "initial-input-real-pty",
+        "command": [
+          "node",
+          "scripts/remote-startup-input-e2e.mjs"
+        ],
+        "description": "构建真实移动 Remote 和 CLI，以隔离 Kernel/PTY 验证附着前后延迟输入完整到达且执行一次",
+        "status": "PASS",
+        "exitCode": 0
+      }
+    ],
+    "valid": true,
+    "verifiedAt": "2026-11-10T10:13:27.983Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "scripts/remote-startup-input-e2e.mjs",
+        "before": null,
+        "after": "27965e6ff99acbf429add08ae7b5d4f53ec7446e2842272981059a8d70e13453"
+      },
+      {
+        "path": "src/remote/lib/TerminalCanvas.svelte",
+        "before": "7463070d2086d02b9827a7beade6ceff2dbcb4ee887c552fcd7661b6cdee6be1",
+        "after": "69057d81f90b9e4e569bc1c32562e3e3e476ef49de39ac14b41b7c59cd2d13bb"
+      },
+      {
+        "path": "src/remote/lib/TerminalCanvas.test.ts",
+        "before": "f033e000c06f308fa7b34a4e0b385577714d5da6b37a567cf1967be8e57f911c",
+        "after": "6ad7597e91ee67e97d53725eb44c61b0637693ca7816728d6b4f62ca9f412fa5"
+      },
+      {
+        "path": "src/remote/lib/remoteInput.test.ts",
+        "before": "3808b367b274171051b7c591482e99ff22b59c638553145e4aeb4e8b523c77a3",
+        "after": "77af1f1fd36862a2b31d9a493408626c0284792e6ed8f1c53888f697619864dd"
+      },
+      {
+        "path": "src/remote/lib/remoteInput.ts",
+        "before": "348bfb1597d3db212651d6842cc102703368113c99d721cb7812c5e61c9b8d8e",
+        "after": "b2b6299ccbd14ad68eaf3727a26e300374972f368972c9ba86b7c6a9a0ba7e7c"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/ab82c199-8871-4986-97d0-a5f2eb367073.log"
+  }
+}

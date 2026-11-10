@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "a71192b4-970e-4eee-bd6b-7a53a1a856e9",
+  "at": "2026-11-10T09:47:46.589Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-119",
+  "data": {
+    "title": "完整缓冲 Remote 初始化输入并约束终端生命周期切换",
+    "implementation": "REQUIRED"
+  }
+}

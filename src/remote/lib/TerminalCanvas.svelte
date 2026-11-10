@@ -27,7 +27,7 @@
   import { activateIme } from '@ridge/remote/shared/terminal/imeAnchor';
   import { REMOTE_TERM_FONT } from '@ridge/remote/shared/terminal/fontStack';
   import { isSafeHttpUrl } from '@ridge/remote/shared/terminal/linkOpenHost';
-  import { captureRemoteKey, encodeRemoteKey, editingKeyForInput, type RemoteKey } from './remoteInput';
+  import { captureRemoteKey, encodeRemoteKey, encodeRemoteInput, editingKeyForInput, PendingRemoteInput } from './remoteInput';
 
   // P4 (2026-07-25): this component no longer owns a single `TerminalController`
   // + canvas. It is now the MOBILE INPUT-ADAPTATION LAYER over the SHARED
@@ -137,24 +137,15 @@
   function onStdin(input: TerminalInputData): void {
     const data = typeof input === 'string' ? inputEncoder.encode(input) : input;
     const pane = ownPaneRef();
-    if (!pane || !data.length) return;
-    if (!attached || bindingUncertain) {
-      // Focus is established before the asynchronous unpark/attach completes
-      // so the first keystrokes after a pane switch are never lost. After
-      // attach, the same bounded buffer holds bytes captured during the
-      // §B binding-uncertain window — the kernel has no usable cursor cell
-      // yet, so forwarding would write into a stale position. Keep only a
-      // bounded local tail; the per-pane RPC queue still owns retry and
-      // ordering once the kernel anchor resolves.
-      const bytes = data.byteLength;
-      if (pendingStdinBytes + bytes <= MAX_PENDING_STDIN_BYTES) {
-        pendingStdin.push(data.slice());
-        pendingStdinBytes += bytes;
-      } else pendingInputError = true;
+    if (!alive || !pane || !data.length) return;
+    const context = (manager.getKernel(paneId)?.terminalInputContext() ?? null) as TerminalInputContext | null;
+    inputContextReady = context !== null;
+    pendingStdin.observe(context);
+    flushPendingStdin();
+    if (bindingUncertain || !context || pendingStdin.failed) {
+      pendingInputError = !pendingStdin.enqueue(data, context);
       return;
     }
-    const context = manager.getKernel(paneId)?.terminalInputContext() as TerminalInputContext | null;
-    if (!context) { pendingInputError = true; return; }
     onPaneStdin(pane, data, context);
     manager.noteUserInput(paneId);
   }
@@ -191,8 +182,7 @@
     }
   });
   const MAX_PENDING_STDIN_BYTES = 64 * 1024;
-  const pendingStdin: Array<Uint8Array | RemoteKey> = [];
-  let pendingStdinBytes = 0;
+  const pendingStdin = new PendingRemoteInput(MAX_PENDING_STDIN_BYTES);
   let pendingInputError = $state(false);
   let handledEditingKey: string | null = null;
   let editingKeyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -204,22 +194,23 @@
     editingKeyTimer = setTimeout(() => { handledEditingKey = null; editingKeyTimer = null; }, 0);
   }
 
-  // §B binding-uncertain guard: after `attached=true` but before the kernel
-  // surfaces a usable IME anchor (no user input snapshot, no recent absolute
-  // CSI), forwarding keystrokes would write into the PTY at a stale cursor
-  // cell. Until the anchor resolves, every input-emitting path bails and the
-  // hidden textarea is disabled so native text composition can't fire. The
-  // guard auto-releases when `inputAnchorResolved` returns non-null and the
-  // accumulated `pendingStdin` is flushed at that boundary.
+  // Capture keyboard/IME locally until both canonical context and anchor exist.
+  // A mounted renderer alone does not establish an input binding.
   let anchorResolved = $state(false);
-  const bindingUncertain = $derived(!attached || !anchorResolved);
-  $effect(() => {
-    // Re-check on attach + whenever the kernel publishes a new anchor. The
-    // manager's `onImeAnchor` subscription (below) already fires on every
-    // anchor update — this effect only seeds the initial sample after attach
-    // and lets `attached` itself invalidate the derived value.
-    if (!attached) return;
+  let inputContextReady = $state(false);
+  const bindingUncertain = $derived(!attached || !anchorResolved || !inputContextReady);
+
+  function updateInputBinding(): void {
+    const context = (manager.getKernel(paneId)?.terminalInputContext() ?? null) as TerminalInputContext | null;
+    pendingStdin.observe(context);
+    inputContextReady = context !== null;
     anchorResolved = !!manager.inputAnchorResolved(paneId);
+    flushPendingStdin();
+  }
+
+  $effect(() => {
+    if (!attached) return;
+    updateInputBinding();
   });
 
   function formatWebgpuInitError(error: unknown): string {
@@ -230,20 +221,31 @@
   }
 
   function flushPendingStdin(): void {
-    if (!attached) return;
+    if (!alive || bindingUncertain) return;
     const pane = ownPaneRef();
     if (!pane || pendingStdin.length === 0) return;
     const kernel = manager.getKernel(paneId);
     if (!kernel) return;
     const context = kernel.terminalInputContext() as TerminalInputContext | null;
     if (!context) return;
-    const queued = pendingStdin.splice(0);
-    pendingStdinBytes = 0;
+    const queued = pendingStdin.drain(context);
+    pendingInputError = pendingStdin.failed;
     for (const input of queued) {
-      const data = input instanceof Uint8Array ? input : encodeRemoteKey(kernel, input);
+      const data = encodeRemoteInput(kernel, input);
       if (data.length) onPaneStdin(pane, data, context);
     }
     manager.noteUserInput(paneId);
+  }
+
+  function resetPendingInput(): void {
+    pendingStdin.reset();
+    pendingInputError = false;
+    pendingWord = '';
+    recentSent = '';
+    imeCommitExpect = '';
+    lastInputText = '';
+    sbuf.takeFlush();
+    focusInput();
   }
   // Lifetime flag: false the moment the component starts tearing down, so the
   // async attach IIFE bails and (if attach already landed) parks the pane.
@@ -398,6 +400,7 @@
       }
     }
     manager.flushPaneFeed(paneId);
+    updateInputBinding();
     flushPendingStdin();
     manager.setFocused(paneId, true);
     focusInput();
@@ -472,6 +475,8 @@
   onDestroy(() => {
     handleTouchCancel();
     manager.cancelPointerGesture(paneId);
+    // Commit the existing sentence buffer while this component still owns input.
+    if (attached && !sbuf.empty) sbufFlush();
     alive = false;
     if (editingKeyTimer !== null) clearTimeout(editingKeyTimer);
     manager.setVisualOffsetY(paneId, 0);
@@ -480,15 +485,12 @@
       cancelAnimationFrame(keyboardSettleRaf);
       keyboardSettleRaf = null;
     }
-    // 句级缓冲：卸载前落笔，防切 pane 丢缓冲文本。
-    if (attached && !sbuf.empty) sbufFlush();
     if (sbufTimer !== null) { clearTimeout(sbufTimer); sbufTimer = null; }
     // §B: clear any pendingStdin captured by THIS instance. pendingStdin is
     // component-local so the next instance owns its own buffer, but a late
     // flushPendingStdin call from a race against attachTerminal could otherwise
     // ship this instance's bytes through the (now stale) ownPaneRef().
-    pendingStdin.length = 0;
-    pendingStdinBytes = 0;
+    pendingStdin.cancel();
     // §B: replace the manager dataHandler with a noop so any byte that races
     // through the kernel between park() and the next mount cannot reach this
     // unmounted component's onStdin closure. (manager.onData replaces by
@@ -636,6 +638,7 @@
       pane.paneId,
       activationId,
     );
+    if (targetPaneId === paneId) updateInputBinding();
     if (targetPaneId === paneId && historyRecoveryPending()) queueMicrotask(maybeLoadOlder);
     return applied;
   }
@@ -1032,7 +1035,11 @@
       }
     }
     // Commit: encodePaste + ship to PTY via the registered dataHandler (onStdin).
-    manager.paste(paneId, data);
+    if (bindingUncertain) {
+      const context = (manager.getKernel(paneId)?.terminalInputContext() ?? null) as TerminalInputContext | null;
+      pendingInputError = !pendingStdin.enqueue({ paste: data }, context);
+      flushPendingStdin();
+    } else manager.paste(paneId, data);
     pendingWord = trailingWord(data);
     // Arm dedup for the trailing `input` event that normally follows.
     imeCommitExpect = data;
@@ -1058,10 +1065,6 @@
       return;
     }
     if (!text) return;
-    if (!attached) {
-      onStdin(text);
-      return;
-    }
     // §1 Robust IME-commit dedup: browsers may re-insert committed text as a
     // non-composing `input` with inputType `insertCompositionText`. Swallow
     // only when it matches the commit we already sent. Some mobile keyboards
@@ -1069,6 +1072,13 @@
     // without a compositionend; an unconditional type check dropped spaces.
     if (text === imeCommitExpect && Date.now() - imeCommitExpectTime < IME_DUP_WINDOW_MS) {
       imeCommitExpect = '';
+      return;
+    }
+    if (!attached) {
+      onStdin(text);
+      pendingWord = updatePendingWord(pendingWord, text);
+      lastInputText = text;
+      lastInputTime = Date.now();
       return;
     }
     // §1 Autocorrect / predictive replacement：旧行为是整帧丢弃（保字面），用户
@@ -1123,15 +1133,13 @@
   // ── Keyboard ──
   function handleKeydown(e: KeyboardEvent) {
     if (isComposing || e.isComposing) return;
-    if (!attached) {
+    const context = (manager.getKernel(paneId)?.terminalInputContext() ?? null) as TerminalInputContext | null;
+    if (bindingUncertain || !context) {
       const key = captureRemoteKey(e);
       if (key) {
         e.preventDefault();
-        if (pendingStdinBytes + 128 <= MAX_PENDING_STDIN_BYTES) {
-          pendingStdin.push(key);
-          pendingStdinBytes += 128;
-          markEditingKey(key.key);
-        } else pendingInputError = true;
+        pendingInputError = !pendingStdin.enqueue(key, context);
+        markEditingKey(key.key);
       }
       return;
     }
@@ -1384,11 +1392,8 @@
   // focused IME sink from the manager's authoritative post-echo anchor.
   $effect(() => {
     if (!attached || !alive) return;
-    return manager.onImeAnchor(paneId, (anchor) => {
-      // §B: a fresh anchor is the signal that the binding has resolved.
-      // `anchor === null` means the kernel dropped the previous capture
-      // (rare; preserves the prior certain state to avoid a flip-flop).
-      if (anchor) anchorResolved = true;
+    return manager.onImeAnchor(paneId, () => {
+      updateInputBinding();
       if (alive && document.activeElement === hiddenInput) {
         positionInputAtCursorOrCenter();
         requestKeyboardShift();
@@ -1430,7 +1435,7 @@
     <div role="alert" class="binding-rail input-error" data-ridge-control
       ontouchstart={(event) => event.stopPropagation()} ontouchend={(event) => event.stopPropagation()}>
       本次输入未送达；请等待终端就绪后重试。
-      <button onclick={() => { pendingInputError = false; }}>关闭</button>
+      <button onclick={resetPendingInput}>关闭</button>
     </div>
   {/if}
   {#if scrollbackLoading}
@@ -1484,7 +1489,7 @@
     spellcheck="false"
     aria-hidden="true"
     tabindex="-1"
-    disabled={attached && bindingUncertain}
+    disabled={pendingInputError}
     onkeydown={handleKeydown}
     onbeforeinput={handleBeforeInput}
     oninput={handleInput}

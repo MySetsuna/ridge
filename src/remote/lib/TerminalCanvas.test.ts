@@ -386,33 +386,36 @@ describe('D — touch gesture edge-case invariants in TerminalCanvas.svelte sour
 // IME anchor (no user input snapshot, no recent absolute CSI), forwarding
 // keystrokes writes into the PTY at a stale cursor cell. The guard must:
 //   1. queue user input into `pendingStdin` (bounded) until the anchor lands,
-//   2. disable the hidden textarea so native text composition can't fire,
-//   3. block virtual-key / paste / keyboard-shortcut paths,
+//   2. keep the hidden keyboard/IME sink capturing until the binding lands,
+//   3. block virtual-key/paste paths and queue physical special-key intent,
 //   4. surface a low-impact status rail (no chrome theft from copy pill),
 //   5. flush the queued bytes the moment the manager publishes an anchor.
 describe('B — binding-uncertain input guard in TerminalCanvas.svelte source', () => {
-  it('declares a reactive bindingUncertain derived from anchor state', () => {
+  it('requires both the canonical input context and anchor for readiness', () => {
     expect(source).toMatch(/let\s+anchorResolved\s*=\s*\$state\(false\)/);
-    expect(source).toMatch(/const\s+bindingUncertain\s*=\s*\$derived\(!attached\s*\|\|\s*!anchorResolved\)/);
+    expect(source).toMatch(/const\s+bindingUncertain\s*=\s*\$derived\(!attached\s*\|\|\s*!anchorResolved\s*\|\|\s*!inputContextReady\)/);
   });
 
-  it('disables the hidden textarea while binding is uncertain', () => {
-    expect(source).toMatch(/disabled=\{attached\s*&&\s*bindingUncertain\}/);
+  it('keeps capturing startup text and only disables after an explicit input failure', () => {
+    expect(source).toContain('disabled={pendingInputError}');
+    expect(source).not.toContain('disabled={attached && bindingUncertain}');
   });
 
   it('exposes a data-binding-uncertain attribute for diagnostics', () => {
     expect(source).toMatch(/data-binding-uncertain=\{attached\s*&&\s*bindingUncertain\s*\?\s*'true'\s*:\s*'false'\}/);
   });
 
-  it('queues onStdin into pendingStdin while bindingUncertain', () => {
-    // The local onStdin must queue (not forward) when bindingUncertain.
-    // The branch is the FIRST one inside the if (!attached || bindingUncertain)
-    // block — same code path that already handles the pre-attach gap.
+  it('queues unready input, preserves ready forwarding and cancels on teardown', () => {
     const stdinFn = lineAfter('function onStdin(input: TerminalInputData): void', 0);
     const stdinBody = lines.slice(stdinFn, stdinFn + 18).join('\n');
-    expect(stdinBody).toMatch(/if\s*\(\s*!attached\s*\|\|\s*bindingUncertain\s*\)/);
-    expect(stdinBody).toMatch(/pendingStdin\.push\(data\.slice\(\)\)/);
-    expect(stdinBody).toMatch(/pendingStdinBytes\s*\+=\s*bytes/);
+    expect(stdinBody).toContain('pendingStdin.enqueue(data, context)');
+    expect(stdinBody).toContain('flushPendingStdin();');
+    expect(stdinBody).toContain('bindingUncertain || !context || pendingStdin.failed');
+    expect(stdinBody).toContain('onPaneStdin(pane, data, context);');
+    expect(source).toContain('if (!alive || bindingUncertain) return;');
+    expect(source).toContain('pendingStdin.drain(context)');
+    expect(source).toContain('pendingStdin.cancel();');
+    expect(source).toContain('pendingStdin.reset();');
   });
 
   it('blocks virtual-key and paste paths while binding is uncertain', () => {
@@ -426,12 +429,14 @@ describe('B — binding-uncertain input guard in TerminalCanvas.svelte source', 
     expect(source).toMatch(/function\s+handlePaste\(e:\s*ClipboardEvent\)\s*\{[\s\S]*?if\s*\(\s*!attached\s*\|\|\s*bindingUncertain\s*\)\s*return;/);
   });
 
-  it('flips anchorResolved on every onImeAnchor emission', () => {
+  it('rechecks binding readiness on every anchor and canonical frame', () => {
     // The onImeAnchor subscription (PTY-echo advance) must update the guard.
     const anchorEff = lines.findIndex((l) => l.includes('return manager.onImeAnchor(paneId,'));
     expect(anchorEff).toBeGreaterThan(-1);
     const slice = lines.slice(anchorEff, anchorEff + 8).join('\n');
-    expect(slice).toMatch(/if\s*\(anchor\)\s*anchorResolved\s*=\s*true/);
+    expect(slice).toContain('updateInputBinding();');
+    expect(source).toContain('if (targetPaneId === paneId) updateInputBinding();');
+    expect(source).toContain('pendingStdin.enqueue({ paste: data }, context)');
   });
 
   it('flushes pendingStdin the moment bindingUncertain clears', () => {
