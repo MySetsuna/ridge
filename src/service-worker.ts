@@ -16,12 +16,12 @@ import { build, version } from '$service-worker';
 
 const CACHE = `ridge-web-remote-${version}`;
 const HTML_CACHE = `ridge-html-${version}`;
-// §perf: precache only shell-critical chunks on install; warm the rest on activate.
+// Precache only the application shell. Other features cache on first use;
+// speculative downloads must not compete with authentication and terminal boot.
 // Monaco language workers (9.4 MB) and wasm (6 MB) are excluded from install —
 // they load on demand and are cached by the fetch handler after first use.
 const SHELL_PATTERN = /\/(entry|nodes)\//;
 const PRECACHE_SHELL = build.filter((f) => SHELL_PATTERN.test(f) || f.endsWith('.css'));
-const PRECACHE_WARM = build.filter((f) => !PRECACHE_SHELL.includes(f) && !f.endsWith('.wasm'));
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
 
@@ -65,19 +65,12 @@ sw.addEventListener('activate', (event) => {
     checkVersionAndNukeIfNeeded()
       .then(() => caches.keys())
       .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== HTML_CACHE && !k.startsWith('ridge-version-')).map((k) => caches.delete(k))))
-      .then(() => sw.clients.claim())
-      .then(() => {
-        // §perf warm: cache remaining shell assets in background after activate.
-        // Per-file catch so one failure doesn't abort the whole warm batch.
-        return caches.open(CACHE).then((cache) =>
-          Promise.allSettled(PRECACHE_WARM.map((f) => cache.add(f).catch(() => {}))),
-        );
-      }),
+      .then(() => sw.clients.claim()),
   );
 });
 
 // Paths that must always hit the network (live data / control plane).
-const BYPASS = ['/ws', '/file', '/info', '/verify', '/health', '/status', '/session', '/workspace'];
+const BYPASS = ['/api', '/artifact.json', '/ws', '/file', '/info', '/verify', '/health', '/status', '/session', '/workspace'];
 
 sw.addEventListener('fetch', (event) => {
   const req = event.request;

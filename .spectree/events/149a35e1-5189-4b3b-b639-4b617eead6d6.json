@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "id": "149a35e1-5189-4b3b-b639-4b617eead6d6",
+  "at": "2026-11-10T05:29:48.668Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-111",
+  "buildId": "BUILD-24109da7e76c",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-24109da7e76c",
+    "changeId": "CHG-111",
+    "specHash": "75b39eb14b6091554e5efb5f8c3bcb7d7a48cfa9d95e61cb3d2ee901fed5997f",
+    "workspaceHash": "b902f9185a1ca1e4b0be7271edd5fde57f7f4feaf3f225b3ba0e8495cc608f43",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "NOT_DECLARED",
+    "acceptanceResults": [],
+    "valid": true,
+    "verifiedAt": "2026-11-10T05:29:48.667Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "src/service-worker.test.ts",
+        "before": "8089ea749eb4f6a6a4d324987e35f066fdeb004ad2ece90b986126c173ca020c",
+        "after": "4852c15ac3daf2e1a03e8cb86d4ad4d7e0130c79658ca080f560a797f02f3d2c"
+      },
+      {
+        "path": "src/service-worker.ts",
+        "before": "1d2aac3ec775dd8c12b403df500d9b0c0cbe56cd6fb1a337c65f4e779ec916fe",
+        "after": "ebcff641e5bad991765b1d151fc413539b3ff244eafb27fcd3d3430012267d0a"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/149a35e1-5189-4b3b-b639-4b617eead6d6.log"
+  }
+}

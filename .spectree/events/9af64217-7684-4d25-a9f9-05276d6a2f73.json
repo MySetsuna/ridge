@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "9af64217-7684-4d25-a9f9-05276d6a2f73",
+  "at": "2026-11-10T05:21:43.114Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-111",
+  "data": {
+    "title": "消除 Remote Service Worker 全量预热与鉴权缓存干扰",
+    "implementation": "REQUIRED"
+  }
+}

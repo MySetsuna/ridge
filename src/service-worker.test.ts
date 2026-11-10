@@ -59,7 +59,7 @@ beforeAll(async () => {
 beforeEach(() => {
   state.caches.match.mockReset();
   state.caches.match.mockResolvedValue(null);
-  vi.stubGlobal('fetch', vi.fn());
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('network')));
 });
 
 function dispatchFetch(request: Request): Promise<Response> | undefined {
@@ -95,6 +95,16 @@ describe('web-remote service worker', () => {
     expect(dispatchFetch(new Request('https://other.test/app'))).toBeUndefined();
     expect(dispatchFetch(new Request('https://remote.test/ws'))).toBeUndefined();
     expect(dispatchFetch(new Request('https://remote.test/workspace/one'))).toBeUndefined();
+    expect(dispatchFetch(new Request('https://remote.test/api/v1/auth/session?refresh=1'))).toBeUndefined();
+    expect(dispatchFetch(new Request('https://remote.test/artifact.json?probe=current'))).toBeUndefined();
+  });
+
+  it('activates without downloading code for unvisited features', async () => {
+    for (const cache of state.cacheEntries.values()) cache.add.mockClear();
+    const activateWait = vi.fn();
+    state.listeners.get('activate')?.({ waitUntil: activateWait });
+    await activateWait.mock.calls[0][0];
+    for (const cache of state.cacheEntries.values()) expect(cache.add).not.toHaveBeenCalled();
   });
 
   it('caches successful navigation and falls back to cached shell on failure', async () => {

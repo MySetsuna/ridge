@@ -2,7 +2,7 @@
 id: L4-OBS-SRC-SERVICE-WORKER-TS-0aba05b7
 level: L4
 parent: L3-OBS-SRC-25a66342
-title: service-worker.ts
+title: Remote 按需缓存与实时控制请求
 status: LOCKED
 origin: observed
 migration_state: CONFIRMED
@@ -635,3 +635,10 @@ Remote PWA version changes invalidate only versioned application caches. They ne
 `src/lib/teammate/layoutEvent.test.ts` → `docs/archive/CHG-070/frontend-runtime-events/layoutEvent.test.ts`
 
 `src/lib/terminal/ptyRuntimeSnapshot.test.ts` → `docs/archive/CHG-090/source/src/lib/terminal/ptyRuntimeSnapshot.test.ts`
+
+
+## Remote 缓存与启动带宽
+
+Service Worker 安装只预缓存既定最小壳层。激活不得主动拉取其余懒加载 JS、编辑器及字体资源；它们在实际使用时按不可变资源规则缓存，故未访问功能不会争抢信令、鉴权、终端启动和首屏带宽。API、设备鉴权、控制端点与发布指纹必须绕过 Service Worker 缓存，直接请求网络；离线失败不能回吐陈旧权限或连接状态。既有应用壳离线回退、版本化静态缓存和控制端身份保留继续有效。
+
+验收：激活时不发起壳层之外的缓存下载；带查询参数的 API 与发布指纹请求不进入 respondWith/cache 路径；首次实际读取不可变资源后仍缓存并可离线命中。以 service-worker.test.ts 的生命周期事件与 fetch 行为验证，不以生成文件存在代替验收。
