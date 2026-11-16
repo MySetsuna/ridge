@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "5b5fcc80-002f-4161-861d-b23961c804c3",
+  "at": "2026-11-16T14:01:03.236Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-129",
+  "data": {
+    "changeId": "CHG-129",
+    "specHash": "7c940267bd2be2d891d2dcb4f3d97e91048e238ee8c80a2d8c75aead7eeaed8c",
+    "approvedAt": "2026-11-16T14:01:03.232Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "依用户全部授权，同意整理重复验收映射：全量 UI 六次归一、接入权限两次归一、派发权限三次归一。每条原完整命令及全部断言保留，以显式 dependsOn 保证影响传播，其他命令次数不变；不得缓存通过记录或修改验证器时限。",
+    "attributionVerified": false
+  }
+}

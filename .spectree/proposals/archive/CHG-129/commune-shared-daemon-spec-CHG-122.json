@@ -1,0 +1,24 @@
+{
+  "changeId": "CHG-122",
+  "nodes": [
+    {
+      "id": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "level": "L4",
+      "title": "共享 daemon 中的终端会话归属",
+      "parent": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+      "codeTargets": [
+        "packages/ridge-kernel/src/agent_discovery.rs",
+        "packages/ridge-kernel/src/commune.rs",
+        "packages/ridge-core/src/process_identity.rs",
+        "src/lib/teammate/CommuneConnectionDialog.svelte"
+      ],
+      "testTargets": [
+        "packages/ridge-kernel/tests/commune_registration.rs",
+        "scripts/commune-permission-ui-acceptance.mjs"
+      ],
+      "body": "# 共享 daemon 中的终端会话归属\n\n## 范围\n\n本契约只规范多客户端共用一个 daemon 时，Ridge 如何把终端分屏与既有协议会话关联。沿用现行的独立终端、原生会话、agentId、编组、历史和权限流程。先完成 CHG-103 的通用接入与独立门禁，再实施此契约。\n\n## 核验与接入\n\n- Runtime 需分别核验原终端客户端的进程启动实例、所连接的 daemon 实例，以及该客户端当前会话的准确标识。会话归属须来自 Runtime 已持有的该客户端协议通道，或来自可信运行方提供且可复核的客户端与会话绑定。只读预览不创建、切换或接管会话，也不向模型派发。\n- 允许通过协作启动复用现有桥接器。桥接器仅在用户显式选择时启动，观察原客户端与 daemon 之间的真实会话创建、恢复和切换。运行方提供可信绑定时，已有终端可直接接入，无需填写连接 JSON。Windows 命名管道与 Unix socket 等传输应在所用连接上核验实际对端。原生独立终端继续按原方式启动。\n- PID、同目录、会话列表、历史文件、终端输出、协议能加载或能派发，均不能单独授权。Grok 状态栏可提示当前会话与切换，但其输出或可写回调文件单独不足以证明 daemon 所确认的归属。运行方不提供可验证绑定时，成员保持可编组，并提示“无法确认原终端的会话归属”；不假定其历史可读、任务可派发或审批可处理。\n- Runtime 通过既有候选引用向本机客户端提供短期可验证的接入选择。引用绑定 Runtime 和分屏代际、客户端和 daemon 启动实例、当前会话及经授权的能力。提交时及历史接入、派发或审批前，在实际连接上核验仍是同一绑定。超时、进程退出或复用 PID、端点更换、会话切换和缺少能力时，停止受影响的操作并解释原因。无法判断请求是否已送达时保留现有未知回执，不自动重试或改派。\n- 附加成功复用已编组成员的 agentId。绑定失效不改变分组，不中断原终端，也不覆盖原会话历史。重新接入同一会话后恢复相应能力。切到另一会话后须按现行重绑授权重新验证；旧会话回执、历史和审批仍各自归属原会话。Remote 仅取得已授权能力与脱敏结果，不返回本机归属凭据。\n\n## 验收\n\n- 用真实共享 daemon 和两个同目录客户端验证至少一条有可信绑定的接入路径，分别派发到各自既有会话，核对原终端进程、会话 ID、agentId、编组及回放来源。已有无证明的第三个客户端即使能列出、加载和派发也不可因此接入。\n- 验证普通终端子进程写入同名状态文件、过期回调、PID 复用、错误端点和双客户端交换会话标识均不能建立绑定。验证切换发生在预览与提交之间、提交与派发之间或审批等待中时，旧授权不被新会话继承。\n- 验证 daemon 重启、客户端退出、短期证据过期、端点鉴权失败及恢复。无隐式新会话、无重复派发、无跨会话历史泄露；编组不受影响。分别记录真实运行方和 fixture 覆盖。仅运行模拟或协议发现检查不得计为真实接入通过。"
+    }
+  ],
+  "remove": [],
+  "createdAt": "2026-11-10T10:59:31.588Z"
+}

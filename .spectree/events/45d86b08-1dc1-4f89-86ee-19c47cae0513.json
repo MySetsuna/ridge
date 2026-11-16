@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "45d86b08-1dc1-4f89-86ee-19c47cae0513",
+  "at": "2026-11-16T13:02:55.737Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-129",
+  "data": {
+    "changeId": "CHG-129",
+    "specHash": "e901a1f68d36cd39b567a63925e9b852b1842b2265911f7ae39884c9fc7e6d1e",
+    "approvedAt": "2026-11-16T13:02:55.730Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "按已授权的规范映射整理，将六条相同完整 UI 命令统一为依赖六个需求的共用验收单元；功能脚本、全部断言、其他命令与验证器时限保持，核对影响传播及唯一命令集合后完整执行",
+    "attributionVerified": false
+  }
+}

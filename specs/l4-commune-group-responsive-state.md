@@ -21,11 +21,6 @@ acceptance_checks:
       - run
       - src/lib/teammate/teammateGroups.test.ts
     description: 覆盖初次加载、后台读取中写入、过期读取与错误返回、写入并发拒绝、作用域切换、失败后显式重试及 legacy 迁移互斥
-  - id: group-refresh-ui
-    command:
-      - node
-      - scripts/commune-global-ui-acceptance.mjs
-    description: 生产 Commune 组件在后台读取挂起时仍可编辑与提交，读取旧回包不能回退新投影，窄屏状态可读且既有编组、派发、审批和接入回归成立
 depends_on:
   - L4-COMMUNE-ORGANIZATION-MEMBERS
 ---
@@ -45,3 +40,7 @@ Native 与 Remote 共用 HostCommuneGroups，用现有设计 token、字体与�
 
 ## 验收边界
 单测须实际控制读取和写入 Promise 顺序，覆盖旧读取成功及失败、写入并发、作用域切换和 legacy 迁移。浏览器验收挂起生产组件的背景读取，执行真实 Kernel CAS 写入，再释放旧快照核对新组保持。使用隔离 Kernel 与协议 fixture，真实外部 Agent、手机和公网证据继续独立记录。
+
+## 共用 UI 验收映射
+
+本节点原有全量浏览器验收由 L4-COMMUNE-UI-ACCEPTANCE 统一执行。该验收单元显式依赖本节点，行为变化仍须触发同一完整脚本与全部原断言；独立协议、存储、权限和其他验收命令保持原定义。

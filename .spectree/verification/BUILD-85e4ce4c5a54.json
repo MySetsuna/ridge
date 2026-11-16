@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "buildId": "BUILD-85e4ce4c5a54",
+  "changeId": "CHG-129",
+  "specHash": "d8579cf1bf9a0bde505eccf06dcb3a896760a1a856174738ff3dce66716b0dcd",
+  "workspaceHash": "711d18bcb0d4e4da5b47e3d170e9d900578db6da9a366c03792ed478920cd60f",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "FAIL",
+  "acceptanceResults": [
+    {
+      "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+      "checkId": "architecture-docs",
+      "command": [
+        "node",
+        "scripts/check-architecture-docs.mjs"
+      ],
+      "description": "检查当前导览内部链接、必需契约与入口引用，历史副本明确标识且旧导览按原文归档\r",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+      "checkId": "proposal-archive-consistency",
+      "command": [
+        "node",
+        "scripts/check-proposal-archives.mjs"
+      ],
+      "description": "核对原始旧稿指纹、主仓落地编号、近期归档和活动目录边界",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+      "checkId": "existing-spec-mappings",
+      "command": [
+        "node",
+        "scripts/check-spec-mappings.mjs"
+      ],
+      "description": "回归现有历史源码证据、映射处置与零失效目标",
+      "status": "FAIL",
+      "exitCode": 1
+    }
+  ],
+  "valid": false,
+  "verifiedAt": "2026-11-16T11:24:31.753Z",
+  "diagnostics": [
+    {
+      "code": "ACCEPTANCE_E_FAILED",
+      "severity": "ERROR",
+      "message": "existing-spec-mappings: node:internal/modules/run_main:107\r\n    triggerUncaughtException(\r\n    ^\r\n\r\nAssertionError [ERR_ASSERTION]: Missing target L2-UNIFIED-CLIENT-RUNTIME src-tauri/binaries/ridge-mcp-x86_64-pc-windows-msvc.exe\r\n    at file:///C:/code/wind/.claude/worktrees/remote-directory-commune/scripts/check-spec-mappings.mjs:65:14\r\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\r\n    at async node:internal/modules/esm/loader:639:26\r\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {\r\n  generatedMessage: false,\r\n  code: 'ERR_ASSERTION',\r\n  actual: false,\r\n  expected: true,\r\n  operator: '==',\r\n  diff: 'simple'\r\n}\r\n\r\nNode.js v25.9.0\r\n",
+      "nodeId": "L3-ARCHITECTURE-DOCUMENTATION"
+    }
+  ],
+  "eventId": "259cd851-0bf8-4f8c-8c9b-17cc3243514b"
+}

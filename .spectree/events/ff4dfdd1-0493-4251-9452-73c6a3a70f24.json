@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "ff4dfdd1-0493-4251-9452-73c6a3a70f24",
+  "at": "2026-11-16T11:40:14.173Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-129",
+  "data": {
+    "changeId": "CHG-129",
+    "specHash": "8e63f4154d0c09b97086c4c66669926e6ec33f8068d4b60808c6aabb819a6216",
+    "approvedAt": "2026-11-16T11:40:14.168Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "沿用用户已批准的独立 docs 与规范映射清理、全部授权及继续迭代；按现有治理规则归档本机观察占位并修正生成物源码映射，不改变产品行为，执行完整影响验收",
+    "attributionVerified": false
+  }
+}

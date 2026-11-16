@@ -1,0 +1,747 @@
+{
+  "version": 1,
+  "id": "bbc8f379-5710-4de6-b0bd-3f127013d99e",
+  "at": "2026-11-16T13:01:27.585Z",
+  "type": "applied",
+  "source": "local_operation",
+  "changeId": "CHG-129",
+  "data": {
+    "added": [
+      "L4-COMMUNE-UI-ACCEPTANCE"
+    ],
+    "changed": [
+      "L3-ARCHITECTURE-DOCUMENTATION",
+      "L3-SPEC-MAPPING-GOVERNANCE",
+      "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
+      "L4-COMMUNE-GROUP-USABILITY",
+      "L4-COMMUNE-MOBILE-GROUP-NAVIGATION",
+      "L4-COMMUNE-ORGANIZATION-MEMBERS",
+      "L4-COMMUNE-REMOTE-DELIVERY",
+      "L4-COMMUNE-SHARED-DAEMON-BINDING"
+    ],
+    "retiring": [
+      "L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f",
+      "L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1",
+      "L4-OBS-DOTENV-d1e2f3a4",
+      "L4-OBS-OPENCODE-PACKAGE-JSON-047992d6",
+      "L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09",
+      "L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d",
+      "L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58",
+      "L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec",
+      "L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1"
+    ],
+    "patch": {
+      "changeId": "CHG-129",
+      "nodes": [
+        {
+          "id": "L3-ARCHITECTURE-DOCUMENTATION",
+          "level": "L3",
+          "title": "架构导览、权威契约引用与历史材料边界",
+          "parent": "L2-UNIFIED-CLIENT-RUNTIME",
+          "codeTargets": [
+            "README.md",
+            "docs/architecture/README.md",
+            "docs/architecture/00-overview.md",
+            "docs/architecture/10-kernel.md",
+            "docs/architecture/20-rtp1-wire.md",
+            "docs/architecture/30-remote-lifecycle.md",
+            "docs/architecture/40-cli.md",
+            "docs/architecture/50-desktop-tauri.md",
+            "docs/architecture/60-data-flow.md",
+            "docs/architecture/70-runtime-epoch.md",
+            "docs/architecture/80-security.md",
+            "docs/architecture/90-performance.md",
+            "docs/archive/CHG-089/architecture/README.md",
+            "docs/archive/CHG-089/architecture/00-overview.md",
+            "docs/archive/CHG-089/architecture/10-kernel.md",
+            "docs/archive/CHG-089/architecture/20-rtp1-wire.md",
+            "docs/archive/CHG-089/architecture/30-remote-lifecycle.md",
+            "docs/archive/CHG-089/architecture/40-cli.md",
+            "docs/archive/CHG-089/architecture/50-desktop-tauri.md",
+            "docs/archive/CHG-089/architecture/60-data-flow.md",
+            "docs/archive/CHG-089/architecture/70-runtime-epoch.md",
+            "docs/archive/CHG-089/architecture/80-security.md",
+            "docs/archive/CHG-089/architecture/90-performance.md",
+            "docs/architecture/RIDGE-RUNTIME-FOUNDATION-FINAL.md",
+            "docs/architecture/specs/L2-PROTO-001.md",
+            "docs/architecture/specs/L2-REMOTE-001.md",
+            "docs/architecture/specs/L2-TERM-001.md",
+            "docs/architecture/specs/L2-PERF-001.md",
+            "docs/architecture/notes/README.md",
+            ".gitattributes",
+            "docs/architecture/proposals.md",
+            "scripts/check-proposal-archives.mjs"
+          ],
+          "testTargets": [
+            "scripts/check-architecture-docs.mjs",
+            "scripts/check-proposal-archives.mjs"
+          ],
+          "body": "# 架构文档投影\r\n\r\n## 范围与依据\r\n\r\n按用户要求独立整理 docs，承接 CHG-088 的现行 CLI 创建契约，并引用统一 Runtime、Remote 终端、Commune 的已批准规范。根 specs/ 与 changes/ 经 SpecTree 管理，docs 解释源码现状、流程和历史，不自行定义协议。\r\n\r\n## 当前导览\r\n\r\n根 README 与架构目录说明独立 Kernel 的业务及 PTY 所有权、最小 Tauri OS 展示层、CLI/TUI、本地授权 WebSocket、LAN 与 Cloud 适配、共同业务分发、权威终端语义生产和展示消费。逐项链接真实源码、测试和根目录规范，区分当前实现、兼容面与历史设计。CLI 四入口、独立终端、鉴权失败、未知提交结果与同身份重试均引用已批准契约。Commune 说明 Host 全局归属及持久化/临时状态边界。\r\n\r\n## 历史材料\r\n\r\n改写前的十一篇架构导览原文保存在 docs/archive/CHG-089/architecture/。Foundation 报告、历史验收和 docs/architecture/specs/ 副本明确标识历史身份并指向现行导览或根规范。保留历史图片作为历史证据，当前导览不再用其表达新拓扑。\r\n\r\n## 验收\r\n\r\n当前导览无断裂的本地 Markdown 链接，各章节有具体实现或测试依据。当前入口不得将 docs 副本宣称为权威，不得把旧 RTP1 adapter、Tauri Channel 或旧桌面模块写作现役业务主链。归档十一篇正文与提案前 Git 版本逐字节一致。文档检查器验证链接、权威引用、历史标识和归档完整性，人工核对流程与源码，执行 npm test、npm run lint、npm run typecheck 和 SpecTree verify/complete。协议字段、产品行为与规范映射清理由各自变更控制。\n\n## 近期流程同步\n\n导览随 CHG-124、CHG-125、CHG-126 的已实现行为更新：区分普通独立终端、显式协作启动与已有会话接入；说明通用 ACP 命令、真实会话及进程所有权、鉴权失败与原意重试。手机编组入口、当前分屏目录与 Cloud 订阅连续性分别引用对应 L4 权威规范及实际实现。共享服务由 L4-COMMUNE-SHARED-DAEMON-BINDING 规范；导览区分显式共享服务客户端与仍无可信绑定的普通原生终端，不能冒称接管。测试、真实 CLI 初始化、完整对话、平台与公网证据须各自区分，不硬编码通过数量。历史文档及 Git 归档保持原文。\n\n## 本轮提案归档与溯源\n\n用户要求 docs 与规范整理独立变更。本轮补齐 CHG-124 至 CHG-128 已应用提案归档，按原文保留六份同号冲突或未应用旧稿，记录工作树来源与主仓落地编号，不用旧稿覆盖权威规范。原始旧稿字节指纹保持；近期文本归档按 Git 换行规范核对。归档清单是下列 JSON 的唯一事实源，docs 仅提供可读索引。源文件移出活动候选目录且保留历史，源工作树不因此获得新的批准或实施状态。脚本核对指纹、编号、已完成变更、对应节点及可读索引；不改变任何产品流程。\n\n```json\n{\n  \"version\": 1,\n  \"records\": [\n    {\n      \"source\": \"main/.spectree/proposals/CHG-071.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-129/main-CHG-071.json\",\n      \"sha256\": \"daf0be4a28d1d39553d9cfae8a6f1b06c4679fbe7000ab3c75874219f7be5491\",\n      \"hashMode\": \"bytes\",\n      \"change\": \"CHG-071\",\n      \"note\": \"已完成变更的未应用旧稿；与同号既有归档内容不同，保留原文，当前实现以后续规范为准\"\n    },\n    {\n      \"source\": \"remote-detached-cwd/.spectree/proposals/CHG-119.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-129/remote-detached-cwd-CHG-119.json\",\n      \"sha256\": \"c03d9b843c8820773ecaee656a3b700daf249a168cf6438bf28a920cf324ec7f\",\n      \"hashMode\": \"bytes\",\n      \"change\": \"CHG-124\",\n      \"note\": \"当前分屏 CWD 已由主仓 CHG-124 落地\"\n    },\n    {\n      \"source\": \"commune-shared-daemon-spec/.spectree/proposals/CHG-122.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-129/commune-shared-daemon-spec-CHG-122.json\",\n      \"sha256\": \"2af63e25e6bf809e542782e7831fca1ca45bdfc67a86908417cdb40b5e055f0a\",\n      \"hashMode\": \"bytes\",\n      \"change\": \"CHG-128\",\n      \"note\": \"共享 daemon 可信绑定已按主仓新编号 CHG-128 落地\"\n    },\n    {\n      \"source\": \"commune-shared-daemon-spec/.spectree/proposals/CHG-123.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-129/commune-shared-daemon-spec-CHG-123.json\",\n      \"sha256\": \"f63bbd9d740546f7d0f25dd16517433495604eeaa54700de8e962afebb1fcd15\",\n      \"hashMode\": \"bytes\",\n      \"change\": \"CHG-124\",\n      \"note\": \"Cloud 订阅连续性已整合主仓 CHG-124\"\n    },\n    {\n      \"source\": \"commune-shared-daemon-spec/.spectree/proposals/CHG-124.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-129/commune-shared-daemon-spec-CHG-124.json\",\n      \"sha256\": \"8da765dbbd9c0fb8f2526adaef9bd4dc2422ce940375d9330cdf60ae0cd4cf6b\",\n      \"hashMode\": \"bytes\",\n      \"change\": \"CHG-126\",\n      \"note\": \"Windows CLI CWD 原生目录验收已由 CHG-126 落地\"\n    },\n    {\n      \"source\": \"commune-shared-daemon-spec/.spectree/proposals/CHG-125.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-129/commune-shared-daemon-spec-CHG-125.json\",\n      \"sha256\": \"02acb09ca5444b737d803075b6be9bdd45a2a5c3a679829751b9c97db7e62e72\",\n      \"hashMode\": \"bytes\",\n      \"change\": \"CHG-124\",\n      \"note\": \"手机编组导航已整合主仓 CHG-124\"\n    },\n    {\n      \"source\": \"applied-main/CHG-124.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-124.json\",\n      \"sha256\": \"6669dac91f021808487c46ba9376fec22d72fe11a10ee0e4325837fd63e77e26\",\n      \"hashMode\": \"lf\",\n      \"change\": \"CHG-124\",\n      \"note\": \"补齐已应用提案溯源；文本指纹按 Git 换行规范化核对\"\n    },\n    {\n      \"source\": \"applied-main/CHG-125.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-125.json\",\n      \"sha256\": \"cf06b267a47905d1a8210ad179d16d75580586cba17df1b1f3bc0e2ad4050f5b\",\n      \"hashMode\": \"lf\",\n      \"change\": \"CHG-125\",\n      \"note\": \"补齐已应用提案溯源；文本指纹按 Git 换行规范化核对\"\n    },\n    {\n      \"source\": \"applied-main/CHG-126.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-126.json\",\n      \"sha256\": \"72c4afb4eab4f144c9570cacde013e0281e4123f2164f03c84a2028dcb900958\",\n      \"hashMode\": \"lf\",\n      \"change\": \"CHG-126\",\n      \"note\": \"补齐已应用提案溯源；文本指纹按 Git 换行规范化核对\"\n    },\n    {\n      \"source\": \"applied-main/CHG-127.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-127.json\",\n      \"sha256\": \"7530c263997ca3334886dbec4a16a0c130165acdee702ff12fd1e0ac26f134ef\",\n      \"hashMode\": \"lf\",\n      \"change\": \"CHG-127\",\n      \"note\": \"补齐已应用提案溯源；文本指纹按 Git 换行规范化核对\"\n    },\n    {\n      \"source\": \"applied-main/CHG-128.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-128.json\",\n      \"sha256\": \"86b474ed9764d7eaf26d1329c2f3e7f1af9855ebe335cafc265eccde4e378d8f\",\n      \"hashMode\": \"lf\",\n      \"change\": \"CHG-128\",\n      \"note\": \"补齐已应用提案溯源；文本指纹按 Git 换行规范化核对\"\n    }\n  ]\n}\n```\n",
+          "acceptanceChecks": [
+            {
+              "id": "architecture-docs",
+              "command": [
+                "node",
+                "scripts/check-architecture-docs.mjs"
+              ],
+              "description": "检查当前导览内部链接、必需契约与入口引用，历史副本明确标识且旧导览按原文归档\r"
+            },
+            {
+              "id": "proposal-archive-consistency",
+              "command": [
+                "node",
+                "scripts/check-proposal-archives.mjs"
+              ],
+              "description": "核对原始旧稿指纹、主仓落地编号、近期归档和活动目录边界"
+            },
+            {
+              "id": "existing-spec-mappings",
+              "command": [
+                "node",
+                "scripts/check-spec-mappings.mjs"
+              ],
+              "description": "回归现有历史源码证据、映射处置与零失效目标"
+            }
+          ]
+        },
+        {
+          "id": "L3-OBS-OPENCODE-5e2dd251",
+          "level": "L3",
+          "title": ".opencode module",
+          "parent": "L2-OBS-OPENCODE-5e2dd251",
+          "codeTargets": [
+            ".opencode/opencode.json"
+          ],
+          "testTargets": [],
+          "body": "# .opencode module\n\nObserved from the existing project. Confirm intended behavior, targets, and interfaces before baseline.\n\n## CHG-129 映射处置\n\n保留 Git 已跟踪的 .opencode/opencode.json 配置源及其活子节点；移除本机 package.json 映射。原节点完整内容按 Git blob 保存在 `docs/archive/CHG-129/observations/L3-OBS-OPENCODE-5e2dd251.md`。Tauri 权限及 MCP 打包仍由现行源码与正式 Runtime 契约承接。未迁入本机环境文件、凭据或工具私有配置。\n"
+        },
+        {
+          "id": "L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f",
+          "level": "L3",
+          "title": "src-tauri/.claude module",
+          "parent": "L2-OBS-SRC-TAURI-6056d0ef",
+          "codeTargets": [
+            "docs/archive/CHG-129/observations/L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f.md"
+          ],
+          "testTargets": [],
+          "body": "# src-tauri/.claude module\n\nObserved from the existing project. Confirm intended behavior, targets, and interfaces before baseline.\n\n## CHG-129 映射处置\n\n本节点仅为本机环境、工具配置或构建缓存的代码观察占位，原文未确认产品行为，已归档。原节点完整内容按 Git blob 保存在 `docs/archive/CHG-129/observations/L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f.md`。Tauri 权限及 MCP 打包仍由现行源码与正式 Runtime 契约承接。未迁入本机环境文件、凭据或工具私有配置。\n"
+        },
+        {
+          "id": "L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1",
+          "level": "L3",
+          "title": "src-tauri/gen/schemas module",
+          "parent": "L2-OBS-SRC-TAURI-6056d0ef",
+          "codeTargets": [
+            "docs/archive/CHG-129/observations/L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1.md"
+          ],
+          "testTargets": [],
+          "body": "# src-tauri/gen/schemas module\n\nObserved from the existing project. Confirm intended behavior, targets, and interfaces before baseline.\n\n## CHG-129 映射处置\n\n本节点仅为本机环境、工具配置或构建缓存的代码观察占位，原文未确认产品行为，已归档。原节点完整内容按 Git blob 保存在 `docs/archive/CHG-129/observations/L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1.md`。Tauri 权限及 MCP 打包仍由现行源码与正式 Runtime 契约承接。未迁入本机环境文件、凭据或工具私有配置。\n"
+        },
+        {
+          "id": "L4-OBS-DOTENV-d1e2f3a4",
+          "level": "L4",
+          "title": ".env",
+          "parent": "L3-OBS-VITE-CONFIG-JS-58e6f63d",
+          "codeTargets": [
+            "docs/archive/CHG-129/observations/L4-OBS-DOTENV-d1e2f3a4.md"
+          ],
+          "testTargets": [],
+          "body": "Local env claim.\n\n## CHG-090 映射处置\n\n原父节点 L3-OBS-STATIC-MOBILE-ASSETS-5cc42e7a 属旧生成资产目录，已退役。根环境配置的观察记录归入 Vite 构建配置模块，保留原 code_targets。此次仅修正层级，不读取、复制或提交本地环境文件内容。\n\n## CHG-129 映射处置\n\n本节点仅为本机环境、工具配置或构建缓存的代码观察占位，原文未确认产品行为，已归档。原节点完整内容按 Git blob 保存在 `docs/archive/CHG-129/observations/L4-OBS-DOTENV-d1e2f3a4.md`。Tauri 权限及 MCP 打包仍由现行源码与正式 Runtime 契约承接。未迁入本机环境文件、凭据或工具私有配置。\n"
+        },
+        {
+          "id": "L4-OBS-OPENCODE-PACKAGE-JSON-047992d6",
+          "level": "L4",
+          "title": "package.json",
+          "parent": "L3-OBS-OPENCODE-5e2dd251",
+          "codeTargets": [
+            "docs/archive/CHG-129/observations/L4-OBS-OPENCODE-PACKAGE-JSON-047992d6.md"
+          ],
+          "testTargets": [],
+          "body": "# package.json\n\nObserved from the existing project. Confirm intended behavior, targets, and interfaces before baseline.\n\n## CHG-129 映射处置\n\n本节点仅为本机环境、工具配置或构建缓存的代码观察占位，原文未确认产品行为，已归档。原节点完整内容按 Git blob 保存在 `docs/archive/CHG-129/observations/L4-OBS-OPENCODE-PACKAGE-JSON-047992d6.md`。Tauri 权限及 MCP 打包仍由现行源码与正式 Runtime 契约承接。未迁入本机环境文件、凭据或工具私有配置。\n"
+        },
+        {
+          "id": "L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09",
+          "level": "L4",
+          "title": "settings.local.json",
+          "parent": "L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f",
+          "codeTargets": [
+            "docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09.md"
+          ],
+          "testTargets": [],
+          "body": "# settings.local.json\n\nObserved from the existing project. Confirm intended behavior, targets, and interfaces before baseline.\n\n## CHG-129 映射处置\n\n本节点仅为本机环境、工具配置或构建缓存的代码观察占位，原文未确认产品行为，已归档。原节点完整内容按 Git blob 保存在 `docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09.md`。Tauri 权限及 MCP 打包仍由现行源码与正式 Runtime 契约承接。未迁入本机环境文件、凭据或工具私有配置。\n"
+        },
+        {
+          "id": "L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d",
+          "level": "L4",
+          "title": "acl-manifests.json",
+          "parent": "L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1",
+          "codeTargets": [
+            "docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d.md"
+          ],
+          "testTargets": [],
+          "body": "# acl-manifests.json\n\nObserved from the existing project. Confirm intended behavior, targets, and interfaces before baseline.\n\n## CHG-129 映射处置\n\n本节点仅为本机环境、工具配置或构建缓存的代码观察占位，原文未确认产品行为，已归档。原节点完整内容按 Git blob 保存在 `docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d.md`。Tauri 权限及 MCP 打包仍由现行源码与正式 Runtime 契约承接。未迁入本机环境文件、凭据或工具私有配置。\n"
+        },
+        {
+          "id": "L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58",
+          "level": "L4",
+          "title": "capabilities.json",
+          "parent": "L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1",
+          "codeTargets": [
+            "docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58.md"
+          ],
+          "testTargets": [],
+          "body": "# capabilities.json\n\nObserved from the existing project. Confirm intended behavior, targets, and interfaces before baseline.\n\n## CHG-129 映射处置\n\n本节点仅为本机环境、工具配置或构建缓存的代码观察占位，原文未确认产品行为，已归档。原节点完整内容按 Git blob 保存在 `docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58.md`。Tauri 权限及 MCP 打包仍由现行源码与正式 Runtime 契约承接。未迁入本机环境文件、凭据或工具私有配置。\n"
+        },
+        {
+          "id": "L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec",
+          "level": "L4",
+          "title": "desktop-schema.json",
+          "parent": "L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1",
+          "codeTargets": [
+            "docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec.md"
+          ],
+          "testTargets": [],
+          "body": "# desktop-schema.json\n\nObserved from the existing project. Confirm intended behavior, targets, and interfaces before baseline.\n\n## CHG-129 映射处置\n\n本节点仅为本机环境、工具配置或构建缓存的代码观察占位，原文未确认产品行为，已归档。原节点完整内容按 Git blob 保存在 `docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec.md`。Tauri 权限及 MCP 打包仍由现行源码与正式 Runtime 契约承接。未迁入本机环境文件、凭据或工具私有配置。\n"
+        },
+        {
+          "id": "L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1",
+          "level": "L4",
+          "title": "windows-schema.json",
+          "parent": "L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1",
+          "codeTargets": [
+            "docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1.md"
+          ],
+          "testTargets": [],
+          "body": "# windows-schema.json\n\nObserved from the existing project. Confirm intended behavior, targets, and interfaces before baseline.\n\n## CHG-129 映射处置\n\n本节点仅为本机环境、工具配置或构建缓存的代码观察占位，原文未确认产品行为，已归档。原节点完整内容按 Git blob 保存在 `docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1.md`。Tauri 权限及 MCP 打包仍由现行源码与正式 Runtime 契约承接。未迁入本机环境文件、凭据或工具私有配置。\n"
+        },
+        {
+          "id": "L3-SPEC-MAPPING-GOVERNANCE",
+          "level": "L3",
+          "title": "规范映射处置及可校验历史证据",
+          "parent": "L2-UNIFIED-CLIENT-RUNTIME",
+          "codeTargets": [
+            "docs/archive/CHG-090/source/src-tauri/src/commands/terminal.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/remote_host_impl.rs",
+            "docs/archive/CHG-090/source/packages/ridge-cli/src/daemon_ctl.rs",
+            "docs/archive/CHG-090/source/packages/ridge-cli/src/session.rs",
+            "docs/archive/CHG-090/source/packages/ridge-cli/src/tui/lan_host_impl.rs",
+            "docs/archive/CHG-090/source/packages/ridge-cli/src/tui/lan_host.rs",
+            "docs/archive/CHG-090/source/packages/ridge-cli/src/tui/scrollback.rs",
+            "docs/archive/CHG-090/source/packages/ridge-cli/src/tui/workspace.rs",
+            "docs/archive/CHG-090/source/src/lib/terminal/ptyRuntimeSnapshot.ts",
+            "docs/archive/CHG-090/source/src-tauri/src/remote_bridge.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/commands/cloud_pane.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/commands/fs_watch.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/commands/pane.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/commands/process.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/commands/remote.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/commands/settings.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/commands/teammate.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/commands/workspace.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/db/mod.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/db/projects.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/hosts/mod.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/hosts/outbound.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/lsp/mod.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/teammate/agent_catalog.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/teammate/autodiscover.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/teammate/context_files.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/teammate/hitl.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/teammate/mcp.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/teammate/memory.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/teammate/mod.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/teammate/orch_health.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/teammate/rollback.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/teammate/server.rs",
+            "docs/archive/CHG-090/source/src-tauri/src/teammate/suspend.rs",
+            "docs/archive/CHG-090/source/packages/ridge-cli/src/session_control_tests.rs",
+            "docs/archive/CHG-090/source/static/mobile/assets/index-BPfF1vzx.css",
+            "docs/archive/CHG-090/source/static/mobile/assets/index-Cm2sAwTC.js",
+            "docs/archive/CHG-090/source/src/lib/terminal/ptyRuntimeSnapshot.test.ts",
+            "docs/archive/CHG-090/.gitattributes",
+            "docs/archive/CHG-129/observations/L3-OBS-OPENCODE-5e2dd251.md",
+            "docs/archive/CHG-129/observations/L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f.md",
+            "docs/archive/CHG-129/observations/L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1.md",
+            "docs/archive/CHG-129/observations/L4-OBS-DOTENV-d1e2f3a4.md",
+            "docs/archive/CHG-129/observations/L4-OBS-OPENCODE-PACKAGE-JSON-047992d6.md",
+            "docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09.md",
+            "docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d.md",
+            "docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58.md",
+            "docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec.md",
+            "docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1.md"
+          ],
+          "testTargets": [
+            "scripts/check-spec-mappings.mjs"
+          ],
+          "body": "# 规范映射治理与历史证据\n\n## 范围\n\nCHG-090 治理初始审计 180 条失效引用，涉及 107 个节点、91 个路径。四个现役需求节点重绑 Kernel 和对应测试，旧 M5.3 三子节点及父节点依 CHG-070 归档。迁移观察节点保留现存目标，完全失效者退役；两个既有归档资产节点修正历史证据路径，空的旧资产父目录一并归档。三个活测试从已退役父目录迁至真实前端模块。\n\n## 验证扩展\n\nverify 另发现审计未覆盖的失效测试引用。全图核对共 190 条、74 个观察节点、7 个测试路径。旧测试原文保留，失效测试观察节点归档，活节点清除过时测试引用。九组接口快照逐项核对既有变更与真实导出，由确定性 interface 命令更新，本轮不更改产品行为。\n\n## 证据及验收\n\n每条源路径对应最后存在的 Git commit 与 blob。仅在现有归档 blob 完全一致时复用，否则补存原 blob，历史 code_targets 不表达现役实现。处置节点保留原需求及原始映射。确定性检查调用实际 stc graph/audit，核对全部历史 blob、节点生命周期、现役映射无归档证据路径和零失效目标。测试名称不代表已执行的跨平台/公网验收。\n\n其余 MISSING_TEST、EMPTY_AREA、SHARED_TEST_TARGET、UNDECLARED_DEPENDENCY、UNCOVERED_FILE 告警保留分类计数，属于独立追踪范围。不得用通配映射补齐率或删除要求掩盖问题。执行 npm test、lint、typecheck、SpecTree verify/complete。\n\n## 处置证据\n\n```json\n{\n  \"sources\": [\n    {\n      \"old\": \"src-tauri/src/commands/terminal.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"15029d6855a7c6d1aba44e8a33a5d3d82961a7bd\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/commands/terminal.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/job_object.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"cda64112ca16d80bddcf567545390e931db606b3\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/teammate/job_object.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/remote_host_impl.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"4494aeb7dec320fa924d5ddcb45ff6e29705efb1\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/remote_host_impl.rs\"\n    },\n    {\n      \"old\": \"packages/ridge-cli/src/daemon_ctl.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"32e24ff695afe625da0c51c1bc6d6f7b3fba5f3f\",\n      \"archive\": \"docs/archive/CHG-090/source/packages/ridge-cli/src/daemon_ctl.rs\"\n    },\n    {\n      \"old\": \"packages/ridge-cli/src/session.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"c59ff2a3b42c42d4b999f845475ed8b933776587\",\n      \"archive\": \"docs/archive/CHG-090/source/packages/ridge-cli/src/session.rs\"\n    },\n    {\n      \"old\": \"packages/ridge-cli/src/tui/lan_host_impl.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"4495c07846c390e1e895662e8bb1bee6f562877b\",\n      \"archive\": \"docs/archive/CHG-090/source/packages/ridge-cli/src/tui/lan_host_impl.rs\"\n    },\n    {\n      \"old\": \"packages/ridge-cli/src/tui/lan_host.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"21bf57c48a8f624f69b495f8ff16ccdcbe881946\",\n      \"archive\": \"docs/archive/CHG-090/source/packages/ridge-cli/src/tui/lan_host.rs\"\n    },\n    {\n      \"old\": \"packages/ridge-cli/src/tui/scrollback.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"ca1aa593e112fd612ba5300ccdf54c5a0766b205\",\n      \"archive\": \"docs/archive/CHG-090/source/packages/ridge-cli/src/tui/scrollback.rs\"\n    },\n    {\n      \"old\": \"packages/ridge-cli/src/tui/workspace.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"155dd48292448423a553bb8f9da114c6cc118e51\",\n      \"archive\": \"docs/archive/CHG-090/source/packages/ridge-cli/src/tui/workspace.rs\"\n    },\n    {\n      \"old\": \"src/lib/remote/cloud/cloudHostTopologyLink.ts\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"fe7afc793d3a41e2200c160861ed33f9e0306a0a\",\n      \"archive\": \"docs/archive/CHG-070/frontend-cloud-topology/cloudHostTopologyLink.ts\"\n    },\n    {\n      \"old\": \"src/lib/stores/hostReconnect.ts\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"5bfb84c135e5e9671656ee061db115f06eb7c891\",\n      \"archive\": \"docs/archive/CHG-070/hostReconnect.ts\"\n    },\n    {\n      \"old\": \"src/lib/teammate/layoutChange.golden.json\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"c11ef79581b0e8fb05b49e52dbe05fed3b40395e\",\n      \"archive\": \"docs/archive/CHG-070/frontend-runtime-events/layoutChange.golden.json\"\n    },\n    {\n      \"old\": \"src/lib/teammate/layoutEvent.ts\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"872c965fe4b34a531eb81b364b36c51608fbdc15\",\n      \"archive\": \"docs/archive/CHG-070/frontend-runtime-events/layoutEvent.ts\"\n    },\n    {\n      \"old\": \"src/lib/terminal/ptyRuntimeSnapshot.ts\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"10cc67ef6863f76e130c5d8399ee28b7c95eedf1\",\n      \"archive\": \"docs/archive/CHG-090/source/src/lib/terminal/ptyRuntimeSnapshot.ts\"\n    },\n    {\n      \"old\": \"src-tauri/src/remote_bridge.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"e056410a768ccc8cd0313171fdf1da3697a4c60e\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/remote_bridge.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/types.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"76eae6a7f0de58929ae5a488485acc85c8c6c2b8\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/types.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/commands/cloud_http.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"30ce95dbef08dcc0ad1c266718866e884d7b24a9\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/commands/cloud_http.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/commands/cloud_pane.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"b42df5590aa4eb8a55ccf6328b05afd556a96ca5\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/commands/cloud_pane.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/commands/fs_watch.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"05bcf133ccd1a69d2b53bb6b929f836469909e9e\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/commands/fs_watch.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/commands/git.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"3a31c2889f45436f8ab251a3f21f4f00cb588c16\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/commands/git.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/commands/pane.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"314343138789235b4d229360e6cc922d96b9c853\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/commands/pane.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/commands/process.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"88179974352aa243b3d8c3395edf80d9849c8b48\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/commands/process.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/commands/remote.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"523971b401e85e70bc76866e31740e21e6d07b3e\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/commands/remote.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/commands/settings.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"5ecd5352926bdbf1da3e1336519dae6e3024a442\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/commands/settings.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/commands/teammate.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"9d11e0a2830d58ac86dc2dc98c12b6eaa0471b98\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/commands/teammate.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/commands/terminal_font.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"1388ab7cc3282f2ecfac2e4dbafd5b02b4e5aa2e\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/commands/terminal_font.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/commands/watch.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"0d505201fba8399eb95a2d68958dd637e5e5af1f\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/commands/watch.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/commands/workspace.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"8a5204390d3311867474b6654f8ecc54317fe88e\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/commands/workspace.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/db/mod.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"e539c47b0a2ca72f05f839d880def8c2f8d3ba0e\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/db/mod.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/db/projects.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"cd248f3c8168275643700bc881f1ff880878be0e\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/db/projects.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/engine/kernel_pty.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"2443eb631826581fced757b0d2935a32dcbd0049\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/engine/kernel_pty.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/engine/mod.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"0ec125dadf50b0403fd16afd5a2bc8e814e871a8\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/engine/mod.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/engine/pane_tree.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"34749886adc878c8d37bff7d2ecca393bc7025e9\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/engine/pane_tree.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/engine/parser.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"6017aa2b200e47df2d6b6e1272be4a9b7d42b9fe\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/engine/parser.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/engine/pty.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"b17874492947c3ba83ce50bd41e493c499ec5337\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/engine/pty.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/fs/mod.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"68167ac6f934a6b2a6ea99a245ecfe10218fb414\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/fs/mod.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/fs/search.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"a48b754c9f589b1f1a5e2ccc2c052e481ddeffa3\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/fs/search.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/fs/tree.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"ebd1821d5d0948c3dc6b79e854497bcc53306fa7\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/fs/tree.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/hosts/desktop_surface.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"699331ebf90b032a1a7216f774f7e6288bd2b403\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/hosts/desktop_surface.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/hosts/foreign_history.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"3280024915321ad7365a3b255120ac7c76a619bb\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/hosts/foreign_history.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/hosts/history_commands.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"cd7f02102c8ca711a272b9f41471f8b1463c3f5a\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/hosts/history_commands.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/hosts/lan_transport.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"d0843215fcdbd1a01b1dd6a3d3c8eb9b4b1845e3\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/hosts/lan_transport.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/hosts/live_backpressure.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"348a2655bc867c2c5d956a0b79778ab9a6658b85\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/hosts/live_backpressure.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/hosts/mod.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"d6d1efabf77dbc2230bf96f8da10681b9315bb5b\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/hosts/mod.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/hosts/outbound.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"5aed94526ad79ee3f1f41a5971c0b0827f5e5a0a\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/hosts/outbound.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/hosts/reconnect_supervisor.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"300ab5e85063033f08ca5fb53e166fd9b4c1b7f0\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/hosts/reconnect_supervisor.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/lsp/mod.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"317d06e55475b1e95771bc3094cdc6449c0d63b4\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/lsp/mod.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/agent_catalog.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"78e60086f6e83ef37503315b76995e51d5ac24fc\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/teammate/agent_catalog.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/autodiscover.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"ef9e997cb967d87e9ccd5db103cd116dec869c71\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/teammate/autodiscover.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/circuit.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"91f5c7e4b43148582e573f54103313493874bbc1\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/teammate/circuit.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/context_files.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"6e0fdfc8c558213df196063dba7641db372ee98b\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/teammate/context_files.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/discover.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"529ccc31c0712b560ecf2e5794a9bd576de21b9c\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/teammate/discover.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/endpoint.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"ba8addd8cde2fd9ee324a8210bb0ccb8db4d8295\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/teammate/endpoint.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/hitl_audit.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"dd1086ac91f72a724fada1160aa72dc02e7d1aff\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/teammate/hitl_audit.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/hitl.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"003960dc27977fa373628604084e46b884770e6e\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/teammate/hitl.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/layout_event.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"3409ab811452a30bb892270c4c99f68ecc9d6ccc\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/teammate/layout_event.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/locks.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"02051cc2291e4c401129e61eb722fdc483ce678b\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/teammate/locks.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/mcp.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"b7e6f7585bff4237ae61b91b70375d4fa2b0f003\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/teammate/mcp.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/memory.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"3e36cf4a11d5c2b799d26399f7952e3b0e190059\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/teammate/memory.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/mod.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"a5e9556d265ebec74c108c859626822ac678cae4\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/teammate/mod.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/native.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"347d3055204fba3270ac23c22ce6ccf72a0ec4f4\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/teammate/native.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/orch_health.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"a6c96d2475a67852af9f5880c85a808fecb024f9\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/teammate/orch_health.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/os_freeze.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"a3cc51e0f7e62788bd11af9309c58a1ffc3e6eff\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/teammate/os_freeze.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/profiles.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"0d1d5001768a71db070c32ac268c92f0d312adea\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/teammate/profiles.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/rollback.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"8854e53e3db0e2933859f4d52ec571ae9b456a7e\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/teammate/rollback.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/server.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"b4aa90274ee41898af01bead435b5b9abc30c8c2\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/teammate/server.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/teammate/suspend.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"b03f2dcfaa23d20e6da07abab9094b2a9ae26b7b\",\n      \"archive\": \"docs/archive/CHG-090/source/src-tauri/src/teammate/suspend.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/utils/error.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"9708f489e2353011292fbc05bd194fbdd60bab26\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/utils/error.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/utils/pane_id.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"8d3be1b60dc3cb83fb199315b1eeac2aa1f5c872\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/utils/pane_id.rs\"\n    },\n    {\n      \"old\": \"src-tauri/src/utils/pty_log.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"88ddd1580809ac76ee88a0bfe264fa951f749aed\",\n      \"archive\": \"docs/archive/CHG-070/desktop-retired-tree/utils/pty_log.rs\"\n    },\n    {\n      \"old\": \"packages/ridge-acp/tests/m53_acceptance.rs\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"de84b876a7b035e9ccc2ce8124fd28ce452fd44a\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/packages/ridge-acp/tests/m53_acceptance.rs\"\n    },\n    {\n      \"old\": \"src/lib/agent-chat/productAcceptance.test.ts\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"ad9c2fbd83978c5c1e095c9a66601fe769889b44\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/src/lib/agent-chat/productAcceptance.test.ts\"\n    },\n    {\n      \"old\": \"src/lib/agent-chat/AgentChatPanel.svelte\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"cc38995c604e3aa877318447adaeb6397401356c\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/src/lib/agent-chat/AgentChatPanel.svelte\"\n    },\n    {\n      \"old\": \"src/lib/agent-chat/DefaultWiredAgentChat.svelte\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"439b4f1d30298213b873a26436e7ab4115914eab\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/src/lib/agent-chat/DefaultWiredAgentChat.svelte\"\n    },\n    {\n      \"old\": \"src/lib/agent-chat/AgentSessionPicker.svelte\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"212a31aab9577a30833a1aca26b78a8db21d633e\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/src/lib/agent-chat/AgentSessionPicker.svelte\"\n    },\n    {\n      \"old\": \"src/lib/agent-chat/agentEvents.ts\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"8e9c7feafc805d5407f6a29dff0c492b43b2ea57\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/src/lib/agent-chat/agentEvents.ts\"\n    },\n    {\n      \"old\": \"src-tauri/src/bridge/acp_bridge.rs\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"9e282dff344f162fa4d31626770f16cb8fdc56f1\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/src-tauri/src/bridge/acp_bridge.rs\"\n    },\n    {\n      \"old\": \"src/lib/agent-chat/providerRestore.ts\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"858b04e4a91fb0d9a0f3dd39b87d7386d46539e9\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/src/lib/agent-chat/providerRestore.ts\"\n    },\n    {\n      \"old\": \"packages/ridge-acp/src/worker.rs\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"89cb6da2c5ba14137d94e88e310ad8987acf7751\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/packages/ridge-acp/src/worker.rs\"\n    },\n    {\n      \"old\": \"packages/ridge-acp/src/workflow.rs\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"3685bcdcafceaa4461f159bab127114e1d4d028d\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/packages/ridge-acp/src/workflow.rs\"\n    },\n    {\n      \"old\": \"packages/ridge-acp/src/test_harness.rs\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"8278b0a706ca90215906ec507114122d98c0ad00\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/packages/ridge-acp/src/test_harness.rs\"\n    },\n    {\n      \"old\": \"packages/ridge-acp/src/communion.rs\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"6e1235bc655010f0474ed7f8ca1b2e55cfba56b4\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/packages/ridge-acp/src/communion.rs\"\n    },\n    {\n      \"old\": \"packages/ridge-cli/src/session_control_tests.rs\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"eabcd2f1ba539adae729df1b2f31bef098e1523e\",\n      \"archive\": \"docs/archive/CHG-090/source/packages/ridge-cli/src/session_control_tests.rs\"\n    },\n    {\n      \"old\": \"packages/ridge-acp/src/provider_adapter.rs\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"b44cba334e5b94b398263f870b85b26d1b055229\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/packages/ridge-acp/src/provider_adapter.rs\"\n    },\n    {\n      \"old\": \"packages/ridge-acp/src/spawn.rs\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"d7ef606830022cd216137b43b2f1c375eaac397d\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/packages/ridge-acp/src/spawn.rs\"\n    },\n    {\n      \"old\": \"packages/ridge-acp/tests/m3_wire.rs\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"b65e8507cb3cbac102e45517580555d2338c77fa\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/packages/ridge-acp/tests/m3_wire.rs\"\n    },\n    {\n      \"old\": \"src/lib/agent-chat/agentEvents.test.ts\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"b16a7439eb5cf93f7675ec04e9c0fe4fd270c908\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/src/lib/agent-chat/agentEvents.test.ts\"\n    },\n    {\n      \"old\": \"src/lib/agent-chat/listenerLifecycle.test.ts\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"35d33dfc763fb84e36b0e294c61db551950e0ab1\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/src/lib/agent-chat/listenerLifecycle.test.ts\"\n    },\n    {\n      \"old\": \"src-tauri/src/bridge/mod.rs\",\n      \"commit\": \"904729d46ae35a233e1e9f4d8139f957fd149d58\",\n      \"blob\": \"580e76e302b59b35a7a52de3ca74ab339102c4a7\",\n      \"archive\": \"docs/archive/CHG-070/retired-communion/src-tauri/src/bridge/mod.rs\"\n    },\n    {\n      \"old\": \"static/mobile/assets/index-BPfF1vzx.css\",\n      \"commit\": \"1c1c6142750369ec7a89184cd6fef0eae061be7b\",\n      \"blob\": \"59013b29c9ec777765e88ebf6ce3b3a160320bf1\",\n      \"archive\": \"docs/archive/CHG-090/source/static/mobile/assets/index-BPfF1vzx.css\"\n    },\n    {\n      \"old\": \"static/mobile/assets/index-Cm2sAwTC.js\",\n      \"commit\": \"1c1c6142750369ec7a89184cd6fef0eae061be7b\",\n      \"blob\": \"9bc80544861ae4d33a89cf0f1591769f15a78406\",\n      \"archive\": \"docs/archive/CHG-090/source/static/mobile/assets/index-Cm2sAwTC.js\"\n    },\n    {\n      \"old\": \"src/lib/remote/cloud/cloudHostTopologyLink.test.ts\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"b729d3d379ccf23208ca01397339d3a3f0828c08\",\n      \"archive\": \"docs/archive/CHG-070/frontend-cloud-topology/cloudHostTopologyLink.test.ts\"\n    },\n    {\n      \"old\": \"src/lib/stores/hostReconnect.test.ts\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"e9a97bd945dd2c1b4d681d793d9073570ee4216f\",\n      \"archive\": \"docs/archive/CHG-070/hostReconnect.test.ts\"\n    },\n    {\n      \"old\": \"src/lib/stores/hostReconnectProduct.test.ts\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"a82dc77c886175e3d77ca2c62b65863ebb59dbd7\",\n      \"archive\": \"docs/archive/CHG-070/hostReconnectProduct.test.ts\"\n    },\n    {\n      \"old\": \"src/lib/stores/hostsOutbound.test.ts\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"c21d6d4331c0cbb293f41993b1c3e89940ae1bb1\",\n      \"archive\": \"docs/archive/CHG-070/hostsOutbound.test.ts\"\n    },\n    {\n      \"old\": \"src/lib/stores/hostsOutboundProduct.test.ts\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"7a2b29d7b36a5b188a3db02d7cd99a71ee6e2f94\",\n      \"archive\": \"docs/archive/CHG-070/hostsOutboundProduct.test.ts\"\n    },\n    {\n      \"old\": \"src/lib/terminal/ptyRuntimeSnapshot.test.ts\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"5e3fd6b83da43b83c4c19d1ce2363bbaa5dcddac\",\n      \"archive\": \"docs/archive/CHG-090/source/src/lib/terminal/ptyRuntimeSnapshot.test.ts\"\n    },\n    {\n      \"old\": \"src/lib/teammate/layoutEvent.test.ts\",\n      \"commit\": \"3c7a18af4bb88aa3a7131cc45b51624a1fda699a\",\n      \"blob\": \"8901c650a0b8b8158ec04e1e36e3f7a151ebfeef\",\n      \"archive\": \"docs/archive/CHG-070/frontend-runtime-events/layoutEvent.test.ts\"\n    }\n  ],\n  \"nodes\": [\n    {\n      \"id\": \"L4-OBS-STATIC-MOBILE-ASSETS-INDEX-BPFF1VZX-CSS-77c42f58\",\n      \"action\": \"archived-evidence\"\n    },\n    {\n      \"id\": \"L4-OBS-STATIC-MOBILE-ASSETS-INDEX-CM2SAWTC-JS-6cebe785\",\n      \"action\": \"archived-evidence\"\n    },\n    {\n      \"id\": \"L2-REMOTE-RENDERING-PARITY\",\n      \"action\": \"rebind\"\n    },\n    {\n      \"id\": \"L2-TUI-MOBILE-PTY-LIFECYCLE\",\n      \"action\": \"rebind\"\n    },\n    {\n      \"id\": \"L3-PERF-REMOTE-PRODUCTION-DIAGNOSIS\",\n      \"action\": \"rebind\"\n    },\n    {\n      \"id\": \"L3-RIDGE-COMMUNION-M53-ACCEPTANCE\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L3-RIDGE-COMMUNION-M53-PRODUCT\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L3-RIDGE-COMMUNION-M53-RUNTIME\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L3-TERMINAL-VISUAL-INPUT-REPAIR\",\n      \"action\": \"rebind\"\n    },\n    {\n      \"id\": \"L3-OBS-PACKAGES-RIDGE-CLI-SRC-353b0498\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L3-OBS-PACKAGES-RIDGE-CLI-SRC-TUI-985fdbf4\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-LIB-REMOTE-CLOUD-643692b0\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-LIB-STORES-c2ef71cf\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-LIB-TEAMMATE-8177ace9\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-LIB-TERMINAL-033d05be\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-TAURI-SRC-bcb33161\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-TAURI-SRC-COMMANDS-7ed73efa\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-TAURI-SRC-DB-fb3d3b31\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-TAURI-SRC-ENGINE-7710ea45\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-TAURI-SRC-FS-85347803\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-TAURI-SRC-HOSTS-728bec8b\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-TAURI-SRC-LSP-baee4624\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-TAURI-SRC-TEAMMATE-cbffd630\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-TAURI-SRC-UTILS-679c9ad4\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-DRIFT-BASELINE-001-UNCLAIMED-a1b2c3d4\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-ACP-SRC-COMMUNION-RS-M41\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-ACP-SRC-PROVIDER-ADAPTER-RS\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-ACP-SRC-SPAWN-RS-M3\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-ACP-TESTS-M3-WIRE-RS\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-CLI-SRC-DAEMON-CTL-RS-487827aa\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-CLI-SRC-SESSION-RS-1eb4fe21\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-CLI-SRC-TUI-LAN-HOST-IMPL-RS-a0422c05\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-CLI-SRC-TUI-LAN-HOST-RS-dee73956\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-CLI-SRC-TUI-SCROLLBACK-RS-e98d3d15\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-CLI-SRC-TUI-WORKSPACE-RS-2ac7d76c\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-AGENT-CHAT-AGENT-EVENTS-TEST-TS\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-AGENT-CHAT-AGENT-EVENTS-TS-M41\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-AGENT-CHAT-DEFAULT-WIRED-SVELTE-M3\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-AGENT-CHAT-LISTENER-LIFECYCLE-TEST-TS-M42\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-AGENT-CHAT-PICKER-SVELTE\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-AGENT-CHAT-PROVIDER-RESTORE-TS-M42\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDHOSTTOPOLOGYLINK-TS-680544f6\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-HOSTRECONNECT-TS-f82d2a23\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-LAYOUTCHANGE-GOLDEN-JSON-148c3d54\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-LAYOUTEVENT-TS-da106aca\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TERMINAL-PTYRUNTIMESNAPSHOT-TS-c8caed0f\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-BRIDGE-ACP-BRIDGE-RS-a1b2c3d4\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-BRIDGE-MOD-RS-b1c2d3e4\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-COMMANDS-CLOUD-HTTP-RS-298f4282\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-COMMANDS-CLOUD-PANE-RS-65fe7524\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-COMMANDS-FS-WATCH-RS-154fe1c6\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-COMMANDS-GIT-RS-8be46cbc\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-COMMANDS-PANE-RS-083d2191\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-COMMANDS-PROCESS-RS-bd4bf5d4\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-COMMANDS-REMOTE-RS-fb28910e\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-COMMANDS-SETTINGS-RS-b743c5a2\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-COMMANDS-TEAMMATE-RS-9292e20f\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-COMMANDS-TERMINAL-FONT-RS-d1768053\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-COMMANDS-TERMINAL-RS-12565300\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-COMMANDS-WATCH-RS-5a7c9f05\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-COMMANDS-WORKSPACE-RS-8a3dbc5b\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-DB-MOD-RS-ddc5c908\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-DB-PROJECTS-RS-5c0fcc7d\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-ENGINE-KERNEL-PTY-RS-c387fe33\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-ENGINE-MOD-RS-24e36859\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-ENGINE-PANE-TREE-RS-81275760\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-ENGINE-PARSER-RS-a790a763\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-ENGINE-PTY-RS-104cc347\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-FS-MOD-RS-ed16b557\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-FS-SEARCH-RS-382fd4a8\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-FS-TREE-RS-0009918d\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-HOSTS-DESKTOP-SURFACE-RS-5d6068b4\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-HOSTS-FOREIGN-HISTORY-RS-857e8b18\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-HOSTS-HISTORY-COMMANDS-RS-977691ec\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-HOSTS-LAN-TRANSPORT-RS-719e4239\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-HOSTS-LIVE-BACKPRESSURE-RS-f1ca296e\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-HOSTS-MOD-RS-eaff247c\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-HOSTS-OUTBOUND-RS-b2497a1b\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-HOSTS-RECONNECT-SUPERVISOR-RS-648b14f2\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-LSP-MOD-RS-4d2b0b61\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-REMOTE-BRIDGE-RS-13885a6e\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-REMOTE-HOST-IMPL-RS-5d15687d\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-AGENT-CATALOG-RS-b8be1b61\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-AUTODISCOVER-RS-46b64992\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-CIRCUIT-RS-c11883e9\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-CONTEXT-FILES-RS-8b3b23e0\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-DISCOVER-RS-07f49d8f\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-ENDPOINT-RS-ba22be5c\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-HITL-AUDIT-RS-5a6322dd\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-HITL-RS-467f3dcb\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-JOB-OBJECT-RS-9da011ec\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-LAYOUT-EVENT-RS-5ec95309\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-LOCKS-RS-11ac3f59\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-MCP-RS-f1741d1a\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-MEMORY-RS-05ee0e18\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-MOD-RS-9ac71a21\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-NATIVE-RS-f38e554c\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-ORCH-HEALTH-RS-77c04f81\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-OS-FREEZE-RS-bf5d5bc1\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-PROFILES-RS-da746222\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-ROLLBACK-RS-1f400db9\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-SERVER-RS-20eb0315\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TEAMMATE-SUSPEND-RS-169abdf1\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-TYPES-RS-5a17982b\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-UTILS-ERROR-RS-91706d06\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-UTILS-PANE-ID-RS-c5e7302c\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-SRC-UTILS-PTY-LOG-RS-cfe4a773\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L2-RIDGE-COMMUNION-M53\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"TEST-OBS-SRC-LIB-REMOTE-REMOTEBOOTMODE-TEST-TS-0c3742d1\",\n      \"action\": \"reparent\"\n    },\n    {\n      \"id\": \"TEST-OBS-SRC-LIB-TEAMMATE-AGENTCOMMUNEMODEL-TEST-TS-313d1942\",\n      \"action\": \"reparent\"\n    },\n    {\n      \"id\": \"TEST-OBS-SRC-LIB-TEAMMATE-TEAMMATEMODEL-TEST-TS-99fea951\",\n      \"action\": \"reparent\"\n    },\n    {\n      \"id\": \"L3-OBS-STATIC-MOBILE-ASSETS-5cc42e7a\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-CLI-SRC-HOST-RS-435d6ebb\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-CLI-SRC-PTY-RS-c81f693e\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-CORE-SRC-TEAMMATE-TOPOLOGY-RS-ec181c11\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-KERNEL-SRC-PTY-RS-7a2cf18e\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-PACKAGES-RIDGE-REMOTE-SRC-HOST-RS-b5c8faed\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-APP-CSS-e269447b\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-APP-HTML-c279397c\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-HOOKS-SERVER-TS-b5aa13ce\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-DEVISSUE-TS-930b4e3d\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-REMOTE-CLOUD-CHECKINGATECARD-SVELTE-7b71a8aa\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDCONTROLLERBOOT-TS-3ba527ac\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDHOSTSTORE-TS-86f442a0\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDPROMODAL-SVELTE-7600402d\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-REMOTE-CLOUD-SHAREDWORKSPACEPROJECTION-TS-27c07ba9\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-REMOTE-MINIMIZEBUTTON-SVELTE-ec260d1a\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-REMOTE-QRCODE-D-TS-5999ec56\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-REMOTE-QRCODE-SVELTE-dbe7af3c\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-REMOTE-REMOTEBOOTMODE-TS-8152e7b4\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-REMOTE-REMOTEPANEL-SVELTE-666f7d6c\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-REMOTE-TOTPIDENTITYSYNC-TS-db20536e\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-REMOTE-TREENODEROW-SVELTE-f3c6ad58\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-CONTEXTMENU-TS-08b90d28\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-DOCKREGIONPICKER-TS-6a37cd47\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-EDITORWINDOW-TS-da005f99\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-EXPLORERLAYOUT-TS-7945c5db\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-FILEEDITOR-TS-301d7e43\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-FILEEXPLORER-TS-e2a5ccec\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-FILEWATCHERSYNC-TS-c625380b\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-FSEVENTS-TS-93e667ef\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-GITGUARDSTATS-TS-50279592\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-HOSTS-TS-74da5b22\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-IMAGEPREVIEWVERSION-TS-f845c21b\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-PANEGITSTATUS-TS-6d620300\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-PANETREE-TS-deea5908\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-PROCESSGUARDPOLICY-TS-6851e66a\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-PROJECT-TS-705c863b\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-REMOTESTATUS-TS-4532b75b\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-SCMCACHE-TS-f1f5bdda\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-SEARCHSTATE-TS-92db44fe\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-SETTINGS-TS-5bc47293\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-SIDEBARPLUGINS-TS-949b8758\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-TERMINALHISTORY-TS-572f35e8\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-TERMSETTINGS-TS-dd19d16f\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-THEMES-TS-8aec2ce9\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-STORES-TOAST-TS-553cfde2\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-AGENTCENTERPANEL-SVELTE-c54ca71e\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-AGENTCOMMUNEMODEL-TS-2b0afbe5\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-AGENTMEMBERROW-SVELTE-9d24ed62\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-AGENTPANEHIGHLIGHTSYNC-SVELTE-31e31ba4\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-AGENTPANEHIGHLIGHTSYNC-TS-b5723d1e\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-HITLAPPROVALMODAL-SVELTE-f8a87f58\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-HITLAUDITFILTER-TS-3c7fa406\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-HITLAUDITPANEL-TS-42d4382f\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-MEMBERTASKS-TS-286be00f\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-ORCHCONTROLPLANE-TS-abcb9735\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-TEAMMATEGROUPS-SVELTE-TS-81a642bc\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-TEAMMATEGROUPSSECTION-SVELTE-53ade9d1\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-TEAMMATEMODEL-TS-5b42791e\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-TEAMMATESETTINGS-TS-212d29ba\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TEAMMATE-WORKSPACEMEMORY-TS-f12c4006\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TERMINAL-DESKTOPPANERESIZE-TS-cd4234d3\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TERMINAL-HOSTPORTS-TS-86368fac\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TERMINAL-PANESIZESYNC-TS-9f63f52d\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TERMINAL-PTYWRITEQUEUE-TS-0440e203\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TRANSPORT-TAURISHIM-EVENT-TS-feb0138e\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-LIB-TYPES-TS-b8b77f5b\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-SERVICE-WORKER-TS-0aba05b7\",\n      \"action\": \"retain\"\n    },\n    {\n      \"id\": \"TEST-OBS-SRC-LIB-REMOTE-CLOUD-CLOUDHOSTTOPOLOGYLINK-TEST-TS-7c92f09e\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"TEST-OBS-SRC-LIB-STORES-HOSTRECONNECT-TEST-TS-e82e61be\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"TEST-OBS-SRC-LIB-STORES-HOSTRECONNECTPRODUCT-TEST-TS-9598a61c\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"TEST-OBS-SRC-LIB-STORES-HOSTSOUTBOUND-TEST-TS-afc6c610\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"TEST-OBS-SRC-LIB-STORES-HOSTSOUTBOUNDPRODUCT-TEST-TS-c9cf71df\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"TEST-OBS-SRC-LIB-TEAMMATE-LAYOUTEVENT-TEST-TS-b130fa00\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"TEST-OBS-SRC-LIB-TERMINAL-PTYRUNTIMESNAPSHOT-TEST-TS-a223e946\",\n      \"action\": \"retire\"\n    },\n    {\n      \"id\": \"L4-OBS-DOTENV-d1e2f3a4\",\n      \"action\": \"retire\",\n      \"change\": \"CHG-129\",\n      \"reason\": \"本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求\",\n      \"previous\": {\n        \"id\": \"L4-OBS-DOTENV-d1e2f3a4\",\n        \"action\": \"reparent\"\n      }\n    },\n    {\n      \"id\": \"L3-OBS-OPENCODE-5e2dd251\",\n      \"action\": \"rebind\",\n      \"change\": \"CHG-129\",\n      \"reason\": \"仅保留 Git 已跟踪的 opencode.json 配置源，不追踪本机 package.json\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f\",\n      \"action\": \"retire\",\n      \"change\": \"CHG-129\",\n      \"reason\": \"本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1\",\n      \"action\": \"retire\",\n      \"change\": \"CHG-129\",\n      \"reason\": \"本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求\"\n    },\n    {\n      \"id\": \"L4-OBS-OPENCODE-PACKAGE-JSON-047992d6\",\n      \"action\": \"retire\",\n      \"change\": \"CHG-129\",\n      \"reason\": \"本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09\",\n      \"action\": \"retire\",\n      \"change\": \"CHG-129\",\n      \"reason\": \"本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d\",\n      \"action\": \"retire\",\n      \"change\": \"CHG-129\",\n      \"reason\": \"本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58\",\n      \"action\": \"retire\",\n      \"change\": \"CHG-129\",\n      \"reason\": \"本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec\",\n      \"action\": \"retire\",\n      \"change\": \"CHG-129\",\n      \"reason\": \"本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1\",\n      \"action\": \"retire\",\n      \"change\": \"CHG-129\",\n      \"reason\": \"本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求\"\n    }\n  ],\n  \"observationArchives\": [\n    {\n      \"id\": \"L3-OBS-OPENCODE-5e2dd251\",\n      \"source\": \"specs/migration/L3-OBS-OPENCODE-5e2dd251.md\",\n      \"commit\": \"92f2686b8aeadaf99be5c382ea871a08821ef8a2\",\n      \"blob\": \"98b79c318d28b97d7df5c913529184b36a96d2d8\",\n      \"archive\": \"docs/archive/CHG-129/observations/L3-OBS-OPENCODE-5e2dd251.md\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f\",\n      \"source\": \"specs/migration/L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f.md\",\n      \"commit\": \"92f2686b8aeadaf99be5c382ea871a08821ef8a2\",\n      \"blob\": \"23cb8172a78af56a4070e978e4c1c265343b96df\",\n      \"archive\": \"docs/archive/CHG-129/observations/L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f.md\"\n    },\n    {\n      \"id\": \"L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1\",\n      \"source\": \"specs/migration/L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1.md\",\n      \"commit\": \"92f2686b8aeadaf99be5c382ea871a08821ef8a2\",\n      \"blob\": \"df4669f56e22742dd4fc5a1b637d42776a7d5cb5\",\n      \"archive\": \"docs/archive/CHG-129/observations/L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1.md\"\n    },\n    {\n      \"id\": \"L4-OBS-DOTENV-d1e2f3a4\",\n      \"source\": \"specs/migration/L4-OBS-DOTENV-d1e2f3a4.md\",\n      \"commit\": \"92f2686b8aeadaf99be5c382ea871a08821ef8a2\",\n      \"blob\": \"d5529ff6f7abdbb6c49de55baaa2813c31a2a735\",\n      \"archive\": \"docs/archive/CHG-129/observations/L4-OBS-DOTENV-d1e2f3a4.md\"\n    },\n    {\n      \"id\": \"L4-OBS-OPENCODE-PACKAGE-JSON-047992d6\",\n      \"source\": \"specs/migration/L4-OBS-OPENCODE-PACKAGE-JSON-047992d6.md\",\n      \"commit\": \"92f2686b8aeadaf99be5c382ea871a08821ef8a2\",\n      \"blob\": \"ed67aef7b21f059ec60a2a3b5f88f12de4b7cdda\",\n      \"archive\": \"docs/archive/CHG-129/observations/L4-OBS-OPENCODE-PACKAGE-JSON-047992d6.md\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09\",\n      \"source\": \"specs/migration/L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09.md\",\n      \"commit\": \"92f2686b8aeadaf99be5c382ea871a08821ef8a2\",\n      \"blob\": \"d731adcb107d7fc686784843f8a81c601f40ce0a\",\n      \"archive\": \"docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09.md\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d\",\n      \"source\": \"specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d.md\",\n      \"commit\": \"92f2686b8aeadaf99be5c382ea871a08821ef8a2\",\n      \"blob\": \"1d1fe7703e0c111d8cb8cc66b51b7ee81f4672ee\",\n      \"archive\": \"docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d.md\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58\",\n      \"source\": \"specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58.md\",\n      \"commit\": \"92f2686b8aeadaf99be5c382ea871a08821ef8a2\",\n      \"blob\": \"641e6302ef5ce550e8b1888b53c233bfb210cb86\",\n      \"archive\": \"docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58.md\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec\",\n      \"source\": \"specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec.md\",\n      \"commit\": \"92f2686b8aeadaf99be5c382ea871a08821ef8a2\",\n      \"blob\": \"85cc8ea3452d5455669951104b0db45e42b66045\",\n      \"archive\": \"docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec.md\"\n    },\n    {\n      \"id\": \"L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1\",\n      \"source\": \"specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1.md\",\n      \"commit\": \"92f2686b8aeadaf99be5c382ea871a08821ef8a2\",\n      \"blob\": \"48f8efbc19030b5368f531bd76da4d4e1ee3c249\",\n      \"archive\": \"docs/archive/CHG-129/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1.md\"\n    }\n  ],\n  \"sharedUiAcceptance\": {\n    \"unitId\": \"L4-COMMUNE-UI-ACCEPTANCE\",\n    \"command\": [\n      \"node\",\n      \"scripts/commune-global-ui-acceptance.mjs\"\n    ],\n    \"requirements\": [\n      {\n        \"nodeId\": \"L4-COMMUNE-GROUP-RESPONSIVE-STATE\",\n        \"checkId\": \"group-refresh-ui\",\n        \"description\": \"生产 Commune 组件在后台读取挂起时仍可编辑与提交，读取旧回包不能回退新投影，窄屏状态可读且既有编组、派发、审批和接入回归成立\"\n      },\n      {\n        \"nodeId\": \"L4-COMMUNE-GROUP-USABILITY\",\n        \"checkId\": \"commune-group-usability-ui\",\n        \"description\": \"真实 Kernel 和受控既有 ACP 会话上验证协作入口可见、跨来源成员选择、候选接入解释、已归组成员可见与原子移动、派发记录保留和窄屏可用性\"\n      },\n      {\n        \"nodeId\": \"L4-COMMUNE-MOBILE-GROUP-NAVIGATION\",\n        \"checkId\": \"commune-mobile-group-navigation\",\n        \"description\": \"真实隔离 Kernel 上的生产组件，验证首屏到编组与派发的路径、同名成员区分、触控区、状态和既有权限\"\n      },\n      {\n        \"nodeId\": \"L4-COMMUNE-ORGANIZATION-MEMBERS\",\n        \"checkId\": \"organization-global-ui\",\n        \"description\": \"Native/Remote 统一成员与候选先入组后接入、同名来源、成员移动与能力反馈\"\n      },\n      {\n        \"nodeId\": \"L4-COMMUNE-REMOTE-DELIVERY\",\n        \"checkId\": \"commune-remote-delivery-ui\",\n        \"description\": \"真实受控 ACP 进程及 Kernel 上验证手机单成员消息、丢回执同键重试、连点防重和新草稿保留，同时保持跨来源编组、历史与 Remote 权限边界\"\n      },\n      {\n        \"nodeId\": \"L4-COMMUNE-SHARED-DAEMON-BINDING\",\n        \"checkId\": \"shared-native-ui\",\n        \"description\": \"实际组件中显式共享服务启动、原有手机编组和会话接入回归\"\n      }\n    ]\n  }\n}\n```\n\n归档子树用局部 .gitattributes 禁止换行转换，保留原始 Git blob 的 CRLF/LF 字节。此规则只作用本轮历史证据 source/。\n\n活动子节点不能留在本轮退役父节点下。根环境观察记录从旧生成资产目录迁至 Vite 构建配置模块，仅修正元数据归属。\n\n## CHG-129 本机资料与生成物复核\n\n全新实施工作树暴露十个观察节点对 .env.local、工具私有配置和 Tauri 缓存的依赖。本轮归档九个观察节点；OpenCode 配置模块保留已跟踪的 opencode.json 与活子节点，移除本机 package.json 映射。十份原文及 Git blob 单独验证。统一 Runtime 的 MCP 打包映射回到 bridge 源码及生成脚本，不要求代码图包含某个平台的可执行产物。原 CHG-090 的 98 份源码证据保持不变。\n\n\n## 共用 UI 验收执行边界\n\n六条相同的完整 UI 命令归并为独立验收单元，功能脚本与断言不变。该单元依赖六个现役需求节点，任一需求变化必须使其进入验收影响集。其他命令保留；每轮执行当前源码的完整 UI 脚本，不采用旧结果或人工回执。确定性检查验证需求引用、依赖方向及命令唯一性。\n",
+          "acceptanceChecks": [
+            {
+              "id": "spec-mapping-audit",
+              "command": [
+                "node",
+                "scripts/check-spec-mappings.mjs"
+              ],
+              "description": "核对 98 份 Git 源证据、所有节点处置、现役测试路径及审计零失效目标"
+            }
+          ]
+        },
+        {
+          "id": "L2-UNIFIED-CLIENT-RUNTIME",
+          "level": "L2",
+          "title": "Desktop presentation client and unified CLI/Remote runtime",
+          "parent": "L1-PROJECT-001",
+          "codeTargets": [
+            "Cargo.toml",
+            "Cargo.lock",
+            "packages/ridge-core/**",
+            "packages/ridge-kernel/**",
+            "packages/ridge-cli/**",
+            "packages/ridge-remote/**",
+            "packages/remote/**",
+            "packages/ridge-acp/**",
+            "packages/ridge-mcp/**",
+            "packages/ridge-term/**",
+            "src-tauri/src/**",
+            "src-tauri/Cargo.toml",
+            "src-tauri/tauri.conf.json",
+            "src-tauri/capabilities/**",
+            "src/lib/**",
+            "src/routes/**",
+            "src/remote/**",
+            "vite.config.js",
+            "scripts/**",
+            "docs/archive/**",
+            "svelte.config.js",
+            "packages/ridge-term-font/pkg/**",
+            "packages/ridge-term-render/pkg/**",
+            "src-tauri/installer-hooks.nsh",
+            "packages/ridge-mcp-bridge/**"
+          ],
+          "testTargets": [
+            "packages/ridge-core/**",
+            "packages/ridge-kernel/**",
+            "packages/ridge-cli/**",
+            "packages/ridge-remote/**",
+            "packages/remote/**",
+            "packages/ridge-acp/**",
+            "src/lib/transport/tauriShim/bridge.test.ts",
+            "scripts/build-ridge-mcp-sidecar.test.mjs"
+          ],
+          "dependsOn": [
+            "L2-AGENT-COMMUNE-EXACT-BINDING",
+            "L2-PROTO-001",
+            "L2-REMOTE-001",
+            "L2-RIDGE-COMMUNION-M53",
+            "L2-RIDGE-PRODUCT-M1",
+            "L2-TERM-001",
+            "L3-REMOTE-INTERACTION-RELIABILITY",
+            "L3-TERMINAL-VISUAL-INPUT-REPAIR"
+          ],
+          "body": "# 桌面展示层化：与 CLI、Remote 共用一条业务链路\n\n## 状态与依据\n\n2026-10-11 用户已将 Commune 与 A2A 方案提升为确定实施内容；其批准记录与验收边界见 `CHG-070.commune.md`。本次定版未改 CHG-069 的权威图、批准或锁。\n\n用户已明确要求：桌面绕过 Tauri 业务后端，全面与 CLI 保持同一链路，桌面仅为展示层；本轮要求交付改动方案并排入下一次 change。此目标已明确，以下迁移机制为设计提案，尚未执行、尚未批准实施锁。\n\n2026-10-11 用户进一步明确：只保留左侧 Agent’s Commune；移除右侧 Communion；Agent 由用户在终端运行，Ridge 经 ACP 等通用协议登记同一既有会话；禁止按品牌业务适配、自动启动 Agent或另建会话冒充接管；支持用户清单扩展和协议兼容的未知 Agent。成员/编组/历史及 A2A 设计详见同目录 `CHG-070.commune.md`，配套节点 `L3-COMMUNE-PROTOCOL-MEMBERSHIP` 的正文由该文件生成。\n\n候选号 CHG-070。CHG-069 正在持锁实施；本文件与同名 JSON 均为 `.spectree/proposals/` 候选，不写入当前权威图、不修改 CHG-069 的批准或锁。CHG-069 完成后重新执行 `stc next`，通过 `stc change` 登记当时实际下一个编号；若编号已占用，整体重编号，再经提案应用、review、approve、lock、build、verify、complete。不得直接复制本候选覆盖 `changes/`。当前工具没有 change 正文导入接口；后续需通过受支持的 SpecTree 正文写入能力登记本方案，不以手改权威文件补工具缺口。\n\n## 0. 与 CHG-069 的需求边界\n\n| 需求 | 主责 change | 另一 change 的责任 |\n| --- | --- | --- |\n| 长按光标逐帧呈现、链接识别与 GPU 下划线 | 069 | 070 接入新链路后回归，不重写语义 |\n| 键盘/IME/鼠标输入、客户端 FIFO/背压、切换与重连恢复 | 069 | 070 将同一客户端/handler 接至统一 Host，保留顺序与代际契约 |\n| 手机后台切回重连、有效会话刷新免验证码 | 069 | 070 迁服务归属并回归；不另改认证期限/绑定 |\n| 语义行历史加载与有界客户端缓存 | 069 | 070 迁移服务入口/运行所有者，复用 069 行分页实现与 schema |\n| WASM 功能拆包、按需加载、冷启动首屏性能 | 069 | 070 打包/服务分发兼容这些模块；独立 Runtime 打包另属 070 |\n| Remote 默认简约 UI；仅 ui=desktop 切桌面 | 069 | 070 同时支持两类浏览器客户端；原生桌面展示层化不改变其 UI |\n| Tauri 业务 dispatcher/AppState/持久化/后台 owner 迁出 | 070 | 069 不承担迁移，不新增这类权威 |\n| 桌面/CLI/Remote 同一 Host 业务与事件链路、能力对等 | 070 | 069 将终端逻辑做成可复用实现与接口，避免绑定新的桌面业务服务 |\n| 独立 Runtime 启停/发现/打包、退出桌面后服务存活、数据迁移 | 070 | 069 保持现有业务生命周期，不承诺此验收 |\n\n两项可触及相同源文件，不能据路径相交认定需求重复。069 对 Host/parser 的修改限必要适配与共享终端实现；不得另建桌面权威或复制多套行分页、认证、分发。070 负责搬移或替换连接/运行归属，终端契约引用 069 的权威节点；不得为服务迁移重新设计 cursor/link、历史协议、WASM 初始化或 UI 路由。\n\n先完成 069，再按其交付源码与实际证据重算 070 影响及 allowedPaths。070 必须把继承的终端契约验收与自己新增的业务归属/进程生命周期验收分开计量；后者不可借 069 测试冒充。069 未完成项不得悄然转移为 070 任务，亦不得把 070 业务迁移提前塞入 069。必要临时适配须只调用共享实现，070 退役时归档旧适配，不保留业务 fallback。\n\n## 1. 目标链路\n\n```text\n桌面 WebView ─┐\nCLI / TUI ────┼─→ 同一 Host 接入与业务分发 → 同一无 Tauri 业务服务 → Ridge Kernel\nRemote 浏览器 ┘       本地 / LAN / Cloud 传输适配                 PTY / 运行态\n\nTauri 壳：窗口与系统展示交互、受限启动/发现入口\n```\n\n“同一链路”指同一命令语义、业务实现、权限判定、状态权威与事件来源。不同接入可有传输适配和既有权限差异，不能维护另一份桌面 dispatcher、另一套业务状态或另一份输出解析。浏览器无须暴露或直连 Kernel 私有端口；Host 仍负责认证、能力授权、连接管理与协议适配。\n\n最终桌面业务命令不经 `tauri::command`，业务事件不依赖 Tauri `emit`/`Channel`，Remote 不再进入 `DesktopHost → commands::*`。CLI LAN、CLI Cloud、CLI/TUI 及桌面都使用统一服务；不能仅把桌面改为调用当前 `ridge host` 的有限命令表便宣告完成。\n\nCLI/TUI 的领域操作亦走该 Host 的共同请求边界，不能各自持有服务状态或直接读写业务数据库。进程启动、诊断等管理入口可独立存在，但不能成为第二个业务执行入口。同一用户与已认证宿主身份下，桌面和 CLI 并发启动须经现有 endpoint/registry 与互斥发现机制复用同一权威实例；不能重复拉起各自的服务副本。多 Host 是连接不同已认证宿主，不是同一宿主多份业务权威。\n\n## 2. 当前缺口与复用依据\n\n| 已核对入口 | 现状与改动方向 |\n| --- | --- |\n| `packages/ridge-cli/src/host.rs:81` | CLI LAN 使用 KernelHost，复用其独立 Host 模式 |\n| `packages/ridge-cli/src/kernel_host_impl.rs:1206` | CLI 自有分发；部分产品命令明确不支持，需补齐共同业务服务 |\n| `packages/ridge-cli/src/daemon.rs:204`、`rpc.rs`、`tui/lan_host_impl.rs` | Cloud/TUI 仍有独立入口，纳入同一能力与事件契约 |\n| `src-tauri/src/remote_bridge.rs:442`、`remote_host_impl.rs:3113` | DesktopHost 与终端 commands 转发需退役归档 |\n| `src-tauri/src/lib.rs:334`、`state.rs` | 大量业务命令和 AppState、后台服务驻留桌面进程，全面迁出 |\n| `packages/ridge-core/src/dispatch.rs` | 已有无 Tauri dispatch、能力校验与业务实现，优先复用、补齐 |\n| `packages/ridge-kernel/src/domain.rs`、`client.rs`、`rtp1_session.rs` | 已有独立 Kernel 与协议，保留权威与运行代际语义 |\n| `src/lib/transport/tauriShim/bridge.ts:1` | 桌面 UI 已有浏览器 RPC 适配基础，改为显式业务 client；逐步移除业务 Tauri shim |\n\nCodeGraph 索引不可用，本方案依据以上真实源码；未声称当前全部服务已迁入 Kernel，也未声称 CLI 与桌面能力已有完整对等。\n\n## 3. 职责与权威\n\n| 职责 | 最终所有者 | 桌面职责 |\n| --- | --- | --- |\n| PTY 创建/写入/resize/销毁、输出序列、snapshot/replay、运行代际 | Ridge Kernel；复用已批准终端/RTP1 契约 | 输入捕获、展示与控制请求；可保留有界渲染镜像 |\n| workspace、pane 拓扑、Host/session 关联、恢复记录 | 独立统一 Runtime；现有 Kernel 权威由 Kernel 承接 | 订阅投影；window/client 选择各自隔离 |\n| Agent’s Commune、ACP/A2A、teammate/Hub、审批、历史 | 同一无 Tauri 协议/产品服务与现有持久化权威；连接用户既有 Agent | 成员/编组/历史投影；不启动 Agent、不持有进程或审批真相 |\n| 文件/搜索/watch、Git、项目历史、设置/主题、字体资源 | 统一业务服务，复用 ridge-core 及现有独立 crate | 展示、编辑与用户交互；保存经授权业务 API |\n| 认证、信任、远控开关、Cloud/Host 连接与重连 | 独立统一 Host 服务 | 显示状态、发起显式用户操作 |\n| 窗口、托盘、通知、原生对话框、系统剪贴板、系统打开 | 最小 OS 展示适配 | 可保留受限 Tauri API；无领域调度或任意文件/进程执行 |\n\n统一 Runtime 为职责边界，不要求把全部业务塞入 PTY crate。保留现有 Kernel/core/ACP/MCP 的依赖隔离；独立服务通过组合这些 crate 提供能力。不得新增与 Kernel 重复的 workspace/PTY 权威，不得把桌面 AppState 原封不动搬出再保留两份。包与类划分由实施者根据真实代码决定。\n\n本地渲染镜像、query cache、焦点、选区、滚动位置属于有界展示状态；业务实体、审批、恢复、持久化修改属于服务。客户端关闭仅 detach，不自动终止 PTY、Agent、Host 或其他客户端。\n\n桌面安装包须携带或明确发现与前端兼容的独立运行程序；无需用户另装 CLI 才可启动。复用现有 Kernel 生命周期与版本发现机制，打包/升级也须遵守身份与兼容检查。Windows 下独立 Runtime 不能受 WebView/Tauri 退出时的进程树或 Job 自动销毁；其他平台同样验真实退出后的存活。业务服务停止只接受已有权限下的显式服务管理操作，窗口关闭不等于停止服务。\n\n## 4. 七个实施阶段；同一 change 的完成条件\n\n1. **能力清单与契约收敛。** 枚举 `generate_handler!`、Remote dispatcher、CLI LAN/Cloud/TUI、前端 invoke/listen 调用；逐条归类业务、OS 展示、退役。对每个命令记录服务归属、权限、事件、持久化和验收场景。以实际 UI 能力建立对等清单，覆盖多窗口、Hosts、文件、Git、Agent、审批及恢复，不能只测终端。\n2. **统一业务服务。** 将桌面命令实现、后台任务和权威状态迁至无 Tauri 服务。复用 ridge-core 能力校验及现有产品 crate；核心函数不接受 AppHandle/State、不调用 tauri runtime、emit 或 Channel。Desktop 与 CLI 调用同一 handler，不复制代码。\n3. **统一 Host 与事件。** 从现有独立 CLI Host 提取可复用入口，LAN/Cloud/TUI 使用共同分发与业务事件源。本地桌面使用同一 RPC/订阅 client，输入、控制、输出保持现有有界队列、序列与取消约束；传输适配不得包含另一套业务分支。\n4. **桌面接入。** 桌面启动后发现或受限拉起独立 Runtime，协商版本与能力，完成授权，订阅快照+事件；业务调用不再走 Tauri IPC。复用浏览器桌面入口和共享 remote client。独立 Host 不应依赖 WebView 活跃、前台、未最小化或桌面进程生存。\n5. **数据与进程生命周期迁移。** 以现有存储路径、schema、身份和事件流为基础，明确每份桌面旧状态的新唯一所有者。备份/归档、版本标记与可恢复迁移由服务执行；旧新进程禁止双写。启动冲突、权限/证书失败、版本不匹配、部分迁移失败均显式报错，禁止回退桌面本地 PTY/业务执行。进程发现校验身份和运行代际，不能通过端口或进程名猜宿主。\n6. **退役旧链路。** 全部对等验收成立后，归档 DesktopHost、Tauri 业务 dispatcher、业务 AppState、PTY/parser/output 转发、桌面业务后台任务以及业务 Tauri shim。保留经清单审计的 OS 展示适配；构建约束禁止现役代码重新引用归档实现。迁移期间兼容桥仅调用共同 handler；最终不得保留回退旧业务链路。\n7. **验收并关单。** 所有阶段通过才 complete；中途迁出终端或接通独立 Host 均不等于桌面展示层化完成。CHG-069 已批准的输入、cursor/link、语义行加载、WASM 按需加载与 Remote 默认 UI 行为须保留，迁移不能抵销其契约。\n\n## 5. 安全与多客户端边界\n\n- Kernel 私有凭据仍留宿主进程。WebView 获得限定身份、能力与期限的 client 授权；不通过 URL、日志或 localStorage 暴露 Kernel token。localhost 连接也必须认证、校验 Origin/连接身份、限制请求与消息大小；不为方便桌面接入开放无认证 localhost RPC 或公网 Kernel 端口。\n- 本地可信桌面、LAN、Cloud 原有权限边界继续由同一服务依据认证身份判定；共享 handler 不代表 Remote 获得本地特权。不通过 UI 隐藏按钮实现权限隔离。\n- 复用已批准的 host/runtime_epoch/workspace/pane/activation、输入幂等、snapshot/delta/replay 与审批绑定契约，不另造并行身份或第二套 wire schema。协议新增字段须在其权威 spec 提案中集中定义并通过版本协商。\n- 选择窗口/客户端 workspace 不得改变其他客户端的活动目标；权限、路径沙箱、取消、审批、revision、原子存储校验都在可信服务执行。授权失败、未知方法、失效代际、跨 workspace 请求、重连重复输入均拒绝或按既有幂等契约处理。\n- OS 文件选择只返回展示交互结果；文件读写、剪贴板图像保存与进程执行等业务副作用走服务授权。任意命令执行、任意路径文件 API 不能伪装成残留“原生能力”。\n\n## 6. 验收\n\n### 静态门禁\n\n1. 业务服务/core/kernel 依赖树零 Tauri；不依赖桌面 AppState/AppHandle。\n2. 桌面业务调用全部经共同 RPC client；Tauri command/插件能力为可审计 OS 白名单，无领域 dispatcher、PTY、业务持久化、Agent/Host 后台 owner。\n3. CLI LAN/Cloud/TUI 与桌面使用共同 handler/事件定义；能力清单无未分类命令、无桌面专属业务 fallback、无功能以“暂不支持”静默消失。\n\n### 真进程与多客户端\n\n1. 桌面、CLI、Remote 同时连接同一 Runtime，观察同一 workspace/pane/Agent 身份及事件顺序；各自 selection/activation 隔离。\n2. 启动真实 PTY 与 Agent，强制退出桌面进程，再用 CLI/Remote 继续输入、读取输出、查看审批与恢复；重开桌面绑定原实体，不能重新创建冒充恢复。\n3. 关闭/最小化/后台桌面不影响 Host 或其他客户端。独立服务重启则显式处理新代际；不声称已死 PTY 自动续命。\n4. 文件/Git/搜索/watch、主题/设置、Hosts/Cloud、Agent/Communion/Hub、审批与恢复逐项回归；多窗口与重连、取消、超时、服务不可达、版本冲突、重复请求、跨 workspace、越权均有断言。\n5. 旧用户数据真实迁移并重新读取；中断/权限失败/冲突时无丢失、无双写，备份和归档可识别并可恢复。\n\n### 流与性能\n\n同一构建与可比负载实测桌面、CLI、Remote 的真实 child reply；记录输入/控制队列、parse/feed/render、P50/P95/P99/max、成功数、超时数与诊断开销。保留 FIFO、delta 顺序、history/replay 有界与 active-only 订阅，桌面不得新增镜像转发或重复解析流。覆盖空闲、持续输出、切换、历史、重连、Host 断开与后台；实际 WAN/蜂窝未测须明示，不把本地通过提升为公网性能通过。不以绕过 Tauri 自动推断延迟已下降，不自行杜撰性能阈值。\n\n实施交付运行 npm test、npm run lint、npm run typecheck，相关 Rust unit/integration、真实桌面/CLI/Remote 集成与架构门禁；保存实际证据，再执行 SpecTree verify 与 complete。此设计轮未修改业务代码、未运行上述实施测试。\n\n## 7. 应用与范围协调\n\n新契约节点 `L2-UNIFIED-CLIENT-RUNTIME` 位于项目根下；配套 JSON 的正文由本文件生成，避免两份人工规范。引用现有 `L2-REMOTE-001`、`L2-TERM-001`、`L2-PROTO-001`、ACP 与 Communion 契约；正式应用前逐项更新其中仍声明 shell/Tauri 为权威的正文及与冻结 Runtime 的冲突，保留历史来源，不用新节点遮盖冲突。\n\n实施路径分组见 JSON。新文件/新 crate 或新增协议 surface 必须先通过 SpecTree 纳入实际 allowedPaths；候选路径不是当前代码写入授权。最终锁应基于 CHG-069 完成后的真实调用链重新收窄；不能借 broad glob 顺手重构无关模块。\n\n## Local presentation client bootstrap contract\n\nThe OS shell authenticates POST /v1/local/clients with the private x-ridge-kernel-token header on the loopback Kernel endpoint. Body: {deviceId, origin}; deviceId is a nonempty bounded client/window identity and origin is an exact trusted local application origin (Tauri localhost or HTTP(S) loopback). Neither field grants privileges by itself. Remote/opaque origins and unauthenticated requests are rejected before issuance.\n\nResponse: {protocolVersion, hostId, runtimeEpoch, deviceId, origin, wsUrl, token, expiresAtUnixSeconds, capabilities}. Version and terminal capabilities reuse existing authorities. wsUrl contains no credential and points only to /v1/local/ws on the loopback Kernel endpoint. The token is a separately issued OS-CSPRNG client credential with the existing server-owned 24-hour session lifetime, never the Kernel token. Capabilities advertise only actual shared Host implementations. The current reduced implementation is transitional and cannot satisfy CHG-070 capability parity; full business/local privilege migration remains required.\n\nThe WebView keeps this grant only in memory. Websocket presents the nonsecret deviceId query, Origin header and Sec-WebSocket-Protocol values ridge-client and auth-<token>. Server selects only ridge-client, requires exact origin/device/token matching and accepts only loopback peers. Origin-bound local grants are rejected by ordinary LAN session validators and private Kernel API authentication. Missing/changed identity, expiry and Kernel generation changes fail visibly; no anonymous localhost or desktop business fallback. Socket closure only detaches subscriptions, never stops Kernel/PTY. OS bootstrap may issue a fresh bounded grant; it never extends stale credentials or creates Agent sessions.\n\nAcceptance: real Kernel/websocket clients test unauthorized issuance, wrong origin/device, private-API and LAN reuse, normal RPC/terminal exchange, detach with stable PTY identity and restart invalidation. Browser/native integration must prove Kernel credentials never appear in WebView state, URLs, storage or logs before this slice is complete.\n\n## Native Cloud controller identity migration\n\nRuntime owns native Cloud controller signaling, RTC, E2EE, remote Host connections and controller trust proof. Desktop supplies explicit account/TOTP input and consumes a limited loopback projection; browser Remote clients keep their transport adapters. Existing wire schemas and nonce direction remain unchanged.\n\nNative controller TOFU pins move from the existing ridge.cloud.trust.<device>-<username> localStorage entries to cloud-device-fingerprints.json in the Runtime data namespace. The file is version 1 with a pins object mapping the same host key to the existing XXXX-XXXX-XXXX-XXXX fingerprint. Native desktop reads legacy pins only as migration evidence; it never writes new pins. Runtime imports a validated legacy pin only when no canonical pin exists, persists atomically, and retains that original pin on identity change. Preserve the existing warn-only policy; show identity changes in the Host projection. Invalid, oversized or unreadable persisted data fails visibly with original bytes retained; no empty-state fallback. Pins are public fingerprints, never credentials or private keys.\n\n# CHG-070 Controller identity migration — approved for implementation\n\nPreserve the old native WebView controller public key when moving signing into Runtime. Host identity remains unchanged.\n\n- Runtime owns a separate `cloud-controller-identity.key`, using ridge-core DeviceIdentity's existing encrypted seed format (Windows user-scope DPAPI; Unix 0600). No new key format or crypto algorithm.\n- Before native Cloud connection, WebView reads existing `ridge-cloud` / `identity` / `controller-ed25519-priv` and `ridge_ctrl_identity` only. It never generates, signs, updates, or deletes keys during migration. Seed must be exactly 32 bytes. Unreadable, malformed, or conflicting sources fail with original data retained.\n- An authenticated local migration request accepts the existing seed or verified absence. Remote callers are rejected before storage access. Runtime returns public identity only; private data never enters topology, URLs, logs, or receipts.\n- A present canonical controller key wins. Matching re-import is idempotent; a different legacy key is a visible conflict and cannot overwrite it.\n- With no controller key yet, import the valid legacy seed. If no legacy identity exists, preserve the current Runtime device key for the controller role. If prior Runtime Cloud records already exist, preserve that current identity instead of silently rotating it; conflicting legacy material remains untouched and requires explicit recovery.\n- Publish the key completely before opening Cloud. Concurrent imports serialize; interrupted or failed publication must not produce an ephemeral identity or a successful acknowledgement. Retain the browser original as recovery evidence; future native signing occurs only in Runtime. Browser Remote identity ownership stays unchanged.\n- Acceptance: actual IndexedDB/localStorage read without creation; same legacy public key after Runtime restart; real Rust trust proof accepted by a Host that trusted the legacy browser key; existing Host identity unchanged; malformed/conflicting/denied/interrupted imports preserve bytes and do not connect.\n\n### 工作区恢复与临时运行态\n\n关闭桌面窗口仅断开展示客户端；Kernel Runtime、其持有的 PTY 与仍运行的 Agent 保持活跃，直至用户显式停止 Runtime 或 Runtime 自身退出。不得为维持该运行态而把临时工作区导出成用户保存文件。\n\n桌面启动先连接现存 Runtime 并绑定其工作区与 PTY。恢复文件列表只含已关联、名称非空、文件仍存在且格式有效的本地 `.ridge` 工作区；未保存、无名或临时工作区不得写入用户恢复索引或生成 `session-*.ridge` 文件。Runtime 冷启动不承诺恢复已经终止的 PTY 进程；已保存 `.ridge` 仅恢复工作区布局与元数据，不得冒充重启原终端进程。\n\n验收：关闭桌面后 Kernel 与原 PTY/Agent 仍存活且可由 CLI/Remote继续使用；重开桌面绑定同一运行态而不重复创建 PTY；恢复索引仅含有效的已命名本地保存文件；临时工作区不会创建 session 文件。\n## 工作区通知与品牌视觉\n\n桌面工作区页签以清晰、克制的视觉层级呈现活动工作区、命名本地保存状态及 Agent 新消息提示；临时未命名工作区不暗示已保存或可冷启动恢复。提示按 workspace 隔离，并在用户查看对应 Commune 活动后清除。该层只呈现既有运行态与本地保存事实，不改变恢复、保存或 Agent 生命周期契约。\n\n工作区与 Commune 使用一致的 Ridge 视觉语言：森林绿作单一强调色，表面、边线、文字层级与紧凑数据排版在亮/暗主题中保持可读；交互控件具有明确的悬停、按下、键盘焦点和窄窗状态。不得以视觉状态暗示数据已持久化或操作已成功。\n\n## CHG-129 打包映射复核\n\nMCP companion 是 src-tauri/tauri.conf.json 的 externalBin 生成物；现役代码映射指向 packages/ridge-mcp-bridge 源码及 scripts/build-ridge-mcp-sidecar.mjs（已由 scripts/** 覆盖），产物命名及版本由现有打包测试校验。移除 Windows 可执行文件的源码目标项，不改变打包、运行、鉴权或进程生命周期。\n"
+        },
+        {
+          "id": "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
+          "level": "L4",
+          "title": "Commune 编组后台刷新与写入状态隔离",
+          "parent": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+          "codeTargets": [
+            "src/lib/teammate/teammateGroups.svelte.ts",
+            "src/lib/teammate/HostCommuneGroups.svelte",
+            "src/lib/i18n/messages/commune.ts"
+          ],
+          "testTargets": [
+            "src/lib/teammate/teammateGroups.test.ts",
+            "scripts/commune-global-ui-acceptance.mjs"
+          ],
+          "dependsOn": [
+            "L4-COMMUNE-ORGANIZATION-MEMBERS"
+          ],
+          "body": "# Commune 编组响应与状态反馈\n\n用户要求实施后续迭代计划，包含 Commune 与手机端交互可用性。本变更修复当前后台读取与写入共用 busy 所致的操作间歇禁用，保持既有组织成员、协议身份、CAS、派发恢复和历史契约。\n\n## 可观察行为\n初次取得有效投影前，写操作保持禁用并显示加载状态。失败时提供明确错误和显式刷新入口，未知 revision 不得当成有效 revision 0 提交。已有有效投影后，后台刷新显示独立、低干扰状态，不清空表单、选择和最后确认内容，不禁用编辑、取消或正常提交。正在提交时只串行化写操作，仍可取消本地确认。所有实际写入仍使用最后确认 revision 经过 Runtime CAS。\n\n## 并发与恢复\n读取中开始写入后，先前读取及其失败不得覆盖写入结果、错误、revision 或状态。实际写入进行中至多一条，同一作用域重复刷新合并为一次后续读取。作用域或 Remote 连接身份切换使旧读取和写入回包失效，不能清除新作用域的加载状态。刷新失败保留已确认投影并展示可重试状态。写入失败继续按既有权威重读恢复，不自动重放写入。历史 workspace 的首次显式 legacy 迁移仍视作写入，在迁移结束前禁止竞争写入，不改变归档和数据保留语义。\n\n## 界面\nNative 与 Remote 共用 HostCommuneGroups，用现有设计 token、字体与组件密度呈现独立的初次加载、后台刷新、保存和错误反馈，提供中英文文案与 aria-live 状态。窄屏保持可读、键盘焦点可见及触摸操作尺寸，成员身份与来源、组长和编组能力继续可辨。\n\n## 验收边界\n单测须实际控制读取和写入 Promise 顺序，覆盖旧读取成功及失败、写入并发、作用域切换和 legacy 迁移。浏览器验收挂起生产组件的背景读取，执行真实 Kernel CAS 写入，再释放旧快照核对新组保持。使用隔离 Kernel 与协议 fixture，真实外部 Agent、手机和公网证据继续独立记录。\n\n## 共用 UI 验收映射\n\n本节点原有全量浏览器验收由 L4-COMMUNE-UI-ACCEPTANCE 统一执行。该验收单元显式依赖本节点，行为变化仍须触发同一完整脚本与全部原断言；独立协议、存储、权限和其他验收命令保持原定义。\n",
+          "acceptanceChecks": [
+            {
+              "id": "group-refresh-races",
+              "command": [
+                "pnpm",
+                "exec",
+                "vitest",
+                "run",
+                "src/lib/teammate/teammateGroups.test.ts"
+              ],
+              "description": "覆盖初次加载、后台读取中写入、过期读取与错误返回、写入并发拒绝、作用域切换、失败后显式重试及 legacy 迁移互斥"
+            }
+          ]
+        },
+        {
+          "id": "L4-COMMUNE-GROUP-USABILITY",
+          "level": "L4",
+          "title": "Commune 协作入口与完整编组成员选择",
+          "parent": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+          "codeTargets": [
+            "src/lib/teammate/TerminalAgentRow.svelte",
+            "src/lib/teammate/HostCommuneGroups.svelte",
+            "src/lib/teammate/teammateGroups.svelte.ts",
+            "src/lib/teammate/AgentCenterPanel.svelte",
+            "src/remote/lib/GlobalCommuneRoster.svelte",
+            "src/lib/i18n/messages/commune.ts",
+            "src/lib/teammate/communeVisual.css"
+          ],
+          "testTargets": [
+            "src/lib/teammate/teammateGroups.test.ts",
+            "scripts/commune-global-ui-acceptance.mjs"
+          ],
+          "dependsOn": [],
+          "body": "# Commune 协作入口与编组可用性\n\n用户明确要求修复难懂的协议操作、列表有成员却无编组候选及操作不便。协作连接、发送、审批等已有内容直接呈现在成员卡上，终端人工按键和输入保持独立可展开区域。\n\n建组流程明确展示所有已登记成员及其来源、在线状态和所属组。已归组成员可见并解释单主组约束，允许通过明确目标选择移动到另一组。移动复用现有组文档 CAS，一次请求同时从原组移出和在目标组加入，原组长被移出时清除原组长，不改已冻结任务。读取失效、并发修订冲突或写失败保留服务端确认的组，不作拆成两次写入的中间迁移。\n\n未登记终端候选在建组界面可见，说明协作会话待接入。桌面提供现有连接动作，Remote 定位原终端并说明须在主机完成登记。候选不能伪装协议身份，禁止隐式登记、发任务或终端输入。稳定组织成员身份与跨协议连接的持久化合并仍属 CHG-092 待定版设计。\n\n建组完成自动展开该组，流程依次指引成员、目标和确认派发。派发资格与编组成员分开说明。失败、同步中、无成员、全已归组与候选待连接各有可理解状态。共享主题和控件风格保持一致，主要操作适配手机触控。\n\n验收覆盖跨工作区同名/不同成员、候选无协议权限、全部已归组仍可见、成员移动的单次 CAS 和组长处理、冲突失败不覆盖、已冻结任务不改绑以及窄屏不横向溢出。\n\n建组允许先创建空组，随后添加或移动成员。此操作沿用 Runtime 已支持的空组文档形态，不发送任务、不建立会话；已全部归组时仍有清晰可达的重组路径。失联成员使用可读占位名称，原始身份在详情中保留。\n\n## 共用 UI 验收映射\n\n本节点原有全量浏览器验收由 L4-COMMUNE-UI-ACCEPTANCE 统一执行。该验收单元显式依赖本节点，行为变化仍须触发同一完整脚本与全部原断言；独立协议、存储、权限和其他验收命令保持原定义。\n",
+          "acceptanceChecks": []
+        },
+        {
+          "id": "L4-COMMUNE-MOBILE-GROUP-NAVIGATION",
+          "level": "L4",
+          "title": "手机 Commune 编组与派发导航",
+          "parent": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+          "codeTargets": [
+            "src/remote/lib/GlobalCommuneRoster.svelte",
+            "src/remote/lib/CommuneWorkspaceRoster.svelte",
+            "src/remote/lib/CommuneMemberMessage.svelte",
+            "src/remote/lib/RemoteSidebar.svelte",
+            "src/lib/teammate/HostCommuneGroups.svelte",
+            "src/lib/teammate/CommuneGroupTasks.svelte",
+            "src/lib/teammate/communeVisual.css",
+            "src/lib/teammate/communeUiText.ts",
+            "src/lib/i18n/messages/commune.ts",
+            ".stcignore",
+            "src/remote/CloudAuthScreen.svelte"
+          ],
+          "testTargets": [
+            "scripts/commune-global-ui-acceptance.mjs"
+          ],
+          "dependsOn": [
+            "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
+            "L4-COMMUNE-GROUP-USABILITY"
+          ],
+          "body": "# 手机 Commune 编组与派发导航\n\n## 范围\n\n重排手机 Remote 的 Commune 入口，覆盖成员、编组、历史。沿用桌面组件和现有主题令牌。接入身份、权限、组文档、组 revision 与派发意图仍由现行 Runtime 契约管理。\n\n## 行为\n\n拥有主机组视图的手机用户从 Commune 首屏直接进入「编组」。进入后显示组、成员摘要和组派发入口。组卡将「派发任务」置于成员详情之前，保留既有的选人、填写目标、确认和结果反馈。创建、加成员、移组、改名和解散维持可达，管理动作在视觉上次于派发；解散仍需确认。受限工作区遵循已有授权和入口可见性。\n\n成员与组内选人优先呈现可读的工作区或终端名称，让同名 Agent 可区分。完整路径和原标识可按现行权限查看。使用宿主主题色，明确选中、待接入、运行、待审批和失败状态。手机侧栏的标签与关闭按钮采用至少 44×44 CSS px 的有效触控区；固定导航有连续背景且不遮挡内容。用紧凑标签、边界和状态层次保持与终端界面一致。\n\n成员和组的操作使用已有同步与重试链路。切换视图保留未确认派发及新草稿。已有任务、审批和历史继续按原会话归属呈现。\n\n## 验收\n\n用含两个同名、不同工作区成员和一个已有组的隔离 Runtime，在 320 和 390 CSS px 粗指针视口验证中英文。打开 Commune 后无需滚动成员列表即可进入编组，选组后首屏可见「派发任务」。核对同名成员来源、键盘焦点、侧栏触控尺寸、滚动和安全区，无横向溢出。回归从终端先编组再接入、无成员、失联、组派发、丢回执后重试及受限工作区可见性。保留桌面布局及现有测试，执行 npm test、npm run lint、npm run typecheck 与 SpecTree 门禁。\n\n## 共用 UI 验收映射\n\n本节点原有全量浏览器验收由 L4-COMMUNE-UI-ACCEPTANCE 统一执行。该验收单元显式依赖本节点，行为变化仍须触发同一完整脚本与全部原断言；独立协议、存储、权限和其他验收命令保持原定义。\n",
+          "acceptanceChecks": []
+        },
+        {
+          "id": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+          "level": "L4",
+          "title": "Commune 稳定组织成员与先编组后接入",
+          "parent": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+          "codeTargets": [
+            "src/lib/teammate/AgentCenterPanel.svelte",
+            "src/lib/teammate/TerminalAgentRow.svelte",
+            "src/lib/teammate/AgentMemberRow.svelte",
+            "src/lib/teammate/HostCommuneGroups.svelte",
+            "src/lib/teammate/communeMembership.ts",
+            "src/lib/teammate/teammateGroups.svelte.ts",
+            "src/remote/lib/GlobalCommuneRoster.svelte",
+            "src/remote/lib/CommuneWorkspaceRoster.svelte",
+            "packages/ridge-kernel/src/agent_discovery.rs",
+            "packages/ridge-kernel/src/commune.rs",
+            "packages/ridge-kernel/src/commune_groups.rs",
+            "packages/remote/src/shared/transport/wsRemote.ts",
+            "src/lib/teammate/teammateModel.ts",
+            "src/lib/teammate/CommuneGroupTasks.svelte",
+            "src/lib/teammate/communeGroupDispatch.ts",
+            "src/lib/i18n/messages/commune.ts",
+            "packages/ridge-kernel/src/server.rs",
+            "packages/ridge-kernel/src/commune_permissions.rs",
+            "src/lib/teammate/CommuneConnectionDialog.svelte",
+            "packages/ridge-kernel/src/domain.rs",
+            "packages/ridge-kernel/src/kernel_mcp.rs",
+            "packages/ridge-core/src/process_identity.rs"
+          ],
+          "testTargets": [
+            "packages/ridge-kernel/tests/commune_registration.rs",
+            "scripts/commune-global-ui-acceptance.mjs",
+            "src/lib/teammate/communeMembership.test.ts",
+            "src/lib/teammate/teammateGroups.test.ts",
+            "packages/ridge-kernel/tests/agent_catalog_runtime.rs",
+            "src/lib/teammate/communeGroupDispatch.test.ts",
+            "scripts/commune-permission-ui-acceptance.mjs",
+            "packages/ridge-kernel/src/commune_groups.rs",
+            "packages/ridge-core/src/process_identity.rs"
+          ],
+          "dependsOn": [],
+          "body": "# Commune 统一成员与先编组后接入\n用户已明确批准 CHG-092 草案，采用既有 agentId、v3 组文件、先编组后接入及归档迁移。CHG-091、CHG-094、CHG-097、CHG-098 已分别完成消息确认、协作入口与组管理、连接文件向导、组派发意图恢复。本提案剩余范围为稳定组织成员、终端候选编组和接入后的连续性。上述已完成行为由各自规范继续约束。\n\n## 产品语义\n1. 成员表示用户编组和管理的协作者。组织成员可尚未连接协作协议，组内同时显示终端可用、协作已连接、可执行能力与限制原因。\n2. 浏览发现列表不登记成员、不写盘。用户选中终端候选并确认建组或加入组时，由 Runtime 核验当前候选并分配或复用稳定 agentId。\n3. 终端候选、组织成员、协议身份在界面合成同一成员卡。同名、同目录均不能用于合并，来源工作区和分屏始终可区分。\n4. 后续接入精确原进程的已有协议会话，沿用已登记 agentId 和原组。没有 conversation.prompt 的成员不能接收结构化任务。终端输入仍由独立人工操作入口处理。\n5. 断开协作、移出编组、归档成员为不同操作。断开只撤销既有控制连接，组织记录和组引用保留。移出组沿用现有组 CAS。归档须成员已移出活动组、无活动协议连接和待处理审批，历史保留。\n6. 组长可作为组织角色预先安排，实际发送始终检查在线绑定、能力和调用者权限。成员派发、审批及结果继续引用已冻结的真实 session、generation 和 lease。\n7. 实际 Agent 能力逐项显示。历史缺失显示覆盖范围，未观察到审批事件时说明来源未提供，普通终端输出不冒充协议历史。\n\n## 单一事实源与持久化\n采用现有 commune-groups.json 的 version 3 增量，在顶层增加 members，键为稳定 agentId。groups 的 memberAgentIds、leaderAgentId 及已有任务引用保持现有形态。agent-roster.json 继续仅持有协议身份与运行代际，不为未连接组织成员伪造 sessionId、lease 或能力。\n\nmembers 值包含 name、source、archived。name 为运行方已观察到的可读名称快照。source 可空，非空时包含 hostId、workspaceId、paneId、terminalEpoch、process，process 沿用现有 ProcessInstance 的 pid 与 startInstance。source 只保留最后核验来源，不声明该进程当前存活。archived 默认为 false。新字段的内部 Rust 类型和序列化实现由实施者决定，磁盘版本和以上语义为约束。\n\n已有协议成员登记到组织名册时直接复用其 agentId。只有既有组引用而无可核验身份的历史成员，保留原 ID 并生成来源为空的历史占位，能力均不可用。组织记录与协议身份按 agentId 合成呈现，协议会话事实仍来自当前权威 roster 与真实连接。\n\n此布局利用现有组文档的 write_atomic、归档与版本拒绝机制，避免建立第二套成员编号，也避免把不具备 session 的成员写入 commit_online_agent。新增成员和加入组落同一次文档提交。\n\n## 发现引用与权限\n发现投影增加可选 candidateRef，为 Runtime 发行的不可伪造、不可跨 Runtime 复用的 opaque 引用。它绑定 host、workspace、pane、terminalEpoch 和准确进程启动实例。刷新时可复用仍有效的引用，进程、终端代际或 Runtime 改变后失效。发行引用只使用临时内存，不持久化成员。\n\nNative 与 Remote 接收同一引用。Remote 仍不接收进程和凭据详情。引用本身不授予权限，所有写入须通过现有 set_teammate_groups、连接只读策略及可操作工作区边界校验。归档和组织登记均不开放 native-only 的 register_commune_member。\n\n旧 Host 未提供 candidateRef 时，界面明确提示需要支持该能力的 Host，继续允许管理已登记成员，禁止按名称、paneId 或目录猜测身份。\n\n## 编组写契约\n现有 set_teammate_groups 的 Host 请求保留 groupScope、expectedRevision、groups，并增加可选 enrollments 数组。每项仅含 candidateRef 和 groupId，groupId 必须属于本次 groups。候选没有客户端指定的新 agentId。\n\nRuntime 在统一成员变更串行边界内复核候选、当前协议身份与组织记录。相同精确来源已经有稳定 ID 时复用，相同候选的并发请求至多建立一条记录。无法唯一解释的既有绑定冲突直接拒绝，不自动合并 ID、组或历史。\n\n解析候选后，在本次 groups 相应成员表中加入稳定 ID，再执行既有组验证、单主组约束、修订检查和一次原子落盘。失败保留旧文档与旧投影，不留“登记成功但入组失败”的半提交。纯 legacy 请求不携带 enrollments 时沿用旧行为，不能因旧客户端缺少 members 字段删除组织名册。\n\n归档通过同一组文档变更入口的可选 archiveMemberIds 数组提出。Runtime 核验该成员不在提交后的活动组、无活动连接和审批后设置 archived。恢复通过可选 restoreMemberIds 数组明确提出，只恢复组织记录，不授予控制权；来源依然按当前事实显示。两个数组不能包含同一 ID，未知 ID、重复 ID 或未满足状态条件均拒绝整个提交。归档不删除记录，不回收其 ID。候选解析命中已归档 ID 时，须本次显式恢复，不能自动另建身份或恢复。\n\n## 协议接入与重新绑定\nregister_commune_member 沿用当前 native 信任、进程树、端点归属、已有 session、协议及鉴权校验。准确原候选已登记组织成员时，正常接入自动复用该 agentId，组文件无需改写。\n\n请求可选 memberAgentId 仅用于用户显式选择原组织成员重新绑定。默认不凭同一 pane、标题或 CWD 接续新进程。不同进程、不同 session 或代际冲突先预览差异，原连接活跃、任务执行中或审批待处理时拒绝覆盖并引导先完成既有结束流程。失联旧任务继续保留原未知结果，不能转发给新会话。\n\n身份选择、组织登记与协议登记共享当前 Runtime 成员变更串行边界，避免握手和编组并发产生两个 ID。优先复用现有 commune 连接互斥与注册校验，实施时核对完整锁顺序。接入只提交新的协议绑定和递增 generation，组织组引用仍为原 ID。既有任务、审批及历史不改写、不补发。\n\n若指定组织 ID 已归档，须先显式恢复，不能由自动发现或自动接入恢复。若认证 peer/session 已绑定另一个成员 ID，返回可审查冲突，禁止静默迁移或拼接历史。\n\n## 兼容与恢复\n1. version 1、2 文件可读取和投影，读取不触发迁移。首次显式组织编组写入时，对旧字节建立按摘要命名的归档，再一次写入完整 version 3。写入或归档失败不改变旧文件。\n2. 既有 Host、workspace、archived groups 和 legacy 原始数据完整保留。已有 agentId、groupId、任务 ID、generation、lease 和历史序列保持原值。\n3. 在写入事务中将已知协议成员和历史组引用补入 members，重复迁移按稳定 ID 幂等。损坏、重复身份或无法解释的引用不静默覆盖，保留原文件并给出诊断。\n4. 旧 Runtime 的 Document 反序列化拒绝未知字段且仅支持版本 1、2，不能重写 version 3。降级使用归档须作为明确的数据恢复操作，先保留当前 version 3，不能自动覆盖。\n5. 旧客户端可继续读取和提交原组字段。组织成员只在当前文档维护，旧请求不能删除其记录。支持新能力的客户端消费 candidateRef 与成员投影，缺省按已登记成员降级显示。\n6. Runtime 重启后组织成员与组仍在，所有运行状态重新核验。旧 candidateRef、旧进程启动实例、旧 terminalEpoch 或旧 lease 均不能提供新控制权。\n\n## 实施单元\nA. version 3 组织成员与组写事务，补齐归档、兼容和故障恢复。\nB. 可信候选引用、Native/Remote 发现投影与候选入组，复用已登记 ID。\nC. 原会话接入复用成员、显式重新绑定、并发身份唯一性和旧任务隔离。\nD. 同一成员卡和组选择器贯通 Native/Remote，按有效能力呈现操作与禁用原因，完成只读、失联、迁移失败及重试路径。\nE. 原用户 Agent 的身份、历史、一次派发、真实审批与返回原任务，分别记录 Native、LAN、Cloud、手机的实际证据。缺少实际 Agent 启动方式或真机时保持待验收。\n\n## 必须验证\n- 普通终端候选无协议 session 时可加入组织编组，成员编号稳定，结构化派发不产生任何协议或终端输入副作用。\n- 同名跨工作区成员可独立选组，Remote 通过 opaque 引用精确入组，不泄露 PID、端点或凭据。\n- 先入组再连接原已有会话，仍为同一 ID、同一组，只新增已核实能力。\n- 候选退出、PID 复用、终端重建、工作区关闭、跨 Runtime 引用、只读连接、越权和过期修订均在副作用前拒绝。\n- 入组与协议握手并发只生成一个稳定 ID；两个客户端同时入组通过 CAS 收敛，失败重试不重复登记。\n- 归档、重新绑定、断开和成员移动保持明确边界。原运行中、未知结果、审批或历史不能迁给新会话。\n- 从旧文件迁移两次、旧客户端提交、旧 Runtime 拒绝新文件、归档失败、磁盘写失败、进程重启恢复与损坏数据保护。\n- 一次入组提交失败后既无新成员也无新组引用；成功但 ACK 丢失后刷新和明确重试仍只有一条组织记录。\n- 移动成员与组长变更仍使用现有单次 CAS，组任务仍冻结原 session/generation/lease，复用 CHG-098 未确认派发保护。\n- 实际 Agent 接入后，从同一成员卡完成身份、明确覆盖范围的对话、一次任务、真实审批与结果返回。Fixture 只证明隔离实现，不能代替外部互操作、真机或 WAN。\n\n\n## 共享投影\n\nHost get_teammate_topology 的 groupScope=host 投影在现有 groups、groupsRevision 外提供可选 members 数组。新实现返回完整组织成员投影，旧客户端可忽略。每项含 agentId、name、archived、workspaceId、paneId、terminalAvailable、protocolConnected、canSend、canCancel，以及存在真实协议绑定时的 generation、lease、sessionId、capabilities。历史来源字段可空。Native 可读取受信来源详情，Remote 不接收 source.process、端点或凭据。canSend 与 canCancel 为调用者方法权限、当前连接及对应协议能力的交集；终端可用不等于协议可用。未提供能力字段按不可用处理。\n\nget_teammate_topology 的既有协议 roster 兼容保留，发现项增加可选 candidateRef。Host 成员与发现候选、协议 roster 由同一 agentId 或经核验的精确来源合并。失联组织成员即使工作区当前未打开仍可管理其组关系。Runtime 重启和成员事件仅刷新事实，不自动登记、重绑定或派发。\n\n## 端点归属可观察性\n既有进程和 TCP 四元组归属校验始终为接入前置条件。Windows 连接表尚未给出该精确连接的归属或仅有未归属 PID 0 时，可在同一条连接内进行有界只读观察等待，每次重验原进程启动实例，最终仍须唯一归属为声明的 PID。其他非零 PID 或歧义归属立即拒绝。等待耗尽保留未连接状态，不重建 socket、不重试协议握手、不产生派发。\n\n## 共用 UI 验收映射\n\n本节点原有全量浏览器验收由 L4-COMMUNE-UI-ACCEPTANCE 统一执行。该验收单元显式依赖本节点，行为变化仍须触发同一完整脚本与全部原断言；独立协议、存储、权限和其他验收命令保持原定义。\n",
+          "acceptanceChecks": [
+            {
+              "id": "organization-socket-attestation",
+              "command": [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "ridge-core",
+                "process_identity"
+              ],
+              "description": "精确进程与 TCP 归属校验，未可观察状态有界等待，错误 PID 和歧义归属始终拒绝"
+            },
+            {
+              "id": "organization-runtime",
+              "command": [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "ridge-kernel",
+                "--test",
+                "commune_registration"
+              ],
+              "description": "真实 Runtime 的候选入组、身份复用、并发、只读与旧任务隔离，fixture 不代替外部 Agent"
+            },
+            {
+              "id": "organization-storage",
+              "command": [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "ridge-kernel",
+                "--lib",
+                "commune_groups"
+              ],
+              "description": "组文档 version 1/2/3、原子提交、归档、CAS 与迁移失败保护"
+            },
+            {
+              "id": "organization-kernel-build",
+              "command": [
+                "cargo",
+                "build",
+                "--locked",
+                "-p",
+                "ridge-kernel",
+                "--bin",
+                "ridge-kernel"
+              ],
+              "description": "以当前源构建后续 UI 使用的真实 Kernel"
+            },
+            {
+              "id": "organization-catalog",
+              "command": [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "ridge-kernel",
+                "--test",
+                "agent_catalog_runtime"
+              ],
+              "description": "Native/Remote 可信发现、只读投影、来源脱敏与工作区关闭后引用失效"
+            },
+            {
+              "id": "organization-membership-ui",
+              "command": [
+                "node",
+                "scripts/commune-permission-ui-acceptance.mjs",
+                "--membership"
+              ],
+              "description": "真实 Runtime 的已有会话连接文件向导、鉴权与进程校验拒绝、修正重试和断开保留历史"
+            },
+            {
+              "id": "organization-dispatch-regression",
+              "command": [
+                "node",
+                "scripts/commune-permission-ui-acceptance.mjs"
+              ],
+              "description": "审批、协议历史、旧工作区组兼容及 CHG-098/099 的失联回执确认保护"
+            }
+          ]
+        },
+        {
+          "id": "L4-COMMUNE-REMOTE-DELIVERY",
+          "level": "L4",
+          "title": "Remote 单成员消息确认与安全重试",
+          "parent": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+          "codeTargets": [
+            "packages/remote/src/shared/transport/wsRemote.ts",
+            "src/remote/lib/cloudRemote.ts",
+            "src/remote/lib/CommuneWorkspaceRoster.svelte",
+            "src/remote/lib/CommuneMemberMessage.svelte",
+            "src/remote/lib/communeMemberDelivery.ts",
+            "src/lib/teammate/communeUiText.ts"
+          ],
+          "testTargets": [
+            "src/remote/lib/communeMemberDelivery.test.ts",
+            "src/remote/lib/cloudRemote.test.ts",
+            "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+            "scripts/commune-global-ui-acceptance.mjs",
+            "src/lib/stores/hosts.connect.test.ts"
+          ],
+          "dependsOn": [],
+          "body": "# Remote 单成员消息确认与安全重试\n\n## 批准依据\n\n用户要求实现审核后的 Commune 与 Remote 迭代。本单元落实既有精确会话、幂等投递、未知结果与协议取消契约。\n\n## 行为\n\n一次发送意图冻结连接、workspace、pane、member、generation、lease、正文和请求键。提交期间重复点击或 Enter 不产生第二次提交。回执丢失保留原意图，用户重试复用原键及原正文，不自动重发。新草稿独立保留，迟到确认只清除仍与所提交快照相同的草稿。\n\n消息状态在当前 RemoteLink 生命周期内按精确目标隔离，切换来源或组件重挂载保留未确认意图，代际变化不向新会话重放旧请求。页面重载后的跨会话恢复不由本单元新增持久化。\n\nLAN 和 Cloud 使用相同调用契约，保留原有两参数发送调用。能力缺失、离线或无精确绑定时禁止发起新请求。展示真实回执并允许只读刷新，执行状态与投递受理分开。取消携带原 deliveryId 和精确身份，取消请求成功后等待真实终态。读取失败保留最后回执并提示错误。\n\n## 验收\n\n覆盖双击/Enter、已提交后丢回执、重试固定键、发送中继续编辑、同文的新发送使用新键、未确认状态重挂载、来源和运行代际隔离、查询失败与取消结果未知。传输测试分别证明 LAN/Cloud 请求字段、状态查询和取消透传。受控真实 ACP 进程验证逻辑消息仅执行一次，不把本机窄屏证据扩充为真实手机或 Cloud/WAN 验收。\n\n## 门禁隔离\n\nHost 连接单测必须使用受控共享列表，模拟鉴权不能触发外部 Cloud HTTP。保持原 5 秒超时及业务断言。\n\n## 共用 UI 验收映射\n\n本节点原有全量浏览器验收由 L4-COMMUNE-UI-ACCEPTANCE 统一执行。该验收单元显式依赖本节点，行为变化仍须触发同一完整脚本与全部原断言；独立协议、存储、权限和其他验收命令保持原定义。\n",
+          "acceptanceChecks": []
+        },
+        {
+          "id": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+          "level": "L4",
+          "title": "共享 daemon 中的终端会话归属",
+          "parent": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+          "codeTargets": [
+            "packages/ridge-core/src/process_identity.rs",
+            "packages/ridge-acp/src/transport.rs",
+            "packages/ridge-kernel/src/commune_endpoint.rs",
+            "packages/ridge-kernel/src/managed_agent.rs",
+            "packages/ridge-kernel/src/managed_console.rs",
+            "packages/ridge-kernel/src/commune.rs",
+            "packages/ridge-kernel/src/agent_discovery.rs",
+            "packages/ridge-kernel/src/app_server.rs",
+            "src/lib/teammate/CommuneStartDialog.svelte",
+            "src/lib/teammate/communeLaunch.ts",
+            "src/lib/i18n/messages/commune.ts"
+          ],
+          "testTargets": [
+            "packages/ridge-core/src/process_identity.rs",
+            "packages/ridge-acp/tests/transport_guard.rs",
+            "packages/ridge-kernel/tests/shared_daemon_binding.rs",
+            "packages/ridge-kernel/tests/managed_agent.rs",
+            "src/lib/teammate/communeLaunch.test.ts",
+            "scripts/commune-shared-daemon-acceptance.mjs",
+            "scripts/commune-global-ui-acceptance.mjs"
+          ],
+          "dependsOn": [
+            "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION"
+          ],
+          "body": "# 共享 daemon 中的终端会话归属\n\n## 范围\n\n本契约只规范多客户端共用一个 daemon 时，Ridge 如何把终端分屏与既有协议会话关联。沿用现行的独立终端、原生会话、agentId、编组、历史和权限流程。先完成 CHG-103 的通用接入与独立门禁，再实施此契约。\n\n## 核验与接入\n\n- Runtime 需分别核验原终端客户端的进程启动实例、所连接的 daemon 实例，以及该客户端当前会话的准确标识。会话归属须来自 Runtime 已持有的该客户端协议通道，或来自可信运行方提供且可复核的客户端与会话绑定。只读预览不创建、切换或接管会话，也不向模型派发。\n- 允许通过协作启动复用现有桥接器。桥接器仅在用户显式选择时启动，观察原客户端与 daemon 之间的真实会话创建、恢复和切换。运行方提供可信绑定时，已有终端可直接接入，无需填写连接 JSON。Windows 命名管道与 Unix socket 等传输应在所用连接上核验实际对端。原生独立终端继续按原方式启动。\n- PID、同目录、会话列表、历史文件、终端输出、协议能加载或能派发，均不能单独授权。Grok 状态栏可提示当前会话与切换，但其输出或可写回调文件单独不足以证明 daemon 所确认的归属。运行方不提供可验证绑定时，成员保持可编组，并提示“无法确认原终端的会话归属”；不假定其历史可读、任务可派发或审批可处理。\n- Runtime 通过既有候选引用向本机客户端提供短期可验证的接入选择。引用绑定 Runtime 和分屏代际、客户端和 daemon 启动实例、当前会话及经授权的能力。提交时及历史接入、派发或审批前，在实际连接上核验仍是同一绑定。超时、进程退出或复用 PID、端点更换、会话切换和缺少能力时，停止受影响的操作并解释原因。无法判断请求是否已送达时保留现有未知回执，不自动重试或改派。\n- 附加成功复用已编组成员的 agentId。绑定失效不改变分组，不中断原终端，也不覆盖原会话历史。重新接入同一会话后恢复相应能力。切到另一会话后须按现行重绑授权重新验证；旧会话回执、历史和审批仍各自归属原会话。Remote 仅取得已授权能力与脱敏结果，不返回本机归属凭据。\n\n## 验收\n\n- 用真实共享 daemon 和两个同目录客户端验证至少一条有可信绑定的接入路径，分别派发到各自既有会话，核对原终端进程、会话 ID、agentId、编组及回放来源。已有无证明的第三个客户端即使能列出、加载和派发也不可因此接入。\n- 验证普通终端子进程写入同名状态文件、过期回调、PID 复用、错误端点和双客户端交换会话标识均不能建立绑定。验证切换发生在预览与提交之间、提交与派发之间或审批等待中时，旧授权不被新会话继承。\n- 验证 daemon 重启、客户端退出、短期证据过期、端点鉴权失败及恢复。无隐式新会话、无重复派发、无跨会话历史泄露；编组不受影响。分别记录真实运行方和 fixture 覆盖。仅运行模拟或协议发现检查不得计为真实接入通过。\n\n## 既有规划的实施入口\n\n批准依据：用户“全部授权通过”及“还有什么没做的吗？如果有，就按照已有规划推进迭代”。原候选 CHG-122 位于 commune-shared-daemon-spec 工作树，与主仓编号冲突，本轮按真实下一编号登记，不覆盖已完成的主仓 CHG-122。\n\n复用显式协作终端，CLI 增加 `ridge agent --connect <local-endpoint> --protocol <acp|acp-ws|app-server> [--bearer-token-file <absolute-file>] [--auth-method <ACP-method>] [--cwd <absolute-directory>]`。connect、profile、command 三选一；connect 必须显式选协议，不接受进程参数或任意 sessionId。凭据仅引用本机文件，禁止 URL 用户名、query、fragment 和非本机端点。acp 字节流不接收 WebSocket Bearer 文件。桌面沿用同一新建协作终端对话框，提供本机共享服务选择、协议和可选凭据文件；显示将创建新协议会话，不能称为接管另一个原生终端。Remote 不取得创建或凭据权限。\n\n用户显式创建后，控制台即该共享服务的协议客户端。先在实际连接核验 daemon 的 PID 和启动实例，再在同一已鉴权通道创建唯一会话并固定其准确标识；不依赖第三方列举会话，不重试未知创建或派发。借现有短期候选引用发布控制台本身的进程实例与本机固定会话网关，复用原 native 连接、agentId、编组与回放来源。普通终端和无证明客户端的直接接入不放宽现有进程树限制；其未接入原因明确提示无法确认原终端会话归属。\n\nTCP 使用原连接准确四元组的唯一非零 OS 对端 PID；Unix socket 使用该连接实际 peer PID。持有连接，后续发送、历史加载和审批答复前重新核验同一启动实例与连接。平台无法证明时拒绝。终端退出只关闭本客户端连接，绝不终止、重启或接管共享 daemon。鉴权失败在创建会话之前终止；恢复必须由用户显式新建或重新连接。控制台本轮固定一会话，不提供任意会话切换命令；交换 SID、过期候选、端点替换及失效期间的旧审批均不可继承授权。已有失联成员和编组记录保留，不把未完成任务改成成功。\n\n验收区分真实运行方与受控协议 fixture。Grok 真实验证沿用本轮用户豁免，保持 SKIPPED；此豁免不用于跳过共享绑定、鉴权、派发、审批或仓库门禁。\n\n## 共用 UI 验收映射\n\n本节点原有全量浏览器验收由 L4-COMMUNE-UI-ACCEPTANCE 统一执行。该验收单元显式依赖本节点，行为变化仍须触发同一完整脚本与全部原断言；独立协议、存储、权限和其他验收命令保持原定义。\n",
+          "acceptanceChecks": [
+            {
+              "id": "shared-build",
+              "command": [
+                "cargo",
+                "build",
+                "--locked",
+                "-p",
+                "ridge-kernel",
+                "-p",
+                "ridge-cli",
+                "-p",
+                "ridge-acp",
+                "--bin",
+                "ridge-kernel",
+                "--bin",
+                "ridge",
+                "--bin",
+                "fake_acp_agent"
+              ],
+              "description": "构建真实 Kernel、CLI 与既有受控 ACP 进程"
+            },
+            {
+              "id": "shared-os-peer",
+              "command": [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "ridge-core",
+                "process_identity::"
+              ],
+              "description": "连接四元组、唯一实际对端、启动实例与错误归属保护"
+            },
+            {
+              "id": "shared-transport-revocation",
+              "command": [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "ridge-acp",
+                "--test",
+                "transport_guard"
+              ],
+              "description": "绑定失效后拒绝派发、取消及迟到审批响应，不重复发送"
+            },
+            {
+              "id": "shared-binding-runtime",
+              "command": [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "ridge-kernel",
+                "--test",
+                "shared_daemon_binding"
+              ],
+              "description": "共享协议 fixture 的精确双会话、原成员编组、过期预览、错误来源及服务退出"
+            },
+            {
+              "id": "shared-real-codex",
+              "command": [
+                "node",
+                "scripts/commune-shared-daemon-acceptance.mjs"
+              ],
+              "description": "隔离真实 Codex daemon、两个同目录协作客户端与无归属第三客户端，核对真实会话、派发和历史；模型响应使用本地受控服务，不能提升为外部模型或公网验收"
+            },
+            {
+              "id": "shared-existing-managed",
+              "command": [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "ridge-kernel",
+                "--test",
+                "managed_agent"
+              ],
+              "description": "已有独立终端、鉴权失败、重试、桥接和进程生命周期回归"
+            },
+            {
+              "id": "shared-ui-fixture-build",
+              "command": [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "ridge-kernel",
+                "--test",
+                "commune_registration",
+                "--no-run"
+              ],
+              "description": "从当前源码构建 UI 所用的受控协议进程，不依赖旧 target 产物"
+            }
+          ]
+        },
+        {
+          "id": "L4-COMMUNE-UI-ACCEPTANCE",
+          "level": "L4",
+          "title": "Commune 共用全量 UI 验收",
+          "parent": "L3-SPEC-MAPPING-GOVERNANCE",
+          "codeTargets": [
+            "scripts/commune-global-ui-acceptance.mjs"
+          ],
+          "testTargets": [
+            "scripts/commune-global-ui-acceptance.mjs"
+          ],
+          "dependsOn": [
+            "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
+            "L4-COMMUNE-GROUP-USABILITY",
+            "L4-COMMUNE-MOBILE-GROUP-NAVIGATION",
+            "L4-COMMUNE-ORGANIZATION-MEMBERS",
+            "L4-COMMUNE-REMOTE-DELIVERY",
+            "L4-COMMUNE-SHARED-DAEMON-BINDING"
+          ],
+          "body": "# Commune 共用全量 UI 验收\n\n复用现有 scripts/commune-global-ui-acceptance.mjs，一轮验证完整执行一次。原脚本、全部断言和隔离 Runtime 保持原实现，不缓存验证结果。\n\n## 影响关系\n\n本单元依赖下列六个需求节点；任意节点变化须经 SpecTree 影响传播触发本单元。各需求保留原 test_targets 与产品验收正文，其他独立命令不合并。\n\n- L4-COMMUNE-GROUP-RESPONSIVE-STATE（原 group-refresh-ui）：生产 Commune 组件在后台读取挂起时仍可编辑与提交，读取旧回包不能回退新投影，窄屏状态可读且既有编组、派发、审批和接入回归成立\n- L4-COMMUNE-GROUP-USABILITY（原 commune-group-usability-ui）：真实 Kernel 和受控既有 ACP 会话上验证协作入口可见、跨来源成员选择、候选接入解释、已归组成员可见与原子移动、派发记录保留和窄屏可用性\n- L4-COMMUNE-MOBILE-GROUP-NAVIGATION（原 commune-mobile-group-navigation）：真实隔离 Kernel 上的生产组件，验证首屏到编组与派发的路径、同名成员区分、触控区、状态和既有权限\n- L4-COMMUNE-ORGANIZATION-MEMBERS（原 organization-global-ui）：Native/Remote 统一成员与候选先入组后接入、同名来源、成员移动与能力反馈\n- L4-COMMUNE-REMOTE-DELIVERY（原 commune-remote-delivery-ui）：真实受控 ACP 进程及 Kernel 上验证手机单成员消息、丢回执同键重试、连点防重和新草稿保留，同时保持跨来源编组、历史与 Remote 权限边界\n- L4-COMMUNE-SHARED-DAEMON-BINDING（原 shared-native-ui）：实际组件中显式共享服务启动、原有手机编组和会话接入回归\n\n治理检查验证依赖、单一完整命令及节点关联，实施时再用 stc impact 核对六个入口均能到达此单元。通过声明只能来自本轮实际命令退出状态。\n",
+          "acceptanceChecks": [
+            {
+              "id": "commune-complete-ui",
+              "command": [
+                "node",
+                "scripts/commune-global-ui-acceptance.mjs"
+              ],
+              "description": "完整执行现有生产组件与真实隔离 Kernel 的 Native/Remote、编组、历史、审批、重试、会话选择、共享服务入口及触控断言"
+            }
+          ]
+        }
+      ],
+      "remove": [
+        "L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f",
+        "L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1",
+        "L4-OBS-DOTENV-d1e2f3a4",
+        "L4-OBS-OPENCODE-PACKAGE-JSON-047992d6",
+        "L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09",
+        "L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d",
+        "L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58",
+        "L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec",
+        "L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1"
+      ]
+    }
+  }
+}

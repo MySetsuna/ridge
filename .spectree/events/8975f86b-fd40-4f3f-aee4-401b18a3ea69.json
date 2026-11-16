@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "8975f86b-fd40-4f3f-aee4-401b18a3ea69",
+  "at": "2026-11-16T14:28:05.416Z",
+  "type": "approval_derived",
+  "source": "local_operation",
+  "changeId": "CHG-129",
+  "data": {
+    "changeId": "CHG-129",
+    "specHash": "bac579ac197f9ab5d773ee94cbcffd54c8450271811a9695f989e273fa4ad116",
+    "approvedAt": "2026-11-16T14:28:05.414Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "依全部授权完成独立文档与规范映射整理。撤回额外的 L2 Runtime 打包映射改动，提案恢复原字段、目标、依赖和正文，仅留序列化补入的空验收列表；保留具体 sidecar 构建授权、九个无效观察占位归档及三组完整 UI 脚本去重映射。所有原命令、断言和相应需求影响关系保留，不跳过所选范围的验收。",
+    "derivedFrom": {
+      "buildId": "BUILD-3dcac12cc3e8",
+      "specHash": "3191a0d6780f0e41b9be34d00ffc34d6f940eba4e9dc6f8ccdf6fabc04ff87fc"
+    },
+    "attributionVerified": false
+  }
+}

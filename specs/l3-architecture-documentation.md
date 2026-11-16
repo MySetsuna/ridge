@@ -35,14 +35,28 @@ code_targets:
   - docs/architecture/specs/L2-TERM-001.md
   - docs/architecture/specs/L2-PERF-001.md
   - docs/architecture/notes/README.md
+  - .gitattributes
+  - docs/architecture/proposals.md
+  - scripts/check-proposal-archives.mjs
 test_targets:
   - scripts/check-architecture-docs.mjs
+  - scripts/check-proposal-archives.mjs
 acceptance_checks:
   - id: architecture-docs
     command:
       - node
       - scripts/check-architecture-docs.mjs
     description: "检查当前导览内部链接、必需契约与入口引用，历史副本明确标识且旧导览按原文归档\r"
+  - id: proposal-archive-consistency
+    command:
+      - node
+      - scripts/check-proposal-archives.mjs
+    description: 核对原始旧稿指纹、主仓落地编号、近期归档和活动目录边界
+  - id: existing-spec-mappings
+    command:
+      - node
+      - scripts/check-spec-mappings.mjs
+    description: 回归现有历史源码证据、映射处置与零失效目标
 ---
 
 # 架构文档投影
@@ -65,4 +79,104 @@ acceptance_checks:
 
 ## 近期流程同步
 
-导览随 CHG-124、CHG-125、CHG-126 的已实现行为更新：区分普通独立终端、显式协作启动与已有会话接入；说明通用 ACP 命令、真实会话及进程所有权、鉴权失败与原意重试。手机编组入口、当前分屏目录与 Cloud 订阅连续性分别引用对应 L4 权威规范及实际实现。说明共享 daemon 的已有终端归属仍需可信绑定，不将普通端点发现或新启动会话误称为原终端接入。测试、真实 CLI 初始化、完整对话、平台与公网证据须各自区分，不硬编码通过数量。历史文档及 Git 归档保持原文。
+导览随 CHG-124、CHG-125、CHG-126 的已实现行为更新：区分普通独立终端、显式协作启动与已有会话接入；说明通用 ACP 命令、真实会话及进程所有权、鉴权失败与原意重试。手机编组入口、当前分屏目录与 Cloud 订阅连续性分别引用对应 L4 权威规范及实际实现。共享服务由 L4-COMMUNE-SHARED-DAEMON-BINDING 规范；导览区分显式共享服务客户端与仍无可信绑定的普通原生终端，不能冒称接管。测试、真实 CLI 初始化、完整对话、平台与公网证据须各自区分，不硬编码通过数量。历史文档及 Git 归档保持原文。
+
+## 本轮提案归档与溯源
+
+用户要求 docs 与规范整理独立变更。本轮补齐 CHG-124 至 CHG-128 已应用提案归档，按原文保留六份同号冲突或未应用旧稿，记录工作树来源与主仓落地编号，不用旧稿覆盖权威规范。原始旧稿字节指纹保持；近期文本归档按 Git 换行规范核对。归档清单是下列 JSON 的唯一事实源，docs 仅提供可读索引。源文件移出活动候选目录且保留历史，源工作树不因此获得新的批准或实施状态。脚本核对指纹、编号、已完成变更、对应节点及可读索引；不改变任何产品流程。
+
+```json
+{
+  "version": 1,
+  "records": [
+    {
+      "source": "main/.spectree/proposals/CHG-071.json",
+      "archive": ".spectree/proposals/archive/CHG-129/main-CHG-071.json",
+      "sha256": "daf0be4a28d1d39553d9cfae8a6f1b06c4679fbe7000ab3c75874219f7be5491",
+      "hashMode": "bytes",
+      "change": "CHG-071",
+      "note": "已完成变更的未应用旧稿；与同号既有归档内容不同，保留原文，当前实现以后续规范为准"
+    },
+    {
+      "source": "remote-detached-cwd/.spectree/proposals/CHG-119.json",
+      "archive": ".spectree/proposals/archive/CHG-129/remote-detached-cwd-CHG-119.json",
+      "sha256": "c03d9b843c8820773ecaee656a3b700daf249a168cf6438bf28a920cf324ec7f",
+      "hashMode": "bytes",
+      "change": "CHG-124",
+      "note": "当前分屏 CWD 已由主仓 CHG-124 落地"
+    },
+    {
+      "source": "commune-shared-daemon-spec/.spectree/proposals/CHG-122.json",
+      "archive": ".spectree/proposals/archive/CHG-129/commune-shared-daemon-spec-CHG-122.json",
+      "sha256": "2af63e25e6bf809e542782e7831fca1ca45bdfc67a86908417cdb40b5e055f0a",
+      "hashMode": "bytes",
+      "change": "CHG-128",
+      "note": "共享 daemon 可信绑定已按主仓新编号 CHG-128 落地"
+    },
+    {
+      "source": "commune-shared-daemon-spec/.spectree/proposals/CHG-123.json",
+      "archive": ".spectree/proposals/archive/CHG-129/commune-shared-daemon-spec-CHG-123.json",
+      "sha256": "f63bbd9d740546f7d0f25dd16517433495604eeaa54700de8e962afebb1fcd15",
+      "hashMode": "bytes",
+      "change": "CHG-124",
+      "note": "Cloud 订阅连续性已整合主仓 CHG-124"
+    },
+    {
+      "source": "commune-shared-daemon-spec/.spectree/proposals/CHG-124.json",
+      "archive": ".spectree/proposals/archive/CHG-129/commune-shared-daemon-spec-CHG-124.json",
+      "sha256": "8da765dbbd9c0fb8f2526adaef9bd4dc2422ce940375d9330cdf60ae0cd4cf6b",
+      "hashMode": "bytes",
+      "change": "CHG-126",
+      "note": "Windows CLI CWD 原生目录验收已由 CHG-126 落地"
+    },
+    {
+      "source": "commune-shared-daemon-spec/.spectree/proposals/CHG-125.json",
+      "archive": ".spectree/proposals/archive/CHG-129/commune-shared-daemon-spec-CHG-125.json",
+      "sha256": "02acb09ca5444b737d803075b6be9bdd45a2a5c3a679829751b9c97db7e62e72",
+      "hashMode": "bytes",
+      "change": "CHG-124",
+      "note": "手机编组导航已整合主仓 CHG-124"
+    },
+    {
+      "source": "applied-main/CHG-124.json",
+      "archive": ".spectree/proposals/archive/CHG-124.json",
+      "sha256": "6669dac91f021808487c46ba9376fec22d72fe11a10ee0e4325837fd63e77e26",
+      "hashMode": "lf",
+      "change": "CHG-124",
+      "note": "补齐已应用提案溯源；文本指纹按 Git 换行规范化核对"
+    },
+    {
+      "source": "applied-main/CHG-125.json",
+      "archive": ".spectree/proposals/archive/CHG-125.json",
+      "sha256": "cf06b267a47905d1a8210ad179d16d75580586cba17df1b1f3bc0e2ad4050f5b",
+      "hashMode": "lf",
+      "change": "CHG-125",
+      "note": "补齐已应用提案溯源；文本指纹按 Git 换行规范化核对"
+    },
+    {
+      "source": "applied-main/CHG-126.json",
+      "archive": ".spectree/proposals/archive/CHG-126.json",
+      "sha256": "72c4afb4eab4f144c9570cacde013e0281e4123f2164f03c84a2028dcb900958",
+      "hashMode": "lf",
+      "change": "CHG-126",
+      "note": "补齐已应用提案溯源；文本指纹按 Git 换行规范化核对"
+    },
+    {
+      "source": "applied-main/CHG-127.json",
+      "archive": ".spectree/proposals/archive/CHG-127.json",
+      "sha256": "7530c263997ca3334886dbec4a16a0c130165acdee702ff12fd1e0ac26f134ef",
+      "hashMode": "lf",
+      "change": "CHG-127",
+      "note": "补齐已应用提案溯源；文本指纹按 Git 换行规范化核对"
+    },
+    {
+      "source": "applied-main/CHG-128.json",
+      "archive": ".spectree/proposals/archive/CHG-128.json",
+      "sha256": "86b474ed9764d7eaf26d1329c2f3e7f1af9855ebe335cafc265eccde4e378d8f",
+      "hashMode": "lf",
+      "change": "CHG-128",
+      "note": "补齐已应用提案溯源；文本指纹按 Git 换行规范化核对"
+    }
+  ]
+}
+```

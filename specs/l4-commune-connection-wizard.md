@@ -33,12 +33,6 @@ acceptance_checks:
       - commune_registration
       - --no-run
     description: 构建隔离的已运行 ACP 会话端点
-  - id: connection-ui
-    command:
-      - node
-      - scripts/commune-permission-ui-acceptance.mjs
-      - --membership
-    description: 真实 Chromium 文件选择、预览、错误重试、取消与既有会话注册及移出，不新建替身会话
 depends_on: []
 ---
 
@@ -57,3 +51,7 @@ depends_on: []
 ## 验收
 
 隔离单测覆盖字节上限、描述绑定和入口取消与防重。真实 Chromium 从文件读取原 ACP 会话描述，预览阶段 roster 无新成员。无效文件、跨分屏文件和 Runtime 连接拒绝均可见，原输入仍可修正并重试。成功后成员绑定原 process 和 session，移出后原终端进程存活，既有历史仍可读取。截图核对共享主题、窄屏、无横向溢出。外部 Agent 与真机联调单独记录，fixture 不作互操作通过声明。
+
+## 共用权限 UI 验收映射
+
+L4-COMMUNE-UI-MEMBERSHIP-ACCEPTANCE 依赖本需求，并完整执行原权限脚本；仅移除重复声明，不缩减断言。

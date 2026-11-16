@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "d767602c-4da5-4b35-bedb-b3981a1eda3d",
+  "at": "2026-11-16T11:45:03.797Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-129",
+  "data": {
+    "changeId": "CHG-129",
+    "specHash": "55dcfe18b3a4f1be7e1823988742a424d7fe6f84fbfd6129f72886598a5a198b",
+    "approvedAt": "2026-11-16T11:45:03.794Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "既有独立规范映射清理授权涵盖缺失资料与声明的精确打包输入；保留 L4 sidecar 原门禁，从当前源码构建和验版，无发布或安装",
+    "attributionVerified": false
+  }
+}

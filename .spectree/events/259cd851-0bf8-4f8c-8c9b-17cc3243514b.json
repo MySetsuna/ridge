@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "id": "259cd851-0bf8-4f8c-8c9b-17cc3243514b",
+  "at": "2026-11-16T11:24:31.754Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-129",
+  "buildId": "BUILD-85e4ce4c5a54",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-85e4ce4c5a54",
+    "changeId": "CHG-129",
+    "specHash": "d8579cf1bf9a0bde505eccf06dcb3a896760a1a856174738ff3dce66716b0dcd",
+    "workspaceHash": "711d18bcb0d4e4da5b47e3d170e9d900578db6da9a366c03792ed478920cd60f",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "FAIL",
+    "acceptanceResults": [
+      {
+        "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+        "checkId": "architecture-docs",
+        "command": [
+          "node",
+          "scripts/check-architecture-docs.mjs"
+        ],
+        "description": "检查当前导览内部链接、必需契约与入口引用，历史副本明确标识且旧导览按原文归档\r",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+        "checkId": "proposal-archive-consistency",
+        "command": [
+          "node",
+          "scripts/check-proposal-archives.mjs"
+        ],
+        "description": "核对原始旧稿指纹、主仓落地编号、近期归档和活动目录边界",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+        "checkId": "existing-spec-mappings",
+        "command": [
+          "node",
+          "scripts/check-spec-mappings.mjs"
+        ],
+        "description": "回归现有历史源码证据、映射处置与零失效目标",
+        "status": "FAIL",
+        "exitCode": 1
+      }
+    ],
+    "valid": false,
+    "verifiedAt": "2026-11-16T11:24:31.753Z",
+    "diagnostics": [
+      {
+        "code": "ACCEPTANCE_E_FAILED",
+        "severity": "ERROR",
+        "message": "existing-spec-mappings: node:internal/modules/run_main:107\r\n    triggerUncaughtException(\r\n    ^\r\n\r\nAssertionError [ERR_ASSERTION]: Missing target L2-UNIFIED-CLIENT-RUNTIME src-tauri/binaries/ridge-mcp-x86_64-pc-windows-msvc.exe\r\n    at file:///C:/code/wind/.claude/worktrees/remote-directory-commune/scripts/check-spec-mappings.mjs:65:14\r\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\r\n    at async node:internal/modules/esm/loader:639:26\r\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {\r\n  generatedMessage: false,\r\n  code: 'ERR_ASSERTION',\r\n  actual: false,\r\n  expected: true,\r\n  operator: '==',\r\n  diff: 'simple'\r\n}\r\n\r\nNode.js v25.9.0\r\n",
+        "nodeId": "L3-ARCHITECTURE-DOCUMENTATION"
+      }
+    ],
+    "fileChanges": [
+      {
+        "path": ".gitattributes",
+        "before": "9857ff9bdb1e263152be695c970a8e9d2c94576dbf709ee02f12d780e0958df4",
+        "after": "842e292d3ccd3a59d2532917fffbf841fd3329e93e9ed9c5929e16c8a8fced1f"
+      },
+      {
+        "path": "docs/architecture/40-cli.md",
+        "before": "7241764c2e4ba3ad9754fde898ab47b88bb3c850d3e6dba1eb8b618555a7fe8e",
+        "after": "6438a4d6347b6901ebd25b2d6a7959615cb190dedd36cb81cdea7cb92c1573ed"
+      },
+      {
+        "path": "docs/architecture/80-security.md",
+        "before": "700b8c353bc1dcf03703ea64d7c3e134387cd39d0bd2dfac51ee9aee2f465ea4",
+        "after": "a893f99bb3dd8ff63e3460a555f893aaf13ee07ec07e253208dc750b95dd2929"
+      },
+      {
+        "path": "docs/architecture/90-performance.md",
+        "before": "f0b8fe7f3d49ac013386ff1009b9f43f9e57096b30d4e6cc759162def531240d",
+        "after": "369a0b7e311be743e0f23ba5d4906ad554532e02678b0348d0e16c7c0a3ba6b5"
+      },
+      {
+        "path": "docs/architecture/README.md",
+        "before": "9e1ceacb94dff8c1e1845115082ed1b2c66dbc698e2836c1039677d77028eb52",
+        "after": "ab1e59aa5ee7100be31690c4090d365d01ffd49e320131fe2446fa831fb5035b"
+      },
+      {
+        "path": "docs/architecture/proposals.md",
+        "before": null,
+        "after": "1f5e1cb48c99fd92f54a3441156f58160be9fb9c542ae7f030851a90a5576d53"
+      },
+      {
+        "path": "scripts/check-architecture-docs.mjs",
+        "before": "709d8e3f664b0862d59f9f6a865949dfbc23a2147fb45ff1c112c40b395786d6",
+        "after": "083d40bc1b92c87ba1ee30dcb7bc6d4afa064403072a2d8489253a8b7169f1d6"
+      },
+      {
+        "path": "scripts/check-proposal-archives.mjs",
+        "before": null,
+        "after": "cd63e98a3167ad28215ef802fdc04906c92155e7f46885b60dabaf4411a21c37"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/259cd851-0bf8-4f8c-8c9b-17cc3243514b.log"
+  }
+}

@@ -1,0 +1,212 @@
+{
+  "changeId": "CHG-125",
+  "nodes": [
+    {
+      "id": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+      "level": "L3",
+      "title": "Protocol-based terminal Agent Commune, groups, history and A2A",
+      "parent": "L2-UNIFIED-CLIENT-RUNTIME",
+      "status": "LOCKED",
+      "lifecycle": "ACTIVE",
+      "codeTargets": [
+        "packages/ridge-acp/**",
+        "packages/ridge-mcp/**",
+        "packages/ridge-tmux/**",
+        "packages/ridge-kernel/**",
+        "packages/ridge-core/**",
+        "packages/ridge-cli/**",
+        "packages/remote/**",
+        "src/lib/teammate/**",
+        "src/lib/agent-chat/**",
+        "src/lib/components/SettingsPanel.svelte",
+        "src/routes/+layout.svelte",
+        "src/remote/**",
+        "src-tauri/src/teammate/**",
+        "src-tauri/src/bridge/**",
+        "src-tauri/src/commands/**",
+        "src-tauri/src/state.rs",
+        "src-tauri/src/lib.rs",
+        "docs/archive/**",
+        "src/lib/i18n/**",
+        "src/lib/components/SplitContainer.svelte"
+      ],
+      "testTargets": [
+        "packages/ridge-acp/**",
+        "packages/ridge-mcp/**",
+        "packages/ridge-kernel/**",
+        "src/lib/teammate/**",
+        "packages/remote/**",
+        "tests/e2e/commune.spec.ts",
+        "src/remote/lib/SidebarTeamRoster.test.ts",
+        "scripts/commune-permission-ui-acceptance.mjs",
+        "scripts/commune-permission-ui-client.mjs",
+        "src/lib/components/interactionContracts.test.ts",
+        "scripts/commune-global-ui-acceptance.mjs",
+        "scripts/commune-a2a-sdk-acceptance.py",
+        "scripts/commune-sdk-acceptance.mjs",
+        "scripts/commune-live-history-acceptance.mjs"
+      ],
+      "dependsOn": [
+        "L2-AGENT-COMMUNE-EXACT-BINDING",
+        "L2-RIDGE-COMMUNION-M53",
+        "L2-RIDGE-PRODUCT-M1\r"
+      ],
+      "body": "# Agent’s Commune：通用协议成员、编组、历史与 A2A\r\n\r\n## 双语文案覆盖 — 组任务与审批\r\n\r\n桌面与 Remote 的 Commune 成员、编组任务及审批界面支持系统现有中文、英文语言。状态标签、成员分配与广播控件、确认与取消操作、被截断的目标说明与协议输出详情，以及不确定结果和错误提示，均提供对应语言文案；展开详情仍可读取完整目标与输出。两端对同一状态和动作使用一致、可理解的表达，避免遗漏状态、确认说明或错误信息。\r\n\r\n本契约只约束呈现与文案，不改变任务投递、成员选择、审批决策、取消请求、审计记录或执行结果。结果未知须如实呈现并保留原语义，不得因翻译或界面操作自动重试、重复审批或推断成功。\r\n\r\n验收：桌面与 Remote 切换中英文，覆盖成员与组任务生命周期、状态、分配、广播、确认、取消、长目标与协议输出详情、未知结果及错误场景；所有可见 Commune 文案均有对应译文，长内容可展开查看全文。对照既有行为验证翻译不改变目标成员、投递、审批次数、取消结果、审计事件和执行状态。\r\n\r\n## 批准边界与现状\r\n\r\n用户明确要求：移除右侧 Agent’s Communion；保留左侧 Commune 的成员、编组、历史；所有 Agent 由用户在终端运行，Ridge 识别并连接同一会话；不按每种 Agent 写业务适配器，支持通用协议即可接入；沿用用户可扩展的 Agent 清单，并实现 A2A 协作。2026-10-11 用户明确批准“提升为确定要做的内容”：本方案已定版，列为必须实施与验收的内容。尚未修改业务代码；产品方案批准不等于已取得当前 SpecTree 实施锁。\r\n\r\n配属 CHG-070 候选，与桌面展示层化统一 Runtime 一并实施。CHG-069 持锁期间保存已批准内容的提案；正式编号以登记时 `stc next` 为准。新契约正式应用前必须修订已有 ACP/Communion、精确绑定与 Hub 投递契约中的冲突，不直接改权威 specs/changes。\r\n\r\n已核对：`AgentCenterPanel.svelte` 提供三个页签；历史仍读取 `read_agent_recent_replies`、恢复仍按 provider 启动命令；`agent_profiles.rs` / `agent_catalog.rs` 已有内置与用户覆盖；`acp_bridge.rs` 与 `ridge-acp/provider_adapter.rs` 仍有启动新 Agent 的路径；`src/routes/+layout.svelte:498` 挂载右侧 Communion。`ridge-mcp/a2a.rs` 已有协议客户端，`native_a2a.rs` 已有认证 A2A/Hub 服务入口，可复用，但不据源码存在宣称端到端完成。\r\n\r\n## 1. 一套身份与服务，两个页签与共同编组\r\n\r\n```text\r\n用户终端里的既有 Agent ── ACP / 已支持通用协议 ── Commune 服务\r\n                                                   ├─ 成员投影\r\n                                                   ├─ 编组与任务投影\r\n                                                   ├─ 历史投影\r\n                                                   └─ A2A 网关 ←→ 其他成员/授权外部 Agent\r\n\r\n已有 Agent 主动协作 ── 原生 A2A client 或共同 MCP 工具 ── 同一 A2A/任务服务\r\n```\r\n\r\n服务位于独立 Runtime，桌面/CLI/Remote 均为其客户端。Ridge 不启动新 Agent、不使用模型供应商 API 替代终端 Agent、不将协议/自动协作投递转为 PTY 提示词注入，不采样终端内容冒充协议回复。用户主动的侧栏终端查看与人工输入按本轮批准的“终端 Agent 侧栏基础交互”执行。两个页签读取同一登记、会话、任务与事件事实，不能另建三套识别/状态/历史系统。\r\n\r\n### 协议与配置\r\n\r\n- Ridge 实现按协议划分的客户端与传输驱动，例如 ACP、A2A；同协议的所有 Agent 共用代码。不得按 Claude/Codex/Gemini 等名称分支处理消息、历史、审批或恢复，也不从模型厂商配置决定真实成员身份。\r\n- 现有 Agent 清单保留为用户可编辑配置：名称/图标、进程识别规则、协议类型、连接发现配置及凭据引用。它不是准入白名单，未列出的 Agent 也可经授权协议登记。配置里的能力只能作为说明；按钮权限来自真实握手，用户勾选不能制造能力。\r\n- “等协议”指实施并通过互操作验收的通用协议，不承诺自动理解任意未知协议。协议扩展新增一份共同驱动；不新增逐品牌适配器。MCP 是工具入口，不能因 Agent 支持 MCP 就推断其支持 ACP 会话接入。\r\n- 现有 `resumeArgv`、`yoloArgs`、provider 历史扫描退出 Commune 在线执行路径；旧配置及已索引历史归档。用户仍可查看旧记录，但不能凭名称/CWD 自动绑到新会话。\r\n\r\n## 2. 已有终端会话如何接入\r\n\r\n1. Kernel 以 pane 对应的进程树发现候选；识别规则由清单提供，只证明“发现进程”。Agent 也可向通用登记入口提供连接描述，名称不限制注册。\r\n2. 连接已存在的协议端点，认证并完成版本/能力握手；验证它确实服务当前终端会话。登记是 Ridge 的连接管理职责，并非宣称 ACP 自带 PID 发现或终端绑定标准。\r\n3. 通过协议返回的 session 身份与经过验证的端点登记，绑定 host、workspace、pane、进程实例、协议会话；标题/进程名/CWD 均不能作会话主键。PID 必须带进程启动实例标记，防复用；协议 sessionId 必须在认证 peer 命名空间内使用。\r\n4. 绑定明确且具备能力后，注册为可交互成员。端点不存在/认证失败/协议不兼容/会话歧义分别显示原因；不能另起 ACP 进程或调用 `session/new` 冒充接管已有会话。\r\n5. 连接断开只撤销连接与控制租约；进程退出才标已退出，缓存与历史仍保留。重新连接校验运行代际与绑定 revision，不把新进程自动当旧成员。\r\n\r\n**真实能力边界：** ACP v1 标准 stdio 是客户端启动子进程、通过换行 JSON-RPC 通信；不是任意普通 CLI 的附加接口。已运行 Agent 必须已有可连接的 ACP/通用协议端点或由其运行方提供共同的传输入口；普通终端 stdin/stdout 不能强夺或混写 ACP。用户新增一项清单不能把不支持协议的 CLI 变成协议 Agent。[ACP transports](https://agentclientprotocol.com/protocol/v1/transports)\r\n\r\n既有会话附加可复用通用 IPC/双向消息转发，但它只转发协议，不能根据品牌解析 CLI 或另启模型会话。只有 stdio 且未暴露既有连接的 Agent 可识别、定位终端，不能宣称已 ACP 接入。协议持有者若不支持同时控制，Commune 明示控制权不可用；不得用两个 client 同写 stdin。此限制须在第一阶段用真实外部 Agent 验证，不能用新启动 fixture 的通过替代。\r\n\r\n## 3. 成员页签：谁在运行、能做什么\r\n\r\n成员页默认聚合全部本地 workspace 的终端 Agent 与已登记协议成员；每项保留精确 workspace/pane/运行代际/进程实例，协议登记不作为人工终端查看与操作门槛。历史继续按来源授权查询；编组属于当前 Host，派发逐成员验证来源授权。每条成员展示：用户名称、协议自报身份、所属终端、连接状态、当前任务/待审批、最近真实回复与可用功能。\r\n\r\n“发现/待连接/已连接/失联/已退出”与“空闲/执行中/待审批/待输入/未知”分列；不能把进程活着等同协议在线，也不能从无输出猜已完成。未知 Agent 名称可显示握手信息；任何能力未知则按钮禁用并说明原因。\r\n\r\n| 操作 | 行为 |\r\n| --- | --- |\r\n| 定位终端 | 聚焦精确 pane，终端不存在则说明原因 |\r\n| 发消息/派任务 | 进入共同任务队列，对绑定的既有 session 发协议 prompt；同会话串行，忙时显示排队/明确拒绝策略 |\r\n| 停止当前任务 | 请求协议 cancel，等待实际终态；不杀进程、不冒充暂停进程 |\r\n| 审批 | 回应当前会话实际权限请求；多客户端只允许一个成功处理结果 |\r\n| 查看历史 | 打开同一 session 的历史投影 |\r\n| 移出 Commune | 撤销登记/后续路由，处理未发队列；不结束用户 Agent，进行中任务须明确选择等待或取消 |\r\n\r\n消息在服务持久受理、协议发送、Agent 执行和任务终态分别记账。发送超时显示“结果待确认”，不能自动重发可能已执行的 prompt。连接恢复先查询/核对；不支持确认时由用户决断重发。ACP cancel 不等于退出 Agent，也不等于可任意暂停/恢复进程。\r\n\r\n审批与流采用官方 `session/request_permission` / `session/update` 等已协商能力；不能把现有 Ridge 私有 `session/approve`、`agent/request_approval` 通知当所有 ACP Agent 的标准。[ACP tool calls](https://agentclientprotocol.com/protocol/v1/tool-calls)、[prompt turn](https://agentclientprotocol.com/protocol/v1/prompt-turn)\r\n\r\n## 4. 成员页内的编组协作：现有成员的协作关系\r\n\r\n编组持久化于当前 Host 的共同服务，以稳定 groupId、revision 管理；前端只缓存一份全局投影。一个组可包含多个已授权工作区的精确登记成员，不以活动工作区作为组所有者。保留现有“一成员至多一编组”的语义，未分组为视图而非独立任务对象。成员引用精确登记身份，改名不影响归属，退出保留失联位置；替换成员须显式操作，不能按品牌/CWD补位。组长由已有成员担任，不创建 Lead/Staff Agent。\r\n\r\n组卡显示组长、成员能力/在线状态、正在执行的组任务及分项结果。给组长发目标、向选定成员广播、按成员分工派任务是明确不同动作；组长不存在时不能把任务偷偷发给随机成员。\r\n\r\n任务流程：用户向已有组长提交目标 → 组长提供方案 → 用户审定成员与分工 → 服务将子任务送到各自既有会话 → 汇总成员真实终态与产物 → 可再提交给既有组长综合。若组长具备主动调用 A2A/MCP 工具的能力，可在用户预先授权的成员/任务范围内自行派发。不能靠 system prompt 宣称已具备调用工具能力。\r\n\r\n每次派发冻结 group revision、目标成员与绑定 revision；编辑组不改变已受理任务，加入新成员不自动收到旧任务。一个组任务关联多个子任务；部分失败、待审批、成员失联逐项呈现，不能整体假报成功。取消组任务按真实子任务取消能力执行，已完成成果保留。队列有界、同会话单写；任务失联不能改投同名成员。\r\n\r\n## 5. 历史页签：真实会话与任务的账本\r\n\r\n默认按当前 workspace 的真实会话展示，可按成员、编组、任务、时间搜索。对话、工具活动、审批和 A2A 协作链在一条可定位时间线中呈现；组任务关联子任务与实际产物，普通最新回复不等于交付成果。\r\n\r\n历史由两类同源数据构成：Commune 已观察并持久化的协议事件；Agent 通过所协商的会话列表/回放能力提供的历史。Provider 列表是可选能力，缺失时只显示已登记会话；无法回放接入前内容时标“自接入起记录”，不能硬编码读取每家 JSONL 来冒充完整历史。[ACP session list](https://agentclientprotocol.com/protocol/v1/session-list)、[session setup](https://agentclientprotocol.com/protocol/v1/session-setup)\r\n\r\n查看历史默认只读 Commune 缓存，不自动运行 Agent、创建会话、触发 prompt 或修改活动终端。显式“同步历史”使用协商能力；可能影响当前 session 的 load/resume 操作不得在背景查询执行，忙时等待或要求用户明确操作。分页使用协议原生 cursor，不解析它。\r\n\r\n恢复分两种用户行为：仍在线会话“定位/重新连接”；进程已退出则显示“需用户在终端恢复，再连接”。恢复不由 Ridge 按品牌 CLI 命令拉起进程。协议支持回放/重新连接也不证明死亡进程已恢复，不能为了恢复调用 `session/new` 生成另一个会话。\r\n\r\n接入前历史覆盖率、丢失区间、断线时段明确显示。实时/回放有稳定消息 ID 时去重；无 ID 则完整回放作为单次快照事务替换该协议历史投影，不能以文字相同推断重复。Commune 自己的投递、审批与协作账本不被回放覆盖；服务事件使用本地持久序号给 UI 续读。\r\n\r\n## 6. A2A：让成员相互请求工作\r\n\r\n已确认 A2A 是 Agent 间任务协作协议；Agent Card 描述能力与服务接口，任务有自己的标识、状态和产物。它与 ACP 的客户端会话控制职责不同；“注册 ACP”不会自动产生一个原生 A2A 服务或主动调用能力。[A2A specification](https://a2a-protocol.org/latest/specification/)\r\n\r\n### 6.1 统一网关提供被调用能力\r\n\r\nCommune 为已连接且授权的成员提供独立可发现的 A2A 路由与真实能力卡。卡绑定现有 member/session，服务实现共用一份，不为每个品牌启动一个 A2A server/Agent。现有 `ridge-mcp/native_a2a.rs` 与 `a2a.rs` 优先复用。\r\n\r\n调用链：A 的授权请求 → Commune A2A 边界 → 共同任务/Hub 登记 → B 既有会话的 ACP prompt（B 原生 A2A 则使用共同 A2A client）→ 真实输出/终态回到任务服务 → 回给 A。ACP/A2A 语义转换仅按协议定义，不按品牌判断；不能把任意 ACP 通知机械映射为相同 A2A 状态。\r\n\r\nA2A taskId/contextId 与 ACP sessionId、memberId、Hub deliveryId 各有职责，显式关联而不混为同一 ID。请求来源、授权 workspace、目标成员与上下文映射由认证服务校验；客户端 metadata 不能自行决定发送者或跨 workspace路由。每个 A2A context 对精确 ACP conversation 建立并发/串行约束，禁止不同调用者的上下文串入一个共享会话。\r\n\r\n纯 ACP 成员只有一个既有对话且不能隔离多 context 时，只提供与该对话绑定的授权协作入口；不广告通用多租户会话创建。不能为隔离调用私自 `session/new`。成员断开后卡与任务可显示不可用，服务不启动替身。\r\n\r\n### 6.2 主动调用其他成员\r\n\r\n能力须单独显示：`可被调用` 与 `可主动协作`。被调用能力可由统一网关桥接；主动协作需要该 Agent 已有原生 A2A client，或能调用用户配置的共同 Commune MCP 工具。复用已有工具/Hub 路径，工具身份必须绑定真实成员、会话与权限；不再按品牌写工具适配器。[A2A and MCP](https://a2a-protocol.org/latest/topics/a2a-and-mcp/)\r\n\r\n同组发现 → 向目标成员派发 → 查询/等待结果 → 获取产物是共同工具能力。已在运行的 Agent 若不支持加载此工具/配置，Ridge 不能从 ACP 握手强行给它加工具；成员仅作为被调用者，用户在自己的终端环境配置通用工具后再启用主动协作。首期协作限当前 workspace 的已授权同组成员，外部跨 Host 互联另经用户明确授权。\r\n\r\n需防环：子任务带来源与父任务链，拒绝重复环，限制转发深度、任务量与队列；接收 Agent 不能仅因消息内容声称是组长就获得新权限。工具审批仍由目标会话/用户处理，A2A请求不自动授权文件或命令执行。输出产物按现有权限取用，不裸露本机路径/令牌给外部调用者。\r\n\r\n### 6.3 修正现有 A2A 的完成语义与互操作\r\n\r\n当前 `native_a2a.rs:263` 把 `adapter_accepted` 映射为 completed。这只证明投递获接收，不能用于 Commune Agent 工作的完成判定。新链路须区分投递回执与执行任务，真实 prompt 终态/产物才结算；审批暂停、需输入、失败、取消、结果未知均明确处理。\r\n\r\n现有卡为整个 Ridge Hub，目标通过 Ridge metadata 指定；完善成员级路由，标准客户端不应猜私有 `ridge.target` 才能调用某成员。对照官方版本化 schema 校验字段、枚举、错误、取消、流与能力卡；不能因已有方法名称/单元测试即认定与官方互操作。仅广告实际实现的能力：未实现流/完整 history/上下文隔离则如实关闭。\r\n\r\n## 7. 最小数据边界\r\n\r\n| 对象 | 职责与保存 |\r\n| --- | --- |\r\n| Agent 清单配置 | 可编辑识别与协议连接参数；不等于在线成员；凭据仅保存安全引用 |\r\n| Member | 稳定内部 ID、所属 workspace、peer、精确 conversation；名称可改，退出保留记录 |\r\n| Live binding | host/runtimeEpoch/pane/进程实例/协议端点/sessionId/bindingRevision；重连需验证，不复制业务身份 |\r\n| Group | workspace、成员 ID、可选既有组长、revision；持久服务权威 |\r\n| Task / Delivery | 用户或 Agent 请求、来源/目标/父子关系、发送与实际执行状态、产物关联；原子持久受理 |\r\n| Conversation events | 原始合法协议事件与规范化展示索引、本地持久序号、覆盖区间；不收集任意终端原文冒充消息 |\r\n\r\nACP/A2A wire 字段引用官方版本 schema，Commune 内部关联字段不伪称上游规范。服务暴露的具体 DTO/注册鉴权机制在实施前随权威接口提案定版，不能由各 UI 自行追加。一会话多 UI 共享一连接和执行队列；审批响应只能完成一次；断线不能无条件 exactly-once承诺。\r\n\r\n## 8. 移除、迁移与实施顺序\r\n\r\n1. 收敛协议合规：现有 ACP 包中 Content-Length 默认、私有通知与审批扩展不能作为通用 ACP 标准；以官方 schema/互操作证据校准。保留可复用协议解析、请求关联、取消、持久事件能力，退出 provider_spawn/自动创建会话路径。\r\n2. 沿用用户清单，做通用发现/登记/握手/精确绑定；先验证两个不同实现、一个非预置自定义 Agent 都接入既有终端 session，零新 Agent 进程。\r\n3. 建共同成员/会话/事件与任务事实，接通成员页；再接历史回放与覆盖标识，避免先做三套 UI 假数据。\r\n4. 编组状态迁共同服务；旧 group/成员标识只在精确映射时迁移，歧义记录归档保留。最后补 ACP↔A2A 任务桥及共同 MCP 主动协作工具。\r\n5. 归档右侧 Communion 展示、启动入口、默认模型/provider设置和对应专属协调 owner；不能只隐藏按钮，后台仍运行。通用协议库与有用测试保留，不整包误删。\r\n6. 正式规格同步须更新 `L2-RIDGE-PRODUCT-M1`、M5.3 与精确绑定契约中 Ridge启动 Agent、PTY恢复和旧投递保证，迁移不得以保留旧已批准实现为由覆盖本次用户目标。保持 CHG-069 的输入/渲染/加载改动和 CHG-070 的展示层边界。\r\n\r\n## 9. 必须证明的验收\r\n\r\n- 两个同品牌同 CWD 的终端 Agent 与一个自定义未预置 Agent：同协议驱动、分别精确绑定；更名、PID复用、跨 workspace、断线重连不能串成员/历史/审批。\r\n- 注册/派发/恢复/关闭 UI 均不启动、接管、杀死用户 Agent；不使用 PTY提示词、私有历史解析或逐品牌恢复适配器。普通 CLI无端点时准确显示未接入。\r\n- 一个支持会话回放、一个不支持的 Agent：历史来源和覆盖率准确；回放不重发消息、不触发任务、不卡当前会话；旧记录仍可只读。\r\n- 向组派发、改组、成员失联、部分失败与取消：目标快照与 revision冻结，各成员真实状态可查，回执成功不能冒充任务完成。\r\n- 两个真实成员 A→B→A：通过共同 A2A入口/MCP调用，有关联任务、执行结果与产物；至少一项实际权限请求只批准一次。缺主动工具者可被调用但不显示自主派发。\r\n- 官方 A2A 客户端发现成员卡并完成调用/查询/取消；版本、枚举与流能力一致；同会话不同context隔离不支持时明确拒绝。循环派发、伪造来源、越权workspace、重复消息、超时结果未知与队列溢出均有断言。\r\n- 桌面关闭后 CLI/Remote仍读到同一 Commune 登记/编组/历史；右侧与其专属启动链路无活动引用。实施时运行相关 Rust、真实协议互操作、UI与 npm test/lint/typecheck，最后 SpecTree verify/complete。本设计轮未运行实施测试。\r\n\r\n# 终端 Agent 侧栏基础交互 — 2026-10-16 已批准\r\n\r\n批准依据：用户明确要求汇总所有工作区所有终端中的 Agent，查看最新内容、发送文字、选择与回复；在已展示“复用现有终端读写、ACP 为增强、不改变启动命令”的具体方案后，用户指令“那就继续实现吧”。本次是 070 的已批准修正，不要求再次审批同一方案。\r\n\r\n1. 成员页默认聚合全部本地工作区，保留 workspaceId、paneId、终端运行代际与 Agent 进程实例。沿用用户可扩展的进程识别清单，不按品牌解析业务或私有历史。协议登记不是展示及人工操作的门槛。\r\n2. 未登记协议的终端 Agent 是终端观察投影，不伪造 protocol session、Hub delivery identity、任务完成或审批能力。侧栏显示“终端最新内容”，数据直接复用 Runtime 现有终端解析画面；不冒称精确的最后一条模型消息。\r\n3. 用户显式点击发送、方向键、回车、Tab、Escape 或 Ctrl+C，复用原终端的人工输入与顺序去重链路。Runtime 验证工作区、pane、终端代际和进程实例；拒绝过期、跨工作区、已退出或替换后的目标。仅返回“输入已写入终端”的真实 ACK，不冒充 Agent 理解、采纳或任务完成。未知结果保留原请求，禁止自动重发或改投同名进程。\r\n4. 选择控件表示终端按键，不把终端文字解析成协议审批。文本粘贴及按键遵循当前终端模式；提供可展开的终端内容与原终端定位。读取不发输入、不改焦点/尺寸、不启动进程；保持原有 CLI 启动命令与系统 profile。\r\n5. ACP/app-server/A2A 保留为结构化消息、真实权限请求、协议历史及自动协作增强。编组与协议历史仍遵守精确会话、workspace、revision 和真实能力边界。纯人工终端操作不进入 Hub 自动派发，也不是协议投递失败时的 PTY fallback；不把 LLM、MCP 或 A2A 派发改为终端提示词注入。\r\n6. 此前试写的自动包装 Agent 启动入口退出活动产品链路并归档；不要求用户换用共享协议启动。已安装版本不自动修改，验收后仅产出新安装包，由用户手动安装。\r\n\r\n验收：至少两个工作区、多个实际终端 Agent/自定义进程同时可见；原终端普通启动可操作；侧栏最新内容更新；同一 PTY 收到文字及选项按键且其他终端不收；读取无写入/无新进程；重复请求不重写，过期 epoch、进程实例及跨 workspace 拒绝；协议历史来源与语义不变。运行相关 Runtime 与 UI 验收、npm test/lint/typecheck、SpecTree verify，未满足完整 070 验收不得标完成。\r\n\r\n## 成员页融合编组 — 2026-10-16 用户批准\r\n\r\n批准依据：用户明确要求“在成员页签中融合编组的功能，最终只保留成员和历史两个页签”。\r\n\r\n顶层仅“成员、历史”两个页签；成员页内提供可展开的编组协作区。保留建组、成员调整、组长、改名、配色、解散、派发、任务状态与取消，不删除编组能力或已保存数据。成员总览继续汇总全部本地工作区；编组区明确当前工作区，并沿用精确成员身份、workspaceId、groupId、revision 与任务快照边界。\r\n\r\n验收：不存在独立“编组”页签；成员页可操作原编组功能，历史页保持可切换；重开与工作区切换沿用 Runtime 的原编组数据与权限校验。\r\n\r\n### Commune 事件刷新与呈现\r\n\r\n成员、编组、审批、消息投递及历史继续由既有 Kernel/Hub 协议与存储提供权威，不改变身份、投递、权限或编组语义。Commune 对事件按 workspaceId 过滤；相关消息与任务事件到达后刷新对应工作区最近回复和历史，避免依赖长轮询窗口或手动刷新。界面按成员、历史及成员页内编组职责组织，状态与通知清晰可读；中文、英文等支持语言均由 i18n 提供文案。\r\n\r\n验收：真实 UI 中消息发送及回执、最近回复、历史搜索/翻页、编组任务与取消、审批同步正常；跨工作区事件不污染当前历史或通知；支持语言下 Commune 文案完整，现有协议集成测试保持通过。\r\n## Commune 视觉与页面可用性\r\n\r\n成员、历史、编组任务、审批等现有 Commune 能力均须从可发现的页面入口到达真实 Runtime 执行路径；页面切换不得只更换标题或展示静态占位。以工作区、成员、状态、时间和可执行动作建立清楚层级，长目标与协议输出可展开读取，任务终态、不确定结果及权限提示保持可辨。错误、空态、加载、禁用与键盘焦点均有明确呈现。\r\n\r\nCommune 遵循工作区统一的 Ridge 视觉语言与主题，适配桌面和窄屏；紧凑信息不得造成控件拥挤、内容截断或状态难以区分。视觉刷新只调整布局与呈现，不改变成员身份、权限、协议、投递、审批、历史、取消和终端操作语义。\r\n## Remote Commune 视觉一致性\r\n\r\nRemote 的成员、历史、编组及审批沿用与桌面一致的主题感知 Ridge 视觉系统：森林绿强调色、分层表面、清楚状态与数据层级、可见键盘焦点及窄屏适配。成员与历史仍为两个主子页签；编组留在成员页内并可发现、可操作。视觉调整不改协议身份、授权、投递、审计或终端语义。\r\n\r\n## 全局 Commune 聚合 — 2026-10-26 用户明确\r\n\r\nCommune 是已授权 Host 的全局 Agent 总览。成员、最近协议回复、历史和既有编组不随当前终端工作区切换而缩减，也不要求用户先切换工作区才能找到 Agent。工作区仅保留为内部来源与权限身份，不是 Commune 的页面筛选或所有者概念。桌面聚合所有本地工作区，Remote 聚合当前连接实际获准的全部工作区；不能越过连接授权集合。编组共享 Host 全局权威；成员、审批与子任务仍分别受其精确来源和执行权限约束。旧工作区编组与冻结任务按下文兼容规则保留。\r\n\r\n最近回复接受 ACP assistant chunks 和 app-server 正式 assistant items，排除用户消息、思考及隐藏 delta。任何成员动作与历史定位均携带原 workspace/pane/member/session/运行代际，跨来源同名成员不可串线。全局历史分页保持各来源独立 cursor，合并去重并有界呈现；关闭或撤销来源后停止新读取，旧响应不得复活已移除数据。读失败保留最后确认的成员与审批并显示刷新错误，不将未知当作空集合或已无审批。\r\n\r\n验收：至少两个工作区和相同名称/会话字段的不同成员同时可见；切换当前工作区不改变全局成员、回复和历史；源工作区事件可刷新各自回复；实际人工输入及协议/审批只作用于原目标。注入一来源失败及延迟响应，其他来源继续更新且原有效成员/待审批不消失；恢复后投影收敛。旧编组和权限执行语义保持。\r\n\r\n## Host 全局编组与 Remote 终端候选补全（CHG-085）\r\n\r\n用户要求补全 CHG-084 缺口；Commune 无工作区页面概念。一个 Host 只有一份可编辑编组快照与 revision、一个建组入口，成员选择覆盖此连接获准访问的全部来源。组可跨来源；不得跨 Host 静默聚合或赋予新权限。一成员至多一组、显式广播/逐员分配、最多 32 个派发目标、组长须为组员等既有约束保持。\r\n\r\n新组操作不要求产品层 workspaceId。运行时解析精确登记成员；冻结每个目标实际 workspace/pane/session/generation/lease、目标正文、组 revision 与幂等键，再交同一 Hub。父任务归 Host 编组作用域，子投递归其真实来源；历史、取消、恢复与冻结上下文按父子关系查找，不把第一个成员工作区假作组所有者。重复键相同请求返回原任务，差异请求拒绝；旧 revision、过期身份、越权/失联目标在副作用前拒绝。部分投递或重启中断如实显示，不自动重放未知子任务。\r\n\r\n兼容：旧 workspace 编组、归档项、旧任务和幂等关系保留可读；读取不隐式迁移或写盘。首次明确编辑以原子写入建立 Host 全局权威，并保留完整原文档归档。既有不冲突组 ID 保持；ID 冲突用稳定来源命名区分且不改写旧冻结任务；不按同名或 CWD 合并组/补成员。提交失败保留旧权威，重复迁移不产生副本。旧作用域只用于读旧记录和查询在途任务，不恢复多个建组入口。\r\n\r\nRemote 在既有已认证且允许读取该来源终端的连接上展示普通已发现终端 Agent：仅名称、来源 pane、连接状态与最多 4096 字符预览，不传进程 PID/启动实例、命令行、环境、端点、凭据或清单配置。未知协议仍显示未连接，不能伪装为协议成员；可定位现有终端并使用其既有授权输入。此呈现不放开 native-only 发现管理、登记、专用人工输入或设备控制方法。\r\n\r\n验收：两来源同名成员建成同一组；桌面与窄屏均只有一个建组入口并可编辑/重开/切换终端；真实协议广播、逐员任务、等待权限、取消、局部失败、重复键、旧 revision、越权和进程换代均保持精确身份。含冲突 ID 的旧组与在途任务保留，读零写入，首次编辑原子迁移，写失败与重启不丢数据。Remote 候选展示真实现有进程的脱敏结果，定位到正确来源，普通候选不出现协议派发与审批能力；未认证请求/native-only 绕过仍拒绝。\r\n\r\n外部互操作验证必须区分官方独立 SDK 与真实已有 Agent，核对协商版本、认证、同一 session、任务与取消、产物覆盖、审批一次消费；测试 fixture 不冒充外部 Agent。真机、蜂窝/WAN、托管 Cloud 的验收报告声明实际设备/路由；缺设备或运行方端点时保留待验收，不以模拟通过替代。\r\n\r\n## Live refresh and history recovery (CHG-087)\r\n\r\nRemote LAN and Cloud must deliver the existing member, session, group, task and approval events to the same Commune projection. Membership changes refresh even when no terminal bytes arrive. Relevant session events invalidate the matching source's recent replies; unrelated sources keep their cached snapshot. Coalesce bursts and serialize source reads so slow requests can finish under continuous events, with at most one pending follow-up. Reconnect or explicit retry invalidates stale reads without changing identity, permissions, protocol or persistence.\r\n\r\nHistory input immediately fences old list/text-page results before its debounce. A successful response must still match source set, query and request generation before it can change rows, errors or read markers. Live events coalesce behind active reads instead of continuously superseding them. Browsing earlier history preserves that slice and shows the existing new-events indicator; explicit refresh returns to recent entries. Source/query changes and unmount cancel pending timers and fence old work. Text pages must retain the selected event's source and identity. Failure preserves confirmed rows and supports deliberate retry.\r\n\r\nGlobal history merge keeps each source's opaque cursor and buffered rows. Fill empty sources with at most four concurrent reads; consume buffered rows without scheduling a fresh all-source Promise batch per row. Do not prefetch after satisfying the requested page. Validate ordered, duplicate-free pagination, independent failures and no read-side Agent/input side effects. Compare fixed multi-source pagination CPU time against the previous implementation. Browser acceptance must exercise actual current components with delayed reads, bursts, source switching, search races and earlier-history navigation; distinguish injected failures and owned protocol fixtures from external/device/network coverage.\n\n## 用户显式协作启动\n\n用户已批准 CHG-103。用户在终端执行显式协作启动或确认新协作会话时，可由通用终端桥创建新的 ACP/app-server 进程与协议会话，详细行为由 L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION 维护。上述既有会话附加的禁止创建规则继续约束发现、预览、附加、同步历史和失败重试。两种路径须明确区分，普通原生终端不隐式切换。桥接持有同一实际协议进程的唯一 stdio，所有端点、身份、历史、派发、审批、取消和编组仍复用共同 Runtime 契约。"
+    },
+    {
+      "id": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+      "level": "L4",
+      "title": "终端 Agent 自动识别与通用协议接入",
+      "parent": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+      "status": "DRAFT",
+      "lifecycle": "PLANNED",
+      "codeTargets": [
+        "packages/ridge-kernel/src/agent_profiles.rs",
+        "packages/ridge-kernel/src/agent_discovery.rs",
+        "packages/ridge-kernel/src/commune.rs",
+        "packages/ridge-kernel/src/app_server.rs",
+        "packages/ridge-acp/src/**",
+        "packages/ridge-core/src/process_identity.rs",
+        "src/lib/teammate/TerminalAgentRow.svelte",
+        "src/lib/teammate/CommuneConnectionDialog.svelte",
+        "src/lib/teammate/communeMembership.ts",
+        "src/lib/i18n/messages/commune.ts",
+        "src/remote/lib/CommuneWorkspaceRoster.svelte",
+        "packages/remote/src/shared/transport/wsRemote.ts",
+        "packages/ridge-kernel/src/managed_agent.rs",
+        "packages/ridge-kernel/src/lib.rs",
+        "packages/ridge-kernel/src/commune_connection.rs",
+        "packages/ridge-cli/src/main.rs",
+        "packages/ridge-cli/src/managed_agent.rs",
+        "src/lib/teammate/AgentCenterPanel.svelte",
+        "packages/ridge-core/src/commands/shell.rs",
+        "packages/ridge-kernel/src/commune_history.rs",
+        "packages/ridge-kernel/src/managed_console.rs",
+        "packages/ridge-kernel/src/main.rs",
+        "packages/ridge-kernel/src/domain.rs",
+        "packages/ridge-cli/src/tui/lan_session.rs",
+        "src/lib/teammate/CommuneStartDialog.svelte",
+        "src/lib/teammate/communeLaunch.ts",
+        "packages/ridge-kernel/src/server.rs",
+        "packages/ridge-kernel/src/pty.rs",
+        "Cargo.lock",
+        "packages/ridge-kernel/Cargo.toml",
+        "packages/ridge-kernel/src/commune_endpoint.rs"
+      ],
+      "testTargets": [
+        "packages/ridge-kernel/tests/agent_catalog_runtime.rs",
+        "packages/ridge-kernel/tests/commune_registration.rs",
+        "src/lib/teammate/communeMembership.test.ts",
+        "scripts/commune-global-ui-acceptance.mjs",
+        "packages/ridge-kernel/tests/managed_agent.rs",
+        "scripts/commune-agent-interop-acceptance.mjs",
+        "src/lib/teammate/communeLaunch.test.ts"
+      ],
+      "dependsOn": [
+        "L4-COMMUNE-ORGANIZATION-MEMBERS"
+      ],
+      "acceptanceChecks": [
+        {
+          "id": "build-standard-stdio-fixture",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "ridge-acp",
+            "--bin",
+            "fake_acp_agent"
+          ],
+          "description": "先构建唯一受控 stdio 验收进程，供真实管道与生命周期测试使用"
+        },
+        {
+          "id": "build-collaboration-cli",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "ridge-cli"
+          ],
+          "description": "先构建实际终端入口，后续经 CLI、PTY 与 Runtime 验证"
+        },
+        {
+          "id": "shared-acp-driver",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-acp",
+            "--test",
+            "existing_conversation"
+          ],
+          "description": "精确会话、显式鉴权、拒绝鉴权无创建、早期事件、审批与取消"
+        },
+        {
+          "id": "kernel-protocol-drivers",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--lib"
+          ],
+          "description": "协议线格式、WebSocket 鉴权、发现误判、历史覆盖及公共 Runtime 回归"
+        },
+        {
+          "id": "catalog-discovery",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "agent_catalog_runtime"
+          ],
+          "description": "已知 Agent、包装命令和通用 ACP 声明的识别，以及未知能力、精确来源与失效引用处理"
+        },
+        {
+          "id": "existing-session-registration",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "commune_registration"
+          ],
+          "description": "精确原会话接入、鉴权与所有权、原组和 agentId 保留，以及失败与重复接入无副作用"
+        },
+        {
+          "id": "managed-protocol-session",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "managed_agent"
+          ],
+          "description": "真实子进程 stdio、唯一会话、桥接接入、权限路由、取消、失联及生命周期无孤立进程"
+        },
+        {
+          "id": "installed-agent-initialization",
+          "command": [
+            "node",
+            "scripts/commune-agent-interop-acceptance.mjs",
+            "--skip-grok"
+          ],
+          "description": "真实 Codex、Claude、OpenCode 初始化与正常退出；用户明确豁免本轮 Grok 实机验证，证据须标 SKIPPED，不能计作通过或完整对话验收。其他缺适配器、鉴权或创建失败仍失败。"
+        }
+      ],
+      "body": "# 自动识别与通用协议接入\n\n## 需求与批准状态\n用户明确要求自动识别 Codex、Claude、Grok Build、OpenCode，并覆盖可扩展 Agent 与支持 ACP 的 Agent。保留原生独立终端、原进程与原会话，以及 CHG-092 的 agentId 和原组连续性。用户回复“全部授权通过”，已批准显式协作启动及仅补 CHG-103 的 affects 与变更说明。实施仍须取得当前工作树的 SpecTree 锁。\n\n## 已核实现状\n内置清单包含 codex、claude、grok 等，缺少 opencode。进程发现依赖清单匹配，自动接入仅消费 connection.autoConnect 与 descriptorFile，当前未替用户完成端点和已有 session 的发现。ACP 原会话接入使用已有 TCP 字节流，app-server 使用 TCP WebSocket。已有 fixture 和界面通过记录不能证明标准 stdio、Grok WebSocket 或本机共享 daemon 接入。已运行本机四种 CLI 的帮助命令，未启动模型会话。Codex 0.162.1 已导出实验协议 schema，并确认 canAcceptDirectInput 字段存在，不能凭公共文档缺少该字段便移除校验。\n\n## 自动识别\n补齐四种具名工具及其实际包装进程识别。通用 Agent 沿用可扩展清单与协议自报身份，通用 ACP 接入不设品牌白名单。辨认执行映像或真实包装入口，用户 prompt、任意文件路径及普通参数中的品牌文本不能冒充 Agent。每个候选继续精确绑定 host、workspace、pane、terminalEpoch 和 process start instance，Remote 保持脱敏。浏览发现不登记成员、不发送 prompt、不触发新会话。\n\n## 自动连接准备\n主流程由 Runtime 从已验证本地进程的已公布端点、运行方连接元数据或既有受信连接登记生成候选，用户无需自行编写或寻找 JSON。仅枚举精确候选的本地通信资源，不能扫描任意端口或按 cwd、名称推断 session。多个已有会话时展示协议返回的准确会话供用户选择，无法证明目标终端归属时保持待连接并解释原因。Native 一键连接提交 candidateRef 和明确选择，不接受客户端伪造 PID 或新增会话身份。自动附加继续遵守显式 autoConnect 授权，发现进程不自动等同授予控制权。\n\n## 协议与能力\n复用共享会话、投递、审批、历史和组织链路，按协议与传输实现通用连接，不为品牌复制业务状态机。覆盖已存在的 ACP 字节流、ACP WebSocket、已有 app-server 传输与已有 IPC 转发路径。每条路径须核验端点进程启动实例、既有会话、鉴权及可接受控制状态。共享 daemon 不可用相同 cwd 冒充原终端归属，须另有可核验的客户端或会话关联。身份、历史、派发、取消和审批按实际握手及协议事件展示。缺少回放、只读或控制权占用分别说明；手工连接文件保留为高级兼容入口。\n\n## 显式协作启动\n用户从终端显式执行 ridge agent 或界面明确的新协作会话动作时，可创建新的协议进程与 session。原生普通 TUI 和已有会话附加继续使用各自原有路径，不因识别或连接动作切换模式。协作终端桥接进程是 Agent 子进程 stdio 的唯一读写持有者，提供同一真实 session 的通用本地附加入口。桥接端点、进程启动实例与会话来源由运行方自动公布至受保护的本地登记位置，正常接入无需用户提供 JSON。\n\n协议、会话、权限和组织状态沿用 Runtime 链路，CLI 仅提供启动与终端交互适配。ACP 使用 initialize、显式 session/new、prompt、cancel 和标准 permission 事件，app-server 使用其对应协议，不将品牌名写入业务分发。原生工具命令与适配器命令保留在可扩展清单。缺少所需适配器或鉴权时就地显示可操作原因，不暗中安装、替换模型或降低权限。\n\n新模式与现有附加动作分别验证，创建失败不留下已登记成员、孤立子进程或被改写的旧组。用户仅断开 Commune 时，终端桥及其 Agent 保持可用；退出协作终端是明确生命周期动作，负责回收它创建的子进程。鉴权、过期来源或用户取消不能触发重建 Agent、重建 session 或重发 prompt。终端与 Remote 对同一会话串行提交，未知结果保留原意图供确认。\n\n## 验收\n按工具及传输逐项记录真实 CLI 版本、识别、端点发现、精确 session 选择、身份、历史、派发、审批、取消、失联重连与原组保留。具名四种工具和非内置名称 ACP Agent 均须有真实互操作证据。隔离样本覆盖同名多进程、同目录多会话、PID 复用、端点属于另一进程、旧代际、鉴权拒绝、控制权占用与未知结果。发现、预览和鉴权失败均不能产生模型 prompt、新会话、重复派发或组变更。完整模型轮次及真实网络验收按实际可用环境记录，不能以帮助文本、fixture 或按钮存在宣称全面支持。\n\n## 来源\nhttps://learn.chatgpt.com/docs/app-server\nhttps://learn.chatgpt.com/docs/developer-commands\nhttps://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/15-agent-mode.md\nhttps://docs.opencode.ai/docs/acp/\nhttps://agentclientprotocol.com/protocol/v1/transports\nhttps://github.com/agentclientprotocol/claude-agent-acp\n\n## 可重复验收补充\n先构建 fake_acp_agent 和 ridge CLI，再运行实际 CLI → PTY → Runtime 的隔离验收。真实 CLI 初始化脚本仅证明初始化与退出，逐项记录失败，不将其提升为完整派发、审批、取消或手机网络验收。ACP 的 --auth-method 由用户显式指定，须属于该 Agent 公布的协议鉴权方法，鉴权拒绝不创建会话。历史视图须区分协作终端观测窗口与 Agent 原生回放，窗口截断须明确显示。\n\n## Windows 精确连接归属兼容\n本机受控真实连接已捕获准确四元组及正确非零 PID，但 dwState 分别出现 0 与 LISTEN=2（连接行的 peer port 非零）。归属依据为准确连接四元组、唯一非零 PID、前后相同启动实例与终端祖先关系。调用方持有同一已连接 stream，随后仍须完成协议鉴权及准确 session 附加。TCP 状态字段仅供诊断，连接就绪由实际 stream 和协议握手确认。错误 PID、0 PID、混合归属、过期进程、监听行的空 peer 地址与不同 socket 均拒绝。未知 PID 与缺失连接行仍沿同一 socket 有界观察。诊断只输出本端点状态和 PID，不输出凭据。该证据定位了当前误拒绝条件，未证明其 Windows 更新或驱动根因。\n\n\n## 显式启动入口整合\nCLI 与桌面的显式新建协作动作共用 create_independent_terminal。每次创建独立工作区和分屏，沿用客户端生成的稳定标识及当前 Runtime epoch。重试保留准确标识与启动配置。未知结果在对话框重挂载后继续保留，禁止静默创建另一会话。确认拒绝后可修正参数，仍使用原工作区、分屏与 epoch。已退出或启动失败的协作终端不自动重启，其输出保留供查看。\n\n共同控制台由已打包的 Kernel 可执行程序承载，唯一持有 Agent stdio。清单启动配置保持为数据，ACP/app-server 执行共用实现。Ridge 外部运行 CLI 同样通过 Runtime 创建及控制独立终端，使用既有规范终端客户端。查看端退出保留终端，控制台内显式 /exit 才结束所属子进程树。管道文本换行转换为终端 Enter，CLI 读取真实终端退出状态及退出码，未知退出结果须报错。\n\n桌面启动预览仅限 native trust，保持只读，返回可用清单配置、当前 epoch 和默认工作目录，不启动 Agent 或模型请求。创建成功仅确认终端标识，Agent 启动及鉴权结果显示在该终端。鉴权拒绝、缺少可执行程序或会话创建超时均不产生 Commune 成员，也不自动请求另一会话。验收覆盖准确重试、修改启动参数冲突、native trust、过期 epoch、启动失败、查看端与终端生命周期、实际 CLI 和桌面入口，以及回执丢失后的对话框重挂载。\n\n## 本地监听声明与 IPC 附加\n已识别的终端进程可通过清单声明准确的监听子命令和端点参数。Runtime 仅从该进程真实参数识别明确的本地端点，或使用已公布的连接描述。存在多个声明、未知参数形态或无可核验端点时，保持待连接。连接候选只公开发现状态，凭据引用留在 Runtime。\n\n支持 IPv4 回环 TCP 与绝对路径本地 Unix socket。Unix socket 在发送协议数据前读取同一连接的内核对端 PID，并验证声明的进程启动实例及原分屏祖先关系。Windows 兼容成功返回有效 PID 而字节数为零的内核行为。TCP 仍使用原四元组证明。app-server 经 WebSocket 升级复用原驱动，ACP 字节流复用原驱动。会话选择及登记均重复端点和分屏绑定验证。测试覆盖来自另一进程的 socket、无协议数据的拒绝、原会话选择及真实 Windows app-server IPC。共享 daemon 的客户端和会话关联须另有可信证明，不使用相同目录推断归属。\n\n## 本轮验收豁免\n\n用户于 2026-11-16 明确要求跳过 Grok 验证。仅本轮已安装 CLI 初始化检查允许 `--skip-grok`，证据逐项记录 Grok 为 SKIPPED 并说明用户豁免，其真实初始化与完整对话仍未验收。默认命令仍验证全部四种 CLI。其他检查不豁免，不降低协议、鉴权和权限边界。"
+    }
+  ],
+  "remove": [],
+  "createdAt": "2026-11-16T04:42:02.894Z"
+}

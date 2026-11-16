@@ -16,12 +16,7 @@ code_targets:
 test_targets:
   - src/lib/teammate/teammateGroups.test.ts
   - scripts/commune-global-ui-acceptance.mjs
-acceptance_checks:
-  - id: commune-group-usability-ui
-    command:
-      - node
-      - scripts/commune-global-ui-acceptance.mjs
-    description: 真实 Kernel 和受控既有 ACP 会话上验证协作入口可见、跨来源成员选择、候选接入解释、已归组成员可见与原子移动、派发记录保留和窄屏可用性
+acceptance_checks: []
 depends_on: []
 ---
 
@@ -38,3 +33,7 @@ depends_on: []
 验收覆盖跨工作区同名/不同成员、候选无协议权限、全部已归组仍可见、成员移动的单次 CAS 和组长处理、冲突失败不覆盖、已冻结任务不改绑以及窄屏不横向溢出。
 
 建组允许先创建空组，随后添加或移动成员。此操作沿用 Runtime 已支持的空组文档形态，不发送任务、不建立会话；已全部归组时仍有清晰可达的重组路径。失联成员使用可读占位名称，原始身份在详情中保留。
+
+## 共用 UI 验收映射
+
+本节点原有全量浏览器验收由 L4-COMMUNE-UI-ACCEPTANCE 统一执行。该验收单元显式依赖本节点，行为变化仍须触发同一完整脚本与全部原断言；独立协议、存储、权限和其他验收命令保持原定义。

@@ -18,12 +18,7 @@ test_targets:
   - packages/remote/src/shared/transport/wsRemote.behavior.test.ts
   - scripts/commune-global-ui-acceptance.mjs
   - src/lib/stores/hosts.connect.test.ts
-acceptance_checks:
-  - id: commune-remote-delivery-ui
-    command:
-      - node
-      - scripts/commune-global-ui-acceptance.mjs
-    description: 真实受控 ACP 进程及 Kernel 上验证手机单成员消息、丢回执同键重试、连点防重和新草稿保留，同时保持跨来源编组、历史与 Remote 权限边界
+acceptance_checks: []
 depends_on: []
 ---
 
@@ -48,3 +43,7 @@ LAN 和 Cloud 使用相同调用契约，保留原有两参数发送调用。能
 ## 门禁隔离
 
 Host 连接单测必须使用受控共享列表，模拟鉴权不能触发外部 Cloud HTTP。保持原 5 秒超时及业务断言。
+
+## 共用 UI 验收映射
+
+本节点原有全量浏览器验收由 L4-COMMUNE-UI-ACCEPTANCE 统一执行。该验收单元显式依赖本节点，行为变化仍须触发同一完整脚本与全部原断言；独立协议、存储、权限和其他验收命令保持原定义。

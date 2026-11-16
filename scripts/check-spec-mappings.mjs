@@ -21,20 +21,55 @@ assert.ok(evidenceBlock, 'Missing disposition evidence');
 const evidence = JSON.parse(evidenceBlock[1]);
 assert.equal(evidence.sources.length, 98, 'Incomplete original path inventory');
 
-for (const source of evidence.sources) {
-  const rawBlob = execFileSync('git', ['hash-object', '--no-filters', source.archive], {
-    cwd: root, encoding: 'utf8', windowsHide: true,
-  }).trim();
-  // Old blobs may already contain CRLF, while existing archives may be
-  // checkout-converted. Accept the exact blob or Git's canonical form.
-  const blob = rawBlob === source.blob ? rawBlob : execFileSync('git', [
-    'hash-object', '--path', source.old, source.archive,
-  ], { cwd: root, encoding: 'utf8', windowsHide: true }).trim();
-  assert.equal(blob, source.blob, `Changed historical source ${source.old}`);
-  const original = execFileSync('git', ['rev-parse', `${source.commit}:${source.old}`], {
-    cwd: root, encoding: 'utf8', windowsHide: true,
-  }).trim();
-  assert.equal(original, source.blob, `Invalid provenance ${source.old}`);
+const suites = [evidence.sharedUiAcceptance, ...(evidence.sharedPermissionAcceptance ?? [])];
+const expectedSuites = new Map([
+  ['L4-COMMUNE-UI-ACCEPTANCE', [['node', 'scripts/commune-global-ui-acceptance.mjs'], 6]],
+  ['L4-COMMUNE-UI-MEMBERSHIP-ACCEPTANCE', [['node', 'scripts/commune-permission-ui-acceptance.mjs', '--membership'], 2]],
+  ['L4-COMMUNE-UI-PERMISSION-ACCEPTANCE', [['node', 'scripts/commune-permission-ui-acceptance.mjs'], 3]],
+]);
+assert.deepEqual(suites.map(suite => suite?.unitId).sort(), [...expectedSuites.keys()].sort());
+for (const suite of suites) {
+  const [command, count] = expectedSuites.get(suite.unitId);
+  assert.deepEqual(suite.command, command);
+  const unit = graph.nodes.find(node => node.id === suite.unitId);
+  assert.ok(unit, `Missing shared UI unit ${suite.unitId}`);
+  const requirements = suite.requirements.map(record => record.nodeId).sort();
+  assert.equal(requirements.length, count, `Duplicate requirement mappings ${suite.unitId}`);
+  assert.equal(new Set(requirements).size, count, `Incomplete requirements ${suite.unitId}`);
+  assert.deepEqual([...unit.fields.depends_on].sort(), requirements);
+  assert.equal(unit.fields.acceptance_checks.length, 1);
+  assert.deepEqual(unit.fields.acceptance_checks[0].command, command);
+  for (const record of suite.requirements) {
+    const requirement = graph.nodes.find(node => node.id === record.nodeId);
+    assert.ok(requirement, `Missing UI requirement ${record.nodeId}`);
+    assert.ok(requirement.testTargets.includes(command[1]), `Lost UI target ${record.nodeId}`);
+    assert.ok(requirement.body.includes(suite.unitId), `Lost UI mapping ${record.nodeId}`);
+    assert.ok(!(requirement.fields.acceptance_checks ?? []).some(check =>
+      JSON.stringify(check.command) === JSON.stringify(command)), `Duplicate UI execution ${record.nodeId}`);
+  }
+}
+
+// Batch the same Git queries; do not start two Git processes per record.
+// Observation archives contain metadata only, never private local settings.
+const records = [
+  ...evidence.sources.map(source => ({ ...source, source: source.old, canonical: true })),
+  ...(evidence.observationArchives ?? []),
+];
+const gitLines = args => execFileSync('git', args, {
+  cwd: root, encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024,
+}).trim().split(/\r?\n/);
+const rawBlobs = gitLines(['hash-object', '--no-filters', '--', ...records.map(record => record.archive)]);
+const originalBlobs = gitLines(['rev-parse', ...records.map(record => `${record.commit}:${record.source}`)]);
+assert.equal(rawBlobs.length, records.length, 'Incomplete archive fingerprints');
+assert.equal(originalBlobs.length, records.length, 'Incomplete source provenance');
+for (const [index, record] of records.entries()) {
+  // Existing Markdown archives may have checkout-converted newlines; retain
+  // the original per-source Git filter fallback, never apply it to observations.
+  const blob = record.canonical && rawBlobs[index] !== record.blob
+    ? gitLines(['hash-object', '--path', record.source, record.archive])[0]
+    : rawBlobs[index];
+  assert.equal(blob, record.blob, `Changed historical source ${record.source}`);
+  assert.equal(originalBlobs[index], record.blob, `Invalid provenance ${record.source}`);
 }
 
 for (const disposition of evidence.nodes) {
@@ -50,7 +85,7 @@ for (const disposition of evidence.nodes) {
     assert.ok(!['RETIRING', 'ARCHIVED'].includes(lifecycle), `Retired live requirement ${node.id}`);
     assert.ok(node.codeTargets.every(target => !target.startsWith('docs/archive/')), `Archive presented as live implementation ${node.id}`);
   }
-  assert.match(node.body, /CHG-090 映射处置/, `Missing decision ${node.id}`);
+  assert.ok(node.body.includes(`${disposition.change ?? 'CHG-090'} 映射处置`), `Missing decision ${node.id}`);
 }
 
 const historicalIds = new Set(evidence.nodes

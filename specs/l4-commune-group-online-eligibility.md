@@ -31,11 +31,6 @@ acceptance_checks:
       - commune_registration
       - --no-run
     description: 构建连接可断开但原进程保活的已有 ACP fixture
-  - id: online-group-ui
-    command:
-      - node
-      - scripts/commune-permission-ui-acceptance.mjs
-    description: 真实连接断开后离线成员不能新选；已提交丢失回执的组派发仍能确认原请求，不重复执行；回归审批、组分工和产物
 depends_on: []
 ---
 
@@ -46,3 +41,7 @@ depends_on: []
 此条件只约束新派发资格。CHG-098 已提交但回执丢失的原请求保留同一编号和冻结目标，原会话随后断开时仍允许用户明确确认原请求，不能因离线隐藏或清除其未确认状态。Runtime 沿既有组幂等记录返回原回执，不建立新编号或向 Agent 重新发送。原进程保活、历史与未知结果不改变。
 
 验收使用实际 Kernel 与原已有 ACP 连接。主动使一个 fixture 断开连接，核对其 canSend 方法权限仍 true、generation/lease 仍在而 online false，组选择器必须禁用。再用另一成员产生真实已提交组任务，注入丢失回执并使其原连接断开，重新挂载后原请求确认仍可达，两个确认保持同一编号，原进程日志仅有一次执行。fixture 不证明用户实际 Agent 或手机网络表现。
+
+## 共用权限 UI 验收映射
+
+L4-COMMUNE-UI-PERMISSION-ACCEPTANCE 依赖本需求，并完整执行原权限脚本；仅移除重复声明，不缩减断言。

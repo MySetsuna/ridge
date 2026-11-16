@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "2997e707-6d0c-4756-8210-55a9b1cf1fac",
+  "at": "2026-11-16T11:19:36.516Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-129",
+  "data": {
+    "title": "同步共享服务导览并归档冲突提案与近期溯源",
+    "implementation": "REQUIRED"
+  }
+}

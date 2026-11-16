@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "id": "7bdef670-f777-4b6e-bbf5-7373edfd38fa",
+  "at": "2026-11-16T11:20:49.143Z",
+  "type": "applied",
+  "source": "local_operation",
+  "changeId": "CHG-129",
+  "data": {
+    "added": [],
+    "changed": [
+      "L3-ARCHITECTURE-DOCUMENTATION"
+    ],
+    "retiring": [],
+    "patch": {
+      "changeId": "CHG-129",
+      "nodes": [
+        {
+          "id": "L3-ARCHITECTURE-DOCUMENTATION",
+          "level": "L3",
+          "title": "架构导览、权威契约引用与历史材料边界",
+          "parent": "L2-UNIFIED-CLIENT-RUNTIME",
+          "codeTargets": [
+            "README.md",
+            "docs/architecture/README.md",
+            "docs/architecture/00-overview.md",
+            "docs/architecture/10-kernel.md",
+            "docs/architecture/20-rtp1-wire.md",
+            "docs/architecture/30-remote-lifecycle.md",
+            "docs/architecture/40-cli.md",
+            "docs/architecture/50-desktop-tauri.md",
+            "docs/architecture/60-data-flow.md",
+            "docs/architecture/70-runtime-epoch.md",
+            "docs/architecture/80-security.md",
+            "docs/architecture/90-performance.md",
+            "docs/archive/CHG-089/architecture/README.md",
+            "docs/archive/CHG-089/architecture/00-overview.md",
+            "docs/archive/CHG-089/architecture/10-kernel.md",
+            "docs/archive/CHG-089/architecture/20-rtp1-wire.md",
+            "docs/archive/CHG-089/architecture/30-remote-lifecycle.md",
+            "docs/archive/CHG-089/architecture/40-cli.md",
+            "docs/archive/CHG-089/architecture/50-desktop-tauri.md",
+            "docs/archive/CHG-089/architecture/60-data-flow.md",
+            "docs/archive/CHG-089/architecture/70-runtime-epoch.md",
+            "docs/archive/CHG-089/architecture/80-security.md",
+            "docs/archive/CHG-089/architecture/90-performance.md",
+            "docs/architecture/RIDGE-RUNTIME-FOUNDATION-FINAL.md",
+            "docs/architecture/specs/L2-PROTO-001.md",
+            "docs/architecture/specs/L2-REMOTE-001.md",
+            "docs/architecture/specs/L2-TERM-001.md",
+            "docs/architecture/specs/L2-PERF-001.md",
+            "docs/architecture/notes/README.md",
+            ".gitattributes",
+            "docs/architecture/proposals.md",
+            "scripts/check-proposal-archives.mjs"
+          ],
+          "testTargets": [
+            "scripts/check-architecture-docs.mjs",
+            "scripts/check-proposal-archives.mjs"
+          ],
+          "body": "# 架构文档投影\r\n\r\n## 范围与依据\r\n\r\n按用户要求独立整理 docs，承接 CHG-088 的现行 CLI 创建契约，并引用统一 Runtime、Remote 终端、Commune 的已批准规范。根 specs/ 与 changes/ 经 SpecTree 管理，docs 解释源码现状、流程和历史，不自行定义协议。\r\n\r\n## 当前导览\r\n\r\n根 README 与架构目录说明独立 Kernel 的业务及 PTY 所有权、最小 Tauri OS 展示层、CLI/TUI、本地授权 WebSocket、LAN 与 Cloud 适配、共同业务分发、权威终端语义生产和展示消费。逐项链接真实源码、测试和根目录规范，区分当前实现、兼容面与历史设计。CLI 四入口、独立终端、鉴权失败、未知提交结果与同身份重试均引用已批准契约。Commune 说明 Host 全局归属及持久化/临时状态边界。\r\n\r\n## 历史材料\r\n\r\n改写前的十一篇架构导览原文保存在 docs/archive/CHG-089/architecture/。Foundation 报告、历史验收和 docs/architecture/specs/ 副本明确标识历史身份并指向现行导览或根规范。保留历史图片作为历史证据，当前导览不再用其表达新拓扑。\r\n\r\n## 验收\r\n\r\n当前导览无断裂的本地 Markdown 链接，各章节有具体实现或测试依据。当前入口不得将 docs 副本宣称为权威，不得把旧 RTP1 adapter、Tauri Channel 或旧桌面模块写作现役业务主链。归档十一篇正文与提案前 Git 版本逐字节一致。文档检查器验证链接、权威引用、历史标识和归档完整性，人工核对流程与源码，执行 npm test、npm run lint、npm run typecheck 和 SpecTree verify/complete。协议字段、产品行为与规范映射清理由各自变更控制。\n\n## 近期流程同步\n\n导览随 CHG-124、CHG-125、CHG-126 的已实现行为更新：区分普通独立终端、显式协作启动与已有会话接入；说明通用 ACP 命令、真实会话及进程所有权、鉴权失败与原意重试。手机编组入口、当前分屏目录与 Cloud 订阅连续性分别引用对应 L4 权威规范及实际实现。共享服务由 L4-COMMUNE-SHARED-DAEMON-BINDING 规范；导览区分显式共享服务客户端与仍无可信绑定的普通原生终端，不能冒称接管。测试、真实 CLI 初始化、完整对话、平台与公网证据须各自区分，不硬编码通过数量。历史文档及 Git 归档保持原文。\n\n## 本轮提案归档与溯源\n\n用户要求 docs 与规范整理独立变更。本轮补齐 CHG-124 至 CHG-128 已应用提案归档，按原文保留六份同号冲突或未应用旧稿，记录工作树来源与主仓落地编号，不用旧稿覆盖权威规范。原始旧稿字节指纹保持；近期文本归档按 Git 换行规范核对。归档清单是下列 JSON 的唯一事实源，docs 仅提供可读索引。源文件移出活动候选目录且保留历史，源工作树不因此获得新的批准或实施状态。脚本核对指纹、编号、已完成变更、对应节点及可读索引；不改变任何产品流程。\n\n```json\n{\n  \"version\": 1,\n  \"records\": [\n    {\n      \"source\": \"main/.spectree/proposals/CHG-071.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-129/main-CHG-071.json\",\n      \"sha256\": \"daf0be4a28d1d39553d9cfae8a6f1b06c4679fbe7000ab3c75874219f7be5491\",\n      \"hashMode\": \"bytes\",\n      \"change\": \"CHG-071\",\n      \"note\": \"已完成变更的未应用旧稿；与同号既有归档内容不同，保留原文，当前实现以后续规范为准\"\n    },\n    {\n      \"source\": \"remote-detached-cwd/.spectree/proposals/CHG-119.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-129/remote-detached-cwd-CHG-119.json\",\n      \"sha256\": \"c03d9b843c8820773ecaee656a3b700daf249a168cf6438bf28a920cf324ec7f\",\n      \"hashMode\": \"bytes\",\n      \"change\": \"CHG-124\",\n      \"note\": \"当前分屏 CWD 已由主仓 CHG-124 落地\"\n    },\n    {\n      \"source\": \"commune-shared-daemon-spec/.spectree/proposals/CHG-122.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-129/commune-shared-daemon-spec-CHG-122.json\",\n      \"sha256\": \"2af63e25e6bf809e542782e7831fca1ca45bdfc67a86908417cdb40b5e055f0a\",\n      \"hashMode\": \"bytes\",\n      \"change\": \"CHG-128\",\n      \"note\": \"共享 daemon 可信绑定已按主仓新编号 CHG-128 落地\"\n    },\n    {\n      \"source\": \"commune-shared-daemon-spec/.spectree/proposals/CHG-123.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-129/commune-shared-daemon-spec-CHG-123.json\",\n      \"sha256\": \"f63bbd9d740546f7d0f25dd16517433495604eeaa54700de8e962afebb1fcd15\",\n      \"hashMode\": \"bytes\",\n      \"change\": \"CHG-124\",\n      \"note\": \"Cloud 订阅连续性已整合主仓 CHG-124\"\n    },\n    {\n      \"source\": \"commune-shared-daemon-spec/.spectree/proposals/CHG-124.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-129/commune-shared-daemon-spec-CHG-124.json\",\n      \"sha256\": \"8da765dbbd9c0fb8f2526adaef9bd4dc2422ce940375d9330cdf60ae0cd4cf6b\",\n      \"hashMode\": \"bytes\",\n      \"change\": \"CHG-126\",\n      \"note\": \"Windows CLI CWD 原生目录验收已由 CHG-126 落地\"\n    },\n    {\n      \"source\": \"commune-shared-daemon-spec/.spectree/proposals/CHG-125.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-129/commune-shared-daemon-spec-CHG-125.json\",\n      \"sha256\": \"02acb09ca5444b737d803075b6be9bdd45a2a5c3a679829751b9c97db7e62e72\",\n      \"hashMode\": \"bytes\",\n      \"change\": \"CHG-124\",\n      \"note\": \"手机编组导航已整合主仓 CHG-124\"\n    },\n    {\n      \"source\": \"applied-main/CHG-124.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-124.json\",\n      \"sha256\": \"6669dac91f021808487c46ba9376fec22d72fe11a10ee0e4325837fd63e77e26\",\n      \"hashMode\": \"lf\",\n      \"change\": \"CHG-124\",\n      \"note\": \"补齐已应用提案溯源；文本指纹按 Git 换行规范化核对\"\n    },\n    {\n      \"source\": \"applied-main/CHG-125.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-125.json\",\n      \"sha256\": \"cf06b267a47905d1a8210ad179d16d75580586cba17df1b1f3bc0e2ad4050f5b\",\n      \"hashMode\": \"lf\",\n      \"change\": \"CHG-125\",\n      \"note\": \"补齐已应用提案溯源；文本指纹按 Git 换行规范化核对\"\n    },\n    {\n      \"source\": \"applied-main/CHG-126.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-126.json\",\n      \"sha256\": \"72c4afb4eab4f144c9570cacde013e0281e4123f2164f03c84a2028dcb900958\",\n      \"hashMode\": \"lf\",\n      \"change\": \"CHG-126\",\n      \"note\": \"补齐已应用提案溯源；文本指纹按 Git 换行规范化核对\"\n    },\n    {\n      \"source\": \"applied-main/CHG-127.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-127.json\",\n      \"sha256\": \"7530c263997ca3334886dbec4a16a0c130165acdee702ff12fd1e0ac26f134ef\",\n      \"hashMode\": \"lf\",\n      \"change\": \"CHG-127\",\n      \"note\": \"补齐已应用提案溯源；文本指纹按 Git 换行规范化核对\"\n    },\n    {\n      \"source\": \"applied-main/CHG-128.json\",\n      \"archive\": \".spectree/proposals/archive/CHG-128.json\",\n      \"sha256\": \"86b474ed9764d7eaf26d1329c2f3e7f1af9855ebe335cafc265eccde4e378d8f\",\n      \"hashMode\": \"lf\",\n      \"change\": \"CHG-128\",\n      \"note\": \"补齐已应用提案溯源；文本指纹按 Git 换行规范化核对\"\n    }\n  ]\n}\n```\n",
+          "acceptanceChecks": [
+            {
+              "id": "architecture-docs",
+              "command": [
+                "node",
+                "scripts/check-architecture-docs.mjs"
+              ],
+              "description": "检查当前导览内部链接、必需契约与入口引用，历史副本明确标识且旧导览按原文归档\r"
+            },
+            {
+              "id": "proposal-archive-consistency",
+              "command": [
+                "node",
+                "scripts/check-proposal-archives.mjs"
+              ],
+              "description": "核对原始旧稿指纹、主仓落地编号、近期归档和活动目录边界"
+            },
+            {
+              "id": "existing-spec-mappings",
+              "command": [
+                "node",
+                "scripts/check-spec-mappings.mjs"
+              ],
+              "description": "回归现有历史源码证据、映射处置与零失效目标"
+            }
+          ]
+        }
+      ],
+      "remove": []
+    }
+  }
+}

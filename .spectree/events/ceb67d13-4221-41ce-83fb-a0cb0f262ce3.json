@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "ceb67d13-4221-41ce-83fb-a0cb0f262ce3",
+  "at": "2026-11-16T11:20:50.299Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-129",
+  "data": {
+    "changeId": "CHG-129",
+    "specHash": "d8579cf1bf9a0bde505eccf06dcb3a896760a1a856174738ff3dce66716b0dcd",
+    "approvedAt": "2026-11-16T11:20:50.295Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "用户要求 docs 和规范映射清理独立变更，并已全部授权；归档本轮冲突旧稿与补齐现状导览，不改变产品行为",
+    "attributionVerified": false
+  }
+}

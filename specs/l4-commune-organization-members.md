@@ -78,11 +78,6 @@ acceptance_checks:
       - --bin
       - ridge-kernel
     description: 以当前源构建后续 UI 使用的真实 Kernel
-  - id: organization-global-ui
-    command:
-      - node
-      - scripts/commune-global-ui-acceptance.mjs
-    description: Native/Remote 统一成员与候选先入组后接入、同名来源、成员移动与能力反馈
   - id: organization-catalog
     command:
       - cargo
@@ -93,17 +88,6 @@ acceptance_checks:
       - --test
       - agent_catalog_runtime
     description: Native/Remote 可信发现、只读投影、来源脱敏与工作区关闭后引用失效
-  - id: organization-membership-ui
-    command:
-      - node
-      - scripts/commune-permission-ui-acceptance.mjs
-      - --membership
-    description: 真实 Runtime 的已有会话连接文件向导、鉴权与进程校验拒绝、修正重试和断开保留历史
-  - id: organization-dispatch-regression
-    command:
-      - node
-      - scripts/commune-permission-ui-acceptance.mjs
-    description: 审批、协议历史、旧工作区组兼容及 CHG-098/099 的失联回执确认保护
 depends_on: []
 ---
 
@@ -189,3 +173,17 @@ get_teammate_topology 的既有协议 roster 兼容保留，发现项增加可�
 
 ## 端点归属可观察性
 既有进程和 TCP 四元组归属校验始终为接入前置条件。Windows 连接表尚未给出该精确连接的归属或仅有未归属 PID 0 时，可在同一条连接内进行有界只读观察等待，每次重验原进程启动实例，最终仍须唯一归属为声明的 PID。其他非零 PID 或歧义归属立即拒绝。等待耗尽保留未连接状态，不重建 socket、不重试协议握手、不产生派发。
+
+## 共用 UI 验收映射
+
+本节点原有全量浏览器验收由 L4-COMMUNE-UI-ACCEPTANCE 统一执行。该验收单元显式依赖本节点，行为变化仍须触发同一完整脚本与全部原断言；独立协议、存储、权限和其他验收命令保持原定义。
+
+
+## 共用权限 UI 验收映射
+
+L4-COMMUNE-UI-MEMBERSHIP-ACCEPTANCE 依赖本需求，并完整执行原权限脚本；仅移除重复声明，不缩减断言。
+
+
+## 共用权限 UI 验收映射
+
+L4-COMMUNE-UI-PERMISSION-ACCEPTANCE 依赖本需求，并完整执行原权限脚本；仅移除重复声明，不缩减断言。

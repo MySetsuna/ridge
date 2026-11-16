@@ -48,6 +48,7 @@ depends_on:
   - L2-TERM-001
   - L3-REMOTE-INTERACTION-RELIABILITY
   - L3-TERMINAL-VISUAL-INPUT-REPAIR
+acceptance_checks: []
 ---
 
 # 桌面展示层化：与 CLI、Remote 共用一条业务链路
