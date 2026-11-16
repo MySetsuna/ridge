@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "id": "00afec9e-9cc8-47fb-8b94-265e1ad2fd8e",
+  "at": "2026-11-16T05:25:24.040Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-103",
+  "buildId": "BUILD-3c826c4a301f",
+  "data": {
+    "previousBuildId": "BUILD-8e79f9160e31",
+    "testEvidence": {
+      "buildId": "BUILD-8e79f9160e31",
+      "workspaceHash": "3b1562dc1a1e8144faf39ad0b3d60c02ff580ee1ce7a41b56b484fcfb7ad282a",
+      "verifiedAt": "2026-11-16T05:23:54.686Z",
+      "eventId": "953fd4a7-ed0c-4e83-bd02-9d2535a9796d"
+    },
+    "absorbed": [
+      "changes/CHG-103.md"
+    ],
+    "activated": [],
+    "archived": []
+  }
+}

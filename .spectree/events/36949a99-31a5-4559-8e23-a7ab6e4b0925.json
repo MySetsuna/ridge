@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "36949a99-31a5-4559-8e23-a7ab6e4b0925",
+  "at": "2026-11-16T05:25:24.029Z",
+  "type": "approval_derived",
+  "source": "local_operation",
+  "changeId": "CHG-103",
+  "data": {
+    "changeId": "CHG-103",
+    "specHash": "9fbf1e2164193a4239d687b2526bb84edd77c16806e8f68d8424277766cc6880",
+    "approvedAt": "2026-11-16T05:25:24.027Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "沿用全部授权；实际功能已由 CHG-125 实施并通过 34 项验收。本轮仅归结空白重复占位并保留原件，不豁免产品验收。",
+    "derivedFrom": {
+      "buildId": "BUILD-8e79f9160e31",
+      "specHash": "b68faedc21709c485bc545be189533d187d39f8d24dba22cfb744f9f167fde9f"
+    },
+    "attributionVerified": false
+  }
+}
