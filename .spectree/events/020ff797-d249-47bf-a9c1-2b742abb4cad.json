@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "id": "020ff797-d249-47bf-a9c1-2b742abb4cad",
+  "at": "2026-11-16T14:22:10.831Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-130",
+  "buildId": "BUILD-dcb90c05e518",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-dcb90c05e518",
+    "changeId": "CHG-130",
+    "specHash": "a0b50558bb1e1123e1ec205e398896a3a4031d45df25965eff635f8b45e96d53",
+    "workspaceHash": "2b369d6ac38274807c2e96166a5c25c647d3c4ea5edd33840b64bc7155c79226",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "PASS",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-CLOUD-RELEASE-0198",
+        "checkId": "release-version",
+        "command": [
+          "node",
+          "scripts/check-release-version.mjs"
+        ],
+        "description": "四处产品版本一致为 0.1.101，独立 crate 版本保持兼容",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-CLOUD-RELEASE-0198",
+        "checkId": "release-version-regression",
+        "command": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "scripts/check-release-version.test.mjs"
+        ],
+        "description": "版本及 tag 契约拒绝缺失或不一致",
+        "status": "PASS",
+        "exitCode": 0
+      }
+    ],
+    "valid": true,
+    "verifiedAt": "2026-11-16T14:22:10.830Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "Cargo.lock",
+        "before": "7263769c843b7b09ab7515db2e5591ddf17a4e959319020e093cbd8cd457ee0a",
+        "after": "7c9886f88cddbeda22e0617e9a5a6d0d3445240707181e3f6150cca4314efa1e"
+      },
+      {
+        "path": "package.json",
+        "before": "3dcba752610122741a2fcae5e7206ffbd23b3b2b8869528ba62908cd04c2da1c",
+        "after": "892c6eaeadfba01d5d8a0966e4be0729b18048b5dbd733c0368d151360e37fe8"
+      },
+      {
+        "path": "src-tauri/Cargo.toml",
+        "before": "e73b2ad790b16a77439564cd53e5d5b89321516334d4b673b6e1226fd7c3f9ed",
+        "after": "a485c13f527992b616fbccdce62cafcf38f4051302ff52ce339dded51aa6d346"
+      },
+      {
+        "path": "src-tauri/tauri.conf.json",
+        "before": "dd6149a81daf208c93ecdfe1ee88758aa6c750d7d8533192df3a70a52b4d7db4",
+        "after": "848489f9745338d89c9f9c740b6e4f99c8129e1dc5573500187528278b43191c"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/020ff797-d249-47bf-a9c1-2b742abb4cad.log"
+  }
+}

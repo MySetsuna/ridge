@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "id": "24743de0-7de7-4a1f-928c-4d5b7d56242c",
+  "at": "2026-11-16T14:23:14.823Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-130",
+  "buildId": "BUILD-76aa7c82a1bf",
+  "data": {
+    "previousBuildId": "BUILD-dcb90c05e518",
+    "testEvidence": {
+      "buildId": "BUILD-dcb90c05e518",
+      "workspaceHash": "2b369d6ac38274807c2e96166a5c25c647d3c4ea5edd33840b64bc7155c79226",
+      "verifiedAt": "2026-11-16T14:22:10.830Z",
+      "eventId": "020ff797-d249-47bf-a9c1-2b742abb4cad"
+    },
+    "absorbed": [
+      "Cargo.lock",
+      "changes/CHG-130.md",
+      "package.json",
+      "src-tauri/Cargo.toml",
+      "src-tauri/tauri.conf.json"
+    ],
+    "activated": [],
+    "archived": []
+  }
+}

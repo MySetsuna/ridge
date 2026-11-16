@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "4728d4f7-1340-4ec4-8cc5-68d84a860b46",
+  "at": "2026-11-16T14:16:58.517Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-130",
+  "data": {
+    "changeId": "CHG-130",
+    "specHash": "a0b50558bb1e1123e1ec205e398896a3a4031d45df25965eff635f8b45e96d53",
+    "approvedAt": "2026-11-16T14:16:58.514Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "standing-user-authorization-to-push-release-and-complete-remaining-items",
+    "attributionVerified": false
+  }
+}

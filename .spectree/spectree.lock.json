@@ -1,41 +1,53 @@
 {
   "version": 1,
-  "changeId": "CHG-129",
-  "specHash": "74c479615fe8d94aace6026c44afbd507f4f3d11c4b912032603573aad257a05",
+  "changeId": "CHG-130",
+  "specHash": "e24b82023bcf2a5bdae61f4e4c363dfd2e8f2f7277015f7eca4e148cf74054d3",
   "units": [
     {
-      "id": "L4-DESKTOP-TERMINAL-NAVIGATION-FOCUS",
+      "id": "L4-CLOUD-RELEASE-0198",
       "level": "L4",
-      "nodeHash": "ce81d4239f08b9c67c246ccfee1c5ce8e5d40ea7c89cae032868e271d8f83fe3",
+      "nodeHash": "f13f54fb6528dee30e3512174ee00fbf61fdbe1b03c153c86231947d9a9ca9f3",
       "codeTargets": [
-        "src/routes/+page.svelte",
-        "packages/remote/src/shared/terminal/terminalFocus.ts"
+        "package.json",
+        "Cargo.lock",
+        "src-tauri/Cargo.toml",
+        "src-tauri/tauri.conf.json"
       ],
       "testTargets": [
-        "packages/remote/src/shared/terminal/terminalFocus.test.ts",
-        "scripts/cdp-terminal-focus.mjs"
+        "scripts/check-release-version.mjs",
+        "scripts/check-release-version.test.mjs"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "terminal-navigation-focus",
+          "id": "release-version",
+          "command": [
+            "node",
+            "scripts/check-release-version.mjs"
+          ],
+          "description": "四处产品版本一致为 0.1.101，独立 crate 版本保持兼容"
+        },
+        {
+          "id": "release-version-regression",
           "command": [
             "pnpm",
             "exec",
             "vitest",
             "run",
-            "packages/remote/src/shared/terminal/terminalFocus.test.ts"
+            "scripts/check-release-version.test.mjs"
           ],
-          "description": "导航完成恢复原选中终端的输入目标，保护用户随后选择的编辑器与其他终端"
+          "description": "版本及 tag 契约拒绝缺失或不一致"
         }
       ]
     }
   ],
   "allowedPaths": [
-    "packages/remote/src/shared/terminal/terminalFocus.test.ts",
-    "packages/remote/src/shared/terminal/terminalFocus.ts",
-    "scripts/cdp-terminal-focus.mjs",
-    "src/routes/+page.svelte"
+    "Cargo.lock",
+    "package.json",
+    "scripts/check-release-version.mjs",
+    "scripts/check-release-version.test.mjs",
+    "src-tauri/Cargo.toml",
+    "src-tauri/tauri.conf.json"
   ],
   "testCommand": [
     "npm",
@@ -63,7 +75,7 @@
     ".vscode/extensions.json": "926925a0d7f8b5e0e9e84667ac901095f7ffdb83afb54de65662d6e4cfb78ad1",
     ".vscode/settings.json": "54224dc29195ac0e0ae6a3ce38d5cd7aeb390357259a37c860a28a3f1087ef71",
     "AGENTS.md": "f79dcdcc868100c55ce91dda383e287ad1283226b7a24de3fed95123864fc0bf",
-    "Cargo.lock": "7263769c843b7b09ab7515db2e5591ddf17a4e959319020e093cbd8cd457ee0a",
+    "Cargo.lock": "7c9886f88cddbeda22e0617e9a5a6d0d3445240707181e3f6150cca4314efa1e",
     "Cargo.toml": "957354d0468d8acd0df1e15ccdb5440a943a46b84f4bb0536c68edcdaf1442d6",
     "changes/BASELINE-001.md": "014956323df88e7e740dc6669f035bef10d139cb72d42de7c963ae2b1d0b1aae",
     "changes/CHG-001.md": "1108fb4f66a90c53a26b1fba64da1315e81c851d822c4a5736fd84640d9d685d",
@@ -193,6 +205,7 @@
     "changes/CHG-127.md": "f47e4012503a419dfea135ba665befda73b265e27bac2ee3679e9b3930f55f36",
     "changes/CHG-128.md": "4840b269abd108cca1270063e5fb46261910a41604e1894ee605fea80a3a3901",
     "changes/CHG-129.md": "697203c4fe0d9d9430eb0ef92884ba907225204cf7097edc4826b927b9badfff",
+    "changes/CHG-130.md": "e1db17b2eddba9845e3cc912988c9a3df1021295ae74217aa54b13ad722996e0",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -229,7 +242,7 @@
     "docs/README_CN.md": "0c06ccd78ce669ecee57e7f5f04a8deaec30825a9fb390310c605871463759a9",
     "FINAL-REPORT-A8.md": "7f7df82021cea93d3ab23a88e39bda0d60c1df7b531d79972b3556f5e74d6d08",
     "IMPLEMENTATION-ACCEPTANCE.md": "22f532c1e959f91d0e19ec02d3cb291c1e8c737069d6894d0ddaa16b4599e75e",
-    "package.json": "3dcba752610122741a2fcae5e7206ffbd23b3b2b8869528ba62908cd04c2da1c",
+    "package.json": "892c6eaeadfba01d5d8a0966e4be0729b18048b5dbd733c0368d151360e37fe8",
     "packages/remote/package.json": "e45f7377284d78c1d13ed18ef885cfac544fea328677a15090b365edeaebc167",
     "packages/remote/src/index.ts": "a088cec7e3a26058a52c6c3917fc5bf07f647aead3ffe1de8cbad5fb1ff0c95f",
     "packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts": "7abb718851c25821146276ac974fbad2aa64e011e142e2623fe2c6a164324b08",
@@ -1145,7 +1158,7 @@
     "specs/l4-cloud-ice-negotiation-reliability.md": "9ffb24dc04927a338c4f79f37e79f04fd2b1847c03b7259f3a8dd52e7f631951",
     "specs/l4-cloud-mobile-reauth-gate.md": "869f80b0c43d610eccee51c283da8c91eb3a9b02868e3f8262874b2db27daecc",
     "specs/l4-cloud-pane-subscription-continuity.md": "58a4b21827341908ab3ad2417c738b54b1cda2f8991662b696b8d6a9afa1d3df",
-    "specs/l4-cloud-release-0198.md": "6b32cb3757af98269c2752858cf3f0794f24d24839a7bd1154b1075d3e5fef29",
+    "specs/l4-cloud-release-0198.md": "2934301a537acde3008340a5038e2d13a5e1a0c8e894dda6517d840bfb409f4d",
     "specs/l4-cloud-turn-credential-type.md": "541f222eb1502931431950b4cefc02880e3dfe14f19f2eb1e781f33a41c41028",
     "specs/l4-commune-automatic-agent-connection.md": "c58db9b7ea804eab0a2e1c2dd3a11ca92d0d09267ecdd6f3c2a996de3f15b0bc",
     "specs/l4-commune-connection-wizard.md": "55e0d08a4f29a319f1eb7154228661d1e9585f54ce75ebda007858fad433b505",
@@ -2559,7 +2572,7 @@
     "src-tauri/build.rs": "7c43ad9a51ca872756fdcf7d4234f228000800abb0a5498ccac649699cb438f3",
     "src-tauri/capabilities/default.json": "bdc4f0efda8502ddbf0cd0a8c8486f9fe2564715d923f3035a44c5fd318f76ef",
     "src-tauri/Cargo.lock": "1d8ec61843be943db2f3f4d6bc1b557e6603e05c9f5d0483edd5805ab9c8407b",
-    "src-tauri/Cargo.toml": "e73b2ad790b16a77439564cd53e5d5b89321516334d4b673b6e1226fd7c3f9ed",
+    "src-tauri/Cargo.toml": "a485c13f527992b616fbccdce62cafcf38f4051302ff52ce339dded51aa6d346",
     "src-tauri/gen/schemas/acl-manifests.json": "6e09a8d1446e2640a18c93fdbb0fdabfb913e31af7ca946dd4b171d6796d8283",
     "src-tauri/gen/schemas/capabilities.json": "ee5989f2da424f6247baacb2e93e445a53d9265f2ab5ad453c738e001f02220d",
     "src-tauri/gen/schemas/desktop-schema.json": "1d75d79fc208fd9703b312646c8ac6ead58e9acdf90e0af236eb2aeef928c9de",
@@ -2594,7 +2607,7 @@
     "src-tauri/src/utils/cwd.rs": "93768a217ca2a882ecc21b89f64d2879b200b46740e583b2aad909b34278eb9a",
     "src-tauri/src/utils/logging.rs": "46f19900bd026d2263c77f606d9d5015849c9af9ade7fa5924ce3f18d5578ade",
     "src-tauri/src/utils/mod.rs": "8cb88ccb081fee74a039088be23f1f1e8b08b50852a28f4b1358ce3a8873b482",
-    "src-tauri/tauri.conf.json": "dd6149a81daf208c93ecdfe1ee88758aa6c750d7d8533192df3a70a52b4d7db4",
+    "src-tauri/tauri.conf.json": "848489f9745338d89c9f9c740b6e4f99c8129e1dc5573500187528278b43191c",
     "src-tauri/tests/win_manifest_boot.rs": "31a2bb93d3c853c67dde6f31841b9e1e631290b2f9b470f192a752950fab4b31",
     "src-tauri/wix/path-env.wxs": "0b4fa57aab8854d864d5ab1bc68a7b2086491485e9b0d3785da17c58aa6faf2c",
     "static/apple-touch-icon.png": "fcf04070e1ae0e72599b39cf3c118a81c57d01dbb98b894b6ba988bda26cc01e",
@@ -2643,6 +2656,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-7522a60ed497",
-  "manifestHash": "7522a60ed4975ee49b2eb084cb6005cfd246f3de6182b72a30136cd309158a69"
+  "buildId": "BUILD-76aa7c82a1bf",
+  "manifestHash": "76aa7c82a1bf5d19456320e27a8113ffa300452338240e867ddb16ed72c8bf12"
 }

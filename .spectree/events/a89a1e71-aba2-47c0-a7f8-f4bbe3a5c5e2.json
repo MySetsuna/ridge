@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "a89a1e71-aba2-47c0-a7f8-f4bbe3a5c5e2",
+  "at": "2026-11-16T14:16:09.647Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-130",
+  "data": {
+    "title": "汇总最新 Commune 与终端修复为 0.1.101 草稿并更新 Remote",
+    "implementation": "REQUIRED"
+  }
+}

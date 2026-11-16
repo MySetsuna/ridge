@@ -923,5 +923,17 @@
       "buildId": "BUILD-275191d6c0a1",
       "specHash": "8214e986cb02f8ba645dded922e3847a5296b478bfd1b2374333176fe9744a3a"
     }
+  },
+  {
+    "changeId": "CHG-130",
+    "specHash": "e24b82023bcf2a5bdae61f4e4c363dfd2e8f2f7277015f7eca4e148cf74054d3",
+    "approvedAt": "2026-11-16T14:23:14.792Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "standing-user-authorization-to-push-release-and-complete-remaining-items",
+    "derivedFrom": {
+      "buildId": "BUILD-dcb90c05e518",
+      "specHash": "a0b50558bb1e1123e1ec205e398896a3a4031d45df25965eff635f8b45e96d53"
+    }
   }
 ]
