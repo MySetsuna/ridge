@@ -1330,7 +1330,8 @@ pub fn request_json(
         .map_err(|error| format!("connect kernel: {error}"))?;
     let read_timeout = match body.filter(|_| path == "/v1/domain/commands").and_then(|request| request["method"].as_str()) {
         Some("request_gateway_approval" | "submit_gateway_input") => 135_000,
-        Some(method) if method == "load_terminal_font_faces" || method.starts_with("lsp_") => 35_000,
+        Some("load_terminal_font_faces") => 15_000,
+        Some(method) if method.starts_with("lsp_") => 35_000,
         _ => KERNEL_REQUEST_TIMEOUT_MS,
     };
     stream

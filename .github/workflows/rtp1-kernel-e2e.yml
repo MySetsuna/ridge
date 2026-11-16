@@ -33,8 +33,12 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-kernel-runtime-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-kernel-runtime-
+      - name: Scoped admission and font startup deadline regressions
+        run: |
+          cargo test --locked -p ridge-core --lib dispatch::tests -- --test-threads=1
+          cargo test --locked -p ridge-kernel --lib font_manifest_can_finish_after_the_ordinary_command_read_deadline -- --test-threads=1
       - name: Real Kernel Remote and Commune regressions
-        run: cargo test --locked -p ridge-kernel --test remote_invoke_runtime --test commune_registration --test commune_group_tasks --test runtime_workspace_continuity --test cwd_runtime --test workspace_file_owner -- --test-threads=1 2>&1 | tee kernel-runtime-e2e.log
+        run: cargo test --locked -p ridge-kernel --test git_commands_runtime --test remote_invoke_runtime --test commune_registration --test commune_group_tasks --test runtime_workspace_continuity --test cwd_runtime --test workspace_file_owner -- --test-threads=1 2>&1 | tee kernel-runtime-e2e.log
       - name: Upload regression log
         if: always()
         uses: actions/upload-artifact@v4

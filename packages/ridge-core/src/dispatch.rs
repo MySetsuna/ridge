@@ -1147,7 +1147,11 @@ mod tests {
 
     #[test]
     fn git_relative_paths_use_repo_root_without_widening_other_requests() {
-        let root = std::env::current_dir().unwrap().join("shared-sandbox-git");
+        // A real repository inside the grant; a nonexistent child of this
+        // checkout would instead resolve to its unauthorized parent repository.
+        let root = tmp_nonrepo("git_relative_paths");
+        assert!(std::process::Command::new("git").args(["init", "-q"])
+            .current_dir(&root).status().unwrap().success());
         let outside = root.parent().unwrap().join("escape.txt");
         let (ctx, _) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::allow_all().with_roots([&root]));
         for method in ["git_stage", "git_unstage", "git_discard", "git_clean_untracked"] {
@@ -1163,6 +1167,8 @@ mod tests {
         assert!(validate_request("git_compare_commits", &serde_json::json!({"repoRoot":root,"from":"HEAD~1","to":"HEAD"}), &ctx).is_ok());
         assert!(validate_request("git_get_file_versions_between", &serde_json::json!({"repoRoot":root,"path":"src/tracked.txt","from":"HEAD~1","to":"HEAD"}), &ctx).is_ok());
         assert!(matches!(validate_request("write_file", &serde_json::json!({"repoRoot":root,"path":outside}), &ctx), Err(CoreError::OutsideSandbox)));
+        assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

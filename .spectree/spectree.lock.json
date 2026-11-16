@@ -1,7 +1,7 @@
 {
   "version": 1,
   "changeId": "CHG-133",
-  "specHash": "4de5be410e1db005c3539a890ea2557929b39eba98382524ab3446294059d98d",
+  "specHash": "5c752d04f3618bee864b6d0308b3dc301b85c3185a1e84905960e6acc478a2e5",
   "units": [
     {
       "id": "L4-COMMUNE-GLOBAL-HISTORY-EMPTY",
@@ -18,33 +18,38 @@
     {
       "id": "L4-REMOTE-GIT-READ-ROOT-BOUNDARY",
       "level": "L4",
-      "nodeHash": "99d953c6c10580ce67c77beb5e20ddaf84e2540ca0ee55b8d51e94ce3dbb3df9",
+      "nodeHash": "ea590d1ceb86da444e928aa4f240ef2581383bbe124b95df59c02f4d3e8e01f9",
       "codeTargets": [
-        "packages/ridge-core/src/dispatch.rs"
+        "packages/ridge-core/src/dispatch.rs",
+        ".github/workflows/rtp1-kernel-e2e.yml"
       ],
       "testTargets": [
         "packages/ridge-core/src/dispatch.rs",
-        "packages/ridge-kernel/tests/git_commands_runtime.rs"
+        "packages/ridge-kernel/tests/git_commands_runtime.rs",
+        ".github/workflows/rtp1-kernel-e2e.yml"
       ],
       "status": "DRAFT"
     },
     {
       "id": "L4-TERMINAL-INITIALIZATION-RECOVERY",
       "level": "L4",
-      "nodeHash": "05715ede18399fa7b903fafe2bb5a22ff613e17fcbf9032c79e0005fd9312274",
+      "nodeHash": "4cf8b1eb9e004288039b3cb8f5706867c4fbe645a01c5c0137251fa2cb8fa568",
       "codeTargets": [
         "src/lib/components/RidgePane.svelte",
         "packages/ridge-kernel/src/client.rs",
-        "src/lib/i18n/messages/workspace.ts"
+        "src/lib/i18n/messages/workspace.ts",
+        ".github/workflows/rtp1-kernel-e2e.yml"
       ],
       "testTargets": [
         "scripts/cdp-renderer-retry.mjs",
-        "packages/ridge-kernel/src/client.rs"
+        "packages/ridge-kernel/src/client.rs",
+        ".github/workflows/rtp1-kernel-e2e.yml"
       ],
       "status": "DRAFT"
     }
   ],
   "allowedPaths": [
+    ".github/workflows/rtp1-kernel-e2e.yml",
     "packages/ridge-core/src/dispatch.rs",
     "packages/ridge-kernel/src/client.rs",
     "packages/ridge-kernel/tests/git_commands_runtime.rs",
@@ -2665,6 +2670,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-a11690a2185b",
-  "manifestHash": "a11690a2185bbab0e22d38745b3b266b8daf34f8bca28055883f53a5390dd47a"
+  "buildId": "BUILD-a3b8d19a3978",
+  "manifestHash": "a3b8d19a397874e60bf62113929012d0d822e671c046acd0bdee1ef0c4f2f9c4"
 }

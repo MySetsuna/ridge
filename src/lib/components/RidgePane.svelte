@@ -1406,7 +1406,14 @@ onMount(() => {
 			console.error('[ridge-pane] initialization failed', error);
 		}).finally(() => { rendererInitializing = false; });
 	};
+	// A successful pane proves the shared renderer recovered. Wake failed
+	// siblings too, including parked workspace views; no PTY is recreated.
+	const retryFailedSibling = () => {
+		if (webgpuInitError) retryRendererInitialization?.();
+	};
+	window.addEventListener('ridge:pane-attached', retryFailedSibling);
 	retryRendererInitialization();
+	return () => window.removeEventListener('ridge:pane-attached', retryFailedSibling);
 });
 
 // Local desktop panes use the native Rust delta path; remote bindings own

@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "id": "bd8c00a6-cf0d-4b9c-85ba-044f4b4d2fd0",
+  "at": "2026-11-16T16:57:38.873Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-133",
+  "buildId": "BUILD-a11690a2185b",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-a11690a2185b",
+    "changeId": "CHG-133",
+    "specHash": "4de5be410e1db005c3539a890ea2557929b39eba98382524ab3446294059d98d",
+    "workspaceHash": "03c8899e0949b0b1c7419ecac3828979edcda1407d9ff395add27d54811facdb",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "NOT_DECLARED",
+    "acceptanceResults": [],
+    "valid": true,
+    "verifiedAt": "2026-11-16T16:57:38.869Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "packages/ridge-core/src/dispatch.rs",
+        "before": "17087f01b805ebd9a6d9759472a6f51dca52efe83e72296f1c6626eceffc679a",
+        "after": "827e91e36392463ef3f40020bfb06cfe62f722d05c0e50b2d1e8b5eb78b27ba6"
+      },
+      {
+        "path": "packages/ridge-kernel/src/client.rs",
+        "before": "47dc8d489220833305fc3c4e09105387c933ac568aeac233c5df66cc626dcb19",
+        "after": "42bc0cf7c473594619599d636b4b0819f89d0d7e47e3ef73ab82dd490073648b"
+      },
+      {
+        "path": "packages/ridge-kernel/tests/git_commands_runtime.rs",
+        "before": "2dd996422766728cd843167c8f105da7f8861d415159c8a1e334ca1a7dffc120",
+        "after": "fa556cf1d2aeb72ab43c9ff5acbefee0b64eaf4b2de6e8c71224d2482bd441d6"
+      },
+      {
+        "path": "scripts/cdp-renderer-retry.mjs",
+        "before": null,
+        "after": "2a498566505e54bb155209cba743e0931ec61325205391f4892685744356c5a4"
+      },
+      {
+        "path": "src/lib/components/RidgePane.svelte",
+        "before": "38edbc20d84e00547dfba1bf5c272098bf60fce6be2a14c653b7ce86e074f68e",
+        "after": "6bbef20401f94c4b7f377295133cccb241fbfae07ff1e0f3b0760a85fe09bf5a"
+      },
+      {
+        "path": "src/lib/i18n/messages/commune.ts",
+        "before": "2d5510871a3afff1eacec2907aaeeffc96c5e3b3454b1fbebdded06122bc042e",
+        "after": "0035306fab615bd0c5b3f411cbcbbf07dcd56a72ea9ecfa8331ccf8082d9a32a"
+      },
+      {
+        "path": "src/lib/i18n/messages/workspace.ts",
+        "before": "51460c818cdde1ddae7f4b7c6c02ef8cca92edb87194ff2cb3ea1c3725d18cb2",
+        "after": "ac16f1b4adfe7964b31ba68bbe9f3d0e96de5930dca956af5fb5e8e79f137315"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/bd8c00a6-cf0d-4b9c-85ba-044f4b4d2fd0.log"
+  }
+}

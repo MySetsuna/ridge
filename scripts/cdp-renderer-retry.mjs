@@ -24,12 +24,19 @@ assert.match(target, /^\/devtools\/browser\/[a-z0-9-]+$/);
 const browser = await chromium.connectOverCDP(`ws://127.0.0.1:${port}${target}`, { timeout: 5000 });
 let page;
 try {
-  page = browser.contexts().flatMap(c => c.pages()).find(p => p.url().startsWith(config.build.devUrl));
-  assert.ok(page, 'Private native app must be running');
+  await expect.poll(() => {
+    page = browser.contexts().flatMap(c => c.pages()).find(p => p.url().startsWith(config.build.devUrl));
+    return !!page;
+  }, { timeout: 15000 }).toBe(true);
   page.setDefaultTimeout(10000);
   const panes = page.locator('[data-rg-pane-id]:visible');
-  await expect.poll(() => panes.count()).toBeGreaterThan(0);
+  await expect.poll(() => panes.count(), { timeout: 30000 }).toBeGreaterThan(0);
   await expect(page.locator('.rg-webgpu-error')).toHaveCount(0);
+  const expectedIds = await page.locator('[data-rg-pane-id]').evaluateAll(elements => elements.map(e => e.dataset.rgPaneId));
+  await expect.poll(async () => {
+    const running = await processes();
+    return expectedIds.every(id => running.some(p => p.id === id && Number.isInteger(p.pid) && p.pid > 0));
+  }, { timeout: 30000 }).toBe(true);
   const before = await processes();
   assert.ok(before.length > 0, 'Prepare live private PTYs');
   await page.evaluate(() => sessionStorage.setItem('ridge.e2e.rendererFault', '1'));
