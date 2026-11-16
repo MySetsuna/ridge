@@ -23,6 +23,8 @@ LAN 使用 WSS 适配，Cloud 由 Runtime 的 [Cloud 服务](../../packages/ridg
 
 Agent 发现、只读预览、已有会话接入与显式新建协作终端是不同操作。只有最后一项允许按用户选择创建协议进程及会话；既有接入继续核验原终端、进程启动实例、端点实际归属和准确 session。相关实现见 [process_identity.rs](../../packages/ridge-core/src/process_identity.rs)、[commune_endpoint.rs](../../packages/ridge-kernel/src/commune_endpoint.rs)及[自动接入契约](../../specs/l4-commune-automatic-agent-connection.md)。
 
-同名、同目录、共享服务 PID 或可列出会话，均不能单独证明某个普通原生客户端当前使用哪一会话。共享 daemon 的客户端归属仍须可信关联；该直接接入路径是待推进事项。高级连接文件不能替代实际校验。无法确认归属时须保持未接入，不能用新会话冒充原会话。
+同名、同目录、共享服务 PID 或可列出会话，均不能单独证明某个普通原生客户端当前使用哪一会话。普通终端缺少可信关联时仍保持未接入、可编组；高级连接文件不能替代实际校验。
+
+[共享服务契约](../../specs/l4-commune-shared-daemon-binding.md)已落实于显式协作客户端：先在实际连接核验唯一 daemon PID 与启动实例，在该通道创建准确会话，再发布控制台自身的固定会话网关。原终端进程树限制继续生效，不允许把独立 daemon 的任意 sessionId 声称为普通终端会话。后续调用与审批答复通过传输 guard 复核连接；同端口替换、原会话结束或连接退出均撤权，不重新发送未知请求。原成员、编组和已确认历史保留。
 
 Remote 消费 Host 已核验的成员与能力；native 登记权限不会因手机出现按钮而扩大。共享工作区沿用已核验授权及签名通道的就绪状态，并隐藏主机级编组入口；服务端继续限制每次方法和资源访问。

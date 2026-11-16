@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "52495731-5d3f-4f10-afa5-f343975eee4b",
+  "at": "2026-11-16T15:26:38.700Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-131",
+  "data": {
+    "changeId": "CHG-131",
+    "specHash": "ac23465289fac1a8a069912df9dc589ad804791f1061a2d8a76170626b53a0dd",
+    "approvedAt": "2026-11-16T15:26:38.696Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "依全部授权，按文件整合完成后的真实当前图重新审批同一 CHG-131 文档与映射范围；源分支历史原文保留，当前主仓 0.1.101 产品代码与安全边界不改。原验收命令保留，三组重复 UI 声明归并并显式依赖；新增及复用治理检查也实际执行。Grok 仅标 SKIPPED，其余本轮完整门禁必须通过。",
+    "attributionVerified": false
+  }
+}

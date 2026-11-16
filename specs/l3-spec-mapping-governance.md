@@ -45,6 +45,16 @@ code_targets:
   - docs/archive/CHG-090/source/static/mobile/assets/index-Cm2sAwTC.js
   - docs/archive/CHG-090/source/src/lib/terminal/ptyRuntimeSnapshot.test.ts
   - docs/archive/CHG-090/.gitattributes
+  - docs/archive/CHG-131/observations/L3-OBS-OPENCODE-5e2dd251.md
+  - docs/archive/CHG-131/observations/L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f.md
+  - docs/archive/CHG-131/observations/L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1.md
+  - docs/archive/CHG-131/observations/L4-OBS-DOTENV-d1e2f3a4.md
+  - docs/archive/CHG-131/observations/L4-OBS-OPENCODE-PACKAGE-JSON-047992d6.md
+  - docs/archive/CHG-131/observations/L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09.md
+  - docs/archive/CHG-131/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d.md
+  - docs/archive/CHG-131/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58.md
+  - docs/archive/CHG-131/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec.md
+  - docs/archive/CHG-131/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1.md
 test_targets:
   - scripts/check-spec-mappings.mjs
 acceptance_checks:
@@ -53,6 +63,7 @@ acceptance_checks:
       - node
       - scripts/check-spec-mappings.mjs
     description: 核对 98 份 Git 源证据、所有节点处置、现役测试路径及审计零失效目标
+depends_on: []
 ---
 
 # 规范映射治理与历史证据
@@ -1412,7 +1423,224 @@ verify 另发现审计未覆盖的失效测试引用。全图核对共 190 条�
     },
     {
       "id": "L4-OBS-DOTENV-d1e2f3a4",
-      "action": "reparent"
+      "action": "retire",
+      "change": "CHG-131",
+      "reason": "本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求",
+      "previous": {
+        "id": "L4-OBS-DOTENV-d1e2f3a4",
+        "action": "reparent"
+      }
+    },
+    {
+      "id": "L3-OBS-OPENCODE-5e2dd251",
+      "action": "rebind",
+      "change": "CHG-131",
+      "reason": "仅保留 Git 已跟踪的 opencode.json 配置源，不追踪本机 package.json"
+    },
+    {
+      "id": "L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f",
+      "action": "retire",
+      "change": "CHG-131",
+      "reason": "本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求"
+    },
+    {
+      "id": "L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1",
+      "action": "retire",
+      "change": "CHG-131",
+      "reason": "本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求"
+    },
+    {
+      "id": "L4-OBS-OPENCODE-PACKAGE-JSON-047992d6",
+      "action": "retire",
+      "change": "CHG-131",
+      "reason": "本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求"
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09",
+      "action": "retire",
+      "change": "CHG-131",
+      "reason": "本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求"
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d",
+      "action": "retire",
+      "change": "CHG-131",
+      "reason": "本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求"
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58",
+      "action": "retire",
+      "change": "CHG-131",
+      "reason": "本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求"
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec",
+      "action": "retire",
+      "change": "CHG-131",
+      "reason": "本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求"
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1",
+      "action": "retire",
+      "change": "CHG-131",
+      "reason": "本机环境、工具配置或构建生成物的观察占位，不是现役产品源码或已批准行为要求"
+    }
+  ],
+  "observationArchives": [
+    {
+      "id": "L3-OBS-OPENCODE-5e2dd251",
+      "source": "specs/migration/L3-OBS-OPENCODE-5e2dd251.md",
+      "commit": "92f2686b8aeadaf99be5c382ea871a08821ef8a2",
+      "blob": "98b79c318d28b97d7df5c913529184b36a96d2d8",
+      "archive": "docs/archive/CHG-131/observations/L3-OBS-OPENCODE-5e2dd251.md"
+    },
+    {
+      "id": "L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f",
+      "source": "specs/migration/L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f.md",
+      "commit": "92f2686b8aeadaf99be5c382ea871a08821ef8a2",
+      "blob": "23cb8172a78af56a4070e978e4c1c265343b96df",
+      "archive": "docs/archive/CHG-131/observations/L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f.md"
+    },
+    {
+      "id": "L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1",
+      "source": "specs/migration/L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1.md",
+      "commit": "92f2686b8aeadaf99be5c382ea871a08821ef8a2",
+      "blob": "df4669f56e22742dd4fc5a1b637d42776a7d5cb5",
+      "archive": "docs/archive/CHG-131/observations/L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1.md"
+    },
+    {
+      "id": "L4-OBS-DOTENV-d1e2f3a4",
+      "source": "specs/migration/L4-OBS-DOTENV-d1e2f3a4.md",
+      "commit": "92f2686b8aeadaf99be5c382ea871a08821ef8a2",
+      "blob": "d5529ff6f7abdbb6c49de55baaa2813c31a2a735",
+      "archive": "docs/archive/CHG-131/observations/L4-OBS-DOTENV-d1e2f3a4.md"
+    },
+    {
+      "id": "L4-OBS-OPENCODE-PACKAGE-JSON-047992d6",
+      "source": "specs/migration/L4-OBS-OPENCODE-PACKAGE-JSON-047992d6.md",
+      "commit": "92f2686b8aeadaf99be5c382ea871a08821ef8a2",
+      "blob": "ed67aef7b21f059ec60a2a3b5f88f12de4b7cdda",
+      "archive": "docs/archive/CHG-131/observations/L4-OBS-OPENCODE-PACKAGE-JSON-047992d6.md"
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09",
+      "source": "specs/migration/L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09.md",
+      "commit": "92f2686b8aeadaf99be5c382ea871a08821ef8a2",
+      "blob": "d731adcb107d7fc686784843f8a81c601f40ce0a",
+      "archive": "docs/archive/CHG-131/observations/L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09.md"
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d",
+      "source": "specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d.md",
+      "commit": "92f2686b8aeadaf99be5c382ea871a08821ef8a2",
+      "blob": "1d1fe7703e0c111d8cb8cc66b51b7ee81f4672ee",
+      "archive": "docs/archive/CHG-131/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d.md"
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58",
+      "source": "specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58.md",
+      "commit": "92f2686b8aeadaf99be5c382ea871a08821ef8a2",
+      "blob": "641e6302ef5ce550e8b1888b53c233bfb210cb86",
+      "archive": "docs/archive/CHG-131/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58.md"
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec",
+      "source": "specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec.md",
+      "commit": "92f2686b8aeadaf99be5c382ea871a08821ef8a2",
+      "blob": "85cc8ea3452d5455669951104b0db45e42b66045",
+      "archive": "docs/archive/CHG-131/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec.md"
+    },
+    {
+      "id": "L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1",
+      "source": "specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1.md",
+      "commit": "92f2686b8aeadaf99be5c382ea871a08821ef8a2",
+      "blob": "48f8efbc19030b5368f531bd76da4d4e1ee3c249",
+      "archive": "docs/archive/CHG-131/observations/L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1.md"
+    }
+  ],
+  "sharedUiAcceptance": {
+    "unitId": "L4-COMMUNE-UI-ACCEPTANCE",
+    "command": [
+      "node",
+      "scripts/commune-global-ui-acceptance.mjs"
+    ],
+    "requirements": [
+      {
+        "nodeId": "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
+        "checkId": "group-refresh-ui",
+        "description": "生产 Commune 组件在后台读取挂起时仍可编辑与提交，读取旧回包不能回退新投影，窄屏状态可读且既有编组、派发、审批和接入回归成立"
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-USABILITY",
+        "checkId": "commune-group-usability-ui",
+        "description": "真实 Kernel 和受控既有 ACP 会话上验证协作入口可见、跨来源成员选择、候选接入解释、已归组成员可见与原子移动、派发记录保留和窄屏可用性"
+      },
+      {
+        "nodeId": "L4-COMMUNE-MOBILE-GROUP-NAVIGATION",
+        "checkId": "commune-mobile-group-navigation",
+        "description": "真实隔离 Kernel 上的生产组件，验证首屏到编组与派发的路径、同名成员区分、触控区、状态和既有权限"
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-global-ui",
+        "description": "Native/Remote 统一成员与候选先入组后接入、同名来源、成员移动与能力反馈"
+      },
+      {
+        "nodeId": "L4-COMMUNE-REMOTE-DELIVERY",
+        "checkId": "commune-remote-delivery-ui",
+        "description": "真实受控 ACP 进程及 Kernel 上验证手机单成员消息、丢回执同键重试、连点防重和新草稿保留，同时保持跨来源编组、历史与 Remote 权限边界"
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-native-ui",
+        "description": "实际组件中显式共享服务启动、原有手机编组和会话接入回归"
+      }
+    ]
+  },
+  "sharedPermissionAcceptance": [
+    {
+      "unitId": "L4-COMMUNE-UI-MEMBERSHIP-ACCEPTANCE",
+      "command": [
+        "node",
+        "scripts/commune-permission-ui-acceptance.mjs",
+        "--membership"
+      ],
+      "requirements": [
+        {
+          "nodeId": "L4-COMMUNE-CONNECTION-WIZARD",
+          "checkId": "connection-ui",
+          "description": "真实 Chromium 文件选择、预览、错误重试、取消与既有会话注册及移出，不新建替身会话"
+        },
+        {
+          "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+          "checkId": "organization-membership-ui",
+          "description": "真实 Runtime 的已有会话连接文件向导、鉴权与进程校验拒绝、修正重试和断开保留历史"
+        }
+      ]
+    },
+    {
+      "unitId": "L4-COMMUNE-UI-PERMISSION-ACCEPTANCE",
+      "command": [
+        "node",
+        "scripts/commune-permission-ui-acceptance.mjs"
+      ],
+      "requirements": [
+        {
+          "nodeId": "L4-COMMUNE-GROUP-DISPATCH-INTENT",
+          "checkId": "group-intent-ui",
+          "description": "真实组任务在提交后回执丢失、输入新草稿和组件重挂后，确认原派发不重复执行并保留新输入；回归审批、取消和产物"
+        },
+        {
+          "nodeId": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY",
+          "checkId": "online-group-ui",
+          "description": "真实连接断开后离线成员不能新选；已提交丢失回执的组派发仍能确认原请求，不重复执行；回归审批、组分工和产物"
+        },
+        {
+          "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+          "checkId": "organization-dispatch-regression",
+          "description": "审批、协议历史、旧工作区组兼容及 CHG-098/099 的失联回执确认保护"
+        }
+      ]
     }
   ]
 }
@@ -1421,3 +1649,14 @@ verify 另发现审计未覆盖的失效测试引用。全图核对共 190 条�
 归档子树用局部 .gitattributes 禁止换行转换，保留原始 Git blob 的 CRLF/LF 字节。此规则只作用本轮历史证据 source/。
 
 活动子节点不能留在本轮退役父节点下。根环境观察记录从旧生成资产目录迁至 Vite 构建配置模块，仅修正元数据归属。
+
+## CHG-131 本机资料与生成物复核
+
+全新实施工作树暴露十个观察节点对 .env.local、工具私有配置和 Tauri 缓存的依赖。本轮归档九个观察节点；OpenCode 配置模块保留已跟踪的 opencode.json 与活子节点，移除本机 package.json 映射。十份原文及 Git blob 单独验证。统一 Runtime 的 MCP 打包映射回到 bridge 源码及生成脚本，不要求代码图包含某个平台的可执行产物。原 CHG-090 的 98 份源码证据保持不变。
+
+
+## 共用 UI 验收执行边界
+
+六条相同的完整 UI 命令归并为独立验收单元，功能脚本与断言不变。该单元依赖六个现役需求节点，任一需求变化必须使其进入验收影响集。其他命令保留；每轮执行当前源码的完整 UI 脚本，不采用旧结果或人工回执。确定性检查验证需求引用、依赖方向及命令唯一性。
+
+两组相同权限 UI 命令亦各归并为一个依赖单元，保留所有原断言及其他独立命令；任一源需求变化须触发相应完整脚本。

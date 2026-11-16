@@ -36,11 +36,6 @@ acceptance_checks:
       - commune_registration
       - --no-run
     description: 构建既有 ACP 会话 fixture
-  - id: group-intent-ui
-    command:
-      - node
-      - scripts/commune-permission-ui-acceptance.mjs
-    description: 真实组任务在提交后回执丢失、输入新草稿和组件重挂后，确认原派发不重复执行并保留新输入；回归审批、取消和产物
 depends_on: []
 ---
 
@@ -61,3 +56,7 @@ depends_on: []
 隔离单测验证双击、回执丢失、同编号修改被拒后仍可确认原请求、修订尚未接收的错误、原回执确认后的新输入保留、作用域/Host 隔离与组件使用同一状态恢复。真实 Chromium 拦截实际 Runtime 已提交后的回执，组件重挂后仍可重试，两个原 ACP 会话各执行一次，改写的新草稿保留。保留已有组修订变化、逐员分工、真实审批、取消和协议产物回归。fixture 与注入断线不冒充外部 Agent、真机或 WAN 验收。
 
 显式修订保留对应请求快照和前一候选。修订回执丢失时确认最近候选；Runtime 明确返回既有幂等冲突时，恢复前一候选供用户再次确认，不自动派发。相同请求不叠加候选，所有候选沿用同一编号。覆盖先拒绝、再修订已接收但回执丢失的情况，避免始终重试已被修订的旧正文。
+
+## 共用权限 UI 验收映射
+
+L4-COMMUNE-UI-PERMISSION-ACCEPTANCE 依赖本需求，并完整执行原权限脚本；仅移除重复声明，不缩减断言。

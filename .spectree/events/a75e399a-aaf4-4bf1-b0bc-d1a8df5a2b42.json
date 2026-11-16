@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "a75e399a-aaf4-4bf1-b0bc-d1a8df5a2b42",
+  "at": "2026-11-16T14:41:01.898Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-131",
+  "data": {
+    "title": "同步架构导览并整合提案溯源与验收映射",
+    "implementation": "REQUIRED"
+  }
+}

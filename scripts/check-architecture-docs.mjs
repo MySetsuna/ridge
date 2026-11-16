@@ -10,7 +10,7 @@ const names = [
   '30-remote-lifecycle', '40-cli', '50-desktop-tauri',
   '60-data-flow', '70-runtime-epoch', '80-security', '90-performance',
 ];
-const files = ['README.md', ...names.map(name => `docs/architecture/${name}.md`)];
+const files = ['README.md', 'docs/architecture/proposals.md', ...names.map(name => `docs/architecture/${name}.md`)];
 const read = file => readFileSync(path.join(root, file), 'utf8');
 
 for (const file of [...files, 'docs/architecture/notes/README.md']) {
@@ -28,6 +28,7 @@ for (const spec of [
   'l3-remote-interaction-reliability', 'l3-commune-protocol-membership',
   'l4-commune-automatic-agent-connection', 'l4-remote-active-pane-cwd',
   'l4-cloud-pane-subscription-continuity', 'l4-commune-mobile-group-navigation',
+  'l4-commune-shared-daemon-binding',
 ]) assert.ok(index.includes(`../../specs/${spec}.md`), `Missing authority ${spec}`);
 
 for (const name of names) {

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "f628c2e2-c49f-4115-8eea-90d70a536d22",
+  "at": "2026-11-16T14:43:17.502Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-131",
+  "data": {
+    "changeId": "CHG-131",
+    "specHash": "f300a58dc860d6553f6ff0cd7b80b35e4adac55a9867bcf176492f7a50ccb4f0",
+    "approvedAt": "2026-11-16T14:43:17.498Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "依用户全部授权，在当前 0.1.101 主仓整合源分支已闭环的 docs、提案溯源与验收映射整理；独立编号 CHG-131，原 CHG-129 焦点修复与 CHG-130 发布历史保留。原文归档并核对指纹，九个观察占位退休、OpenCode 有效源保留，三组共用 UI 命令保留全部断言及影响依赖。基于当前主仓重新运行完整所选门禁，Grok 仅按明确豁免标 SKIPPED。",
+    "attributionVerified": false
+  }
+}

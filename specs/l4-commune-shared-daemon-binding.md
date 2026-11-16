@@ -100,11 +100,6 @@ acceptance_checks:
       - commune_registration
       - --no-run
     description: 从当前源码构建 UI 所用的受控协议进程，不依赖旧 target 产物
-  - id: shared-native-ui
-    command:
-      - node
-      - scripts/commune-global-ui-acceptance.mjs
-    description: 实际组件中显式共享服务启动、原有手机编组和会话接入回归
 depends_on:
   - L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION
 ---
@@ -140,3 +135,7 @@ depends_on:
 TCP 使用原连接准确四元组的唯一非零 OS 对端 PID；Unix socket 使用该连接实际 peer PID。持有连接，后续发送、历史加载和审批答复前重新核验同一启动实例与连接。平台无法证明时拒绝。终端退出只关闭本客户端连接，绝不终止、重启或接管共享 daemon。鉴权失败在创建会话之前终止；恢复必须由用户显式新建或重新连接。控制台本轮固定一会话，不提供任意会话切换命令；交换 SID、过期候选、端点替换及失效期间的旧审批均不可继承授权。已有失联成员和编组记录保留，不把未完成任务改成成功。
 
 验收区分真实运行方与受控协议 fixture。Grok 真实验证沿用本轮用户豁免，保持 SKIPPED；此豁免不用于跳过共享绑定、鉴权、派发、审批或仓库门禁。
+
+## 共用 UI 验收映射
+
+本节点原有全量浏览器验收由 L4-COMMUNE-UI-ACCEPTANCE 统一执行。该验收单元显式依赖本节点，行为变化仍须触发同一完整脚本与全部原断言；独立协议、存储、权限和其他验收命令保持原定义。

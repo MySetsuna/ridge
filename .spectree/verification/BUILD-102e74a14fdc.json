@@ -1,0 +1,796 @@
+{
+  "version": 1,
+  "buildId": "BUILD-102e74a14fdc",
+  "changeId": "CHG-131",
+  "specHash": "ac23465289fac1a8a069912df9dc589ad804791f1061a2d8a76170626b53a0dd",
+  "workspaceHash": "2e8d5f413fcc37017fe4e25fea34b55b9fbdec229f52b414f066337150bab42b",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "FAIL",
+  "acceptanceResults": [
+    {
+      "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+      "checkId": "architecture-docs",
+      "command": [
+        "node",
+        "scripts/check-architecture-docs.mjs"
+      ],
+      "description": "检查当前导览内部链接、必需契约与入口引用，历史副本明确标识且旧导览按原文归档\r",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+      "checkId": "proposal-archive-consistency",
+      "command": [
+        "node",
+        "scripts/check-proposal-archives.mjs"
+      ],
+      "description": "核对原始旧稿指纹、主仓落地编号、近期归档和活动目录边界",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+      "checkId": "existing-spec-mappings",
+      "command": [
+        "node",
+        "scripts/check-spec-mappings.mjs"
+      ],
+      "description": "回归现有历史源码证据、映射处置与零失效目标",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L3-SPEC-MAPPING-GOVERNANCE",
+      "checkId": "spec-mapping-audit",
+      "command": [
+        "node",
+        "scripts/check-spec-mappings.mjs"
+      ],
+      "description": "核对 98 份 Git 源证据、所有节点处置、现役测试路径及审计零失效目标",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-CLOUD-RELEASE-0198",
+      "checkId": "release-version",
+      "command": [
+        "node",
+        "scripts/check-release-version.mjs"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-CLOUD-RELEASE-0198",
+      "checkId": "release-version-regression",
+      "command": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "scripts/check-release-version.test.mjs"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+      "checkId": "build-standard-stdio-fixture",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "ridge-acp",
+        "--bin",
+        "fake_acp_agent"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+      "checkId": "build-collaboration-cli",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "ridge-cli"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+      "checkId": "shared-acp-driver",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-acp",
+        "--test",
+        "existing_conversation"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+      "checkId": "kernel-protocol-drivers",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--lib"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+      "checkId": "catalog-discovery",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "agent_catalog_runtime"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+      "checkId": "existing-session-registration",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "commune_registration"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+      "checkId": "managed-protocol-session",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "managed_agent"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+      "checkId": "installed-agent-initialization",
+      "command": [
+        "node",
+        "scripts/commune-agent-interop-acceptance.mjs",
+        "--skip-grok"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-CONNECTION-WIZARD",
+      "checkId": "connection-kernel-build",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--bin",
+        "ridge-kernel"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-CONNECTION-WIZARD",
+      "checkId": "connection-fixture-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "commune_registration",
+        "--no-run"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-EXECUTABLE-IMAGE",
+      "checkId": "existing-process-enrollment",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "commune_registration",
+        "--",
+        "--test-threads=1"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-GROUP-DISPATCH-INTENT",
+      "checkId": "group-intent-kernel-build",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--bin",
+        "ridge-kernel"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-GROUP-DISPATCH-INTENT",
+      "checkId": "group-intent-fixture-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "commune_registration",
+        "--no-run"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY",
+      "checkId": "online-kernel-build",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--bin",
+        "ridge-kernel"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY",
+      "checkId": "online-fixture-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "commune_registration",
+        "--no-run"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
+      "checkId": "group-refresh-races",
+      "command": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/lib/teammate/teammateGroups.test.ts"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-LINUX-PROCESS-OBSERVATION",
+      "checkId": "process-enrollment",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "commune_registration",
+        "--",
+        "--test-threads=1"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+      "checkId": "organization-socket-attestation",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-core",
+        "process_identity"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+      "checkId": "organization-runtime",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "commune_registration"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+      "checkId": "organization-storage",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--lib",
+        "commune_groups"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+      "checkId": "organization-kernel-build",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--bin",
+        "ridge-kernel"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+      "checkId": "organization-catalog",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "agent_catalog_runtime"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-build",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "-p",
+        "ridge-cli",
+        "-p",
+        "ridge-acp",
+        "--bin",
+        "ridge-kernel",
+        "--bin",
+        "ridge",
+        "--bin",
+        "fake_acp_agent"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-os-peer",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-core",
+        "process_identity::"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-transport-revocation",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-acp",
+        "--test",
+        "transport_guard"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-binding-runtime",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "shared_daemon_binding"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-real-codex",
+      "command": [
+        "node",
+        "scripts/commune-shared-daemon-acceptance.mjs"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-existing-managed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "managed_agent"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-ui-fixture-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "commune_registration",
+        "--no-run"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-UI-ACCEPTANCE",
+      "checkId": "commune-complete-ui",
+      "command": [
+        "node",
+        "scripts/commune-global-ui-acceptance.mjs"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-UI-MEMBERSHIP-ACCEPTANCE",
+      "checkId": "commune-membership-complete-ui",
+      "command": [
+        "node",
+        "scripts/commune-permission-ui-acceptance.mjs",
+        "--membership"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    },
+    {
+      "nodeId": "L4-COMMUNE-UI-PERMISSION-ACCEPTANCE",
+      "checkId": "commune-permission-complete-ui",
+      "command": [
+        "node",
+        "scripts/commune-permission-ui-acceptance.mjs"
+      ],
+      "status": "NOT_RUN",
+      "exitCode": null,
+      "error": "verification inputs changed"
+    }
+  ],
+  "valid": false,
+  "verifiedAt": "2026-11-16T16:25:24.924Z",
+  "diagnostics": [
+    {
+      "code": "TEST_E_WORKSPACE_CHANGED",
+      "severity": "ERROR",
+      "message": "managed files changed while verification commands were running; verify the resulting workspace again"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: release-version",
+      "nodeId": "L4-CLOUD-RELEASE-0198"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: release-version-regression",
+      "nodeId": "L4-CLOUD-RELEASE-0198"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: build-standard-stdio-fixture",
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: build-collaboration-cli",
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: shared-acp-driver",
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: kernel-protocol-drivers",
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: catalog-discovery",
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: existing-session-registration",
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: managed-protocol-session",
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: installed-agent-initialization",
+      "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: connection-kernel-build",
+      "nodeId": "L4-COMMUNE-CONNECTION-WIZARD"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: connection-fixture-build",
+      "nodeId": "L4-COMMUNE-CONNECTION-WIZARD"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: existing-process-enrollment",
+      "nodeId": "L4-COMMUNE-EXECUTABLE-IMAGE"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: group-intent-kernel-build",
+      "nodeId": "L4-COMMUNE-GROUP-DISPATCH-INTENT"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: group-intent-fixture-build",
+      "nodeId": "L4-COMMUNE-GROUP-DISPATCH-INTENT"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: online-kernel-build",
+      "nodeId": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: online-fixture-build",
+      "nodeId": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: group-refresh-races",
+      "nodeId": "L4-COMMUNE-GROUP-RESPONSIVE-STATE"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: process-enrollment",
+      "nodeId": "L4-COMMUNE-LINUX-PROCESS-OBSERVATION"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: organization-socket-attestation",
+      "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: organization-runtime",
+      "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: organization-storage",
+      "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: organization-kernel-build",
+      "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: organization-catalog",
+      "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: shared-build",
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: shared-os-peer",
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: shared-transport-revocation",
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: shared-binding-runtime",
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: shared-real-codex",
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: shared-existing-managed",
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: shared-ui-fixture-build",
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: commune-complete-ui",
+      "nodeId": "L4-COMMUNE-UI-ACCEPTANCE"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: commune-membership-complete-ui",
+      "nodeId": "L4-COMMUNE-UI-MEMBERSHIP-ACCEPTANCE"
+    },
+    {
+      "code": "ACCEPTANCE_E_NOT_RUN",
+      "severity": "ERROR",
+      "message": "acceptance check was not executed: commune-permission-complete-ui",
+      "nodeId": "L4-COMMUNE-UI-PERMISSION-ACCEPTANCE"
+    }
+  ],
+  "eventId": "dfda537b-2412-4c8b-92d1-c22007694c3b"
+}

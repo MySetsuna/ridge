@@ -40,3 +40,16 @@ ridge agent --command /absolute/path/to/acp-agent --protocol acp --cwd /absolute
 Kernel 的 [managed_agent.rs](../../packages/ridge-kernel/src/managed_agent.rs)持有协议进程、通道和准确会话；控制台把用户明确输入路由到此会话，并展示权限请求。打开创建表单、发现或预览均不启动 Agent。关闭展示连接沿用独立终端的 detach 规则；显式退出协作控制台与移出 Commune 各按自己的生命周期处理。
 
 已有原生终端继续走原进程与原会话的接入路径，不隐式改为协作终端。正常接入会从 Runtime 已发布或已声明的描述自动准备并校验，手工连接文件保留为高级入口。鉴权失败先在相应工具原生 CLI 完成登录，再显式重试；未知提交结果核对原身份，避免重复创建。详见[权威接入契约](../../specs/l4-commune-automatic-agent-connection.md)。
+
+## 共享服务
+
+已有本机 daemon 可显式创建新的协作客户端。CLI 与桌面新建对话框共用参数和原创建链路，例如：
+
+```sh
+ridge agent --connect ws://127.0.0.1:4500 --protocol app-server --bearer-token-file /private/daemon-token --cwd /absolute/project
+ridge agent --connect unix:///absolute/agent.sock --protocol acp --cwd /absolute/project
+```
+
+`profile`、`--command`、`--connect` 三选一。共享端点必须选 `acp`、`acp-ws` 或 `app-server`；Bearer 文件只用于 WebSocket，ACP 字节流不接收该文件。端点只允许可核验的本机传输，凭据使用绝对本地文件引用。此操作创建本客户端的新会话，不接管其他普通终端。
+
+控制台先验证实际 daemon 启动实例，再在持有的真实通道创建并固定 session。Commune 通过该控制台发布的短期候选接入，保留先前编组的 `agentId`。会话结束、进程或连接失效后停止相应操作；旧请求仍可核对原回执，新请求拒绝入队。退出查看窗口保留控制台，控制台 `/exit` 只关闭自身连接，daemon 继续运行。服务重启后须显式建立新客户端，旧授权不会自动转移。详见[共享服务契约](../../specs/l4-commune-shared-daemon-binding.md)。

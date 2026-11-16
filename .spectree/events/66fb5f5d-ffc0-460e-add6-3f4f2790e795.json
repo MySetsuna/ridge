@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "id": "66fb5f5d-ffc0-460e-add6-3f4f2790e795",
+  "at": "2026-11-16T17:29:11.496Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-131",
+  "buildId": "BUILD-585d2b421b11",
+  "data": {
+    "previousBuildId": "BUILD-3af905c1572e",
+    "testEvidence": {
+      "buildId": "BUILD-3af905c1572e",
+      "workspaceHash": "9507626aaa979210059dfb021797c5e5c6788f4ed119f291ee42b629bcb833ea",
+      "verifiedAt": "2026-11-16T17:28:51.935Z",
+      "eventId": "55317fe8-4194-4a24-9436-f5a4370fc94c"
+    },
+    "absorbed": [
+      ".gitattributes",
+      "changes/CHG-131.md",
+      "changes/CHG-132.md",
+      "changes/CHG-133.md",
+      "docs/architecture/40-cli.md",
+      "docs/architecture/80-security.md",
+      "docs/architecture/90-performance.md",
+      "docs/architecture/README.md",
+      "docs/architecture/proposals.md",
+      "scripts/check-architecture-docs.mjs",
+      "scripts/check-proposal-archives.mjs",
+      "scripts/check-spec-mappings.mjs",
+      "specs/archive/L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f.md",
+      "specs/archive/L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1.md",
+      "specs/archive/L4-OBS-DOTENV-d1e2f3a4.md",
+      "specs/archive/L4-OBS-OPENCODE-PACKAGE-JSON-047992d6.md",
+      "specs/archive/L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09.md",
+      "specs/archive/L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d.md",
+      "specs/archive/L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58.md",
+      "specs/archive/L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec.md",
+      "specs/archive/L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1.md",
+      "specs/l4-commune-ui-acceptance.md",
+      "specs/l4-commune-ui-membership-acceptance.md",
+      "specs/l4-commune-ui-permission-acceptance.md",
+      "specs/migration/L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f.md",
+      "specs/migration/L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1.md",
+      "specs/migration/L4-OBS-DOTENV-d1e2f3a4.md",
+      "specs/migration/L4-OBS-OPENCODE-PACKAGE-JSON-047992d6.md",
+      "specs/migration/L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09.md",
+      "specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d.md",
+      "specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58.md",
+      "specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec.md",
+      "specs/migration/L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1.md"
+    ],
+    "activated": [
+      "L4-COMMUNE-UI-ACCEPTANCE",
+      "L4-COMMUNE-UI-MEMBERSHIP-ACCEPTANCE",
+      "L4-COMMUNE-UI-PERMISSION-ACCEPTANCE"
+    ],
+    "archived": [
+      "L3-OBS-SRC-TAURI-CLAUDE-5e8bd37f",
+      "L3-OBS-SRC-TAURI-GEN-SCHEMAS-0e92f1b1",
+      "L4-OBS-DOTENV-d1e2f3a4",
+      "L4-OBS-OPENCODE-PACKAGE-JSON-047992d6",
+      "L4-OBS-SRC-TAURI-CLAUDE-SETTINGS-LOCAL-JSON-af4bdf09",
+      "L4-OBS-SRC-TAURI-GEN-SCHEMAS-ACL-MANIFESTS-JSON-5262c33d",
+      "L4-OBS-SRC-TAURI-GEN-SCHEMAS-CAPABILITIES-JSON-ed120d58",
+      "L4-OBS-SRC-TAURI-GEN-SCHEMAS-DESKTOP-SCHEMA-JSON-bc62fcec",
+      "L4-OBS-SRC-TAURI-GEN-SCHEMAS-WINDOWS-SCHEMA-JSON-d4b4c5f1"
+    ]
+  }
+}

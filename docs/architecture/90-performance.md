@@ -32,4 +32,6 @@ cargo test --locked -p ridge-kernel --test terminal_lifecycle_runtime
 
 [已安装 CLI 初始化矩阵](../../scripts/commune-agent-interop-acceptance.mjs)使用独立 Runtime 数据目录，显式初始化真实 CLI 会话并退出，不发送模型提示。它不证明完整对话、工具审批或目标完成；外部 Agent 的服务与配置仍由其自身管理。获准跳过的工具须记录 SKIPPED，未验证能力不能计作通过。
 
+[共享服务验收](../../scripts/commune-shared-daemon-acceptance.mjs)启动隔离的真实 Codex daemon、Ridge CLI 与 Kernel，用本机受控模型响应验证两个同目录客户端的准确派发、历史隔离、幂等回执、同会话重连、退出及同端口服务替换。它不访问用户已有会话或外部模型服务，也不证明公网或其他平台表现。通用 ACP、权限撤销、伪造进程及端点覆盖见[受控 Runtime 测试](../../packages/ridge-kernel/tests/shared_daemon_binding.rs)与[传输撤权测试](../../packages/ridge-acp/tests/transport_guard.rs)；fixture 不能提升为真实运行方证据。
+
 [生产目录验收](../../scripts/remote-cwd-acceptance.mjs)覆盖真实 shell、LAN HTTPS/WSS 与隔离信令/账号下的 Cloud WebRTC/E2EE；[Cloud Host 验收](../../scripts/kernel-cloud-owner-acceptance.mjs)覆盖控制连接、授权与终端流。执行前构建相应 Kernel、CLI、WASM 和协议 fixture，按脚本及实际报告核对范围。浏览器窄屏、模拟器、物理手机、局域网和公网须分别记录。

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "dcb729c7-dbe0-4e0d-b7f3-413329419d57",
+  "at": "2026-11-16T17:29:11.451Z",
+  "type": "approval_derived",
+  "source": "local_operation",
+  "changeId": "CHG-131",
+  "data": {
+    "changeId": "CHG-131",
+    "specHash": "42f463a26759152a7b02b82d0de850733d683a979c708f138916233e44315336",
+    "approvedAt": "2026-11-16T17:29:11.442Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "全部授权通过；仅同步既有 CHG-131 文档与映射范围，刷新并行草案导致的图哈希",
+    "derivedFrom": {
+      "buildId": "BUILD-3af905c1572e",
+      "specHash": "7dcd3ae57dc4526b4cb0a90813b41e134a16ccdd6db025ee82d12eac084ecfa0"
+    },
+    "attributionVerified": false
+  }
+}

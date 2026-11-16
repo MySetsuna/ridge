@@ -19,12 +19,7 @@ code_targets:
   - src/remote/CloudAuthScreen.svelte
 test_targets:
   - scripts/commune-global-ui-acceptance.mjs
-acceptance_checks:
-  - id: commune-mobile-group-navigation
-    command:
-      - node
-      - scripts/commune-global-ui-acceptance.mjs
-    description: 真实隔离 Kernel 上的生产组件，验证首屏到编组与派发的路径、同名成员区分、触控区、状态和既有权限
+acceptance_checks: []
 depends_on:
   - L4-COMMUNE-GROUP-RESPONSIVE-STATE
   - L4-COMMUNE-GROUP-USABILITY
@@ -47,3 +42,7 @@ depends_on:
 ## 验收
 
 用含两个同名、不同工作区成员和一个已有组的隔离 Runtime，在 320 和 390 CSS px 粗指针视口验证中英文。打开 Commune 后无需滚动成员列表即可进入编组，选组后首屏可见「派发任务」。核对同名成员来源、键盘焦点、侧栏触控尺寸、滚动和安全区，无横向溢出。回归从终端先编组再接入、无成员、失联、组派发、丢回执后重试及受限工作区可见性。保留桌面布局及现有测试，执行 npm test、npm run lint、npm run typecheck 与 SpecTree 门禁。
+
+## 共用 UI 验收映射
+
+本节点原有全量浏览器验收由 L4-COMMUNE-UI-ACCEPTANCE 统一执行。该验收单元显式依赖本节点，行为变化仍须触发同一完整脚本与全部原断言；独立协议、存储、权限和其他验收命令保持原定义。

@@ -1,0 +1,653 @@
+{
+  "version": 1,
+  "id": "55317fe8-4194-4a24-9436-f5a4370fc94c",
+  "at": "2026-11-16T17:28:51.937Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-131",
+  "buildId": "BUILD-3af905c1572e",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-3af905c1572e",
+    "changeId": "CHG-131",
+    "specHash": "7dcd3ae57dc4526b4cb0a90813b41e134a16ccdd6db025ee82d12eac084ecfa0",
+    "workspaceHash": "9507626aaa979210059dfb021797c5e5c6788f4ed119f291ee42b629bcb833ea",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "PASS",
+    "acceptanceResults": [
+      {
+        "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+        "checkId": "architecture-docs",
+        "command": [
+          "node",
+          "scripts/check-architecture-docs.mjs"
+        ],
+        "description": "检查当前导览内部链接、必需契约与入口引用，历史副本明确标识且旧导览按原文归档\r",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+        "checkId": "proposal-archive-consistency",
+        "command": [
+          "node",
+          "scripts/check-proposal-archives.mjs"
+        ],
+        "description": "核对原始旧稿指纹、主仓落地编号、近期归档和活动目录边界",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+        "checkId": "existing-spec-mappings",
+        "command": [
+          "node",
+          "scripts/check-spec-mappings.mjs"
+        ],
+        "description": "回归现有历史源码证据、映射处置与零失效目标",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L3-SPEC-MAPPING-GOVERNANCE",
+        "checkId": "spec-mapping-audit",
+        "command": [
+          "node",
+          "scripts/check-spec-mappings.mjs"
+        ],
+        "description": "核对 98 份 Git 源证据、所有节点处置、现役测试路径及审计零失效目标",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-CLOUD-RELEASE-0198",
+        "checkId": "release-version",
+        "command": [
+          "node",
+          "scripts/check-release-version.mjs"
+        ],
+        "description": "四处产品版本一致为 0.1.101，独立 crate 版本保持兼容",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-CLOUD-RELEASE-0198",
+        "checkId": "release-version-regression",
+        "command": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "scripts/check-release-version.test.mjs"
+        ],
+        "description": "版本及 tag 契约拒绝缺失或不一致",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "build-standard-stdio-fixture",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-acp",
+          "--bin",
+          "fake_acp_agent"
+        ],
+        "description": "先构建唯一受控 stdio 验收进程，供真实管道与生命周期测试使用",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "build-collaboration-cli",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-cli"
+        ],
+        "description": "先构建实际终端入口，后续经 CLI、PTY 与 Runtime 验证",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "shared-acp-driver",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-acp",
+          "--test",
+          "existing_conversation"
+        ],
+        "description": "精确会话、显式鉴权、拒绝鉴权无创建、早期事件、审批与取消",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "kernel-protocol-drivers",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--lib"
+        ],
+        "description": "协议线格式、WebSocket 鉴权、发现误判、历史覆盖及公共 Runtime 回归",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "catalog-discovery",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "agent_catalog_runtime"
+        ],
+        "description": "已知 Agent、包装命令和通用 ACP 声明的识别，以及未知能力、精确来源与失效引用处理",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "existing-session-registration",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration"
+        ],
+        "description": "精确原会话接入、鉴权与所有权、原组和 agentId 保留，以及失败与重复接入无副作用",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "managed-protocol-session",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "managed_agent"
+        ],
+        "description": "真实子进程 stdio、唯一会话、桥接接入、权限路由、取消、失联及生命周期无孤立进程",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "installed-agent-initialization",
+        "command": [
+          "node",
+          "scripts/commune-agent-interop-acceptance.mjs",
+          "--skip-grok"
+        ],
+        "description": "真实 Codex、Claude、OpenCode 初始化与正常退出；用户明确豁免本轮 Grok 实机验证，证据须标 SKIPPED，不能计作通过或完整对话验收。其他缺适配器、鉴权或创建失败仍失败。",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-CONNECTION-WIZARD",
+        "checkId": "connection-kernel-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--bin",
+          "ridge-kernel"
+        ],
+        "description": "构建当前 Runtime 供真实接入验收使用",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-CONNECTION-WIZARD",
+        "checkId": "connection-fixture-build",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--no-run"
+        ],
+        "description": "构建隔离的已运行 ACP 会话端点",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-EXECUTABLE-IMAGE",
+        "checkId": "existing-process-enrollment",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--",
+          "--test-threads=1"
+        ],
+        "description": "真实长名协议进程发现、精确登记、原终端保留与组织重启恢复",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-DISPATCH-INTENT",
+        "checkId": "group-intent-kernel-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--bin",
+          "ridge-kernel"
+        ],
+        "description": "构建现有组派发幂等与冻结目标的真实 Runtime",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-DISPATCH-INTENT",
+        "checkId": "group-intent-fixture-build",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--no-run"
+        ],
+        "description": "构建既有 ACP 会话 fixture",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY",
+        "checkId": "online-kernel-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--bin",
+          "ridge-kernel"
+        ],
+        "description": "构建当前真实 Runtime",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY",
+        "checkId": "online-fixture-build",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--no-run"
+        ],
+        "description": "构建连接可断开但原进程保活的已有 ACP fixture",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
+        "checkId": "group-refresh-races",
+        "command": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "src/lib/teammate/teammateGroups.test.ts"
+        ],
+        "description": "覆盖初次加载、后台读取中写入、过期读取与错误返回、写入并发拒绝、作用域切换、失败后显式重试及 legacy 迁移互斥",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-LINUX-PROCESS-OBSERVATION",
+        "checkId": "process-enrollment",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--",
+          "--test-threads=1"
+        ],
+        "description": "真实有线程的长名进程发现、登记、原会话及组织恢复",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-socket-attestation",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-core",
+          "process_identity"
+        ],
+        "description": "精确进程与 TCP 归属校验，未可观察状态有界等待，错误 PID 和歧义归属始终拒绝",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-runtime",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration"
+        ],
+        "description": "真实 Runtime 的候选入组、身份复用、并发、只读与旧任务隔离，fixture 不代替外部 Agent",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-storage",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--lib",
+          "commune_groups"
+        ],
+        "description": "组文档 version 1/2/3、原子提交、归档、CAS 与迁移失败保护",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-kernel-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--bin",
+          "ridge-kernel"
+        ],
+        "description": "以当前源构建后续 UI 使用的真实 Kernel",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-catalog",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "agent_catalog_runtime"
+        ],
+        "description": "Native/Remote 可信发现、只读投影、来源脱敏与工作区关闭后引用失效",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "-p",
+          "ridge-cli",
+          "-p",
+          "ridge-acp",
+          "--bin",
+          "ridge-kernel",
+          "--bin",
+          "ridge",
+          "--bin",
+          "fake_acp_agent"
+        ],
+        "description": "构建真实 Kernel、CLI 与既有受控 ACP 进程",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-os-peer",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-core",
+          "process_identity::"
+        ],
+        "description": "连接四元组、唯一实际对端、启动实例与错误归属保护",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-transport-revocation",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-acp",
+          "--test",
+          "transport_guard"
+        ],
+        "description": "绑定失效后拒绝派发、取消及迟到审批响应，不重复发送",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-binding-runtime",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "shared_daemon_binding"
+        ],
+        "description": "共享协议 fixture 的精确双会话、原成员编组、过期预览、错误来源及服务退出",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-real-codex",
+        "command": [
+          "node",
+          "scripts/commune-shared-daemon-acceptance.mjs"
+        ],
+        "description": "隔离真实 Codex daemon、两个同目录协作客户端与无归属第三客户端，核对真实会话、派发和历史；模型响应使用本地受控服务，不能提升为外部模型或公网验收",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-existing-managed",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "managed_agent"
+        ],
+        "description": "已有独立终端、鉴权失败、重试、桥接和进程生命周期回归",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-ui-fixture-build",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--no-run"
+        ],
+        "description": "从当前源码构建 UI 所用的受控协议进程，不依赖旧 target 产物",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-UI-ACCEPTANCE",
+        "checkId": "commune-complete-ui",
+        "command": [
+          "node",
+          "scripts/commune-global-ui-acceptance.mjs"
+        ],
+        "description": "完整执行现有生产组件与真实隔离 Kernel 的 Native/Remote、编组、历史、审批、重试、会话选择、共享服务入口及触控断言",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-UI-MEMBERSHIP-ACCEPTANCE",
+        "checkId": "commune-membership-complete-ui",
+        "command": [
+          "node",
+          "scripts/commune-permission-ui-acceptance.mjs",
+          "--membership"
+        ],
+        "description": "完整执行原脚本及全部断言；覆盖原有 connection-ui, organization-membership-ui",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-UI-PERMISSION-ACCEPTANCE",
+        "checkId": "commune-permission-complete-ui",
+        "command": [
+          "node",
+          "scripts/commune-permission-ui-acceptance.mjs"
+        ],
+        "description": "完整执行原脚本及全部断言；覆盖原有 group-intent-ui, online-group-ui, organization-dispatch-regression",
+        "status": "PASS",
+        "exitCode": 0
+      }
+    ],
+    "valid": true,
+    "verifiedAt": "2026-11-16T17:28:51.935Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": ".gitattributes",
+        "before": "9857ff9bdb1e263152be695c970a8e9d2c94576dbf709ee02f12d780e0958df4",
+        "after": "7fd0af4a26d9f54ec6c02cec1f948c84848ee46a3cd25e23080422a80a5e9663"
+      },
+      {
+        "path": "changes/CHG-132.md",
+        "before": null,
+        "after": "d4c0ef71959e953588d2c35b091fccb6c34ce3f8e17ed22fd24bb65a2b4dd665"
+      },
+      {
+        "path": "changes/CHG-133.md",
+        "before": null,
+        "after": "cfa117039594345bf5db0c8083bd292411d4132ef7f73273e514ed014d84dd6c"
+      },
+      {
+        "path": "docs/architecture/40-cli.md",
+        "before": "7241764c2e4ba3ad9754fde898ab47b88bb3c850d3e6dba1eb8b618555a7fe8e",
+        "after": "6438a4d6347b6901ebd25b2d6a7959615cb190dedd36cb81cdea7cb92c1573ed"
+      },
+      {
+        "path": "docs/architecture/80-security.md",
+        "before": "700b8c353bc1dcf03703ea64d7c3e134387cd39d0bd2dfac51ee9aee2f465ea4",
+        "after": "a893f99bb3dd8ff63e3460a555f893aaf13ee07ec07e253208dc750b95dd2929"
+      },
+      {
+        "path": "docs/architecture/90-performance.md",
+        "before": "f0b8fe7f3d49ac013386ff1009b9f43f9e57096b30d4e6cc759162def531240d",
+        "after": "369a0b7e311be743e0f23ba5d4906ad554532e02678b0348d0e16c7c0a3ba6b5"
+      },
+      {
+        "path": "docs/architecture/README.md",
+        "before": "9e1ceacb94dff8c1e1845115082ed1b2c66dbc698e2836c1039677d77028eb52",
+        "after": "ab1e59aa5ee7100be31690c4090d365d01ffd49e320131fe2446fa831fb5035b"
+      },
+      {
+        "path": "docs/architecture/proposals.md",
+        "before": null,
+        "after": "54c53ca28566b48e7e20a2a9eb3320aa906e7cb21da23523c1f23a35fc959186"
+      },
+      {
+        "path": "scripts/check-architecture-docs.mjs",
+        "before": "709d8e3f664b0862d59f9f6a865949dfbc23a2147fb45ff1c112c40b395786d6",
+        "after": "083d40bc1b92c87ba1ee30dcb7bc6d4afa064403072a2d8489253a8b7169f1d6"
+      },
+      {
+        "path": "scripts/check-proposal-archives.mjs",
+        "before": null,
+        "after": "962f3ec989aaba70c1fd5b4a5cc40eb612e3b7482e17914133b42154a0ca88ac"
+      },
+      {
+        "path": "scripts/check-spec-mappings.mjs",
+        "before": "a59dd814bebb5f245fde8e66337263222e4aba1b6f523229bb38fc28a254e0e3",
+        "after": "e691277e5d2270638c785e298b1352d8d8e225d2db132ea8dcd79edae267f2c7"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/55317fe8-4194-4a24-9436-f5a4370fc94c.log"
+  }
+}
