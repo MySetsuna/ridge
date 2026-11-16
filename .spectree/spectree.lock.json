@@ -1,9 +1,81 @@
 {
   "version": 1,
-  "changeId": "CHG-103",
-  "specHash": "9fbf1e2164193a4239d687b2526bb84edd77c16806e8f68d8424277766cc6880",
-  "units": [],
-  "allowedPaths": [],
+  "changeId": "CHG-126",
+  "specHash": "62c9de8d626b52eb46f3e8c7039e4032ecda4a13854ad380c63a07a6e32e21ab",
+  "units": [
+    {
+      "id": "L3-CLI-INDEPENDENT-TERMINAL-CREATION",
+      "level": "L3",
+      "nodeHash": "ba0fe5508bb1a802348afb07f6a4d44b6cdc36543ddada1f00725becd3ecebc8",
+      "codeTargets": [
+        "packages/ridge-cli/src/tui/lan_session.rs",
+        "packages/ridge-cli/src/tui/mod.rs",
+        "packages/ridge-cli/src/tui/dashboard.rs",
+        "packages/ridge-cli/src/daemon.rs",
+        "packages/ridge-kernel/src/host.rs",
+        "packages/ridge-kernel/src/business.rs",
+        "packages/ridge-kernel/src/domain.rs",
+        "packages/ridge-kernel/src/cloud/manager.rs",
+        "packages/ridge-kernel/src/remote_control.rs",
+        "packages/ridge-core/src/capability.rs",
+        "packages/ridge-cli/Cargo.toml",
+        "Cargo.lock",
+        "packages/remote/src/shared/cloud/remoteAllowlist.ts"
+      ],
+      "testTargets": [
+        "packages/ridge-cli/tests/cli_terminal_create_e2e.rs",
+        "packages/ridge-remote/src/auth.rs",
+        "packages/remote/src/shared/cloud/remoteAllowlist.test.ts"
+      ],
+      "status": "LOCKED",
+      "acceptanceChecks": [
+        {
+          "id": "cli-terminal-creation-e2e",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-cli",
+            "--test",
+            "cli_terminal_create_e2e"
+          ],
+          "description": "真实 Kernel 上四个 CLI 入口的创建、鉴权及上线失败、部分写入回滚、丢包和并发重试验收"
+        },
+        {
+          "id": "local-grant-expiry",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-remote",
+            "--lib",
+            "expired_local_grants_reject_replay_without_affecting_live_grants"
+          ],
+          "description": "共享授权验证器拒绝真实过期记录及其重放，保留同时有效的授权\r"
+        }
+      ]
+    }
+  ],
+  "allowedPaths": [
+    "Cargo.lock",
+    "packages/remote/src/shared/cloud/remoteAllowlist.test.ts",
+    "packages/remote/src/shared/cloud/remoteAllowlist.ts",
+    "packages/ridge-cli/Cargo.toml",
+    "packages/ridge-cli/src/daemon.rs",
+    "packages/ridge-cli/src/tui/dashboard.rs",
+    "packages/ridge-cli/src/tui/lan_session.rs",
+    "packages/ridge-cli/src/tui/mod.rs",
+    "packages/ridge-cli/tests/cli_terminal_create_e2e.rs",
+    "packages/ridge-core/src/capability.rs",
+    "packages/ridge-kernel/src/business.rs",
+    "packages/ridge-kernel/src/cloud/manager.rs",
+    "packages/ridge-kernel/src/domain.rs",
+    "packages/ridge-kernel/src/host.rs",
+    "packages/ridge-kernel/src/remote_control.rs",
+    "packages/ridge-remote/src/auth.rs"
+  ],
   "testCommand": [
     "npm",
     "test"
@@ -152,6 +224,7 @@
     "changes/CHG-123.md": "9915fa842febe720168285b5da578627ca53b3ba2b1c83c2a255866352b1a4ca",
     "changes/CHG-124.md": "931c73f26def54ca3c23eb9bca78da02f8c6350729651dcd54c19e79e70b1a8f",
     "changes/CHG-125.md": "0d86e349ff969430423508dd8fffeb7d36cd9b69b0b95aac2a1ffea154970128",
+    "changes/CHG-126.md": "3e44bc328bf719102fc227b622f19fe1dc035599a99f28126ee91c119089933e",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -498,7 +571,7 @@
     "packages/ridge-cli/src/tui/performance.rs": "f526a99568ef0f5cf13f12f1e6682d2b393a7915e7f233094901561b1da951c2",
     "packages/ridge-cli/src/tui/qr_display.rs": "a0365bbfb2f2eb411543a32831e654a9d24fade8a0cb355f7ec20258eddecefa",
     "packages/ridge-cli/src/tui/session.rs": "ed975e981d94bd1b31061a0b66f9ccfbd47e3a61fe7645ff5c7258014ff16087",
-    "packages/ridge-cli/tests/cli_terminal_create_e2e.rs": "7c81fd43976bc2b28b920db2722e5069f288e4c47d8249e52f92d5ddd144e502",
+    "packages/ridge-cli/tests/cli_terminal_create_e2e.rs": "bf97876dd2b4b86326748a1271277aed0b5a2f3add691ff1697a353a1024ff0b",
     "packages/ridge-cli/tests/kernel_lifecycle_e2e.rs": "0aa5e0c4f1cee8e937207bb37f586932b4dae1eb61fa1e95861dc0a3156a8f93",
     "packages/ridge-cli/tests/rtp1_kernel_e2e.rs": "33d0e2353344348267a55b1627077e2b41a2509014afd1df42e7d89ca62e5882",
     "packages/ridge-core/Cargo.toml": "d1ad81cc98acea296e6caeaa390eff9671190c994eade12bb9cded6b8a623f20",
@@ -1084,7 +1157,7 @@
     "specs/l2-tui-mobile-pty-lifecycle.md": "f7634e463feb7d52a1eb52aa69f2001f912f8cfe59615fdf9396d3dcfc6292c2",
     "specs/l2-unified-client-runtime.md": "aa64ddea82a6223fa3ca58dc7b6042776ae41713ba6fcdaf88d96a81fd149ae6",
     "specs/l3-architecture-documentation.md": "dc875cf045b1128fea4aaec8489631bc5991ef87638faaa323f18c26dfa9de9a",
-    "specs/l3-cli-independent-terminal-creation.md": "f7c908f33f6346042f846363336b86f3b3cd5bff1566e83a80a910499fae5081",
+    "specs/l3-cli-independent-terminal-creation.md": "c1decf81cb8f435630a1f5cd5af46a48481fc465f8b07778aee068e139d517b0",
     "specs/l3-commune-protocol-membership.md": "234c02f60fa7dc0d42c73429892618918526c72404fd729f5c44557a927a7060",
     "specs/l3-perf-remote-production-diagnosis.md": "f9e9793827d4e2225d0a33f26d712887970e1288796204dc442e9f2d70bc05d1",
     "specs/l3-remote-interaction-reliability.md": "e67f22893476eaeb98692fb8be0ebabe76087883f2327b157361ab063d1727a4",
@@ -2584,6 +2657,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-3c826c4a301f",
-  "manifestHash": "3c826c4a301fa17fffd8bb9719241f03fc69b117338ab6684dbd60155912792b"
+  "buildId": "BUILD-d06bc0353f4c",
+  "manifestHash": "d06bc0353f4c4cc2d7ddec76db37f916888895f559beeacc40e3706425202ac5"
 }

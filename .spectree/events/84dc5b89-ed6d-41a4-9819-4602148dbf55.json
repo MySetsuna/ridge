@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "84dc5b89-ed6d-41a4-9819-4602148dbf55",
+  "at": "2026-11-16T10:08:23.146Z",
+  "type": "approval_derived",
+  "source": "local_operation",
+  "changeId": "CHG-126",
+  "data": {
+    "changeId": "CHG-126",
+    "specHash": "62c9de8d626b52eb46f3e8c7039e4032ecda4a13854ad380c63a07a6e32e21ab",
+    "approvedAt": "2026-11-16T10:08:23.144Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "用户要求按已有规划继续；落实已存在的 Windows CLI 原生目录语义验收草案，产品行为和安全断言不变。",
+    "derivedFrom": {
+      "buildId": "BUILD-f0c10853d37a",
+      "specHash": "0830eeade981e0547cf4ba1de1b1c3ab5e78a4ad4b9c591967aff2e405e1bfc6"
+    },
+    "attributionVerified": false
+  }
+}

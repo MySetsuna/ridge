@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "3fd68798-89ce-4bff-91cf-98f285174dea",
+  "at": "2026-11-16T10:01:02.010Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-126",
+  "data": {
+    "title": "按原生目录语义验收 CLI 四入口创建",
+    "implementation": "REQUIRED"
+  }
+}

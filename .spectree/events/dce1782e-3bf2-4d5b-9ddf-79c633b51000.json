@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "id": "dce1782e-3bf2-4d5b-9ddf-79c633b51000",
+  "at": "2026-11-16T10:08:23.164Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-126",
+  "buildId": "BUILD-d06bc0353f4c",
+  "data": {
+    "previousBuildId": "BUILD-f0c10853d37a",
+    "testEvidence": {
+      "buildId": "BUILD-f0c10853d37a",
+      "workspaceHash": "ce62eabb061f96f7d68bea8e7277e70d246b12cbd39a4cf5aa2bd866b7c6a05d",
+      "verifiedAt": "2026-11-16T10:03:11.505Z",
+      "eventId": "646d3c89-cd0e-40ff-a92e-43ed6549ac84"
+    },
+    "absorbed": [
+      "changes/CHG-126.md",
+      "packages/ridge-cli/tests/cli_terminal_create_e2e.rs"
+    ],
+    "activated": [],
+    "archived": []
+  }
+}

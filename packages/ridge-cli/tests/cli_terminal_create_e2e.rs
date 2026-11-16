@@ -402,7 +402,10 @@ async fn four_actual_cli_entries_keep_independent_identities_and_existing_select
         )
         .await;
         assert_eq!(selected["result"].as_str(), original.as_deref());
-        assert_eq!(created[0].cwd.as_deref(), Some(cwd));
+        assert_eq!(
+            fs::canonicalize(created[0].cwd.as_deref().expect("created terminal has a cwd")).unwrap(),
+            fs::canonicalize(cwd).unwrap(),
+        );
         assert_eq!(
             created[0].launch_profile.as_deref(),
             if args.first() == Some(&"remote") {

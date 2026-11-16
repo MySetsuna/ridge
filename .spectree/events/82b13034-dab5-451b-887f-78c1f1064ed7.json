@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "82b13034-dab5-451b-887f-78c1f1064ed7",
+  "at": "2026-11-16T10:01:05.723Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-126",
+  "data": {
+    "changeId": "CHG-126",
+    "specHash": "0830eeade981e0547cf4ba1de1b1c3ab5e78a4ad4b9c591967aff2e405e1bfc6",
+    "approvedAt": "2026-11-16T10:01:05.713Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "用户要求按已有规划继续；落实已存在的 Windows CLI 原生目录语义验收草案，产品行为和安全断言不变。",
+    "attributionVerified": false
+  }
+}

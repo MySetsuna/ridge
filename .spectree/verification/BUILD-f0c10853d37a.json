@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "buildId": "BUILD-f0c10853d37a",
+  "changeId": "CHG-126",
+  "specHash": "0830eeade981e0547cf4ba1de1b1c3ab5e78a4ad4b9c591967aff2e405e1bfc6",
+  "workspaceHash": "ce62eabb061f96f7d68bea8e7277e70d246b12cbd39a4cf5aa2bd866b7c6a05d",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L3-CLI-INDEPENDENT-TERMINAL-CREATION",
+      "checkId": "cli-terminal-creation-e2e",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-cli",
+        "--test",
+        "cli_terminal_create_e2e"
+      ],
+      "description": "真实 Kernel 上四个 CLI 入口的创建、鉴权及上线失败、部分写入回滚、丢包和并发重试验收",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L3-CLI-INDEPENDENT-TERMINAL-CREATION",
+      "checkId": "local-grant-expiry",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-remote",
+        "--lib",
+        "expired_local_grants_reject_replay_without_affecting_live_grants"
+      ],
+      "description": "共享授权验证器拒绝真实过期记录及其重放，保留同时有效的授权\r",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-16T10:03:11.505Z",
+  "diagnostics": [],
+  "eventId": "646d3c89-cd0e-40ff-a92e-43ed6549ac84"
+}
