@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "id": "f51f9e24-69ad-45d0-aac0-fd12a9d098a3",
+  "at": "2026-11-16T10:18:52.667Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-127",
+  "buildId": "BUILD-8def24702262",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-8def24702262",
+    "changeId": "CHG-127",
+    "specHash": "863479ec4c4582c4c3bc1f3f1c7b341d7bd7f9dd0c760f3fb22e5296d895b39b",
+    "workspaceHash": "60e0adf16ae08c98da8098f0eeb9691c4adf6dcdd64150447c99685fd7fe6518",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "PASS",
+    "acceptanceResults": [
+      {
+        "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+        "checkId": "architecture-docs",
+        "command": [
+          "node",
+          "scripts/check-architecture-docs.mjs"
+        ],
+        "description": "检查当前导览内部链接、必需契约与入口引用，历史副本明确标识且旧导览按原文归档\r",
+        "status": "PASS",
+        "exitCode": 0
+      }
+    ],
+    "valid": true,
+    "verifiedAt": "2026-11-16T10:18:52.666Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "docs/architecture/30-remote-lifecycle.md",
+        "before": "a7caf82ac563dd893b7daec0a8e370cd3d5433ced45884e1bba0859b0f61bcc6",
+        "after": "489886f94b571eb063e0a72fe6223f94f8e0a919e348909a41d539499d33abfd"
+      },
+      {
+        "path": "docs/architecture/40-cli.md",
+        "before": "9d4c176e089b462ce6dfa383c50a2666a7dd60f54ea9fd6759152fb1c5338032",
+        "after": "7241764c2e4ba3ad9754fde898ab47b88bb3c850d3e6dba1eb8b618555a7fe8e"
+      },
+      {
+        "path": "docs/architecture/60-data-flow.md",
+        "before": "fe23881159e49579055820d83a295ab7d7d7dd7efdb417c77973d0c4f3c009a2",
+        "after": "2d4cb0e4ce5995ac931e709727dbc069f8da53592f53ee0ea9797b6396ef7a3b"
+      },
+      {
+        "path": "docs/architecture/80-security.md",
+        "before": "1f14cd517dd8b4aafae6e5c50c56bb87e0bc7d078d698b066ccc26251348d84a",
+        "after": "700b8c353bc1dcf03703ea64d7c3e134387cd39d0bd2dfac51ee9aee2f465ea4"
+      },
+      {
+        "path": "docs/architecture/90-performance.md",
+        "before": "6bc68b338bfafee504b5ab638c3035351e964c943599424a82c899e9741a8f4e",
+        "after": "f0b8fe7f3d49ac013386ff1009b9f43f9e57096b30d4e6cc759162def531240d"
+      },
+      {
+        "path": "docs/architecture/README.md",
+        "before": "e324a4b77ab1fa714365102922fd22753e5c63f73275d9bf96d209329e548959",
+        "after": "9e1ceacb94dff8c1e1845115082ed1b2c66dbc698e2836c1039677d77028eb52"
+      },
+      {
+        "path": "scripts/check-architecture-docs.mjs",
+        "before": "15d715f39cf1041de658cbf0a7fe7cc1d0e100e212a387640d31c7f77ceb2505",
+        "after": "709d8e3f664b0862d59f9f6a865949dfbc23a2147fb45ff1c112c40b395786d6"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/f51f9e24-69ad-45d0-aac0-fd12a9d098a3.log"
+  }
+}

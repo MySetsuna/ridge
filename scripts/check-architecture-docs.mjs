@@ -26,6 +26,8 @@ const index = read('docs/architecture/README.md');
 for (const spec of [
   'l2-unified-client-runtime', 'l3-cli-independent-terminal-creation',
   'l3-remote-interaction-reliability', 'l3-commune-protocol-membership',
+  'l4-commune-automatic-agent-connection', 'l4-remote-active-pane-cwd',
+  'l4-cloud-pane-subscription-continuity', 'l4-commune-mobile-group-navigation',
 ]) assert.ok(index.includes(`../../specs/${spec}.md`), `Missing authority ${spec}`);
 
 for (const name of names) {

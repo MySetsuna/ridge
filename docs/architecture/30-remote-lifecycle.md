@@ -22,3 +22,10 @@
 创建结果未知时，保留原 workspaceId、paneId、runtimeEpoch 重试同一逻辑请求，服务返回同一活终端或明确拒绝。再次显式创建生成新身份。见[创建契约](../../specs/l3-cli-independent-terminal-creation.md)及[真实进程验收](../../packages/ridge-cli/tests/cli_terminal_create_e2e.rs)。
 
 回归入口包括 [remote_backpressure](../../packages/ridge-kernel/tests/remote_backpressure.rs)、[terminal_lifecycle_runtime](../../packages/ridge-kernel/tests/terminal_lifecycle_runtime.rs)与 [runtime_workspace_continuity](../../packages/ridge-kernel/tests/runtime_workspace_continuity.rs)。
+
+
+## 当前目录与分屏切换
+
+[MainApp.svelte](../../src/remote/MainApp.svelte)从当前 workspace/pane 快照投影 cwd；元数据事件只更新其原作用域。切到目录未知或尚无快照的分屏时，页头清空目录，文件、Git 和搜索显示等待状态，不能沿用上一个分屏的目录或结果。目录就绪后页头与侧栏共同更新。见[当前分屏目录契约](../../specs/l4-remote-active-pane-cwd.md)。
+
+[CloudRemoteConnection](../../src/remote/lib/cloudRemote.ts)退订携带旧 activationId；[Cloud 控制连接](../../packages/ridge-kernel/src/cloud/connection.rs)把缺失标识、错误归属或无运行 PTY 限制为该次操作失败。迟到或重复退订不撤销新激活；无 PTY 分屏不因此启动终端，也不关闭控制连接。真实传输断开仍走重连流程。见[Cloud 连续性契约](../../specs/l4-cloud-pane-subscription-continuity.md)。

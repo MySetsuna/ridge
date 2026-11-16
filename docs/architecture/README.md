@@ -23,6 +23,8 @@
 - [CLI 独立终端创建](../../specs/l3-cli-independent-terminal-creation.md)规定四入口的鉴权、提交与重试。
 - [Remote 交互可靠性](../../specs/l3-remote-interaction-reliability.md)规定当前终端语义与恢复。
 - [Commune 协议成员](../../specs/l3-commune-protocol-membership.md)规定 Host 全局成员、编组与历史。
+- [Agent 自动接入与协作启动](../../specs/l4-commune-automatic-agent-connection.md)区分已有会话接入与用户显式新建协作终端。
+- [当前分屏目录](../../specs/l4-remote-active-pane-cwd.md)、[Cloud 订阅连续性](../../specs/l4-cloud-pane-subscription-continuity.md)及[手机编组导航](../../specs/l4-commune-mobile-group-navigation.md)规定近期 Remote 流程。
 - [协议](../../specs/L2-PROTO-001.md)、[终端](../../specs/L2-TERM-001.md)、[生命周期](../../specs/L2-REMOTE-001.md)、[性能](../../specs/L2-PERF-001.md)须结合后续修订阅读。
 
 ## 历史材料

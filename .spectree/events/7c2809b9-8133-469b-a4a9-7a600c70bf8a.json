@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "7c2809b9-8133-469b-a4a9-7a600c70bf8a",
+  "at": "2026-11-16T10:15:35.968Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-127",
+  "data": {
+    "title": "同步 Agent 协作启动与 Remote 当前流程导览",
+    "implementation": "REQUIRED"
+  }
+}

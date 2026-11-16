@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "51b56db1-b01f-49fa-8834-4082415630c0",
+  "at": "2026-11-16T10:15:39.812Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-127",
+  "data": {
+    "changeId": "CHG-127",
+    "specHash": "863479ec4c4582c4c3bc1f3f1c7b341d7bd7f9dd0c760f3fb22e5296d895b39b",
+    "approvedAt": "2026-11-16T10:15:39.809Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "用户要求按已有规划继续；沿用 docs 独立变更约定，同步已落地流程与证据边界，不改变产品契约。",
+    "attributionVerified": false
+  }
+}

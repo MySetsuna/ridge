@@ -1,6 +1,6 @@
 # 40 — CLI 与独立终端创建
 
-[main.rs](../../packages/ridge-cli/src/main.rs)提供 TUI、默认仪表盘、login、remote、connect、tmux、host、mcp 与 kernel 入口。CLI 启动或连接独立 Runtime，LAN listener 与 Cloud 会话由 Runtime 持有。TUI 消费语义并在本地展示。
+[main.rs](../../packages/ridge-cli/src/main.rs)提供 TUI、默认仪表盘、login、remote、connect、tmux、host、mcp、agent 与 kernel 入口。CLI 启动或连接独立 Runtime，LAN listener 与 Cloud 会话由 Runtime 持有。TUI 消费语义并在本地展示。
 
 ## 四入口
 
@@ -24,3 +24,19 @@
 - 保存拓扑失败回滚新 PTY，用户可用原身份重试。错误携带可核对身份，超时不能宣称未执行。
 
 [cli_terminal_create_e2e](../../packages/ridge-cli/tests/cli_terminal_create_e2e.rs)覆盖四入口、鉴权与上线失败、回滚、丢失响应及并发重试。[ridge-remote auth](../../packages/ridge-remote/src/auth.rs)覆盖授权到期和重放。公网及平台实测范围须查实际执行证据。
+
+
+## Agent 协作终端
+
+[agent 入口](../../packages/ridge-cli/src/managed_agent.rs)复用共同 Host 与独立终端身份；[参数定义和控制台](../../packages/ridge-kernel/src/managed_console.rs)由 Kernel 管理。用户显式启动时，才创建所选 Agent 的真实协议会话。例如：
+
+```sh
+ridge agent codex --cwd /absolute/project
+ridge agent --command /absolute/path/to/acp-agent --protocol acp --cwd /absolute/project -- --agent-option value
+```
+
+内置清单包含 Codex、Claude、Grok Build、OpenCode；自定义命令使用兼容的 ACP 或 app-server。程序参数放在 `--` 之后，保持其原始 argv。程序、适配器、登录和协议能力须实际可用，名称识别不代表会话已接入。
+
+Kernel 的 [managed_agent.rs](../../packages/ridge-kernel/src/managed_agent.rs)持有协议进程、通道和准确会话；控制台把用户明确输入路由到此会话，并展示权限请求。打开创建表单、发现或预览均不启动 Agent。关闭展示连接沿用独立终端的 detach 规则；显式退出协作控制台与移出 Commune 各按自己的生命周期处理。
+
+已有原生终端继续走原进程与原会话的接入路径，不隐式改为协作终端。正常接入会从 Runtime 已发布或已声明的描述自动准备并校验，手工连接文件保留为高级入口。鉴权失败先在相应工具原生 CLI 完成登录，再显式重试；未知提交结果核对原身份，避免重复创建。详见[权威接入契约](../../specs/l4-commune-automatic-agent-connection.md)。

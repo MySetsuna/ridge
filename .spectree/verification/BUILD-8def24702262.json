@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "buildId": "BUILD-8def24702262",
+  "changeId": "CHG-127",
+  "specHash": "863479ec4c4582c4c3bc1f3f1c7b341d7bd7f9dd0c760f3fb22e5296d895b39b",
+  "workspaceHash": "60e0adf16ae08c98da8098f0eeb9691c4adf6dcdd64150447c99685fd7fe6518",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L3-ARCHITECTURE-DOCUMENTATION",
+      "checkId": "architecture-docs",
+      "command": [
+        "node",
+        "scripts/check-architecture-docs.mjs"
+      ],
+      "description": "检查当前导览内部链接、必需契约与入口引用，历史副本明确标识且旧导览按原文归档\r",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-16T10:18:52.666Z",
+  "diagnostics": [],
+  "eventId": "f51f9e24-69ad-45d0-aac0-fd12a9d098a3"
+}

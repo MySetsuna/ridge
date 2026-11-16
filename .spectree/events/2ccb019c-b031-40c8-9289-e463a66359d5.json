@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "id": "2ccb019c-b031-40c8-9289-e463a66359d5",
+  "at": "2026-11-16T10:25:18.414Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-127",
+  "buildId": "BUILD-c1c0db4bcdbd",
+  "data": {
+    "previousBuildId": "BUILD-8def24702262",
+    "testEvidence": {
+      "buildId": "BUILD-8def24702262",
+      "workspaceHash": "60e0adf16ae08c98da8098f0eeb9691c4adf6dcdd64150447c99685fd7fe6518",
+      "verifiedAt": "2026-11-16T10:18:52.666Z",
+      "eventId": "f51f9e24-69ad-45d0-aac0-fd12a9d098a3"
+    },
+    "absorbed": [
+      "changes/CHG-127.md",
+      "docs/architecture/30-remote-lifecycle.md",
+      "docs/architecture/40-cli.md",
+      "docs/architecture/60-data-flow.md",
+      "docs/architecture/80-security.md",
+      "docs/architecture/90-performance.md",
+      "docs/architecture/README.md",
+      "scripts/check-architecture-docs.mjs"
+    ],
+    "activated": [],
+    "archived": []
+  }
+}

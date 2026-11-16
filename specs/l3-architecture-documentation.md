@@ -42,7 +42,7 @@ acceptance_checks:
     command:
       - node
       - scripts/check-architecture-docs.mjs
-    description: 检查当前导览内部链接、必需契约与入口引用，历史副本明确标识且旧导览按原文归档
+    description: "检查当前导览内部链接、必需契约与入口引用，历史副本明确标识且旧导览按原文归档\r"
 ---
 
 # 架构文档投影
@@ -62,3 +62,7 @@ acceptance_checks:
 ## 验收
 
 当前导览无断裂的本地 Markdown 链接，各章节有具体实现或测试依据。当前入口不得将 docs 副本宣称为权威，不得把旧 RTP1 adapter、Tauri Channel 或旧桌面模块写作现役业务主链。归档十一篇正文与提案前 Git 版本逐字节一致。文档检查器验证链接、权威引用、历史标识和归档完整性，人工核对流程与源码，执行 npm test、npm run lint、npm run typecheck 和 SpecTree verify/complete。协议字段、产品行为与规范映射清理由各自变更控制。
+
+## 近期流程同步
+
+导览随 CHG-124、CHG-125、CHG-126 的已实现行为更新：区分普通独立终端、显式协作启动与已有会话接入；说明通用 ACP 命令、真实会话及进程所有权、鉴权失败与原意重试。手机编组入口、当前分屏目录与 Cloud 订阅连续性分别引用对应 L4 权威规范及实际实现。说明共享 daemon 的已有终端归属仍需可信绑定，不将普通端点发现或新启动会话误称为原终端接入。测试、真实 CLI 初始化、完整对话、平台与公网证据须各自区分，不硬编码通过数量。历史文档及 Git 归档保持原文。
