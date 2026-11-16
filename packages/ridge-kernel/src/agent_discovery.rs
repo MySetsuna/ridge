@@ -71,7 +71,7 @@ pub(crate) fn prepare(state:&AppState,args:&Value)->Result<Value,String> {
         }
         descriptor
     } else {
-        candidate.declared.ok_or("This Agent has no published or declared local endpoint. Use a collaboration terminal or an advanced connection file")?
+        candidate.declared.ok_or("无法确认原终端的会话归属 (cannot verify this terminal's session ownership). This Agent has no published or declared local endpoint. It remains groupable; use an explicit collaboration terminal or a verified advanced connection")?
     };
     let object=descriptor.as_object_mut().ok_or("invalid connection descriptor")?;
     object.remove("agentName");

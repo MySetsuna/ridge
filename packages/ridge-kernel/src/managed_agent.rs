@@ -1,4 +1,4 @@
-//! Explicitly launched protocol processes. Discovery never calls this module.
+//! Explicit collaboration clients. Discovery never creates a protocol session.
 pub use crate::commune_connection::Conversation as Session;
 use ridge_acp::{
     existing::{ExistingConversation, PermissionHandler, UpdateSink},
@@ -121,7 +121,28 @@ struct BridgeState {
 pub struct CollaborationTerminal {
     server: tokio::task::JoinHandle<()>,
     published: PublishedSession,
-    agent: StdioAgent,
+    agent: TerminalAgent,
+}
+enum TerminalAgent {
+    Owned(StdioAgent),
+    Shared { process: ProcessInstance, session: Arc<Session> },
+}
+impl TerminalAgent {
+    fn process(&self) -> &ProcessInstance {
+        match self {Self::Owned(agent) => agent.process(), Self::Shared {process, ..} => process}
+    }
+    fn session(&self) -> Arc<Session> {
+        match self {Self::Owned(agent) => agent.session(), Self::Shared {session, ..} => session.clone()}
+    }
+}
+impl Drop for TerminalAgent {
+    fn drop(&mut self) {
+        if let Self::Shared {session, ..} = self {session.disconnect();}
+    }
+}
+enum AgentSource<'a> {
+    Owned { program: &'a Path, arguments: &'a [String] },
+    Shared { endpoint: &'a str, token_file: Option<&'a Path> },
 }
 impl Drop for CollaborationTerminal {
     fn drop(&mut self) {
@@ -133,6 +154,29 @@ impl CollaborationTerminal {
         protocol: &str,
         program: &Path,
         arguments: &[String],
+        cwd: &Path,
+        updates: UpdateSink,
+        local_permission: PermissionHandler,
+        authentication: Option<String>,
+    ) -> Result<Self, String> {
+        Self::open(protocol, AgentSource::Owned {program, arguments}, cwd, updates, local_permission, authentication).await
+    }
+    /// Explicitly create this client's session on an existing, OS-attested
+    /// daemon. No arbitrary session ID or ownership sidecar is accepted.
+    pub async fn connect_shared(
+        protocol: &str,
+        endpoint: &str,
+        token_file: Option<&Path>,
+        cwd: &Path,
+        updates: UpdateSink,
+        local_permission: PermissionHandler,
+        authentication: Option<String>,
+    ) -> Result<Self, String> {
+        Self::open(protocol, AgentSource::Shared {endpoint, token_file}, cwd, updates, local_permission, authentication).await
+    }
+    async fn open(
+        protocol: &str,
+        source: AgentSource<'_>,
         cwd: &Path,
         updates: UpdateSink,
         local_permission: PermissionHandler,
@@ -161,12 +205,7 @@ impl CollaborationTerminal {
                 }
             })
         });
-        let agent = StdioAgent::start_protocol(
-            protocol,
-            program,
-            arguments,
-            cwd,
-            Arc::new(move |event| {
+        let observed_updates: UpdateSink = Arc::new(move |event| {
                 updates(event)?;
                 let mut state = observed
                     .lock()
@@ -196,11 +235,49 @@ impl CollaborationTerminal {
                     }
                 }
                 Ok(())
-            }),
-            permission,
-            authentication,
-        )
-        .await?;
+            });
+        let agent = match source {
+            AgentSource::Owned {program, arguments} => TerminalAgent::Owned(StdioAgent::start_protocol(
+                protocol, program, arguments, cwd, observed_updates, permission, authentication,
+            ).await?),
+            AgentSource::Shared {endpoint, token_file} => {
+                if !cwd.is_absolute() || !cwd.is_dir() {return Err("an existing absolute working directory is required".into());}
+                if !matches!(protocol, "acp" | "acp-ws" | "app-server") || (protocol == "app-server" && authentication.is_some()) {
+                    return Err("shared collaboration requires ACP or app-server; ACP authentication is protocol-specific".into());
+                }
+                if protocol == "acp" && token_file.is_some() {return Err("ACP byte streams do not accept a WebSocket credential".into());}
+                let endpoint = crate::commune_endpoint::LocalEndpoint::try_from(endpoint.to_owned())?;
+                let token = crate::commune_endpoint::read_token(token_file)?;
+                let (stream, binding) = endpoint.connect_attested().await?;
+                let transport = if protocol == "acp" {
+                    let (read, write) = tokio::io::split(stream);
+                    AcpTransport::from_io(write, read)
+                } else {
+                    let upgrade = async {
+                        if protocol == "app-server" {crate::app_server::transport(stream, &endpoint.websocket_url(), token).await}
+                        else {crate::app_server::acp_transport(stream, &endpoint.websocket_url(), token).await}
+                    };
+                    tokio::time::timeout(Duration::from_secs(5), upgrade).await.map_err(|_| "shared protocol handshake timed out")??
+                };
+                transport.set_connection_guard(Arc::new(move || binding.verify().map_err(failure))).map_err(|error| error.to_string())?;
+                let directory = cwd.to_string_lossy().into_owned();
+                let created = if protocol == "app-server" {
+                    crate::app_server::Conversation::create(transport.clone(), directory, observed_updates, permission).await.map(Session::AppServer)
+                } else {
+                    match authentication {
+                        Some(method) => ExistingConversation::create_authenticated(transport.clone(), directory, observed_updates, permission, method).await,
+                        None => ExistingConversation::create(transport.clone(), directory, observed_updates, permission).await,
+                    }.map(Session::Acp)
+                };
+                let session = match created {
+                    Ok(session) => session,
+                    Err(error) => {transport.shutdown(); return Err(error.to_string());}
+                };
+                session.finish_replay()?;
+                if !session.is_connected() {return Err("shared daemon binding expired during startup; no retry was sent".into());}
+                TerminalAgent::Shared {process: process_identity::instance(std::process::id()).map_err(|error| error.to_string())?, session: Arc::new(session)}
+            }
+        };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(|error| error.to_string())?;
@@ -324,6 +401,10 @@ async fn serve_connection(
             biased;
             next=requests.recv()=>{
                 let Some(request) = next else { break; };
+                if !session.is_connected() {
+                    let _ = transport.respond(&request.id, Err(rpc_error("terminal session binding expired; reconnect explicitly".into())));
+                    break;
+                }
                 let params = request.params.unwrap_or(Value::Null);
                 let result = match request.method.as_str() {
                     "initialize" if !initialized => {
@@ -403,6 +484,7 @@ async fn serve_connection(
                 if transport.respond(&request.id,result.map_err(rpc_error)).is_err(){break;}
             }
             Some(event)=updates.recv()=>{
+                if !session.is_connected() {break;}
                 let result = match event {
                     BridgeEvent::Update(event) => transport.notify("session/update",event).await,
                     BridgeEvent::Reply(id,result) => transport.respond(&id,result),

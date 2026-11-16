@@ -1,0 +1,242 @@
+{
+  "version": 1,
+  "id": "252ab673-2f8f-4c16-a538-1cc08fddd2e6",
+  "at": "2026-11-16T11:17:23.840Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-128",
+  "buildId": "BUILD-4bc6e3770fad",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-4bc6e3770fad",
+    "changeId": "CHG-128",
+    "specHash": "972dd895822c23eec2ed72a7b01ce4df0f29c3df2e9ef1f8f99224f366832454",
+    "workspaceHash": "2333db669fbb30279b43ef13873ba05af90c189b09b00f2b07ef5f14e27eb8d4",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "PASS",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "-p",
+          "ridge-cli",
+          "-p",
+          "ridge-acp",
+          "--bin",
+          "ridge-kernel",
+          "--bin",
+          "ridge",
+          "--bin",
+          "fake_acp_agent"
+        ],
+        "description": "构建真实 Kernel、CLI 与既有受控 ACP 进程",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-os-peer",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-core",
+          "process_identity::"
+        ],
+        "description": "连接四元组、唯一实际对端、启动实例与错误归属保护",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-transport-revocation",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-acp",
+          "--test",
+          "transport_guard"
+        ],
+        "description": "绑定失效后拒绝派发、取消及迟到审批响应，不重复发送",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-binding-runtime",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "shared_daemon_binding"
+        ],
+        "description": "共享协议 fixture 的精确双会话、原成员编组、过期预览、错误来源及服务退出",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-real-codex",
+        "command": [
+          "node",
+          "scripts/commune-shared-daemon-acceptance.mjs"
+        ],
+        "description": "隔离真实 Codex daemon、两个同目录协作客户端与无归属第三客户端，核对真实会话、派发和历史；模型响应使用本地受控服务，不能提升为外部模型或公网验收",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-existing-managed",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "managed_agent"
+        ],
+        "description": "已有独立终端、鉴权失败、重试、桥接和进程生命周期回归",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-ui-fixture-build",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--no-run"
+        ],
+        "description": "从当前源码构建 UI 所用的受控协议进程，不依赖旧 target 产物",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+        "checkId": "shared-native-ui",
+        "command": [
+          "node",
+          "scripts/commune-global-ui-acceptance.mjs"
+        ],
+        "description": "实际组件中显式共享服务启动、原有手机编组和会话接入回归",
+        "status": "PASS",
+        "exitCode": 0
+      }
+    ],
+    "valid": true,
+    "verifiedAt": "2026-11-16T11:17:23.839Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "packages/ridge-acp/src/transport.rs",
+        "before": "96df4bc20d4c18eef2040af10cfac4146b63a9b35733c64d1c02929af9d822f8",
+        "after": "62ac07bf700ac9c0dcc8fe7f562d3952874873e4982e2ed41d909b0fc6b59486"
+      },
+      {
+        "path": "packages/ridge-acp/tests/transport_guard.rs",
+        "before": null,
+        "after": "330e226e61602bbba0b8ec50b9147c358737648ca26e43e5287a4839cb58a568"
+      },
+      {
+        "path": "packages/ridge-core/src/process_identity.rs",
+        "before": "75883f03cede08fabb6409bb0b781a7791f265e31e49604ad09ef9dde166cd4c",
+        "after": "501a13e167a54de1e7e5b8c51d63a22d5fa0872e9efc69344326d41e48ae7023"
+      },
+      {
+        "path": "packages/ridge-kernel/src/agent_discovery.rs",
+        "before": "8a43bbd49fb14f4cf2618f62e9eaf59e818fcdcc81ed937e849539cd8edff0f3",
+        "after": "223ce75c04a3bd8d51e096be9fd09f0c98ae6becaae3ae016989b8e70d21d5ed"
+      },
+      {
+        "path": "packages/ridge-kernel/src/app_server.rs",
+        "before": "7397b44d1307321a0f8a913ec2b1133eaf42129dd564677b3f8aba1ef63019ad",
+        "after": "ce0abe7953c116abe01e1f6a63306e7630cf242faea5a5b18bc9878064b3fb7e"
+      },
+      {
+        "path": "packages/ridge-kernel/src/commune.rs",
+        "before": "fd7b9ebffcb2c56ec0763b554052edbbece28ba1b0948f1cc3310965c209323e",
+        "after": "538a0dee45aaf2e56c569d11cafa745aa3c0adeb9678f35256b6f5dc116e9c8b"
+      },
+      {
+        "path": "packages/ridge-kernel/src/commune_endpoint.rs",
+        "before": "39261b45d129e4e710330e281bdb211c96ee35151b3058afdbd735ef6e3d4169",
+        "after": "4268849e75f760b7e605d97c2d0d4fee22a65741c6148e0b2aba6205a470e511"
+      },
+      {
+        "path": "packages/ridge-kernel/src/managed_agent.rs",
+        "before": "cd3ccdaeebab037bacb2151c3224a421b52a6452d096d2cdf0de67a08f7d42ac",
+        "after": "63a45e13c2ffce1b923c386272d2b960f2025a9af6417df450173ecd6416d4ce"
+      },
+      {
+        "path": "packages/ridge-kernel/src/managed_console.rs",
+        "before": "b137c87937bcbeac3a2b3a2424741e5c5091edf920d90cce8375b766aef12607",
+        "after": "056ce809031b6614ea86fe2db60afa9c243569027c714174a69b4ff1ef2fcbdc"
+      },
+      {
+        "path": "packages/ridge-kernel/tests/shared_daemon_binding.rs",
+        "before": null,
+        "after": "446fd09635d9123c62b7ed40a30012b7f3ea2b5d8d40c5ce1def8aae905ab955"
+      },
+      {
+        "path": "scripts/commune-global-ui-acceptance.mjs",
+        "before": "ea90ce6a8b3741a8ae7badc6c77c651c5cbed10986a3591042652b238d198e7c",
+        "after": "5aa0e4f2ea145170a6531b5d50a86ffcfa3d6b4a888cbc57865f7d7f16cbcaab"
+      },
+      {
+        "path": "scripts/commune-shared-daemon-acceptance.mjs",
+        "before": null,
+        "after": "1609a1b70f865d76a56c0fa940ae268d44fd7152edd4876c776aea7af11be46d"
+      },
+      {
+        "path": "specs/l4-commune-shared-daemon-binding.md",
+        "before": "540b07700a64b01770434afaf7e362f2bfd0b46f76bfaaa8edb067e234a85d47",
+        "after": "74662797e712d575f60e1c30b555af1d309ea36bde9bb1ce1b6e66b00e4aa398"
+      },
+      {
+        "path": "src/lib/i18n/messages/commune.ts",
+        "before": "655e617153ded9d047f83007abfb4f0925034662b9ea26f1c3d4b7855aae93b3",
+        "after": "2d5510871a3afff1eacec2907aaeeffc96c5e3b3454b1fbebdded06122bc042e"
+      },
+      {
+        "path": "src/lib/teammate/CommuneStartDialog.svelte",
+        "before": "679788c8b1c5f96678bc911fce843e077633aaf2e2975408e9a62f04ad9425eb",
+        "after": "d9cdda4f4b668832c1c7c690694744414b692571d5af9c824a962936b8254603"
+      },
+      {
+        "path": "src/lib/teammate/communeLaunch.test.ts",
+        "before": "a553bbc4ba1fbc52a270dd19e864b277b79a33fda692a86f4c07b77c9d55905c",
+        "after": "66a369f0f4d241e208e0251c0cee55dfe175507c061b0a55acf72c28fcc4063e"
+      },
+      {
+        "path": "src/lib/teammate/communeLaunch.ts",
+        "before": "50bd5e913d3ce06249fe3cf109317a207d25fe72825da8bb9e3d34caf35d3797",
+        "after": "1a30ddfc6216153455824f143c69c17b32fa09bffa4f73b0ae02acfd100c604c"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/252ab673-2f8f-4c16-a538-1cc08fddd2e6.log"
+  }
+}

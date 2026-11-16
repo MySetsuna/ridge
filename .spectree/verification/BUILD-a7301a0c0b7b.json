@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "buildId": "BUILD-a7301a0c0b7b",
+  "changeId": "CHG-128",
+  "specHash": "74151e79d7d0f974930235d034ba5ef3a93adbd65fc79572095c1bfd096063e8",
+  "workspaceHash": "d87760f7743e9ebbb1b55c95fc7657c2a110cf4a9e6142a66ed3cc86ad7a6227",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "FAIL",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-build",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "-p",
+        "ridge-cli",
+        "-p",
+        "ridge-acp",
+        "--bin",
+        "ridge-kernel",
+        "--bin",
+        "ridge",
+        "--bin",
+        "fake_acp_agent"
+      ],
+      "description": "构建真实 Kernel、CLI 与既有受控 ACP 进程",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-os-peer",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-core",
+        "process_identity::"
+      ],
+      "description": "连接四元组、唯一实际对端、启动实例与错误归属保护",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-transport-revocation",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-acp",
+        "--test",
+        "transport_guard"
+      ],
+      "description": "绑定失效后拒绝派发、取消及迟到审批响应，不重复发送",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-binding-runtime",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "shared_daemon_binding"
+      ],
+      "description": "共享协议 fixture 的精确双会话、原成员编组、过期预览、错误来源及服务退出",
+      "status": "FAIL",
+      "exitCode": 101
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-real-codex",
+      "command": [
+        "node",
+        "scripts/commune-shared-daemon-acceptance.mjs"
+      ],
+      "description": "隔离真实 Codex daemon、两个同目录协作客户端与无归属第三客户端，核对真实会话、派发和历史；模型响应使用本地受控服务，不能提升为外部模型或公网验收",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-existing-managed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "managed_agent"
+      ],
+      "description": "已有独立终端、鉴权失败、重试、桥接和进程生命周期回归",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-native-ui",
+      "command": [
+        "node",
+        "scripts/commune-global-ui-acceptance.mjs"
+      ],
+      "description": "实际组件中显式共享服务启动、原有手机编组和会话接入回归",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": false,
+  "verifiedAt": "2026-11-16T11:12:30.212Z",
+  "diagnostics": [
+    {
+      "code": "ACCEPTANCE_E_FAILED",
+      "severity": "ERROR",
+      "message": "shared-binding-runtime: warning: linker stdout: 正在创建库 C:\\code\\wind\\.claude\\worktrees\\remote-directory-commune\\target\\debug\\deps\\ridge_term_font.dll.lib 和对象 C:\\code\\wind\\.claude\\worktrees\\remote-directory-commune\\target\\debug\\deps\\ridge_term_font.dll.exp\n  |\n  = note: `#[warn(linker_messages)]` on by default\n\nwarning: `ridge-term-font` (lib) generated 1 warning\n   Compiling ridge-term v0.1.0 (C:\\code\\wind\\.claude\\worktrees\\remote-directory-commune\\packages\\ridge-term)\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: failed to parse serde attribute\n  | \n  | #[serde(skip_serializing_if = \"Option::is_none\", default)]\n  | \n  = note: ts-rs failed to parse this attribute. It will be ignored.\nwarning: unused import: `std::cell::RefCell`\n  --> packages\\ridge-term\\src\\lib.rs:37:5\n   |\n37 | use std::cell::RefCell;\n   |     ^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default\n\nwarning: unused import: `wasm_bindgen::prelude::*`\n  --> packages\\ridge-term\\src\\lib.rs:39:5\n   |\n39 | use wasm_bindgen::prelude::*;\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `crate::input::KeyEvent`\n  --> packages\\ridge-term\\src\\lib.rs:54:5\n   |\n54 | use crate::input::KeyEvent;\n   |     ^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `crate::search::SearchState`\n  --> packages\\ridge-term\\src\\lib.rs:55:5\n   |\n55 | use crate::search::SearchState;\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused imports: `Pos`, `RangeAbs`, `Range`, and `Selection`\n  --> packages\\ridge-term\\src\\lib.rs:56:24\n   |\n56 | use crate::selection::{Pos, Range, RangeAbs, Selection};\n   |                        ^^^  ^^^^^  ^^^^^^^^  ^^^^^^^^^\n\nwarning: unused import: `crate::term::Terminal`\n  --> packages\\ridge-term\\src\\lib.rs:57:5\n   |\n57 | use crate::term::Terminal;\n   |     ^^^^^^^^^^^^^^^^^^^^^\n\nwarning: function `append_render_scroll_ops` is never used\n   --> packages\\ridge-term\\src\\lib.rs:247:4\n    |\n247 | fn append_render_scroll_ops(\n    |    ^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: constant `SHELL_HISTORY_STICKY_MS` is never used\n   --> packages\\ridge-term\\src\\lib.rs:537:7\n    |\n537 | const SHELL_HISTORY_STICKY_MS: i64 = 0;\n    |       ^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: `ridge-term` (lib) generated 8 warnings (run `cargo fix --lib -p ridge-term` to apply 6 suggestions)\n   Compiling ridge-tmux v0.1.0 (C:\\code\\wind\\.claude\\worktrees\\remote-directory-commune\\packages\\ridge-tmux)\n   Compiling ridge-remote v0.1.0 (C:\\code\\wind\\.claude\\worktrees\\remote-directory-commune\\packages\\ridge-remote)\n   Compiling ridge-kernel v0.1.0 (C:\\code\\wind\\.claude\\worktrees\\remote-directory-commune\\packages\\ridge-kernel)\nwarning: function `read_http_response` is never used\n    --> packages\\ridge-kernel\\src\\client.rs:1378:4\n     |\n1378 | fn read_http_response(stream: &mut TcpStream) -> Result<(String, Vec<u8>), String> {\n     |    ^^^^^^^^^^^^^^^^^^\n     |\n     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: function `builtin_agent_profiles` is never used\n  --> packages\\ridge-kernel\\src\\domain.rs:56:8\n   |\n56 | pub fn builtin_agent_profiles() -> Value {\n   |        ^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: `ridge-kernel` (lib) generated 2 warnings\nwarning: type alias `Socket` is never used\n  --> packages\\ridge-kernel\\tests\\common\\runtime_fixture.rs:15:6\n   |\n15 | type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;\n   |      ^^^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: function `attach` is never used\n  --> packages\\ridge-kernel\\tests\\common\\runtime_fixture.rs:55:14\n   |\n55 | pub async fn attach(endpoint: &KernelEndpoint) -> Socket {\n   |              ^^^^^^\n\nwarning: function `grant` is never used\n  --> packages\\ridge-kernel\\tests\\common\\runtime_fixture.rs:58:8\n   |\n58 | pub fn grant(endpoint: &KernelEndpoint) -> ClientGrant {\n   |        ^^^^^\n\nwarning: function `attach_grant` is never used\n  --> packages\\ridge-kernel\\tests\\common\\runtime_fixture.rs:72:14\n   |\n72 | pub async fn attach_grant(grant: &ClientGrant) -> Socket {\n   |              ^^^^^^^^^^^^\n\nwarning: function `rpc` is never used\n  --> packages\\ridge-kernel\\tests\\common\\runtime_fixture.rs:87:14\n   |\n87 | pub async fn rpc(socket: &mut Socket, id: u64, method: &str, args: Value) -> Value {\n   |              ^^^\n\nwarning: `ridge-kernel` (test \"shared_daemon_binding\") generated 5 warnings\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.81s\n     Running tests\\shared_daemon_binding.rs (target\\debug\\deps\\shared_daemon_binding-25fc526922e960c4.exe)\nerror: test failed, to rerun pass `-p ridge-kernel --test shared_daemon_binding`\n",
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING"
+    }
+  ],
+  "eventId": "f81410cf-6db1-422e-8ace-b1796fdfa54a"
+}

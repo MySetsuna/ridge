@@ -224,6 +224,14 @@ impl Conversation {
             let params=notification.params.as_ref().unwrap_or(&Value::Null);
             if params["threadId"].as_str()!=Some(&inner.thread) {return Ok(());}
             let mut completed=None;
+            if matches!(notification.method.as_str(), "thread/closed" | "thread/unloaded" | "thread/archived")
+                || (notification.method == "thread/status/changed" && params["status"]["type"] == "notLoaded")
+            {
+                inner.transport.shutdown();
+                let mut turn = inner.turn.lock().map_err(|_|error("turn unavailable"))?;
+                fail(&mut turn, "original app-server session binding ended; no turn was resent");
+                return Ok(());
+            }
             match notification.method.as_str() {
                 "turn/started"=>{inner.busy.store(true,Ordering::Release);},
                 "thread/status/changed"=>{inner.busy.store(params["status"]["type"]=="active" || inner.turn.lock().map_err(|_|error("turn unavailable"))?.pending.is_some(),Ordering::Release);},

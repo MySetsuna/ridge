@@ -1,0 +1,142 @@
+---
+id: L4-COMMUNE-SHARED-DAEMON-BINDING
+level: L4
+title: 共享 daemon 中的终端会话归属
+status: LOCKED
+lifecycle: ACTIVE
+parent: L3-COMMUNE-PROTOCOL-MEMBERSHIP
+code_targets:
+  - packages/ridge-core/src/process_identity.rs
+  - packages/ridge-acp/src/transport.rs
+  - packages/ridge-kernel/src/commune_endpoint.rs
+  - packages/ridge-kernel/src/managed_agent.rs
+  - packages/ridge-kernel/src/managed_console.rs
+  - packages/ridge-kernel/src/commune.rs
+  - packages/ridge-kernel/src/agent_discovery.rs
+  - packages/ridge-kernel/src/app_server.rs
+  - src/lib/teammate/CommuneStartDialog.svelte
+  - src/lib/teammate/communeLaunch.ts
+  - src/lib/i18n/messages/commune.ts
+test_targets:
+  - packages/ridge-core/src/process_identity.rs
+  - packages/ridge-acp/tests/transport_guard.rs
+  - packages/ridge-kernel/tests/shared_daemon_binding.rs
+  - packages/ridge-kernel/tests/managed_agent.rs
+  - src/lib/teammate/communeLaunch.test.ts
+  - scripts/commune-shared-daemon-acceptance.mjs
+  - scripts/commune-global-ui-acceptance.mjs
+acceptance_checks:
+  - id: shared-build
+    command:
+      - cargo
+      - build
+      - --locked
+      - -p
+      - ridge-kernel
+      - -p
+      - ridge-cli
+      - -p
+      - ridge-acp
+      - --bin
+      - ridge-kernel
+      - --bin
+      - ridge
+      - --bin
+      - fake_acp_agent
+    description: 构建真实 Kernel、CLI 与既有受控 ACP 进程
+  - id: shared-os-peer
+    command:
+      - cargo
+      - test
+      - --locked
+      - -p
+      - ridge-core
+      - "process_identity::"
+    description: 连接四元组、唯一实际对端、启动实例与错误归属保护
+  - id: shared-transport-revocation
+    command:
+      - cargo
+      - test
+      - --locked
+      - -p
+      - ridge-acp
+      - --test
+      - transport_guard
+    description: 绑定失效后拒绝派发、取消及迟到审批响应，不重复发送
+  - id: shared-binding-runtime
+    command:
+      - cargo
+      - test
+      - --locked
+      - -p
+      - ridge-kernel
+      - --test
+      - shared_daemon_binding
+    description: 共享协议 fixture 的精确双会话、原成员编组、过期预览、错误来源及服务退出
+  - id: shared-real-codex
+    command:
+      - node
+      - scripts/commune-shared-daemon-acceptance.mjs
+    description: 隔离真实 Codex
+      daemon、两个同目录协作客户端与无归属第三客户端，核对真实会话、派发和历史；模型响应使用本地受控服务，不能提升为外部模型或公网验收
+  - id: shared-existing-managed
+    command:
+      - cargo
+      - test
+      - --locked
+      - -p
+      - ridge-kernel
+      - --test
+      - managed_agent
+    description: 已有独立终端、鉴权失败、重试、桥接和进程生命周期回归
+  - id: shared-ui-fixture-build
+    command:
+      - cargo
+      - test
+      - --locked
+      - -p
+      - ridge-kernel
+      - --test
+      - commune_registration
+      - --no-run
+    description: 从当前源码构建 UI 所用的受控协议进程，不依赖旧 target 产物
+  - id: shared-native-ui
+    command:
+      - node
+      - scripts/commune-global-ui-acceptance.mjs
+    description: 实际组件中显式共享服务启动、原有手机编组和会话接入回归
+depends_on:
+  - L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION
+---
+
+# 共享 daemon 中的终端会话归属
+
+## 范围
+
+本契约只规范多客户端共用一个 daemon 时，Ridge 如何把终端分屏与既有协议会话关联。沿用现行的独立终端、原生会话、agentId、编组、历史和权限流程。先完成 CHG-103 的通用接入与独立门禁，再实施此契约。
+
+## 核验与接入
+
+- Runtime 需分别核验原终端客户端的进程启动实例、所连接的 daemon 实例，以及该客户端当前会话的准确标识。会话归属须来自 Runtime 已持有的该客户端协议通道，或来自可信运行方提供且可复核的客户端与会话绑定。只读预览不创建、切换或接管会话，也不向模型派发。
+- 允许通过协作启动复用现有桥接器。桥接器仅在用户显式选择时启动，观察原客户端与 daemon 之间的真实会话创建、恢复和切换。运行方提供可信绑定时，已有终端可直接接入，无需填写连接 JSON。Windows 命名管道与 Unix socket 等传输应在所用连接上核验实际对端。原生独立终端继续按原方式启动。
+- PID、同目录、会话列表、历史文件、终端输出、协议能加载或能派发，均不能单独授权。Grok 状态栏可提示当前会话与切换，但其输出或可写回调文件单独不足以证明 daemon 所确认的归属。运行方不提供可验证绑定时，成员保持可编组，并提示“无法确认原终端的会话归属”；不假定其历史可读、任务可派发或审批可处理。
+- Runtime 通过既有候选引用向本机客户端提供短期可验证的接入选择。引用绑定 Runtime 和分屏代际、客户端和 daemon 启动实例、当前会话及经授权的能力。提交时及历史接入、派发或审批前，在实际连接上核验仍是同一绑定。超时、进程退出或复用 PID、端点更换、会话切换和缺少能力时，停止受影响的操作并解释原因。无法判断请求是否已送达时保留现有未知回执，不自动重试或改派。
+- 附加成功复用已编组成员的 agentId。绑定失效不改变分组，不中断原终端，也不覆盖原会话历史。重新接入同一会话后恢复相应能力。切到另一会话后须按现行重绑授权重新验证；旧会话回执、历史和审批仍各自归属原会话。Remote 仅取得已授权能力与脱敏结果，不返回本机归属凭据。
+
+## 验收
+
+- 用真实共享 daemon 和两个同目录客户端验证至少一条有可信绑定的接入路径，分别派发到各自既有会话，核对原终端进程、会话 ID、agentId、编组及回放来源。已有无证明的第三个客户端即使能列出、加载和派发也不可因此接入。
+- 验证普通终端子进程写入同名状态文件、过期回调、PID 复用、错误端点和双客户端交换会话标识均不能建立绑定。验证切换发生在预览与提交之间、提交与派发之间或审批等待中时，旧授权不被新会话继承。
+- 验证 daemon 重启、客户端退出、短期证据过期、端点鉴权失败及恢复。无隐式新会话、无重复派发、无跨会话历史泄露；编组不受影响。分别记录真实运行方和 fixture 覆盖。仅运行模拟或协议发现检查不得计为真实接入通过。
+
+## 既有规划的实施入口
+
+批准依据：用户“全部授权通过”及“还有什么没做的吗？如果有，就按照已有规划推进迭代”。原候选 CHG-122 位于 commune-shared-daemon-spec 工作树，与主仓编号冲突，本轮按真实下一编号登记，不覆盖已完成的主仓 CHG-122。
+
+复用显式协作终端，CLI 增加 `ridge agent --connect <local-endpoint> --protocol <acp|acp-ws|app-server> [--bearer-token-file <absolute-file>] [--auth-method <ACP-method>] [--cwd <absolute-directory>]`。connect、profile、command 三选一；connect 必须显式选协议，不接受进程参数或任意 sessionId。凭据仅引用本机文件，禁止 URL 用户名、query、fragment 和非本机端点。acp 字节流不接收 WebSocket Bearer 文件。桌面沿用同一新建协作终端对话框，提供本机共享服务选择、协议和可选凭据文件；显示将创建新协议会话，不能称为接管另一个原生终端。Remote 不取得创建或凭据权限。
+
+用户显式创建后，控制台即该共享服务的协议客户端。先在实际连接核验 daemon 的 PID 和启动实例，再在同一已鉴权通道创建唯一会话并固定其准确标识；不依赖第三方列举会话，不重试未知创建或派发。借现有短期候选引用发布控制台本身的进程实例与本机固定会话网关，复用原 native 连接、agentId、编组与回放来源。普通终端和无证明客户端的直接接入不放宽现有进程树限制；其未接入原因明确提示无法确认原终端会话归属。
+
+TCP 使用原连接准确四元组的唯一非零 OS 对端 PID；Unix socket 使用该连接实际 peer PID。持有连接，后续发送、历史加载和审批答复前重新核验同一启动实例与连接。平台无法证明时拒绝。终端退出只关闭本客户端连接，绝不终止、重启或接管共享 daemon。鉴权失败在创建会话之前终止；恢复必须由用户显式新建或重新连接。控制台本轮固定一会话，不提供任意会话切换命令；交换 SID、过期候选、端点替换及失效期间的旧审批均不可继承授权。已有失联成员和编组记录保留，不把未完成任务改成成功。
+
+验收区分真实运行方与受控协议 fixture。Grok 真实验证沿用本轮用户豁免，保持 SKIPPED；此豁免不用于跳过共享绑定、鉴权、派发、审批或仓库门禁。

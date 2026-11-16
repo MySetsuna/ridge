@@ -50,3 +50,14 @@ it('fences concurrent submits and preserves intent after a mismatched receipt', 
   expect(get(launch).editable).toBe(false);
   expect(get(launch).error).toContain('different collaboration terminal identity');
 });
+
+it('freezes shared endpoint, protocol and credential reference after an unknown creation result', async () => {
+  const launch = createCommuneLaunch();
+  const shared = { cwd: '/project', runtimeEpoch: 'runtime', connect: 'ws://127.0.0.1:4500/', protocol: 'app-server' as const, bearerTokenFile: '/private/token' };
+  await launch.send(async () => { throw Error('lost ACK'); }, shared);
+  const original = get(launch).pending;
+  expect(original?.collaboration).toEqual({ connect: shared.connect, protocol: shared.protocol, bearerTokenFile: shared.bearerTokenFile, arguments: [] });
+  const submit = vi.fn(async request => receipt(request));
+  await launch.send(submit, { ...shared, connect: 'ws://127.0.0.1:4600/' });
+  expect(submit).toHaveBeenCalledExactlyOnceWith(original);
+});

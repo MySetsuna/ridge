@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "ae362301-b145-470f-85b2-54ff64a63db3",
+  "at": "2026-11-16T10:41:41.216Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-128",
+  "data": {
+    "changeId": "CHG-128",
+    "specHash": "74151e79d7d0f974930235d034ba5ef3a93adbd65fc79572095c1bfd096063e8",
+    "approvedAt": "2026-11-16T10:41:41.212Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "用户全部授权通过，并要求按已有规划继续迭代；本轮落实旧 shared-daemon 绑定候选，不扩大远程权限或接管无证明的原终端",
+    "attributionVerified": false
+  }
+}

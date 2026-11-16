@@ -899,5 +899,17 @@
       "buildId": "BUILD-8def24702262",
       "specHash": "863479ec4c4582c4c3bc1f3f1c7b341d7bd7f9dd0c760f3fb22e5296d895b39b"
     }
+  },
+  {
+    "changeId": "CHG-128",
+    "specHash": "5ca139e9da26f0b39d41ba7eac70719727aa3b09673f197b0399f316e3e195d8",
+    "approvedAt": "2026-11-16T11:18:12.101Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "沿用已有全部授权；补齐 UI fixture 的从源码构建门禁，不改变已批准的共享绑定语义",
+    "derivedFrom": {
+      "buildId": "BUILD-4bc6e3770fad",
+      "specHash": "972dd895822c23eec2ed72a7b01ce4df0f29c3df2e9ef1f8f99224f366832454"
+    }
   }
 ]

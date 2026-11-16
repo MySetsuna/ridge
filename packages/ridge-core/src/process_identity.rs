@@ -92,6 +92,27 @@ pub fn owns_connection(
     }
 }
 
+/// Discover the unique OS owner of this connected socket, then attest its
+/// process instance on the same four-tuple. Never infer ownership from LISTEN.
+pub fn connection_owner(server: SocketAddrV4, client: SocketAddrV4) -> io::Result<ProcessInstance> {
+    if !server.ip().is_loopback() || !client.ip().is_loopback() {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "protocol peer must be loopback"));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+    loop {
+        match platform::owner(server, client) {
+            Ok(pid) => {
+                let peer = instance(pid)?;
+                owns_connection(&peer, server, client)?;
+                return Ok(peer);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock
+                && std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(2)),
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 #[cfg(windows)]
 mod platform {
     use super::*;
@@ -178,6 +199,9 @@ mod platform {
         Ok(process.parent().map(|pid| pid.as_u32()))
     }
     pub fn owns(pid: u32, server: SocketAddrV4, client: SocketAddrV4) -> io::Result<bool> {
+        Ok(owner(server, client)? == pid)
+    }
+    pub fn owner(server: SocketAddrV4, client: SocketAddrV4) -> io::Result<u32> {
         let mut size = 0;
         let first = unsafe { GetExtendedTcpTable(std::ptr::null_mut(), &mut size, 0, 2, 5, 0) };
         if first != 0 && first != 122 {
@@ -199,19 +223,27 @@ mod platform {
             if result != 0 {
                 return Err(io::Error::from_raw_os_error(result as i32));
             }
-            return connection_owner(&table, pid, server, client);
+            return connection_pid(&table, server, client);
         }
         Err(io::Error::new(
             io::ErrorKind::WouldBlock,
             "TCP owner table changed repeatedly",
         ))
     }
+    #[cfg(test)]
     fn connection_owner(
         table: &[u32],
         pid: u32,
         server: SocketAddrV4,
         client: SocketAddrV4,
     ) -> io::Result<bool> {
+        let actual = connection_pid(table, server, client)?;
+        if actual != pid {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "protocol socket belongs to a different process"));
+        }
+        Ok(true)
+    }
+    fn connection_pid(table: &[u32], server: SocketAddrV4, client: SocketAddrV4) -> io::Result<u32> {
         let count = table.first().copied().unwrap_or(0) as usize;
         if count
             .checked_mul(6)
@@ -232,15 +264,6 @@ mod platform {
                     && u16::from_be(row[4] as u16) == client.port()
             })
             .collect::<Vec<_>>();
-        if let Some(row) = matching.iter().find(|row| row[5] != 0 && row[5] != pid) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "protocol socket belongs to a different process (observed PID {})",
-                    row[5]
-                ),
-            ));
-        }
         let owners = matching
             .iter()
             // Live Windows connections can report incorrect states, including
@@ -255,16 +278,16 @@ mod platform {
                 .take(8).map(|row|(row[0],u16::from_be(row[4] as u16),row[5])).collect::<Vec<_>>();
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
-                format!("protocol socket ownership is not yet observable (endpoint {server}, client {client}, expected PID {pid}, endpoint rows [state, peer port, PID] {endpoint_rows:?})"),
+                format!("protocol socket ownership is not yet observable (endpoint {server}, client {client}, endpoint rows [state, peer port, PID] {endpoint_rows:?})"),
             ));
         }
-        if owners.len() != 1 {
+        if owners.len() != 1 || owners.contains(&0) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "protocol socket ownership is ambiguous",
             ));
         }
-        Ok(owners.contains(&pid))
+        Ok(*owners.iter().next().expect("one nonzero socket owner"))
     }
 
     #[cfg(test)]
@@ -376,9 +399,9 @@ mod platform {
             u16::from_str_radix(port, 16).ok()?,
         ))
     }
-    pub fn owns(pid: u32, server: SocketAddrV4, client: SocketAddrV4) -> io::Result<bool> {
+    fn socket_inodes(server: SocketAddrV4, client: SocketAddrV4) -> io::Result<HashSet<String>> {
         let table = std::fs::read_to_string("/proc/net/tcp")?;
-        let inodes: HashSet<_> = table
+        Ok(table
             .lines()
             .skip(1)
             .filter_map(|line| {
@@ -393,7 +416,9 @@ mod platform {
                     None
                 }
             })
-            .collect();
+            .collect())
+    }
+    fn owns_inodes(pid: u32, inodes: &HashSet<String>) -> io::Result<bool> {
         for fd in std::fs::read_dir(format!("/proc/{pid}/fd"))? {
             if let Ok(target) = std::fs::read_link(fd?.path()) {
                 if inodes.contains(target.to_string_lossy().as_ref()) {
@@ -402,6 +427,23 @@ mod platform {
             }
         }
         Ok(false)
+    }
+    pub fn owns(pid: u32, server: SocketAddrV4, client: SocketAddrV4) -> io::Result<bool> {
+        owns_inodes(pid, &socket_inodes(server, client)?)
+    }
+    pub fn owner(server: SocketAddrV4, client: SocketAddrV4) -> io::Result<u32> {
+        let inodes = socket_inodes(server, client)?;
+        let mut owners = HashSet::new();
+        for entry in std::fs::read_dir("/proc")? {
+            let entry = entry?;
+            let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {continue;};
+            if owns_inodes(pid, &inodes).unwrap_or(false) {owners.insert(pid);}
+            if owners.len() > 1 {break;}
+        }
+        if owners.len() != 1 {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "protocol socket owner is unavailable or ambiguous"));
+        }
+        Ok(*owners.iter().next().expect("unique socket owner"))
     }
 }
 #[cfg(not(any(windows, target_os = "linux")))]
@@ -422,6 +464,7 @@ mod platform {
     pub fn owns(_: u32, _: SocketAddrV4, _: SocketAddrV4) -> io::Result<bool> {
         Err(unsupported())
     }
+    pub fn owner(_: SocketAddrV4, _: SocketAddrV4) -> io::Result<u32> { Err(unsupported()) }
 }
 
 #[cfg(all(test, any(windows, target_os = "linux")))]
@@ -479,6 +522,7 @@ mod tests {
             unreachable!()
         };
         owns_connection(&current, local, remote).unwrap();
+        assert_eq!(connection_owner(local, remote).unwrap(), current);
         assert!(owns_connection(&child_instance, local, remote).is_err());
         child.0.kill().unwrap();
         child.0.wait().unwrap();

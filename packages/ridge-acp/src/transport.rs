@@ -75,6 +75,7 @@ struct PeerInbox {
 }
 
 pub type CallCompletion = Arc<dyn Fn() + Send + Sync>;
+pub type ConnectionGuard = Arc<dyn Fn() -> Result<(), AcpErrorWrap> + Send + Sync>;
 struct PendingReply { sender: Option<oneshot::Sender<AcpResponse>>, completion: Option<CallCompletion> }
 impl PendingReply { fn finish(&mut self) { if let Some(finish)=self.completion.take() {finish();} } }
 impl Drop for PendingReply { fn drop(&mut self) {self.finish();} }
@@ -103,6 +104,7 @@ impl PendingResponse {
 }
 
 struct TransportInner {
+    connection_guard: StdMutex<Option<ConnectionGuard>>,
     next_id: AtomicI64,
     writer_tx: mpsc::Sender<WriterCmd>,
     /// Pending call responses, keyed by request id. The reader task drains
@@ -213,6 +215,7 @@ impl AcpTransport {
 
         Self {
             inner: Arc::new(TransportInner {
+                connection_guard: StdMutex::new(None),
                 next_id: AtomicI64::new(1),
                 writer_tx,
                 pending,
@@ -235,9 +238,7 @@ impl AcpTransport {
         method: &str,
         params: serde_json::Value,
     ) -> Result<(PendingResponse, Vec<u8>), AcpErrorWrap> {
-        if self.inner.closed.load(Ordering::Acquire) {
-            return Err(AcpErrorWrap::SessionClosed);
-        }
+        self.check_connection()?;
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let req = AcpRequest {
             jsonrpc: "2.0".into(),
@@ -315,9 +316,7 @@ impl AcpTransport {
         method: &str,
         params: serde_json::Value,
     ) -> Result<(), AcpErrorWrap> {
-        if self.inner.closed.load(Ordering::Acquire) {
-            return Err(AcpErrorWrap::SessionClosed);
-        }
+        self.check_connection()?;
         let notif = AcpNotification {
             jsonrpc: "2.0".into(),
             method: method.into(),
@@ -360,8 +359,32 @@ impl AcpTransport {
         Ok(())
     }
 
+    /// Bind a held local connection to its OS evidence before protocol startup.
+    /// Revocation is permanent; a failed guard never reconnects or resends.
+    pub fn set_connection_guard(&self, guard: ConnectionGuard) -> Result<(), AcpErrorWrap> {
+        if let Err(error) = guard() {self.shutdown(); return Err(error);}
+        let mut current = self.inner.connection_guard.lock().expect("connection guard lock");
+        if current.is_some() {
+            return Err(AcpErrorWrap::Transport("connection guard already owned".into()));
+        }
+        *current = Some(guard);
+        Ok(())
+    }
+    fn check_connection(&self) -> Result<(), AcpErrorWrap> {
+        if self.inner.closed.load(Ordering::Acquire) || self.inner.writer_tx.is_closed() {
+            return Err(AcpErrorWrap::SessionClosed);
+        }
+        let guard = self.inner.connection_guard.lock().expect("connection guard lock").clone();
+        if let Some(guard) = guard {
+            if let Err(error) = guard() {
+                self.shutdown();
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
     pub fn is_closed(&self) -> bool {
-        self.inner.closed.load(Ordering::Acquire) || self.inner.writer_tx.is_closed()
+        self.check_connection().is_err()
     }
 
     /// Wire framing this transport was spawned with.

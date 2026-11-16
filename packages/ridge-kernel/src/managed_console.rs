@@ -14,13 +14,19 @@ use tokio::sync::{mpsc, oneshot};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentArgs {
     /// Catalog profile, for example codex, claude, grok, or opencode.
-    #[arg(required_unless_present = "command", conflicts_with = "command")]
+    #[arg(required_unless_present_any = ["command", "connect"], conflicts_with_all = ["command", "connect"])]
     pub profile: Option<String>,
     /// Explicit executable for any compatible ACP Agent or app-server.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "connect")]
     pub command: Option<PathBuf>,
-    #[arg(long, requires="command", value_parser=["acp","app-server"])]
+    /// Existing local shared daemon. Creates this terminal's own protocol session.
+    #[arg(long, requires = "protocol")]
+    pub connect: Option<String>,
+    #[arg(long, value_parser=["acp","acp-ws","app-server"])]
     pub protocol: Option<String>,
+    /// Absolute local file containing the shared WebSocket Bearer credential.
+    #[arg(long, requires = "connect")]
+    pub bearer_token_file: Option<PathBuf>,
     /// Explicit ACP authentication method advertised by this Agent.
     #[arg(long)]
     pub auth_method: Option<String>,
@@ -39,18 +45,33 @@ struct Permission {
 
 impl AgentArgs {
     pub fn validate(&self) -> Result<()> {
-        if self.profile.is_some() == self.command.is_some() {
-            return Err(anyhow!("choose exactly one Agent profile or executable"));
+        if [self.profile.is_some(), self.command.is_some(), self.connect.is_some()].into_iter().filter(|present| *present).count() != 1 {
+            return Err(anyhow!("choose exactly one Agent profile, executable, or shared endpoint"));
         }
         if self
             .protocol
             .as_deref()
-            .is_some_and(|protocol| !matches!(protocol, "acp" | "app-server"))
-            || (self.protocol.is_some() && self.command.is_none())
+            .is_some_and(|protocol| !matches!(protocol, "acp" | "acp-ws" | "app-server"))
+            || (self.protocol.is_some() && self.command.is_none() && self.connect.is_none())
+            || (self.protocol.as_deref() == Some("acp-ws") && self.connect.is_none())
         {
             return Err(anyhow!(
-                "explicit protocol requires a compatible executable"
+                "explicit protocol requires a compatible executable or shared endpoint"
             ));
+        }
+        if let Some(endpoint) = &self.connect {
+            crate::commune_endpoint::LocalEndpoint::try_from(endpoint.clone()).map_err(|error| anyhow!(error))?;
+            if self.protocol.is_none() || !self.arguments.is_empty() {
+                return Err(anyhow!("shared endpoints require an explicit protocol and do not accept process arguments"));
+            }
+        }
+        if let Some(path) = &self.bearer_token_file {
+            if self.connect.is_none() || self.protocol.as_deref() == Some("acp") || !crate::commune_endpoint::local_path(path) {
+                return Err(anyhow!("Bearer credentials require a shared WebSocket and an absolute local file"));
+            }
+        }
+        if self.auth_method.is_some() && self.protocol.as_deref() == Some("app-server") {
+            return Err(anyhow!("authentication method selection requires ACP"));
         }
         if serde_json::to_vec(self)?.len() > 16 * 1024 {
             return Err(anyhow!("collaboration launch configuration exceeds 16 KiB"));
@@ -61,9 +82,11 @@ impl AgentArgs {
 
 pub async fn run(args: AgentArgs) -> Result<()> {
     args.validate()?;
-    let (program, mut arguments, protocol) = if let Some(program) = args.command {
+    let (program, mut arguments, protocol) = if args.connect.is_some() {
+        (None, Vec::new(), args.protocol.expect("validated shared protocol"))
+    } else if let Some(program) = args.command {
         (
-            program,
+            Some(program),
             Vec::new(),
             args.protocol.unwrap_or_else(|| "acp".into()),
         )
@@ -91,7 +114,7 @@ pub async fn run(args: AgentArgs) -> Result<()> {
             })
             .collect::<Result<Vec<_>>>()?;
         (
-            PathBuf::from(command),
+            Some(PathBuf::from(command)),
             arguments,
             recipe["protocol"]
                 .as_str()
@@ -108,14 +131,9 @@ pub async fn run(args: AgentArgs) -> Result<()> {
     let (permission_tx, mut permissions) = mpsc::channel::<Permission>(1);
     eprintln!(
         "Starting a new collaboration session with {}.",
-        program.display()
+        args.connect.as_deref().map(str::to_owned).unwrap_or_else(|| program.as_ref().expect("owned program").display().to_string())
     );
-    let startup = CollaborationTerminal::start(
-        &protocol,
-        &program,
-        &arguments,
-        &cwd,
-        Arc::new(|event| {
+    let updates: ridge_acp::existing::UpdateSink = Arc::new(|event| {
             let update = &event["update"];
             if let Some(text) = update["content"]["text"].as_str() {
                 print!("{text}");
@@ -124,17 +142,22 @@ pub async fn run(args: AgentArgs) -> Result<()> {
                 eprintln!("\n{title}");
             }
             Ok(())
-        }),
-        Arc::new(move |params| {
+        });
+    let permission: ridge_acp::existing::PermissionHandler = Arc::new(move |params| {
             let sender = permission_tx.clone();
             Box::pin(async move {
                 let (answer, wait) = oneshot::channel();
                 sender.send(Permission { params, answer }).await.ok()?;
                 wait.await.ok().flatten()
             })
-        }),
-        args.auth_method,
-    );
+        });
+    let startup = async {
+        if let Some(endpoint) = &args.connect {
+            CollaborationTerminal::connect_shared(&protocol, endpoint, args.bearer_token_file.as_deref(), &cwd, updates, permission, args.auth_method).await
+        } else {
+            CollaborationTerminal::start(&protocol, program.as_ref().expect("owned program"), &arguments, &cwd, updates, permission, args.auth_method).await
+        }
+    };
     let terminal = tokio::select! {
         result = startup => result.map_err(|error| anyhow!(error))?,
         _ = tokio::signal::ctrl_c() => {

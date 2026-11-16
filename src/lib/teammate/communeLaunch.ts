@@ -12,8 +12,10 @@ export interface LaunchRequest {
   runtimeEpoch: string;
   entry: 'agent';
   cwd: string;
-  collaboration: { profile: string; arguments: string[] };
+  collaboration: { profile: string; arguments: string[] } | { connect: string; protocol: SharedProtocol; bearerTokenFile?: string; arguments: string[] };
 }
+export type SharedProtocol = 'acp' | 'acp-ws' | 'app-server';
+type LaunchSelection = { cwd: string; runtimeEpoch: string } & ({ profile: string } | { connect: string; protocol: SharedProtocol; bearerTokenFile?: string });
 export interface LaunchReceipt { workspaceId: string; paneId: string }
 
 export function createCommuneLaunch() {
@@ -24,7 +26,7 @@ export function createCommuneLaunch() {
   const update = (patch: Partial<typeof state>) => { state = { ...state, ...patch }; store.set(state); };
   return {
     subscribe: store.subscribe,
-    async send(submit: (request: LaunchRequest) => Promise<LaunchReceipt>, selection: { profile: string; cwd: string; runtimeEpoch: string }) {
+    async send(submit: (request: LaunchRequest) => Promise<LaunchReceipt>, selection: LaunchSelection) {
       if (state.busy) return;
       const previous = state.pending;
       const request: LaunchRequest = previous && !state.editable ? previous : {
@@ -32,7 +34,9 @@ export function createCommuneLaunch() {
         paneId: previous?.paneId ?? crypto.randomUUID(),
         runtimeEpoch: previous?.runtimeEpoch ?? selection.runtimeEpoch,
         entry: 'agent', cwd: selection.cwd,
-        collaboration: { profile: selection.profile, arguments: [] },
+        collaboration: 'connect' in selection
+          ? { connect: selection.connect, protocol: selection.protocol, ...(selection.bearerTokenFile ? { bearerTokenFile: selection.bearerTokenFile } : {}), arguments: [] }
+          : { profile: selection.profile, arguments: [] },
       };
       update({ pending: structuredClone(request), busy: true, editable: false, error: '' });
       try {

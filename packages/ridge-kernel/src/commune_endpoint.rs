@@ -84,6 +84,33 @@ pub(crate) trait LocalIo: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> LocalIo for T {}
 pub(crate) type LocalStream = Box<dyn LocalIo>;
 
+#[derive(Clone)]
+pub(crate) struct PeerBinding {
+    pub owner: ProcessInstance,
+    tcp: Option<(SocketAddrV4, SocketAddrV4)>,
+}
+impl PeerBinding {
+    pub fn verify(&self) -> Result<(), String> {
+        process_identity::validate(&self.owner).map_err(|error| error.to_string())?;
+        if let Some((server, client)) = self.tcp {
+            process_identity::owns_connection(&self.owner, server, client).map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn read_token(path: Option<&Path>) -> Result<Option<String>, String> {
+    let Some(path) = path else {return Ok(None);};
+    if !local_path(path) {return Err("protocol credential reference must be an absolute local path".into());}
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|_| "cannot read protocol credential reference")?;
+    let mut token = String::new();
+    file.take(4097).read_to_string(&mut token).map_err(|_| "invalid protocol credential")?;
+    let token = token.trim().to_owned();
+    if token.is_empty() || token.len() > 4096 || token.contains(['\r', '\n']) {return Err("invalid protocol credential".into());}
+    Ok(Some(token))
+}
+
 impl LocalEndpoint {
     pub(crate) fn namespace(&self, owner: &ProcessInstance) -> String {
         let transport = match self {
@@ -118,11 +145,30 @@ impl LocalEndpoint {
                         .map_err(|error| error.to_string())?;
                     Ok(Box::new(stream) as LocalStream)
                 }
-                Self::Unix(path) => connect_unix(path, owner).await,
+                Self::Unix(path) => connect_unix(path, Some(owner)).await.map(|(stream, _)| stream),
             }
         })
         .await
         .map_err(|_| "protocol endpoint connection timed out")?
+    }
+
+    pub(crate) async fn connect_attested(&self) -> Result<(LocalStream, PeerBinding), String> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            match self {
+                Self::Tcp(server) | Self::WebSocket(server, _) => {
+                    let stream = tokio::net::TcpStream::connect(server).await.map_err(|error| error.to_string())?;
+                    let SocketAddr::V4(client) = stream.local_addr().map_err(|error| error.to_string())? else {
+                        return Err("protocol connection address family mismatch".into());
+                    };
+                    let owner = process_identity::connection_owner(*server, client).map_err(|error| error.to_string())?;
+                    Ok((Box::new(stream) as LocalStream, PeerBinding {owner, tcp: Some((*server, client))}))
+                }
+                Self::Unix(path) => {
+                    let (stream, owner) = connect_unix(path, None).await?;
+                    Ok((stream, PeerBinding {owner, tcp: None}))
+                }
+            }
+        }).await.map_err(|_| "protocol endpoint connection timed out")?
     }
 }
 
@@ -155,15 +201,17 @@ mod tests {
     }
 }
 
-fn verify_peer(pid: Option<u32>, owner: &ProcessInstance) -> Result<(), String> {
-    if pid != Some(owner.pid) || owner.pid == 0 {
+fn verify_peer(pid: Option<u32>, expected: Option<&ProcessInstance>) -> Result<ProcessInstance, String> {
+    let owner = process_identity::instance(pid.ok_or("Unix socket peer PID unavailable")?).map_err(|error| error.to_string())?;
+    if expected.is_some_and(|expected| *expected != owner) {
         return Err("Unix socket peer does not match the declared process".into());
     }
-    process_identity::validate(owner).map_err(|error| error.to_string())
+    process_identity::validate(&owner).map_err(|error| error.to_string())?;
+    Ok(owner)
 }
 
 #[cfg(unix)]
-async fn connect_unix(path: &Path, owner: &ProcessInstance) -> Result<LocalStream, String> {
+async fn connect_unix(path: &Path, owner: Option<&ProcessInstance>) -> Result<(LocalStream, ProcessInstance), String> {
     let stream = tokio::net::UnixStream::connect(path)
         .await
         .map_err(|error| error.to_string())?;
@@ -172,12 +220,12 @@ async fn connect_unix(path: &Path, owner: &ProcessInstance) -> Result<LocalStrea
     if peer.uid() != unsafe { libc::geteuid() } {
         return Err("Unix socket peer is owned by a different user".into());
     }
-    verify_peer(peer.pid().and_then(|pid| u32::try_from(pid).ok()), owner)?;
-    Ok(Box::new(stream))
+    let owner = verify_peer(peer.pid().and_then(|pid| u32::try_from(pid).ok()), owner)?;
+    Ok((Box::new(stream), owner))
 }
 
 #[cfg(windows)]
-async fn connect_unix(path: &Path, owner: &ProcessInstance) -> Result<LocalStream, String> {
+async fn connect_unix(path: &Path, owner: Option<&ProcessInstance>) -> Result<(LocalStream, ProcessInstance), String> {
     use std::{
         io::{Read, Write},
         os::windows::io::{AsRawSocket, AsSocket, BorrowedSocket},
@@ -235,7 +283,7 @@ async fn connect_unix(path: &Path, owner: &ProcessInstance) -> Result<LocalStrea
         return Err(std::io::Error::from_raw_os_error(unsafe { WSAGetLastError() }).to_string());
     }
     // Some Windows builds write the PID while reporting zero bytes.
-    verify_peer(Some(pid), owner)?;
+    let owner = verify_peer(Some(pid), owner)?;
     let stream = async_io::Async::new(Socket(socket)).map_err(|error| error.to_string())?;
-    Ok(Box::new(stream.compat()))
+    Ok((Box::new(stream.compat()), owner))
 }

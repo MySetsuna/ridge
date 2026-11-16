@@ -451,6 +451,23 @@ pub async fn dispatch(
             } else {
                 request["delivery_id"] = args["deliveryId"].clone();
             }
+            if method == "send_agent_message" && !grouped {
+                let key = args["idempotency_key"].as_str().ok_or("missing idempotency key")?;
+                // An exact accepted retry must still recover its receipt after
+                // disconnect. A new intent may not enter a dead receiver queue.
+                if state.mcp_state.receipt_for_key(args, "user-client", key)?.is_none() {
+                    let connections = state.commune.lock().await;
+                    let connected = connections.get(args["agentId"].as_str().unwrap()).is_some_and(|session| session.is_connected());
+                    let live = state.roster.lock().map_err(|_| "roster unavailable")?.agent_identities().into_iter().any(|member| {
+                        member.online && member.agent_id == args["agentId"] && member.workspace_id == args["workspaceId"]
+                            && member.generation == args["generation"] && member.lease == args["lease"]
+                            && member.protocol_binding.as_ref().is_some_and(|binding| {
+                                process_identity::validate(&binding.process).is_ok() && process_identity::validate(&binding.endpoint_owner).is_ok()
+                            })
+                    });
+                    if !connected || !live {return Err("Agent binding no longer live; no new delivery was queued".into());}
+                }
+            }
             let state = state.clone();
             tokio::task::spawn_blocking(move || {
                 let host = crate::kernel_mcp::KernelMcpHost::new(state.clone());
@@ -651,25 +668,7 @@ async fn connect_protocol(
     stream: crate::commune_endpoint::LocalStream,
 ) -> Result<AcpTransport, String> {
     Ok(if request.protocol != "acp" {
-        let token = if let Some(path) = &request.bearer_token_file {
-            if !path.is_absolute() {
-                return Err("protocol credential reference must be absolute".into());
-            }
-            let file = std::fs::File::open(path)
-                .map_err(|_| "cannot read protocol credential reference")?;
-            use std::io::Read;
-            let mut token = String::new();
-            file.take(4097)
-                .read_to_string(&mut token)
-                .map_err(|_| "invalid protocol credential")?;
-            let token = token.trim().to_owned();
-            if token.is_empty() || token.len() > 4096 || token.contains(['\r', '\n']) {
-                return Err("invalid protocol credential".into());
-            }
-            Some(token)
-        } else {
-            None
-        };
+        let token = crate::commune_endpoint::read_token(request.bearer_token_file.as_deref())?;
         tokio::time::timeout(Duration::from_secs(5), async {
             let url = request.endpoint.websocket_url();
             if request.protocol == "app-server" {

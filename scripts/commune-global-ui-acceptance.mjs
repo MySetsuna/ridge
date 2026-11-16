@@ -18,6 +18,8 @@ const fixture = fs.readdirSync(path.join(target,'debug/deps')).filter(name => /^
 assert.ok(fixture, 'build commune_registration first');
 const evidence = { scope: 'Owned ACP process fixtures + real Kernel native RPC + production desktop/mobile Commune components; no external Agent/WAN claim', checks: [], result: 'RUNNING' };
 let kernel, vite, browser, page, endpoint;
+let sharedServer;
+const sharedSockets = [], sharedWorkers = [];
 let devUrl=process.env.RIDGE_TEST_DEV_URL;
 const until = async check => { const deadline = Date.now() + 30000; while (Date.now() < deadline) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 30)); } throw Error('owned global Commune readiness timeout'); };
 const call = async (method, url, body) => {
@@ -653,6 +655,36 @@ try {
   assert.deepEqual(choiceOperations.split(/\r?\n/).filter(line=>line.startsWith('session/load')),['session/load "fixture-alternative"']);
   assert.doesNotMatch(choiceOperations,/session\/(new|prompt)/);
   evidence.checks.push('Desktop requires an explicit choice between two live protocol-returned session IDs and loads only the selected second session. Out-of-directory sessions and prompt/creation side effects are absent.');
+  sharedServer = net.createServer(socket => {
+    sharedSockets.push(socket);
+    const worker = spawn(launchFixture, ['--standard-stdio'], { cwd: root, windowsHide: true, stdio: ['pipe','pipe','ignore'] });
+    sharedWorkers.push(worker); worker.stdin.on('error', () => {});
+    socket.pipe(worker.stdin); worker.stdout.pipe(socket);
+  });
+  await new Promise(resolve => sharedServer.listen(0, '127.0.0.1', resolve));
+  const sharedAddress = `127.0.0.1:${sharedServer.address().port}`;
+  await page.getByTestId('commune-new-collaboration').click();
+  const sharedDialog = page.getByRole('dialog');
+  await sharedDialog.getByLabel('连接方式', {exact:true}).selectOption('shared');
+  await sharedDialog.getByLabel('本机服务地址', {exact:true}).fill(sharedAddress);
+  await sharedDialog.getByLabel('协议', {exact:true}).selectOption('acp');
+  await sharedDialog.getByLabel('工作目录', {exact:true}).fill(root);
+  assert.equal(sharedWorkers.length, 0, 'opening and editing shared preview must not connect or create a protocol session');
+  await expect(sharedDialog.getByText('在现有服务中为此终端新建会话。服务独立运行，终端退出后仍保留。', {exact:true})).toBeVisible();
+  await expect(sharedDialog.getByRole('button', {name:'创建并查看终端', exact:true})).toBeInViewport();
+  await page.screenshot({path:path.resolve(evidenceDir,'collaboration-shared-launch-narrow.png')});
+  await sharedDialog.getByRole('button', {name:'创建并查看终端', exact:true}).click();
+  await expect(sharedDialog).toHaveCount(0);
+  const sharedRequest = await page.evaluate(() => window.globalCommune.launchRequests.at(-1));
+  assert.deepEqual(sharedRequest.collaboration, {connect:sharedAddress, protocol:'acp', arguments:[]});
+  await until(async () => (await command('get_teammate_topology',{workspaceId:sharedRequest.workspaceId})).discovered.some(candidate => candidate.connectionReady));
+  assert.equal(sharedWorkers.length, 1);
+  const sharedCandidate = (await command('get_teammate_topology',{workspaceId:sharedRequest.workspaceId})).discovered.find(candidate => candidate.connectionReady);
+  const sharedIdentity = await command('register_commune_member',{workspaceId:sharedRequest.workspaceId,paneId:sharedRequest.paneId,candidateRef:sharedCandidate.candidateRef});
+  assert.ok(sharedIdentity.sessionId.startsWith('standard-'));
+  assert.equal(sharedServer.listening, true);
+  assert.deepEqual(pageErrors, []);
+  evidence.checks.push('Native shared-service form at 390px stays explicit and read-only until submit; creates one actual independent ACP client, automatically publishes its fixed session and attaches through the existing native authority without connection JSON');
   evidence.result = 'PASS';
 } catch (error) {
   evidence.result = 'FAIL'; evidence.error = String(error); process.exitCode = 1;
@@ -663,6 +695,9 @@ try {
 }
 finally {
   await browser?.close();
+  for (const socket of sharedSockets) socket.destroy();
+  for (const worker of sharedWorkers) worker.kill();
+  if (sharedServer) await new Promise(resolve => sharedServer.close(resolve));
   if (endpoint?.pid === kernel?.pid) await call('POST', '/v1/shutdown').catch(() => {});
   if (kernel?.pid && kernel.exitCode === null && kernel.signalCode === null) {
     await Promise.race([new Promise(resolve => kernel.once('exit', resolve)), new Promise(resolve => setTimeout(resolve, 3000))]);

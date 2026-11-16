@@ -3,7 +3,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { t } from '$lib/i18n';
-  import { nativeCommuneLaunch as launch, type LaunchOptions, type LaunchReceipt } from './communeLaunch';
+  import { nativeCommuneLaunch as launch, type LaunchOptions, type LaunchReceipt, type SharedProtocol } from './communeLaunch';
 
   let { workspaceId, paneId, onfinish }: {
     workspaceId?: string; paneId?: string; onfinish: (receipt?: LaunchReceipt) => void;
@@ -11,10 +11,15 @@
   let dialog: HTMLDialogElement;
   let options = $state<LaunchOptions>();
   let profile = $state('');
+  let mode = $state('local');
+  let endpoint = $state('');
+  let protocol = $state<SharedProtocol>('app-server');
+  let tokenFile = $state('');
   let cwd = $state('');
   let reading = $state(true);
   let error = $state('');
   const selected = $derived(options?.profiles.find(option => option.id === profile));
+  const ready = $derived(mode === 'shared' ? Boolean(endpoint.trim()) : Boolean(profile));
 
   onMount(() => {
     dialog.showModal();
@@ -23,7 +28,10 @@
       .then(value => {
         if (!active) return;
         options = value;
-        profile = $launch.pending?.collaboration.profile ?? '';
+        const pending = $launch.pending?.collaboration;
+        if (pending && 'connect' in pending) {
+          mode = 'shared'; endpoint = pending.connect; protocol = pending.protocol; tokenFile = pending.bearerTokenFile ?? '';
+        } else { profile = pending?.profile ?? ''; }
         cwd = $launch.pending?.cwd ?? value.cwd ?? '';
       }).catch(cause => { if (active) error = String(cause); })
       .finally(() => { if (active) reading = false; });
@@ -31,10 +39,11 @@
   });
 
   async function start() {
-    if (!options || !profile || !cwd.trim()) return;
-    const receipt = await launch.send(request => invoke('create_independent_terminal', { ...request }), {
-      profile, cwd: cwd.trim(), runtimeEpoch: options.runtimeEpoch,
-    });
+    if (!options || !ready || !cwd.trim()) return;
+    const selection = { cwd: cwd.trim(), runtimeEpoch: options.runtimeEpoch };
+    const receipt = await launch.send(request => invoke('create_independent_terminal', { ...request }), mode === 'shared'
+      ? { ...selection, connect: endpoint.trim(), protocol, ...(protocol !== 'acp' && tokenFile.trim() ? { bearerTokenFile: tokenFile.trim() } : {}) }
+      : { ...selection, profile });
     if (receipt) onfinish(receipt);
   }
 </script>
@@ -49,12 +58,31 @@
     <p>{$t('commune.launchIntro')}</p>
   </header>
   <div class="body" aria-busy={reading || $launch.busy}>
+    <label for="commune-launch-mode">{$t('commune.launchSource')}</label>
+    <select id="commune-launch-mode" bind:value={mode} disabled={reading || !$launch.editable}>
+      <option value="local">{$t('commune.launchLocal')}</option>
+      <option value="shared">{$t('commune.launchShared')}</option>
+    </select>
+    {#if mode === 'shared'}
+      <p class="hint">{$t('commune.launchSharedIntro')}</p>
+      <label for="commune-launch-endpoint">{$t('commune.launchEndpoint')}</label>
+      <input id="commune-launch-endpoint" bind:value={endpoint} disabled={reading || !$launch.editable} spellcheck="false" autocomplete="off" placeholder="ws://127.0.0.1:4500/" />
+      <label for="commune-launch-protocol">{$t('commune.launchProtocol')}</label>
+      <select id="commune-launch-protocol" bind:value={protocol} disabled={reading || !$launch.editable}>
+        <option value="app-server">app-server</option><option value="acp-ws">ACP · WebSocket</option><option value="acp">ACP · TCP / Unix socket</option>
+      </select>
+      {#if protocol !== 'acp'}
+        <label for="commune-launch-token">{$t('commune.launchTokenFile')}</label>
+        <input id="commune-launch-token" bind:value={tokenFile} disabled={reading || !$launch.editable} spellcheck="false" autocomplete="off" />
+      {/if}
+    {:else}
     <label for="commune-launch-profile">{$t('commune.launchAgent')}</label>
     <select id="commune-launch-profile" bind:value={profile} disabled={reading || !$launch.editable}>
       <option value="">{$t('commune.launchChoose')}</option>
       {#each options?.profiles ?? [] as option (option.id)}<option value={option.id}>{option.name ?? option.id}</option>{/each}
     </select>
     {#if selected}<code>{selected.collaboration.command} {selected.collaboration.args.join(' ')}</code>{/if}
+    {/if}
     <label for="commune-launch-cwd">{$t('commune.connectionCwd')}</label>
     <input id="commune-launch-cwd" bind:value={cwd} title={cwd} disabled={reading || !$launch.editable} spellcheck="false" autocomplete="off" />
     <p class="hint">{$t('commune.launchLifecycle')}</p>
@@ -65,11 +93,11 @@
       </aside>
     {/if}
     {#if error || $launch.error}<p class="error" role="alert">{error || $launch.error}</p>{/if}
-    {#if !reading && !options?.profiles.length}<p>{$t('commune.launchNoProfiles')}</p>{/if}
+    {#if !reading && mode === 'local' && !options?.profiles.length}<p>{$t('commune.launchNoProfiles')}</p>{/if}
   </div>
   <footer>
     <button type="button" onclick={() => onfinish()} disabled={$launch.busy}>{$t('commune.connectionCancel')}</button>
-    <button type="button" class="primary" onclick={start} disabled={reading || $launch.busy || !options || !profile || !cwd.trim()}>
+    <button type="button" class="primary" onclick={start} disabled={reading || $launch.busy || !options || !ready || !cwd.trim()}>
       {$t($launch.busy ? 'commune.launchStarting' : $launch.pending ? 'commune.launchRetry' : 'commune.launchCreate')}
     </button>
   </footer>

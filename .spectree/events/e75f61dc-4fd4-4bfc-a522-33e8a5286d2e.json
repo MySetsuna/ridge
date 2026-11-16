@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "id": "e75f61dc-4fd4-4bfc-a522-33e8a5286d2e",
+  "at": "2026-11-16T11:18:12.129Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-128",
+  "buildId": "BUILD-e811d7eddbd0",
+  "data": {
+    "previousBuildId": "BUILD-4bc6e3770fad",
+    "testEvidence": {
+      "buildId": "BUILD-4bc6e3770fad",
+      "workspaceHash": "2333db669fbb30279b43ef13873ba05af90c189b09b00f2b07ef5f14e27eb8d4",
+      "verifiedAt": "2026-11-16T11:17:23.839Z",
+      "eventId": "252ab673-2f8f-4c16-a538-1cc08fddd2e6"
+    },
+    "absorbed": [
+      "changes/CHG-128.md",
+      "packages/ridge-acp/src/transport.rs",
+      "packages/ridge-acp/tests/transport_guard.rs",
+      "packages/ridge-core/src/process_identity.rs",
+      "packages/ridge-kernel/src/agent_discovery.rs",
+      "packages/ridge-kernel/src/app_server.rs",
+      "packages/ridge-kernel/src/commune.rs",
+      "packages/ridge-kernel/src/commune_endpoint.rs",
+      "packages/ridge-kernel/src/managed_agent.rs",
+      "packages/ridge-kernel/src/managed_console.rs",
+      "packages/ridge-kernel/tests/shared_daemon_binding.rs",
+      "scripts/commune-global-ui-acceptance.mjs",
+      "scripts/commune-shared-daemon-acceptance.mjs",
+      "specs/l4-commune-shared-daemon-binding.md",
+      "src/lib/i18n/messages/commune.ts",
+      "src/lib/teammate/CommuneStartDialog.svelte",
+      "src/lib/teammate/communeLaunch.test.ts",
+      "src/lib/teammate/communeLaunch.ts"
+    ],
+    "activated": [
+      "L4-COMMUNE-SHARED-DAEMON-BINDING"
+    ],
+    "archived": []
+  }
+}

@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "buildId": "BUILD-4bc6e3770fad",
+  "changeId": "CHG-128",
+  "specHash": "972dd895822c23eec2ed72a7b01ce4df0f29c3df2e9ef1f8f99224f366832454",
+  "workspaceHash": "2333db669fbb30279b43ef13873ba05af90c189b09b00f2b07ef5f14e27eb8d4",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-build",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "-p",
+        "ridge-cli",
+        "-p",
+        "ridge-acp",
+        "--bin",
+        "ridge-kernel",
+        "--bin",
+        "ridge",
+        "--bin",
+        "fake_acp_agent"
+      ],
+      "description": "构建真实 Kernel、CLI 与既有受控 ACP 进程",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-os-peer",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-core",
+        "process_identity::"
+      ],
+      "description": "连接四元组、唯一实际对端、启动实例与错误归属保护",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-transport-revocation",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-acp",
+        "--test",
+        "transport_guard"
+      ],
+      "description": "绑定失效后拒绝派发、取消及迟到审批响应，不重复发送",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-binding-runtime",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "shared_daemon_binding"
+      ],
+      "description": "共享协议 fixture 的精确双会话、原成员编组、过期预览、错误来源及服务退出",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-real-codex",
+      "command": [
+        "node",
+        "scripts/commune-shared-daemon-acceptance.mjs"
+      ],
+      "description": "隔离真实 Codex daemon、两个同目录协作客户端与无归属第三客户端，核对真实会话、派发和历史；模型响应使用本地受控服务，不能提升为外部模型或公网验收",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-existing-managed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "managed_agent"
+      ],
+      "description": "已有独立终端、鉴权失败、重试、桥接和进程生命周期回归",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-ui-fixture-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "ridge-kernel",
+        "--test",
+        "commune_registration",
+        "--no-run"
+      ],
+      "description": "从当前源码构建 UI 所用的受控协议进程，不依赖旧 target 产物",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "checkId": "shared-native-ui",
+      "command": [
+        "node",
+        "scripts/commune-global-ui-acceptance.mjs"
+      ],
+      "description": "实际组件中显式共享服务启动、原有手机编组和会话接入回归",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-16T11:17:23.839Z",
+  "diagnostics": [],
+  "eventId": "252ab673-2f8f-4c16-a538-1cc08fddd2e6"
+}

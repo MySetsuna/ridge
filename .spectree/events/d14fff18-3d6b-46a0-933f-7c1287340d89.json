@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "d14fff18-3d6b-46a0-933f-7c1287340d89",
+  "at": "2026-11-16T10:40:22.908Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-128",
+  "data": {
+    "title": "共享 daemon 的可信协作通道与精确会话绑定",
+    "implementation": "REQUIRED"
+  }
+}
