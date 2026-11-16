@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "id": "4a64fe35-75d2-430a-a70b-da2ce18ec655",
+  "at": "2026-11-16T14:10:39.330Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-129",
+  "buildId": "BUILD-7522a60ed497",
+  "data": {
+    "previousBuildId": "BUILD-275191d6c0a1",
+    "testEvidence": {
+      "buildId": "BUILD-275191d6c0a1",
+      "workspaceHash": "e9554232ac30869b7487cbb4c706d3782013cec99f9e54945f318a087ec06d89",
+      "verifiedAt": "2026-11-16T14:10:03.057Z",
+      "eventId": "540903c2-3bca-434f-af52-0d817d2b7c5f"
+    },
+    "absorbed": [
+      "changes/CHG-129.md",
+      "packages/remote/src/shared/terminal/terminalFocus.test.ts",
+      "packages/remote/src/shared/terminal/terminalFocus.ts",
+      "scripts/cdp-terminal-focus.mjs",
+      "specs/l4-desktop-terminal-navigation-focus.md",
+      "src/routes/+page.svelte"
+    ],
+    "activated": [
+      "L4-DESKTOP-TERMINAL-NAVIGATION-FOCUS"
+    ],
+    "archived": []
+  }
+}

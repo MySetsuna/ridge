@@ -1,7 +1,7 @@
 <!-- src/routes/+page.svelte -->
 <script lang="ts">
   import { t, tr } from '$lib/i18n';
-  import { focusActiveTerminal, focusTerminalPane, ownsTabKey } from '@ridge/remote/shared/terminal/terminalFocus';
+  import { captureTerminalFocus, focusActiveTerminal, focusTerminalPane, ownsTabKey } from '@ridge/remote/shared/terminal/terminalFocus';
   import SplitContainer from '$lib/components/SplitContainer.svelte';
   const loadSourceControl = () => import('$lib/components/SourceControl.svelte');
   import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
@@ -11,6 +11,7 @@
   import ContextMenu from '$lib/components/ContextMenu.svelte';
   import WindDialog from '$lib/components/RidgeDialog.svelte';
   import WindToast from '$lib/components/WindToast.svelte';
+  import { showToast } from '$lib/stores/toast';
   import { settingsStore, initSettingsBoot, setSetting } from '$lib/stores/settings';
   const loadRemotePanel = () => import('$lib/remote/RemotePanel.svelte');
   const loadAgentCenterPanel = () => import('$lib/teammate/AgentCenterPanel.svelte');
@@ -640,6 +641,21 @@ function expandSidebar(minWidth = 0) {
 
   // 窗口控制
   let isMaximized = $state(false);
+
+  let terminalNavigation = 0;
+  async function navigateTerminal(action: () => Promise<unknown>, workspaceId?: string) {
+    const restore = captureTerminalFocus();
+    const generation = ++terminalNavigation;
+    try {
+      if (await action() === false) return;
+      await tick();
+      if (generation !== terminalNavigation || (workspaceId && workspaceId !== get(activeWorkspaceId))) return;
+      restore(get(activePaneId));
+    } catch (error) {
+      showToast(String(error), 'error');
+      reportDevIssue({ title: 'Terminal navigation failed', message: String(error) });
+    }
+  }
 
   async function handleMinimize() {
     if (!isTauri()) return;
@@ -1935,7 +1951,7 @@ function expandSidebar(minWidth = 0) {
           savedWorkspaceIds={Object.values($workspaceSaveInfoStore).filter(info => !!info.file_path && !!info.name?.trim()).map(info => info.workspace_id)}
           unreadWorkspaceIds={Object.keys($communeUnreadWorkspaces)}
           activeWorkspaceId={$activeWorkspaceId}
-          onSwitch={switchWorkspace}
+          onSwitch={(id) => void navigateTerminal(() => switchWorkspace(id), id)}
           onClose={closeWorkspace}
           onReorder={reorderWorkspaces}
           onRename={renameWorkspace}
@@ -2019,7 +2035,7 @@ function expandSidebar(minWidth = 0) {
               type="button"
               class="shrink-0 ml-2 flex h-8 w-8 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-[var(--rg-accent)]/40 hover:text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/8 transition-colors"
               title={$t('main.newWorkspaceBtn')}
-              onclick={() => createWorkspace()}
+              onclick={() => void navigateTerminal(createWorkspace)}
             >
               <span class="text-lg leading-none">+</span>
             </button>
@@ -2059,7 +2075,7 @@ function expandSidebar(minWidth = 0) {
             class={toolBtn}
             title={$t('main.splitHorizontal')}
             data-testid="add-pane-btn"
-            onclick={() => void splitActivePane('horizontal')}
+            onclick={() => void navigateTerminal(() => splitActivePane('horizontal'), get(activeWorkspaceId))}
           >
             <svg
               class="h-4 w-4"
@@ -2077,7 +2093,7 @@ function expandSidebar(minWidth = 0) {
             type="button"
             class={toolBtn}
             title={$t('main.splitVertical')}
-            onclick={() => void splitActivePane('vertical')}
+            onclick={() => void navigateTerminal(() => splitActivePane('vertical'), get(activeWorkspaceId))}
           >
             <svg
               class="h-4 w-4"

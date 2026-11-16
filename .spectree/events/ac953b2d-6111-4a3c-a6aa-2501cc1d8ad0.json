@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "ac953b2d-6111-4a3c-a6aa-2501cc1d8ad0",
+  "at": "2026-11-16T14:10:39.300Z",
+  "type": "approval_derived",
+  "source": "local_operation",
+  "changeId": "CHG-129",
+  "data": {
+    "changeId": "CHG-129",
+    "specHash": "74c479615fe8d94aace6026c44afbd507f4f3d11c4b912032603573aad257a05",
+    "approvedAt": "2026-11-16T14:10:39.296Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "user-authorized-terminal-freeze-fix-and-realistic-e2e; current-omission-audit",
+    "derivedFrom": {
+      "buildId": "BUILD-275191d6c0a1",
+      "specHash": "8214e986cb02f8ba645dded922e3847a5296b478bfd1b2374333176fe9744a3a"
+    },
+    "attributionVerified": false
+  }
+}

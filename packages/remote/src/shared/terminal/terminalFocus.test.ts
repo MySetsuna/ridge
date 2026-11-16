@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { focusActiveTerminal, focusTerminalPane, ownsTabKey } from './terminalFocus';
+import { captureTerminalFocus, focusActiveTerminal, focusTerminalPane, ownsTabKey } from './terminalFocus';
 
 /**
  * `ownsTabKey` decides whether a Tab keystroke should keep native browser
@@ -102,5 +102,36 @@ describe('focusActiveTerminal', () => {
 
 		expect(focusTerminalPane('pane-target')).toBe(true);
 		expect(ime.focus).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('navigation focus restoration', () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it.each(['unchanged', 'removed by layout'])('restores terminal focus when the original target is %s', (mode) => {
+		const original = {};
+		const body = {};
+		const focus = vi.fn();
+		const doc = { activeElement: original, body, querySelector: () => ({ querySelector: () => ({ focus }) }) };
+		vi.stubGlobal('document', doc);
+		const restore = captureTerminalFocus();
+		if (mode === 'removed by layout') doc.activeElement = body;
+		expect(restore('selected-pane')).toBe(true);
+		expect(focus).toHaveBeenCalledOnce();
+	});
+
+	it('leaves a subsequently focused input target alone', () => {
+		const querySelector = vi.fn();
+		const doc = { activeElement: {}, body: {}, querySelector };
+		vi.stubGlobal('document', doc);
+		const restore = captureTerminalFocus();
+		doc.activeElement = {};
+		expect(restore('selected-pane')).toBe(false);
+		expect(querySelector).not.toHaveBeenCalled();
+	});
+
+	it('does nothing without a DOM', () => {
+		vi.stubGlobal('document', undefined);
+		expect(captureTerminalFocus()('selected-pane')).toBe(false);
 	});
 });

@@ -1,159 +1,41 @@
 {
   "version": 1,
-  "changeId": "CHG-128",
-  "specHash": "5ca139e9da26f0b39d41ba7eac70719727aa3b09673f197b0399f316e3e195d8",
+  "changeId": "CHG-129",
+  "specHash": "74c479615fe8d94aace6026c44afbd507f4f3d11c4b912032603573aad257a05",
   "units": [
     {
-      "id": "L4-COMMUNE-SHARED-DAEMON-BINDING",
+      "id": "L4-DESKTOP-TERMINAL-NAVIGATION-FOCUS",
       "level": "L4",
-      "nodeHash": "eef6c916f6905b22d8bd26de3c57dc6f928dc9a1a74930841449f11707f34332",
+      "nodeHash": "ce81d4239f08b9c67c246ccfee1c5ce8e5d40ea7c89cae032868e271d8f83fe3",
       "codeTargets": [
-        "packages/ridge-core/src/process_identity.rs",
-        "packages/ridge-acp/src/transport.rs",
-        "packages/ridge-kernel/src/commune_endpoint.rs",
-        "packages/ridge-kernel/src/managed_agent.rs",
-        "packages/ridge-kernel/src/managed_console.rs",
-        "packages/ridge-kernel/src/commune.rs",
-        "packages/ridge-kernel/src/agent_discovery.rs",
-        "packages/ridge-kernel/src/app_server.rs",
-        "src/lib/teammate/CommuneStartDialog.svelte",
-        "src/lib/teammate/communeLaunch.ts",
-        "src/lib/i18n/messages/commune.ts"
+        "src/routes/+page.svelte",
+        "packages/remote/src/shared/terminal/terminalFocus.ts"
       ],
       "testTargets": [
-        "packages/ridge-core/src/process_identity.rs",
-        "packages/ridge-acp/tests/transport_guard.rs",
-        "packages/ridge-kernel/tests/shared_daemon_binding.rs",
-        "packages/ridge-kernel/tests/managed_agent.rs",
-        "src/lib/teammate/communeLaunch.test.ts",
-        "scripts/commune-shared-daemon-acceptance.mjs",
-        "scripts/commune-global-ui-acceptance.mjs"
+        "packages/remote/src/shared/terminal/terminalFocus.test.ts",
+        "scripts/cdp-terminal-focus.mjs"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "shared-build",
+          "id": "terminal-navigation-focus",
           "command": [
-            "cargo",
-            "build",
-            "--locked",
-            "-p",
-            "ridge-kernel",
-            "-p",
-            "ridge-cli",
-            "-p",
-            "ridge-acp",
-            "--bin",
-            "ridge-kernel",
-            "--bin",
-            "ridge",
-            "--bin",
-            "fake_acp_agent"
+            "pnpm",
+            "exec",
+            "vitest",
+            "run",
+            "packages/remote/src/shared/terminal/terminalFocus.test.ts"
           ],
-          "description": "构建真实 Kernel、CLI 与既有受控 ACP 进程"
-        },
-        {
-          "id": "shared-os-peer",
-          "command": [
-            "cargo",
-            "test",
-            "--locked",
-            "-p",
-            "ridge-core",
-            "process_identity::"
-          ],
-          "description": "连接四元组、唯一实际对端、启动实例与错误归属保护"
-        },
-        {
-          "id": "shared-transport-revocation",
-          "command": [
-            "cargo",
-            "test",
-            "--locked",
-            "-p",
-            "ridge-acp",
-            "--test",
-            "transport_guard"
-          ],
-          "description": "绑定失效后拒绝派发、取消及迟到审批响应，不重复发送"
-        },
-        {
-          "id": "shared-binding-runtime",
-          "command": [
-            "cargo",
-            "test",
-            "--locked",
-            "-p",
-            "ridge-kernel",
-            "--test",
-            "shared_daemon_binding"
-          ],
-          "description": "共享协议 fixture 的精确双会话、原成员编组、过期预览、错误来源及服务退出"
-        },
-        {
-          "id": "shared-real-codex",
-          "command": [
-            "node",
-            "scripts/commune-shared-daemon-acceptance.mjs"
-          ],
-          "description": "隔离真实 Codex daemon、两个同目录协作客户端与无归属第三客户端，核对真实会话、派发和历史；模型响应使用本地受控服务，不能提升为外部模型或公网验收"
-        },
-        {
-          "id": "shared-existing-managed",
-          "command": [
-            "cargo",
-            "test",
-            "--locked",
-            "-p",
-            "ridge-kernel",
-            "--test",
-            "managed_agent"
-          ],
-          "description": "已有独立终端、鉴权失败、重试、桥接和进程生命周期回归"
-        },
-        {
-          "id": "shared-ui-fixture-build",
-          "command": [
-            "cargo",
-            "test",
-            "--locked",
-            "-p",
-            "ridge-kernel",
-            "--test",
-            "commune_registration",
-            "--no-run"
-          ],
-          "description": "从当前源码构建 UI 所用的受控协议进程，不依赖旧 target 产物"
-        },
-        {
-          "id": "shared-native-ui",
-          "command": [
-            "node",
-            "scripts/commune-global-ui-acceptance.mjs"
-          ],
-          "description": "实际组件中显式共享服务启动、原有手机编组和会话接入回归"
+          "description": "导航完成恢复原选中终端的输入目标，保护用户随后选择的编辑器与其他终端"
         }
       ]
     }
   ],
   "allowedPaths": [
-    "packages/ridge-acp/src/transport.rs",
-    "packages/ridge-acp/tests/transport_guard.rs",
-    "packages/ridge-core/src/process_identity.rs",
-    "packages/ridge-kernel/src/agent_discovery.rs",
-    "packages/ridge-kernel/src/app_server.rs",
-    "packages/ridge-kernel/src/commune.rs",
-    "packages/ridge-kernel/src/commune_endpoint.rs",
-    "packages/ridge-kernel/src/managed_agent.rs",
-    "packages/ridge-kernel/src/managed_console.rs",
-    "packages/ridge-kernel/tests/managed_agent.rs",
-    "packages/ridge-kernel/tests/shared_daemon_binding.rs",
-    "scripts/commune-global-ui-acceptance.mjs",
-    "scripts/commune-shared-daemon-acceptance.mjs",
-    "src/lib/i18n/messages/commune.ts",
-    "src/lib/teammate/CommuneStartDialog.svelte",
-    "src/lib/teammate/communeLaunch.test.ts",
-    "src/lib/teammate/communeLaunch.ts"
+    "packages/remote/src/shared/terminal/terminalFocus.test.ts",
+    "packages/remote/src/shared/terminal/terminalFocus.ts",
+    "scripts/cdp-terminal-focus.mjs",
+    "src/routes/+page.svelte"
   ],
   "testCommand": [
     "npm",
@@ -165,6 +47,7 @@
     ".claude/workflows/rdg-remote-cont.js": "e79907d8e37cfd7b3aed7b0481b376896516e7126492961ae5fc6d245be739bd",
     ".claude/workflows/rdg-remote-unify.js": "7facee49728129a58ff1d4e14424992bc3ce3dc4c76f67ba2b0744f98e62a7f1",
     ".env": "d4ef68e4a9a1d5b79094d3ff7bfa01acca753b5a05623401272a53ff2e47c457",
+    ".env.local": "5e24dd1c2c435d03c9d0bdf277e8039fd24d511666b1d3d740d568d631ad9079",
     ".gitattributes": "9857ff9bdb1e263152be695c970a8e9d2c94576dbf709ee02f12d780e0958df4",
     ".github/workflows/deploy-pages.yml": "68c4c2a838c45ec4927f108a20e46db9cd79543049566530307d5fe556c1d8cb",
     ".github/workflows/publish-remote.yml": "f664af1891aeea987c2accb7f2cfec1ee0768e25004d567c9a35437519e99a5b",
@@ -173,7 +56,10 @@
     ".gitignore": "ca02fc69e48ce2e209f41670b3f12cfa7c88263a1be4fc634212b519193d7b52",
     ".mcp.json": "8a016cf6fb0eae77086d97254c4e34e5ef1c8335aab2076f6e9531085630b533",
     ".npmrc": "03d8c2004616576994a079ab45a218ffe758d646b7197907edcbbf671c2248b1",
+    ".opencode/.gitignore": "663a068e76d264d0bc6740f5450b6c4193c7b41ecf5e0dc222485b8a17404d95",
     ".opencode/opencode.json": "d22a4e077bede638ca180486cb20df967cdae0b7f8f39552cbcd41a2bfc0402a",
+    ".opencode/package-lock.json": "9b1265e028aeef5440f1de140afa559272c820440e587622c96a0f3b49e623bd",
+    ".opencode/package.json": "2d036aa9b15c658f0411aefbd13b9a6cfa0cc1ff5d508dd49fef5a46eda852e3",
     ".vscode/extensions.json": "926925a0d7f8b5e0e9e84667ac901095f7ffdb83afb54de65662d6e4cfb78ad1",
     ".vscode/settings.json": "54224dc29195ac0e0ae6a3ce38d5cd7aeb390357259a37c860a28a3f1087ef71",
     "AGENTS.md": "f79dcdcc868100c55ce91dda383e287ad1283226b7a24de3fed95123864fc0bf",
@@ -306,6 +192,7 @@
     "changes/CHG-126.md": "3e44bc328bf719102fc227b622f19fe1dc035599a99f28126ee91c119089933e",
     "changes/CHG-127.md": "f47e4012503a419dfea135ba665befda73b265e27bac2ee3679e9b3930f55f36",
     "changes/CHG-128.md": "4840b269abd108cca1270063e5fb46261910a41604e1894ee605fea80a3a3901",
+    "changes/CHG-129.md": "697203c4fe0d9d9430eb0ef92884ba907225204cf7097edc4826b927b9badfff",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -502,8 +389,8 @@
     "packages/remote/src/shared/terminal/shellInputSnapshot.ts": "bd7299c43a35ab6921b70f649c427ac5c0399bb621b71e23d227f2f99bb67327",
     "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts": "628f5e20289e9795951ed7d32a7ce49a2dde72ecb6c8ee3957b038d3ee019b1c",
     "packages/remote/src/shared/terminal/terminalFeedPolicy.ts": "26fdc78b68aa047bce0d5bfbfc55370efe383d0bd0d8cdc5d6d2055a0dc90704",
-    "packages/remote/src/shared/terminal/terminalFocus.test.ts": "6c2c813d5b2e9dd42b037216c9e024ae8240caaf08819da55add48e78a5b3126",
-    "packages/remote/src/shared/terminal/terminalFocus.ts": "4474f89d45c9ea062762b4f36a6b4845835e2bc257043a3d09cde474d75bfced",
+    "packages/remote/src/shared/terminal/terminalFocus.test.ts": "5e597440f64bcb64618f7c1e9a137cba3571b5a6cf7d72dbc6daf52f40936bbf",
+    "packages/remote/src/shared/terminal/terminalFocus.ts": "78727a223b503b203801348050ca1d29379d7711d1d3ef48b1a92b9d3fde7061",
     "packages/remote/src/shared/terminal/terminalMemoryPolicy.test.ts": "5b2a6ba77e487e8d029fffa783b15ed48f4ec1d89f18700f90946f964785b8b5",
     "packages/remote/src/shared/terminal/terminalMemoryPolicy.ts": "2f8b8786d60d2fe51da3db7545756cf006cacc1ffd8f9198b31f946593e79a2b",
     "packages/remote/src/shared/terminal/themeBridge.test.ts": "f866c19b2c2e33eeb9c8eedab734dc4afa65b7c99bb1d738c7b0b0a153df324d",
@@ -656,10 +543,12 @@
     "packages/ridge-cli/tests/cli_terminal_create_e2e.rs": "bf97876dd2b4b86326748a1271277aed0b5a2f3add691ff1697a353a1024ff0b",
     "packages/ridge-cli/tests/kernel_lifecycle_e2e.rs": "0aa5e0c4f1cee8e937207bb37f586932b4dae1eb61fa1e95861dc0a3156a8f93",
     "packages/ridge-cli/tests/rtp1_kernel_e2e.rs": "33d0e2353344348267a55b1627077e2b41a2509014afd1df42e7d89ca62e5882",
+    "packages/ridge-core/bash.exe.stackdump": "1fc1ccde43b2fedd708ae5c06a27b0d45c14168c2d22d894fd8d601cc87db030",
     "packages/ridge-core/Cargo.toml": "d1ad81cc98acea296e6caeaa390eff9671190c994eade12bb9cded6b8a623f20",
     "packages/ridge-core/src/capability_matrix_guard.rs": "cdb1a7bc239071e9163beaffd828601c01b7b79257f3e6e7e981b58ec48dbf2e",
     "packages/ridge-core/src/capability.rs": "2b72fd1bd72d5acaab8cbded9b283ced774f29e355b4c2f9114fc3d726f371a0",
     "packages/ridge-core/src/clipboard.rs": "e0773f2964b38420bfe5b89d98103f1bb0b198dd3c7129499c32890a98dd2ddb",
+    "packages/ridge-core/src/commands/bash.exe.stackdump": "dc3611abe239abe369e59795d97af621ae5bb5ee0a686423673a595d91c0fcde",
     "packages/ridge-core/src/commands/git.rs": "0fc22a9da66a86f8e7f9ef114902255384ff5f7ad59cf758ac49b93c281eed43",
     "packages/ridge-core/src/commands/mod.rs": "4b6f9e65b62784d3329e4b07ddd3a13f5293f006237133a5880b99fe3b6e8cf4",
     "packages/ridge-core/src/commands/process.rs": "e6d9a6512a3f383e1fac8584501cccbbe83efb2edb08b473d131e735ba80032b",
@@ -906,6 +795,7 @@
     "packages/ridge-term/src/semantic.rs": "cf90dba48414f33ff4be5c442d90fd73d910655596b757c38372eb09847bdc22",
     "packages/ridge-term/src/term/attr_table.rs": "c50578b1c30b75a3a479995f38c7848f374884ff86d2caa02658094d97ce2209",
     "packages/ridge-term/src/term/attrs.rs": "4ddf1a27d67a68fdbe93649f81ec008f6658cf58c309ee50500824172b837f5e",
+    "packages/ridge-term/src/term/bash.exe.stackdump": "6c0080a50b7b007823a17c0d4f9fc3cd4b2f34d49e93c5f40aaa9d3c0473b969",
     "packages/ridge-term/src/term/cell.rs": "26f82517ca427d71eefa37e38f2efec2413fada09785e7e2ee14d017b1446306",
     "packages/ridge-term/src/term/clock.rs": "2c71ff408ea34177947d033ea18d345506e7f01be43d4ee72c09db4bbbfaaebb",
     "packages/ridge-term/src/term/cursor.rs": "a907d8da86bb80bd944cc99ec0879496b01f80cd8f76cd490a773e755d134a4d",
@@ -988,6 +878,7 @@
     "scripts/cdp-teammate-mcp-e2e.mjs": "96e4a765de50caf6e7c6070cedf3c4d6bb06b8951167214d79a1416d7ae708c3",
     "scripts/cdp-term-input.mjs": "236d5a72a98f433dc5ada6f34e6d26d10d1fab2842b7ceace1baacf7d55533b7",
     "scripts/cdp-term-render-e2e.mjs": "a902bef93b05d37c2a337ef345853fd03ea048e29e42f55451d76531c864452f",
+    "scripts/cdp-terminal-focus.mjs": "36940892c31c515c17a640cf798e82db5c540ea3be5c410a45519cc86a1da215",
     "scripts/cdp-wait-and-enable.mjs": "a05f197759d09b8f8ad04366860bb75ac7bf3f147686be132d6a6ad9ed7eff72",
     "scripts/check-architecture-docs.mjs": "709d8e3f664b0862d59f9f6a865949dfbc23a2147fb45ff1c112c40b395786d6",
     "scripts/check-capability-matrix.mjs": "6b1918dcc0998a8a3a9df1e7d2c666a033909634f25474660400bf8dddd63149",
@@ -1268,6 +1159,7 @@
     "specs/l4-commune-organization-members.md": "ce0dcd973142bcd24a8d3305126a4df1ecbab4b37842ab07419c456995c53c2b",
     "specs/l4-commune-remote-delivery.md": "43ae0e9067cebb2a70ba1f46fc92104e0d625ae80dbce045e40239cb56c08230",
     "specs/l4-commune-shared-daemon-binding.md": "044682cf0855d009e86fd919dae65c7684b2dd6c5c0134d98208f8757dac7676",
+    "specs/l4-desktop-terminal-navigation-focus.md": "ee51dd37afd75580ace3dc0e0f2eeeba6d27bcd478c92b9f97e02c4461655dc4",
     "specs/l4-monaco-trusted-styles.md": "61dc83ef5ea96a7ffb2ee4e7ee02be802f56ce9babc2bdd1460aabda35c43dfe",
     "specs/l4-perf-latency-bench-entry.md": "86935a5eb9927f52620529e323278781fcf871545b9fc9cec4232c01418d798c",
     "specs/l4-remote-active-pane-cwd.md": "5e83048d577f2e9988c3baf8178d96865ffa540bbfcb6c4bdfdb777e80f95535",
@@ -2282,6 +2174,7 @@
     "specs/project.md": "17b01da7cc649ee0a6218b434b72abf4e77a0f177ae1a932c63c7230467a5cfe",
     "src/app.css": "8c00edbcb8544e0c644b75b13ceb07bbeb22488dc91e05dcb4ca774459fbe2fc",
     "src/app.html": "b69dad785d8c5c19a7da1146dbf88faa07d24df2de1a1a30c36ea3eb61ebb217",
+    "src/bash.exe.stackdump": "d7d05351f4c92930913b59f54a55dd38da8e99aebdad01705ca1598cb17751ce",
     "src/hooks.server.ts": "c6a07cbdf29ef3466bafcf6f8e76bdf4fa3cd9b0ed5d8f0f34db1c476e8afaa1",
     "src/lib/actions/autoGrow.ts": "20928f8b44609c46fa6b31c8b664bb7df2a69936928dfea4600f1c25b8a0458d",
     "src/lib/actions/hostSessionDrag.test.ts": "8e00b833bb2278788d8c54182432248898f5d5634cef3e40beb5f467a6e8619e",
@@ -2649,7 +2542,7 @@
     "src/remote/svelte.config.js": "38f4ed7a7ec5e5c793b4f3809b8f85876ce2ee232392e56c25c2d076e30370a4",
     "src/routes/+layout.svelte": "55f53cc610aa09f861276b8a47e89a0398d961d97e59ddacb2030ccada49027f",
     "src/routes/+layout.ts": "06d9b38b113e4c1bf159b3942d7d65302ce05bb01713b438df91b73ad9be9ee6",
-    "src/routes/+page.svelte": "16853a467abac34d455512280f22cb71181191bcecd52e4ffd6fc6abcad03ca4",
+    "src/routes/+page.svelte": "0ebca87c32985c5f6708d5ec2438fef8fd1b37455082750bae1609da41ab5691",
     "src/service-worker.test.ts": "4852c15ac3daf2e1a03e8cb86d4ad4d7e0130c79658ca080f560a797f02f3d2c",
     "src/service-worker.ts": "ebcff641e5bad991765b1d151fc413539b3ff244eafb27fcd3d3430012267d0a",
     "src/shared/sidebar/gitRequestLifecycle.test.ts": "42899d8d467fdfad8fbd27bdfb85b24555b592a8c6c155ce36c67920e1ab0d29",
@@ -2658,11 +2551,19 @@
     "src/shared/sidebar/sidebarRequestLifecycle.test.ts": "87023b2dfefaf503407489f96938c4cf5495ec11518aef99043b70484eb56a05",
     "src/shared/sidebar/SidebarSearch.svelte": "43093a183a08684b15948ce6bd604631ea3ca15908a3909f0495467ec2199a69",
     "src/shared/sidebar/types.ts": "5f2f712326c2bf1f261ead2fb599b2f7eae43e0a109303b12e26705dbd5af5f8",
+    "src-tauri/.claude/settings.local.json": "58e52d8100982b6a9cdf5438b951168f398ff8e15dae44282e961de09df79ac4",
     "src-tauri/.gitignore": "88707cda7ba4226eda3ffa91d8284f1a0d12b827f06fb9bc48425cc0d4af04af",
+    "src-tauri/bash.exe.stackdump": "d31a8944b18a997f167ef18216625505ded7a4a20dd90b962420a6925b9b779a",
+    "src-tauri/binaries/rdg-x86_64-pc-windows-msvc.exe": "fd8f6696721bc53dcd09821fb94df1b660700996538a54da656228fda2071c7f",
+    "src-tauri/binaries/ridge-mcp-x86_64-pc-windows-msvc.exe": "0cee49a66858c080c51171c711757d38e48a32238c276e6a9c825a97c16ec798",
     "src-tauri/build.rs": "7c43ad9a51ca872756fdcf7d4234f228000800abb0a5498ccac649699cb438f3",
     "src-tauri/capabilities/default.json": "bdc4f0efda8502ddbf0cd0a8c8486f9fe2564715d923f3035a44c5fd318f76ef",
     "src-tauri/Cargo.lock": "1d8ec61843be943db2f3f4d6bc1b557e6603e05c9f5d0483edd5805ab9c8407b",
     "src-tauri/Cargo.toml": "e73b2ad790b16a77439564cd53e5d5b89321516334d4b673b6e1226fd7c3f9ed",
+    "src-tauri/gen/schemas/acl-manifests.json": "6e09a8d1446e2640a18c93fdbb0fdabfb913e31af7ca946dd4b171d6796d8283",
+    "src-tauri/gen/schemas/capabilities.json": "ee5989f2da424f6247baacb2e93e445a53d9265f2ab5ad453c738e001f02220d",
+    "src-tauri/gen/schemas/desktop-schema.json": "1d75d79fc208fd9703b312646c8ac6ead58e9acdf90e0af236eb2aeef928c9de",
+    "src-tauri/gen/schemas/windows-schema.json": "1d75d79fc208fd9703b312646c8ac6ead58e9acdf90e0af236eb2aeef928c9de",
     "src-tauri/icons/128x128.png": "65e5c57e1ddfabd977c993a4d2b57fe4d99bb2eeb7c3950a0f9bfd3f47499cb2",
     "src-tauri/icons/128x128@2x.png": "3516a9df3ae93b096a130b8da0f9bc693acdb7fbeedc39563a94c13a58cc736d",
     "src-tauri/icons/32x32.png": "e2ea1b6303e08c018d919ff0adba578743bea7d7ab519c14dc349531fcfe6e32",
@@ -2742,6 +2643,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-e811d7eddbd0",
-  "manifestHash": "e811d7eddbd088978c0cdc032159945d85a411fe22802961d4a697a7f36e1840"
+  "buildId": "BUILD-7522a60ed497",
+  "manifestHash": "7522a60ed4975ee49b2eb084cb6005cfd246f3de6182b72a30136cd309158a69"
 }

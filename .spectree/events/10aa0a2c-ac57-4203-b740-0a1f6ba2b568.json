@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "10aa0a2c-ac57-4203-b740-0a1f6ba2b568",
+  "at": "2026-11-16T13:54:10.690Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-129",
+  "data": {
+    "title": "修复工作区切换和分屏后的终端键盘焦点",
+    "implementation": "REQUIRED"
+  }
+}

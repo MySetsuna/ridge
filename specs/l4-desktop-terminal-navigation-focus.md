@@ -1,0 +1,27 @@
+---
+id: L4-DESKTOP-TERMINAL-NAVIGATION-FOCUS
+level: L4
+title: 桌面终端导航后的真实键盘焦点
+status: LOCKED
+lifecycle: ACTIVE
+parent: L3-REMOTE-INTERACTION-RELIABILITY
+code_targets:
+  - src/routes/+page.svelte
+  - packages/remote/src/shared/terminal/terminalFocus.ts
+test_targets:
+  - packages/remote/src/shared/terminal/terminalFocus.test.ts
+  - scripts/cdp-terminal-focus.mjs
+acceptance_checks:
+  - id: terminal-navigation-focus
+    command:
+      - pnpm
+      - exec
+      - vitest
+      - run
+      - packages/remote/src/shared/terminal/terminalFocus.test.ts
+    description: 导航完成恢复原选中终端的输入目标，保护用户随后选择的编辑器与其他终端
+---
+
+用户显式切换或创建工作区、对当前 pane 分屏后，待布局提交，DOM 键盘焦点须回到当前工作区原契约选中的 pane，使用现有 IME textarea 或 direct 容器，不只更新 activePaneId 与 Wasm 光标。后台刷新不触发自动聚焦。异步导航期间用户已转入编辑器、对话框、其他终端或发起更新导航时，旧结果不得抢回焦点；失败导航不声称成功。不得改变 PTY、工作区归属或重试输入。
+
+默认单元回归覆盖原焦点、布局移除后 body、其他输入面与缺失 DOM。原生 dev:cdp 在私有 Runtime 和两个工作区上验证真实标签切换及两个方向分屏，等待可见 pane 身份和数量稳定，再断言 document.activeElement 对应正确 pane 的真实键盘输入目标，不能用隐藏的 keep-alive pane 数量作为完成依据。验收脚本不向 shell 写入命令。保留修复前失焦与修复后证据。执行 npm test、lint、typecheck 和 SpecTree verify、complete。测试使用非 breakaway 开关时明确标记，只证明功能链路，不证明生产进程保活。

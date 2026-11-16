@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "buildId": "BUILD-275191d6c0a1",
+  "changeId": "CHG-129",
+  "specHash": "8214e986cb02f8ba645dded922e3847a5296b478bfd1b2374333176fe9744a3a",
+  "workspaceHash": "e9554232ac30869b7487cbb4c706d3782013cec99f9e54945f318a087ec06d89",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-DESKTOP-TERMINAL-NAVIGATION-FOCUS",
+      "checkId": "terminal-navigation-focus",
+      "command": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "packages/remote/src/shared/terminal/terminalFocus.test.ts"
+      ],
+      "description": "导航完成恢复原选中终端的输入目标，保护用户随后选择的编辑器与其他终端",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-16T14:10:03.057Z",
+  "diagnostics": [],
+  "eventId": "540903c2-3bca-434f-af52-0d817d2b7c5f"
+}

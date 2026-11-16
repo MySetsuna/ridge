@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "e82a7c33-76c3-405d-af63-a4654f4822f4",
+  "at": "2026-11-16T13:55:52.887Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-129",
+  "data": {
+    "changeId": "CHG-129",
+    "specHash": "8214e986cb02f8ba645dded922e3847a5296b478bfd1b2374333176fe9744a3a",
+    "approvedAt": "2026-11-16T13:55:52.871Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "user-authorized-terminal-freeze-fix-and-realistic-e2e; current-omission-audit",
+    "attributionVerified": false
+  }
+}

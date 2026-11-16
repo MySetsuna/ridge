@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "id": "4a3c518b-2ebf-4f6a-af5a-a98d86b7891e",
+  "at": "2026-11-16T14:04:46.074Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-129",
+  "buildId": "BUILD-275191d6c0a1",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-275191d6c0a1",
+    "changeId": "CHG-129",
+    "specHash": "8214e986cb02f8ba645dded922e3847a5296b478bfd1b2374333176fe9744a3a",
+    "workspaceHash": "9d028f6741b3e823adf71d6c92dc962d3346c440ce154422fbe886092d128d36",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "PASS",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-DESKTOP-TERMINAL-NAVIGATION-FOCUS",
+        "checkId": "terminal-navigation-focus",
+        "command": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "packages/remote/src/shared/terminal/terminalFocus.test.ts"
+        ],
+        "description": "导航完成恢复原选中终端的输入目标，保护用户随后选择的编辑器与其他终端",
+        "status": "PASS",
+        "exitCode": 0
+      }
+    ],
+    "valid": true,
+    "verifiedAt": "2026-11-16T14:04:46.070Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "packages/remote/src/shared/terminal/terminalFocus.test.ts",
+        "before": "6c2c813d5b2e9dd42b037216c9e024ae8240caaf08819da55add48e78a5b3126",
+        "after": "5e597440f64bcb64618f7c1e9a137cba3571b5a6cf7d72dbc6daf52f40936bbf"
+      },
+      {
+        "path": "packages/remote/src/shared/terminal/terminalFocus.ts",
+        "before": "4474f89d45c9ea062762b4f36a6b4845835e2bc257043a3d09cde474d75bfced",
+        "after": "78727a223b503b203801348050ca1d29379d7711d1d3ef48b1a92b9d3fde7061"
+      },
+      {
+        "path": "scripts/cdp-terminal-focus.mjs",
+        "before": null,
+        "after": "71656a078192be5302d22ff9f712954bcb751943923e4d1a90a92d8e48dcc8b4"
+      },
+      {
+        "path": "src/routes/+page.svelte",
+        "before": "16853a467abac34d455512280f22cb71181191bcecd52e4ffd6fc6abcad03ca4",
+        "after": "0ebca87c32985c5f6708d5ec2438fef8fd1b37455082750bae1609da41ab5691"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/4a3c518b-2ebf-4f6a-af5a-a98d86b7891e.log"
+  }
+}

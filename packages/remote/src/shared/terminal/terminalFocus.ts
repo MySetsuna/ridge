@@ -75,6 +75,16 @@ export function focusTerminalPane(paneId: string): boolean {
 	return focusPaneElement(pane);
 }
 
+/** Restore after layout navigation, unless the user chose another input target. */
+export function captureTerminalFocus(): (paneId: string) => boolean {
+	if (typeof document === 'undefined') return () => false;
+	const original = document.activeElement;
+	return (paneId) => {
+		if (document.activeElement !== original && document.activeElement !== document.body) return false;
+		return focusTerminalPane(paneId);
+	};
+}
+
 
 function focusPaneElement(pane: HTMLElement | null): boolean {
 	if (!pane) return false;
