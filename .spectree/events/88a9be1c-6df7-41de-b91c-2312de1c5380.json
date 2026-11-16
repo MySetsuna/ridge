@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "id": "88a9be1c-6df7-41de-b91c-2312de1c5380",
+  "at": "2026-11-16T16:17:46.063Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-132",
+  "buildId": "BUILD-986e547ad732",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-986e547ad732",
+    "changeId": "CHG-132",
+    "specHash": "320550bbcd0a0f3bc45895f9dc2cddd44f5c8b4d8161d079d6fa40e4e63c3a22",
+    "workspaceHash": "82e72f93ddb53e16eee158e656ff650417c4ea4821bfb53beafe4889f9cc8a13",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "NOT_DECLARED",
+    "acceptanceResults": [],
+    "valid": true,
+    "verifiedAt": "2026-11-16T16:17:46.060Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": ".github/workflows/release.yml",
+        "before": "6adfc32b20787bd7c7d94801d50ff9c7ae9ee5e40092613aaf2860fb77a61943",
+        "after": "d44cdcd754622d9720d50aca5331eeebd717b54b9243f389c5eb3ccdcbf7815d"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/88a9be1c-6df7-41de-b91c-2312de1c5380.log"
+  }
+}

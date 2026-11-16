@@ -935,5 +935,13 @@
       "buildId": "BUILD-dcb90c05e518",
       "specHash": "a0b50558bb1e1123e1ec205e398896a3a4031d45df25965eff635f8b45e96d53"
     }
+  },
+  {
+    "changeId": "CHG-132",
+    "specHash": "320550bbcd0a0f3bc45895f9dc2cddd44f5c8b4d8161d079d6fa40e4e63c3a22",
+    "approvedAt": "2026-11-16T16:09:38.237Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "chat:01a154c6-d291-7481-a5cb-27db8f70abdc:authorized-fix-release-and-change-metadata-exception"
   }
 ]

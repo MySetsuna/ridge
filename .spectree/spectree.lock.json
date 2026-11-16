@@ -1,53 +1,23 @@
 {
   "version": 1,
-  "changeId": "CHG-130",
-  "specHash": "e24b82023bcf2a5bdae61f4e4c363dfd2e8f2f7277015f7eca4e148cf74054d3",
+  "changeId": "CHG-132",
+  "specHash": "320550bbcd0a0f3bc45895f9dc2cddd44f5c8b4d8161d079d6fa40e4e63c3a22",
   "units": [
     {
-      "id": "L4-CLOUD-RELEASE-0198",
+      "id": "L4-DESKTOP-RELEASE-TOOLCHAIN",
       "level": "L4",
-      "nodeHash": "f13f54fb6528dee30e3512174ee00fbf61fdbe1b03c153c86231947d9a9ca9f3",
+      "nodeHash": "45ed020c1c768ccdd48abe39005e1abfdf922b200c4df34662445d42252a74c4",
       "codeTargets": [
-        "package.json",
-        "Cargo.lock",
-        "src-tauri/Cargo.toml",
-        "src-tauri/tauri.conf.json"
+        ".github/workflows/release.yml"
       ],
       "testTargets": [
-        "scripts/check-release-version.mjs",
-        "scripts/check-release-version.test.mjs"
+        ".github/workflows/release.yml"
       ],
-      "status": "LOCKED",
-      "acceptanceChecks": [
-        {
-          "id": "release-version",
-          "command": [
-            "node",
-            "scripts/check-release-version.mjs"
-          ],
-          "description": "四处产品版本一致为 0.1.101，独立 crate 版本保持兼容"
-        },
-        {
-          "id": "release-version-regression",
-          "command": [
-            "pnpm",
-            "exec",
-            "vitest",
-            "run",
-            "scripts/check-release-version.test.mjs"
-          ],
-          "description": "版本及 tag 契约拒绝缺失或不一致"
-        }
-      ]
+      "status": "DRAFT"
     }
   ],
   "allowedPaths": [
-    "Cargo.lock",
-    "package.json",
-    "scripts/check-release-version.mjs",
-    "scripts/check-release-version.test.mjs",
-    "src-tauri/Cargo.toml",
-    "src-tauri/tauri.conf.json"
+    ".github/workflows/release.yml"
   ],
   "testCommand": [
     "npm",
@@ -206,6 +176,7 @@
     "changes/CHG-128.md": "4840b269abd108cca1270063e5fb46261910a41604e1894ee605fea80a3a3901",
     "changes/CHG-129.md": "697203c4fe0d9d9430eb0ef92884ba907225204cf7097edc4826b927b9badfff",
     "changes/CHG-130.md": "e1db17b2eddba9845e3cc912988c9a3df1021295ae74217aa54b13ad722996e0",
+    "changes/CHG-132.md": "8c10537ef28e7992ae48e17564204ea6cedc3506d4fe8ef247cf407983007d99",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -1172,6 +1143,7 @@
     "specs/l4-commune-organization-members.md": "ce0dcd973142bcd24a8d3305126a4df1ecbab4b37842ab07419c456995c53c2b",
     "specs/l4-commune-remote-delivery.md": "43ae0e9067cebb2a70ba1f46fc92104e0d625ae80dbce045e40239cb56c08230",
     "specs/l4-commune-shared-daemon-binding.md": "044682cf0855d009e86fd919dae65c7684b2dd6c5c0134d98208f8757dac7676",
+    "specs/l4-desktop-release-toolchain.md": "9ad97f9155557bb197b6bd41e553f285fb67aad48630fa6819597e257c44130d",
     "specs/l4-desktop-terminal-navigation-focus.md": "ee51dd37afd75580ace3dc0e0f2eeeba6d27bcd478c92b9f97e02c4461655dc4",
     "specs/l4-monaco-trusted-styles.md": "61dc83ef5ea96a7ffb2ee4e7ee02be802f56ce9babc2bdd1460aabda35c43dfe",
     "specs/l4-perf-latency-bench-entry.md": "86935a5eb9927f52620529e323278781fcf871545b9fc9cec4232c01418d798c",
@@ -2656,6 +2628,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-76aa7c82a1bf",
-  "manifestHash": "76aa7c82a1bf5d19456320e27a8113ffa300452338240e867ddb16ed72c8bf12"
+  "buildId": "BUILD-986e547ad732",
+  "manifestHash": "986e547ad7328c32490d08cc394b4d8c6a5916e904818879b5a6d374e3277015"
 }

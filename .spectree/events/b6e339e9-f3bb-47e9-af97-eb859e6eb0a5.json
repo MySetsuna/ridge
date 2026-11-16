@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "b6e339e9-f3bb-47e9-af97-eb859e6eb0a5",
+  "at": "2026-11-16T16:09:38.240Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-132",
+  "data": {
+    "changeId": "CHG-132",
+    "specHash": "320550bbcd0a0f3bc45895f9dc2cddd44f5c8b4d8161d079d6fa40e4e63c3a22",
+    "approvedAt": "2026-11-16T16:09:38.237Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "chat:01a154c6-d291-7481-a5cb-27db8f70abdc:authorized-fix-release-and-change-metadata-exception",
+    "attributionVerified": false
+  }
+}
