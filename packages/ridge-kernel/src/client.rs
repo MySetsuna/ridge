@@ -1328,8 +1328,13 @@ pub fn request_json(
     let hostport = format!("127.0.0.1:{}", endpoint.port);
     let mut stream = TcpStream::connect(("127.0.0.1", endpoint.port))
         .map_err(|error| format!("connect kernel: {error}"))?;
+    let read_timeout = match body.filter(|_| path == "/v1/domain/commands").and_then(|request| request["method"].as_str()) {
+        Some("request_gateway_approval" | "submit_gateway_input") => 135_000,
+        Some(method) if method == "load_terminal_font_faces" || method.starts_with("lsp_") => 35_000,
+        _ => KERNEL_REQUEST_TIMEOUT_MS,
+    };
     stream
-        .set_read_timeout(Some(Duration::from_millis(if path=="/v1/domain/commands"&&body.is_some_and(|request|matches!(request["method"].as_str(),Some("request_gateway_approval"|"submit_gateway_input"))){135_000}else if path=="/v1/domain/commands"&&body.is_some_and(|request|request["method"].as_str().is_some_and(|method|method.starts_with("lsp_"))){35_000}else{KERNEL_REQUEST_TIMEOUT_MS})))
+        .set_read_timeout(Some(Duration::from_millis(read_timeout)))
         .map_err(|e| e.to_string())?;
     stream
         .set_write_timeout(Some(Duration::from_millis(KERNEL_REQUEST_TIMEOUT_MS)))
@@ -1439,6 +1444,36 @@ fn read_http_response_bounded(stream: &mut TcpStream, maximum: usize) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn font_manifest_can_finish_after_the_ordinary_command_read_deadline() {
+        for (method, should_finish) in [("get_current_project", false), ("load_terminal_font_faces", true)] {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut request = std::io::BufReader::new(socket.try_clone().unwrap());
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    std::io::BufRead::read_line(&mut request, &mut line).unwrap();
+                    if line == "\r\n" { break; }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+                let mut body = vec![0; length];
+                request.read_exact(&mut body).unwrap();
+                assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["method"], method);
+                std::thread::sleep(Duration::from_millis(KERNEL_REQUEST_TIMEOUT_MS + 1_000));
+                let reply = r#"{"ok":true,"value":[]}"#;
+                let _ = write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len());
+            });
+            let endpoint = KernelEndpoint { pid:std::process::id(), port, token:"owned-font-deadline".into(), started_at_unix:1 };
+            let reply = request_json(&endpoint, "POST", "/v1/domain/commands", Some(&json!({"method":method,"args":{}})));
+            assert_eq!(reply.is_ok(), should_finish, "{method}: {reply:?}");
+            server.join().unwrap();
+        }
+    }
     #[test]
     fn output_poll_clamps_requested_batch_to_the_service_admission_limit(){
         let listener=std::net::TcpListener::bind(("127.0.0.1",0)).unwrap();let port=listener.local_addr().unwrap().port();

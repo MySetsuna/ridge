@@ -935,5 +935,13 @@
       "buildId": "BUILD-dcb90c05e518",
       "specHash": "a0b50558bb1e1123e1ec205e398896a3a4031d45df25965eff635f8b45e96d53"
     }
+  },
+  {
+    "changeId": "CHG-133",
+    "specHash": "4de5be410e1db005c3539a890ea2557929b39eba98382524ab3446294059d98d",
+    "approvedAt": "2026-11-16T16:28:11.554Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "chat:01a154c6-d291-7481-a5cb-27db8f70abdc:authorized-root-fixes-real-e2e-and-change-metadata-exception"
   }
 ]

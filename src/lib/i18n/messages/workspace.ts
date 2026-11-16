@@ -27,6 +27,7 @@ export const zh: Record<string, string> = {
   // RidgePane
   terminalAriaLabel: '终端',
   terminalInputAriaLabel: '终端输入',
+  rendererRetry: '重试终端渲染',
   scrollToBottom: '滚动到最新输出 (End)',
   refreshForRemote: '按本端尺寸刷新（远程控制开启时可用）',
   refreshForRemoteLabel: '按本端尺寸刷新',
@@ -105,6 +106,7 @@ export const en: Record<string, string> = {
   // RidgePane
   terminalAriaLabel: 'Terminal',
   terminalInputAriaLabel: 'Terminal input',
+  rendererRetry: 'Retry terminal rendering',
   scrollToBottom: 'Scroll to latest output (End)',
   refreshForRemote: 'Refresh at this desktop size (available when remote control is on)',
   refreshForRemoteLabel: 'Refresh at this desktop size',

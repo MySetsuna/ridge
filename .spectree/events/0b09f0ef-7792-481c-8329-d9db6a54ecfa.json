@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "id": "0b09f0ef-7792-481c-8329-d9db6a54ecfa",
+  "at": "2026-11-16T16:28:10.421Z",
+  "type": "applied",
+  "source": "local_operation",
+  "changeId": "CHG-133",
+  "data": {
+    "added": [
+      "L4-COMMUNE-GLOBAL-HISTORY-EMPTY",
+      "L4-REMOTE-GIT-READ-ROOT-BOUNDARY",
+      "L4-TERMINAL-INITIALIZATION-RECOVERY"
+    ],
+    "changed": [],
+    "retiring": [],
+    "patch": {
+      "changeId": "CHG-133",
+      "nodes": [
+        {
+          "id": "L4-TERMINAL-INITIALIZATION-RECOVERY",
+          "level": "L4",
+          "title": "终端初始化失败可恢复且不重建运行进程",
+          "parent": "L3-TERMINAL-VISUAL-INPUT-REPAIR",
+          "codeTargets": [
+            "src/lib/components/RidgePane.svelte",
+            "packages/ridge-kernel/src/client.rs",
+            "src/lib/i18n/messages/workspace.ts"
+          ],
+          "testTargets": [
+            "scripts/cdp-renderer-retry.mjs",
+            "packages/ridge-kernel/src/client.rs"
+          ],
+          "body": "只读 load_terminal_font_faces 在本地 Kernel 命令通道使用 35 秒有限读时限，普通命令仍使用 5 秒。RidgePane 对渲染初始化做一次自动重试，持续失败显示可操作重试；重试沿原附着流程，保持工作区、pane 和 PTY 身份，不重启核心或终端。重复触发互斥，卸载取消后续附着。真实 native dev:cdp 注入字体请求失败后恢复，核对真实输入回显、同一 PTY 与无重复绑定；并运行真实 socket 超过默认 5 秒的字体回应回归。"
+        },
+        {
+          "id": "L4-REMOTE-GIT-READ-ROOT-BOUNDARY",
+          "level": "L4",
+          "title": "Git 读取与发现遵守实际仓库根授权",
+          "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+          "codeTargets": [
+            "packages/ridge-core/src/dispatch.rs"
+          ],
+          "testTargets": [
+            "packages/ridge-core/src/dispatch.rs",
+            "packages/ridge-kernel/tests/git_commands_runtime.rs"
+          ],
+          "body": "有界 RootScope 下，Git 读、状态和仓库发现必须核对实际向上找到的仓库根；参数虽在 roots 内，但实际仓库位于 roots 外，返回 outside_sandbox，不能借子目录读父仓库。共同 admission 约束 Desktop scoped、LAN 与 Cloud 等调用方；无界本机行为及授权根内真实仓库的子目录访问保持不变。回归覆盖真实父仓库拒绝、根内仓库允许和非 Git 空目录，不执行越界写入。"
+        },
+        {
+          "id": "L4-COMMUNE-GLOBAL-HISTORY-EMPTY",
+          "level": "L4",
+          "title": "Commune 历史空态符合全局聚合",
+          "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+          "codeTargets": [
+            "src/lib/i18n/messages/commune.ts"
+          ],
+          "testTargets": [
+            "src/lib/i18n/messages.test.ts"
+          ],
+          "body": "成员、编组与历史仍聚合所有工作区；历史空态不得误称只属当前工作区。中英文一致，保留未接入 Agent 协议不会自动同步的说明；本轮不改查询接口与持久化。"
+        }
+      ]
+    }
+  }
+}

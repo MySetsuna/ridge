@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "7eaf9f57-879f-4288-97bb-a30453168029",
+  "at": "2026-11-16T16:28:11.566Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-133",
+  "data": {
+    "changeId": "CHG-133",
+    "specHash": "4de5be410e1db005c3539a890ea2557929b39eba98382524ab3446294059d98d",
+    "approvedAt": "2026-11-16T16:28:11.554Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "chat:01a154c6-d291-7481-a5cb-27db8f70abdc:authorized-root-fixes-real-e2e-and-change-metadata-exception",
+    "attributionVerified": false
+  }
+}

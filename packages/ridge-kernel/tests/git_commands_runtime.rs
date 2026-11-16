@@ -123,6 +123,17 @@ async fn source_control_commands_share_execution_and_preserve_admission() {
     assert_eq!(command("git_stage", json!({"repoRoot":repo,"paths":["file.txt"]}), false, json!([repo]))["ok"], true);
     assert_eq!(command("git_delete_branch", json!({"repoRoot":repo,"branch":"pick"}), false, json!([repo]))["error"]["data"]["kind"], "capability_denied");
     let sub = repo.join("sub"); fs::create_dir(&sub).unwrap();
+    for native in [false, true] {
+        for (method, args) in [
+            ("get_scm_status", json!({"repoRoot":sub})),
+            ("git_list_branches", json!({"repoRoot":sub})),
+            ("get_git_info_with_cwd", json!({"cwd":sub})),
+            ("find_git_repo_root", json!({"path":sub})),
+        ] {
+            assert_eq!(command(method,args,native,json!([sub]))["error"]["data"]["kind"], "outside_sandbox", "{method}, native={native}");
+        }
+        assert_eq!(command("get_scm_status",json!({"repoRoot":sub}),native,json!([repo]))["value"]["is_git_repo"],true);
+    }
     let head = git(&repo, &["rev-parse", "HEAD"]);
     assert_eq!(command("git_checkout", json!({"repoRoot":sub,"branch":"pick"}), true, json!([sub]))["error"]["data"]["kind"], "outside_sandbox");
     assert_eq!(git(&repo, &["rev-parse", "HEAD"]), head);

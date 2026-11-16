@@ -70,6 +70,8 @@ let alive = true;
 // after a split until the next activePaneId change.
 let attached = $state(false);
 let webgpuInitError = $state<string | null>(null);
+let rendererInitializing = $state(false);
+let retryRendererInitialization: (() => void) | null = null;
 let terminalStreamError = $state(false);
 let terminalStreamRetrying = $state(false);
 let terminalStartupRetrying = $state(false);
@@ -1264,7 +1266,7 @@ onMount(() => {
 		else un();
 	});
 
-	void (async () => {
+	const initializeRenderer = async () => {
 		// Desktop restart can leave the kernel process alive.  Wait for the
 		// parent startup sequence to restore all workspace trees and rebind
 		// stable pane-owned PTYs before this pane is allowed to create a shell;
@@ -1273,7 +1275,9 @@ onMount(() => {
 		await waitForDesktopKernelReattach();
 		if (!alive) return;
 		try {
-			await manager.ready();
+			// ready() clears its rejected promise. Retry one read-only startup
+			// failure before exposing an explicit recovery action.
+			await manager.ready().catch(() => alive ? manager.ready() : undefined);
 		} catch (error) {
 			if (!alive) return;
 			webgpuInitError = formatWebgpuInitError(error);
@@ -1392,7 +1396,17 @@ onMount(() => {
 		manager.onResize(paneId, onPtyResize);
 
 		await retryTerminalConnection();
-	})();
+	};
+	retryRendererInitialization = () => {
+		if (!alive || attached || rendererInitializing) return;
+		rendererInitializing = true;
+		webgpuInitError = null;
+		void initializeRenderer().catch((error) => {
+			if (alive && !attached) webgpuInitError = formatWebgpuInitError(error);
+			console.error('[ridge-pane] initialization failed', error);
+		}).finally(() => { rendererInitializing = false; });
+	};
+	retryRendererInitialization();
 });
 
 // Local desktop panes use the native Rust delta path; remote bindings own
@@ -2142,7 +2156,11 @@ function captureBackspace(node: HTMLElement) {
   <button class="rg-history-retry" style="position:absolute;top:8px;right:8px;z-index:20" onpointerdown={(event) => event.stopPropagation()} onclick={() => void fetchOlderScrollback()}>Older output unavailable · Retry</button>
  {/if}
 	{#if webgpuInitError}
-		<div class="rg-webgpu-error" role="alert" aria-live="assertive">{webgpuInitError}</div>
+		<div class="rg-webgpu-error" role="alert" aria-live="assertive">
+			<span>{webgpuInitError}</span>
+			<button class="mt-3 rounded border border-current px-3 py-1" disabled={rendererInitializing}
+				onpointerdown={(event) => event.stopPropagation()} onclick={() => retryRendererInitialization?.()}>{$t('workspace.rendererRetry')}</button>
+		</div>
 	{/if}
 	<!-- IME helper textarea. Gated on Settings.terminalImeMode === 'ime'
 	     so users who only type ASCII can flip to 'direct' mode and the

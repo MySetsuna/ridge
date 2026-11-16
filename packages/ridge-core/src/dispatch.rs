@@ -106,7 +106,20 @@ fn sandbox_guard(method: &str, args: &Value, scope: &RootScope) -> CoreResult<()
         } else {
             Err(CoreError::OutsideSandbox)
         }
-    })
+    })?;
+    // Git may walk above an admitted directory. Scope the repository it will
+    // actually read, just as filesystem access scopes its resolved target.
+    let repository_path = match method {
+        "find_git_repo_root" => args["path"].as_str(),
+        "get_git_info_with_cwd" => args["cwd"].as_str(),
+        "get_scm_status" => args["repoRoot"].as_str(),
+        _ if method.starts_with("git_") => args["repoRoot"].as_str(),
+        _ => None,
+    };
+    if let Some(root) = repository_path.and_then(|path| git::find_git_repo_root(path.to_owned())) {
+        if !scope.is_allowed(&root) { return Err(CoreError::OutsideSandbox); }
+    }
+    Ok(())
 }
 
 /// Extract an optional string arg (camelCase keys, as the frontend sends).
@@ -897,6 +910,34 @@ mod tests {
         .unwrap();
         assert_eq!(out, Value::Null);
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn scoped_git_reads_admit_the_actual_repository_not_only_its_subdirectory() {
+        let root = tmp_nonrepo("git_read_roots");
+        let repo = root.join("repo");
+        let sub = repo.join("sub");
+        let plain = root.join("plain");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(std::process::Command::new("git").args(["init", "-q"])
+            .current_dir(&repo).status().unwrap().success());
+        let (restricted, _) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::allow_all().with_roots([&sub]));
+        for (method, args) in [
+            ("get_scm_status", serde_json::json!({"repoRoot":sub})),
+            ("git_list_branches", serde_json::json!({"repoRoot":sub})),
+            ("get_git_info_with_cwd", serde_json::json!({"cwd":sub})),
+            ("find_git_repo_root", serde_json::json!({"path":sub})),
+        ] {
+            assert_eq!(dispatch(method, args, &restricted).unwrap_err().kind_tag(), "outside_sandbox", "{method}");
+        }
+        let (allowed, _) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default().with_roots([&repo]));
+        assert_eq!(dispatch("get_scm_status", serde_json::json!({"repoRoot":sub}), &allowed).unwrap()["is_git_repo"], true);
+        assert!(dispatch("find_git_repo_root", serde_json::json!({"path":sub}), &allowed).unwrap().is_string());
+        let (empty, _) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default().with_roots([&plain]));
+        assert!(dispatch("find_git_repo_root", serde_json::json!({"path":plain}), &empty).unwrap().is_null());
+        assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
