@@ -432,6 +432,7 @@ export interface CommuneGroupTask {
   objectiveVerified: boolean;
   children: {member: {workspaceId?:string; agentId: string; sessionId: string; paneId: string; generation: number; lease: string};
     objective: string; objectiveTruncated?: boolean; state: string; taskId?: string; deliveryId?: string; submissionError?: string; deliveryError?: string;
+    execution?: { reason?: string | null } | null;
     artifacts: CommuneProtocolOutput[]; artifactsHasMore?: boolean; artifactCoverage: string}[];
   cancellationErrors?: {memberId:string;error:string}[];
   objectiveDetail?: {memberId:string;text:string;offset:number;length:number;next?:string;previous?:string};
@@ -502,6 +503,8 @@ export interface OrchestrationHealth {
 }
 
 export interface RemoteLink {
+  /** A workspace grant excludes Host-wide controls. */
+  readonly workspaceShared?: boolean;
   /** Stable host scope for lightweight navigation preferences; never contains auth. */
   cacheScope?(): string;
   state(): ConnectionState;
@@ -1696,7 +1699,6 @@ export class RemoteConnection implements RemoteLink {
           generation: target.generation,
           lease: target.lease,
           message,
-          from: 'remote-ui',
           idempotency_key: idempotencyKey,
         },
         _reqId: ++this._reqCounter,

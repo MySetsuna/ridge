@@ -30,7 +30,7 @@ pub struct ShellInfo {
 /// Look up a command in `PATH`; also accepts an absolute path directly. No
 /// extra crate (avoids a `which` dependency) — uses `PATH` + manual iteration,
 /// honouring `PATHEXT` on Windows.
-fn lookup_program(name: &str) -> Option<PathBuf> {
+pub fn lookup_program(name: &str) -> Option<PathBuf> {
     let path = PathBuf::from(name);
     if path.is_absolute() && path.is_file() {
         return Some(path);

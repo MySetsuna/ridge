@@ -13,6 +13,8 @@ const VERSION: &str = match option_env!("RIDGE_KERNEL_BUNDLE_VERSION") {
     about = "Ridge kernel control plane + domain"
 )]
 struct Args {
+    #[arg(long, hide = true)]
+    agent_console: Option<String>,
     /// Shared launcher flag, also understood by embedded CLI/desktop hosts.
     #[arg(long = "ridge-kernel-host", hide = true)]
     _kernel_host: bool,
@@ -38,6 +40,9 @@ async fn main() -> Result<()> {
         )
         .init();
     let args = Args::parse();
+    if let Some(config) = args.agent_console {
+        return ridge_kernel::managed_console::run(serde_json::from_str(&config)?).await;
+    }
     if args.installer_check { return ridge_kernel::installer::check(); }
     if let Some(parent) = args.installer_parent {
         return ridge_kernel::installer::hold(parent,

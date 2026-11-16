@@ -3,11 +3,14 @@ use ridge_acp::{existing::ExistingConversation, transport::CallCompletion, AcpEr
 use serde_json::Value;
 use tokio::sync::oneshot;
 
-pub(crate) enum Conversation {
+pub enum Conversation {
     Acp(ExistingConversation),
     AppServer(crate::app_server::Conversation),
 }
 impl Conversation {
+    pub fn replay_info(&self)->Option<&Value> {match self {Self::Acp(s)=>s.replay_info(),Self::AppServer(_)=>None}}
+    pub fn prompt(&self,text:String)->Result<oneshot::Receiver<Result<Value,AcpErrorWrap>>,AcpErrorWrap> {self.prompt_observed(text,None)}
+    pub fn session_id(&self)->&str { match self { Self::Acp(s)=>s.session_id(),Self::AppServer(s)=>s.session_id() } }
     pub fn is_connected(&self) -> bool { match self { Self::Acp(s)=>s.is_connected(),Self::AppServer(s)=>s.is_connected() } }
     pub fn is_busy(&self) -> bool { match self { Self::Acp(s)=>s.is_busy(),Self::AppServer(s)=>s.is_busy() } }
     pub fn agent_info(&self) -> Option<&Value> { match self { Self::Acp(s)=>s.agent_info(),Self::AppServer(s)=>Some(s.agent_info()) } }

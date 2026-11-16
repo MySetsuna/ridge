@@ -12,7 +12,25 @@ export const communeUiText = {
     session: '会话', binding: '绑定', task: '任务', protocolArtifact: '协议产物', unverified: '未核验', rawProtocol: '查看原始协议记录',
     recentArtifacts: '仅列最近 50 条协议产物；原事件保留于历史。', queryCancel: '重新查询并请求取消', cancelGroupTask: '请求取消此组任务',
     cancellationPending: '已请求取消；以各成员协议终态为准。', individualConfirm: '各成员逐项确认；回复结束不作目标完成。',
-    recentDispatches: '当前工作区最近 10 次组派发；旧记录仍留任务账本。',
+    recentDispatches: '本组近期派发。更早记录仍保留在任务账本中。',
+    group: '组', delivery: '投递', event: '事件',
+    artifactCoverage: '产物来自本轮观察到的协议事件，目标仍待核验。没有产物时，覆盖范围未知。',
+    artifactObserved: '由本轮 ACP 事件报告，结果待核验',
+    artifactDiff: '文件差异', artifactEmbedded: '嵌入资源', artifactLink: '资源链接', artifactTool: '工具输出',
+    artifactCompleted: '已完成', artifactPending: '待执行', artifactRunning: '执行中', artifactFailed: '失败',
+    historyBridgeTruncated: '协作终端观测记录。早期事件已超出回放窗口。',
+    historyBridge: '协作终端启动后的观测记录',
+    historyReplay: '包含 Agent 回放与接入后记录。接入前完整度待核验。',
+    historyFromAttach: '自接入起记录。接入前覆盖范围未知。',
+    sourceLedger: 'Ridge 账本', sourceAcpLive: 'ACP 实时事件', sourceAcpReplay: 'ACP 回放',
+    sourceAppLive: 'App Server 实时事件', sourceAppReplay: 'App Server 回放',
+    historyExecution: '执行记录', historyApprovalRequested: '审批请求', historyApprovalDecided: '审批结果',
+    historyApprovalCancelled: '审批撤回', historyAgentReply: 'Agent 回复', historyUserMessage: '用户消息',
+    approvalToolRequest: 'Agent 请求工具权限', approvalGatewayRequest: 'Ridge 命令输入审批',
+    approvalChanged: '审批信息已变更。请刷新后核对待审批项。',
+    approvalCheckStatus: '审批结果尚未确认。请先核对原任务状态。',
+    approvalStillPending: '此请求仍待审批。请核对后重试。',
+    approvalNoLongerPending: '此请求已不在待审批列表中。请在任务历史中核对结果。',
     operationFailed: '操作失败：{error}',
     approvalInvalid: '审批已失效或已由其他客户端处理；请核对原任务状态，勿重复提交。', approvalUnknown: '审批结果未确认：{error}。请核对原任务状态，勿重复提交任务。',
     approvalExpired: '审批已失效或已由其他客户端处理。', approvalUnknownBrief: '审批结果未确认：{error}；请核对原任务状态。', cancelUnknown: '取消尚未确认：{error}',
@@ -33,7 +51,25 @@ export const communeUiText = {
     session: 'Session', binding: 'Binding', task: 'Task', protocolArtifact: 'Protocol artifact', unverified: 'Unverified', rawProtocol: 'View raw protocol event',
     recentArtifacts: 'Showing the latest 50 protocol artifacts; original events remain in history.', queryCancel: 'Check again and request cancellation', cancelGroupTask: 'Request cancellation for this group task',
     cancellationPending: 'Cancellation requested; each member protocol determines the final state.', individualConfirm: 'Each member is confirmed separately; a reply ending does not mean the objective is complete.',
-    recentDispatches: 'Latest 10 group dispatches in this workspace; older records remain in the task ledger.',
+    recentDispatches: 'Recent dispatches for this group. Older records remain in the task ledger.',
+    group: 'Group', delivery: 'Delivery', event: 'Event',
+    artifactCoverage: 'Artifacts come from protocol events observed during this turn. The objective still needs review. Without artifacts, coverage is unknown.',
+    artifactObserved: 'Reported by an ACP event during this turn. Result unverified.',
+    artifactDiff: 'File diff', artifactEmbedded: 'Embedded resource', artifactLink: 'Resource link', artifactTool: 'Tool output',
+    artifactCompleted: 'Completed', artifactPending: 'Pending', artifactRunning: 'Running', artifactFailed: 'Failed',
+    historyBridgeTruncated: 'Events observed in the collaboration terminal. Earlier events are outside the replay window.',
+    historyBridge: 'Events observed since the collaboration terminal started',
+    historyReplay: 'Includes Agent replay and events since connection. Earlier coverage is unverified.',
+    historyFromAttach: 'Events since connection. Earlier coverage is unknown.',
+    sourceLedger: 'Ridge ledger', sourceAcpLive: 'Live ACP', sourceAcpReplay: 'ACP replay',
+    sourceAppLive: 'Live App Server', sourceAppReplay: 'App Server replay',
+    historyExecution: 'Execution', historyApprovalRequested: 'Approval requested', historyApprovalDecided: 'Approval decision',
+    historyApprovalCancelled: 'Approval withdrawn', historyAgentReply: 'Agent reply', historyUserMessage: 'User message',
+    approvalToolRequest: 'Agent requests tool permission', approvalGatewayRequest: 'Ridge command input approval',
+    approvalChanged: 'Approval details changed. Refresh and review the pending request.',
+    approvalCheckStatus: 'Approval result is unconfirmed. Check the original task status first.',
+    approvalStillPending: 'This request is still pending. Review it before retrying.',
+    approvalNoLongerPending: 'This request is no longer pending. Check the task history for the outcome.',
     operationFailed: 'Operation failed: {error}',
     approvalInvalid: 'Approval expired or another client handled it. Check the original task; do not submit it again.', approvalUnknown: 'Approval result unconfirmed: {error}. Check the original task; do not resubmit it.',
     approvalExpired: 'Approval expired or another client handled it.', approvalUnknownBrief: 'Approval result unconfirmed: {error}. Check the original task.', cancelUnknown: 'Cancellation unconfirmed: {error}',
@@ -44,6 +80,32 @@ export const communeUiText = {
 } as const;
 
 export type CommuneUiTextKey = keyof typeof communeUiText.zh;
+const runtimeLabels = new Map<string, CommuneUiTextKey>([
+  ['协议报告的内容；仅关联观察区间，未核验目标完成。无内容时覆盖未知。', 'artifactCoverage'],
+  ['ACP event observed during owned prompt; result not verified', 'artifactObserved'],
+  ['diff', 'artifactDiff'], ['embedded_resource', 'artifactEmbedded'], ['resource_link', 'artifactLink'],
+  ['tool_output', 'artifactTool'], ['completed', 'artifactCompleted'], ['pending', 'artifactPending'],
+  ['in_progress', 'artifactRunning'], ['failed', 'artifactFailed'],
+  ['协作终端观测记录；早期记录已超出回放窗口', 'historyBridgeTruncated'],
+  ['协作终端启动后观测记录', 'historyBridge'],
+  ['Agent 回放与接入后记录；接入前完整度未独立验证', 'historyReplay'],
+  ['自接入起记录；接入前覆盖未知', 'historyFromAttach'],
+  ['ridge-ledger', 'sourceLedger'], ['acp-live', 'sourceAcpLive'], ['acp-replay', 'sourceAcpReplay'],
+  ['app-server-live', 'sourceAppLive'], ['app-server-replay', 'sourceAppReplay'],
+  ['execution', 'historyExecution'], ['permission_requested', 'historyApprovalRequested'],
+  ['permission_decided', 'historyApprovalDecided'], ['permission_cancelled', 'historyApprovalCancelled'],
+  ['agent_message_chunk', 'historyAgentReply'], ['agentMessage', 'historyAgentReply'],
+  ['user_message_chunk', 'historyUserMessage'], ['userMessage', 'historyUserMessage'],
+  ['Agent 请求工具权限', 'approvalToolRequest'], ['Ridge command input approval', 'approvalGatewayRequest'],
+]);
+
+/** Localize only known Runtime-generated display labels. Older hosts send the prose directly. */
+export function communeRuntimeLabel(locale: string, value: string | undefined): string {
+  if (!value) return '';
+  const key = runtimeLabels.get(value);
+  return key ? communeText(locale, key) : value;
+}
+
 export function communeText(locale: string, key: CommuneUiTextKey, vars: Record<string, string | number> = {}): string {
   const template = communeUiText[locale === 'en' ? 'en' : 'zh'][key];
   return template.replace(/\{(\w+)\}/g, (_, name: string) => String(vars[name] ?? `{${name}}`));

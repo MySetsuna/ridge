@@ -20,6 +20,7 @@ use serde_json::{json, Map, Value};
 const PROTOCOL_VERSION: &str = "v1";
 
 fn main() -> io::Result<()> {
+    if std::env::args().any(|arg| arg == "--standard-stdio") { return standard_stdio(); }
     let no_approval = std::env::args().any(|arg| arg == "--no-approval");
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -242,6 +243,64 @@ fn main() -> io::Result<()> {
             }
         }
         stdout.flush()?;
+    }
+}
+
+fn standard_stdio() -> io::Result<()> {
+    let arguments=std::env::args().collect::<Vec<_>>();
+    if let Some(index)=arguments.iter().position(|argument|argument=="--pid-file") {
+        std::fs::write(arguments.get(index+1).expect("fixture PID file path"),std::process::id().to_string())?;
+    }
+    let mut input=io::stdin().lock();
+    let mut output=io::stdout().lock();
+    let mut session:Option<String>=None;
+    let mut pending=Value::Null;
+    loop {
+        let mut line=String::new();
+        if input.read_line(&mut line)?==0 { return Ok(()); }
+        let request:Value=serde_json::from_str(&line)?;
+        if let Some(path)=std::env::var_os("RIDGE_ACP_STANDARD_LOG") {
+            let mut file=std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+            writeln!(file,"{request}")?;
+        }
+        let result=match request["method"].as_str().unwrap_or("") {
+            "initialize"=>json!({"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"owned-standard-agent","version":"fixture"}}),
+            "session/new"=>{
+                if arguments.iter().any(|argument|argument=="--stall-create") {continue;}
+                assert!(session.is_none(),"one explicit session creation");
+                let id=format!("standard-{}",uuid_like());session=Some(id.clone());json!({"sessionId":id})
+            },
+            "session/prompt"=>{
+                assert_eq!(request["params"]["sessionId"].as_str(),session.as_deref());
+                let text=request["params"]["prompt"][0]["text"].as_str().unwrap();
+                if text == "auth-needed" || text == "prompt-error" {
+                    let code = if text == "auth-needed" { -32000 } else { -32603 };
+                    writeln!(output, "{}", json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":code,"message":"private-provider-detail"}}))?;
+                    output.flush()?;
+                    continue;
+                }
+                if text=="wait-for-cancel" {pending=request["id"].clone();continue;}
+                if text=="permission-needed" {
+                    pending=request["id"].clone();
+                    writeln!(output,"{}",json!({"jsonrpc":"2.0","id":"permission","method":"session/request_permission","params":{"sessionId":session,"toolCall":{"toolCallId":"owned-tool"},"options":[{"optionId":"once","name":"Allow once","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]}}))?;
+                    output.flush()?;continue;
+                }
+                writeln!(output,"{}",json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":text}}}}))?;
+                json!({"stopReason":"end_turn"})
+            },
+            "session/cancel"=>{
+                if !pending.is_null() {writeln!(output,"{}",json!({"jsonrpc":"2.0","id":pending,"result":{"stopReason":"cancelled"}}))?;pending=Value::Null;output.flush()?;}
+                continue;
+            },
+            "" if request["id"]=="permission"=>{
+                assert!(request["error"].is_null());
+                writeln!(output,"{}",json!({"jsonrpc":"2.0","id":pending,"result":{"stopReason":"end_turn"}}))?;
+                pending=Value::Null;output.flush()?;continue;
+            },
+            _=>return Err(io::Error::new(io::ErrorKind::InvalidData,"unexpected standard fixture request")),
+        };
+        writeln!(output,"{}",json!({"jsonrpc":"2.0","id":request["id"],"result":result}))?;
+        output.flush()?;
     }
 }
 

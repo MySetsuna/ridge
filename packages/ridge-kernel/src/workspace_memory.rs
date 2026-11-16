@@ -16,6 +16,10 @@ pub(crate) fn dispatch(method:&str,args:&Value,native:bool)->Result<Value,String
  if method=="get_workspace_memory_directory"{return Ok(json!(directory()));}
  if method=="get_automation_pause_count" {
   let _guard=WRITES.lock().map_err(|_|"workspace memory unavailable")?;
+  if let Some(workspace)=args["workspaceId"].as_str() {
+   let id=Uuid::parse_str(workspace).map_err(|_|"invalid workspaceId")?;
+   return Ok(json!(read(id)?.as_ref().map(pause_ids).transpose()?.unwrap_or_default().len()));
+  }
   let entries=match std::fs::read_dir(directory()){Ok(entries)=>entries,Err(error)if error.kind()==std::io::ErrorKind::NotFound=>return Ok(json!(0)),Err(error)=>return Err(error.to_string())};
   let mut count=0;
   for entry in entries {let path=entry.map_err(|error|error.to_string())?.path();if path.extension().and_then(|value|value.to_str())!=Some("json"){continue;}let id=Uuid::parse_str(path.file_stem().and_then(|value|value.to_str()).ok_or("invalid memory document name")?).map_err(|_|"invalid memory document name")?;if let Some(doc)=read(id)?{count+=pause_ids(&doc)?.len();}}

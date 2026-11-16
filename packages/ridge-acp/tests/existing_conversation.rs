@@ -23,6 +23,132 @@ async fn send(writer: &mut WriteHalf<DuplexStream>, value: Value) {
 }
 
 #[tokio::test]
+async fn explicit_authentication_is_offered_and_succeeds_before_one_creation() {
+    for accepted in [true,false] {
+        let (client,peer)=tokio::io::duplex(65536);
+        let (input,output)=tokio::io::split(client);
+        let (reader,mut writer)=tokio::io::split(peer);
+        let agent=tokio::spawn(async move {
+            let mut reader=BufReader::new(reader);
+            let initialized=read(&mut reader).await;
+            send(&mut writer,json!({"jsonrpc":"2.0","id":initialized["id"],"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[{"id":"selected-login","name":"Agent login"}]}})).await;
+            let authenticate=read(&mut reader).await;
+            assert_eq!(authenticate["method"],"authenticate");
+            assert_eq!(authenticate["params"],json!({"methodId":"selected-login"}));
+            if accepted {
+                send(&mut writer,json!({"jsonrpc":"2.0","id":authenticate["id"],"result":{}})).await;
+                let creation=read(&mut reader).await;
+                assert_eq!(creation["method"],"session/new");
+                send(&mut writer,json!({"jsonrpc":"2.0","id":creation["id"],"result":{"sessionId":"authenticated-session"}})).await;
+            }else{
+                send(&mut writer,json!({"jsonrpc":"2.0","id":authenticate["id"],"error":{"code":-32000,"message":"Authentication refused"}})).await;
+                let mut trailing=String::new();
+                assert_eq!(reader.read_line(&mut trailing).await.unwrap(),0,"failed authentication must close without creation or retry");
+            }
+        });
+        let session=ExistingConversation::create_authenticated(AcpTransport::from_io(output,input),std::env::temp_dir().to_string_lossy().into(),Arc::new(|_|Ok(())),Arc::new(|_|Box::pin(async{None})),"selected-login".into()).await;
+        assert_eq!(session.is_ok(),accepted);
+        if let Ok(session)=session{assert_eq!(session.session_id(),"authenticated-session");session.disconnect();}
+        agent.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn new_session_authentication_failure_only_suggests_supported_protocol_methods() {
+    for protocol_method in [false, true] {
+        let (client, peer) = tokio::io::duplex(65536);
+        let (input, output) = tokio::io::split(client);
+        let (reader, mut writer) = tokio::io::split(peer);
+        let agent = tokio::spawn(async move {
+            let mut reader = BufReader::new(reader);
+            let initialized = read(&mut reader).await;
+            let mut methods = vec![json!({"id":"terminal-login","type":"terminal"})];
+            if protocol_method {
+                methods.push(json!({"id":"protocol-login"}));
+            }
+            send(&mut writer, json!({"jsonrpc":"2.0","id":initialized["id"],
+                "result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":methods}})).await;
+            let create = read(&mut reader).await;
+            assert_eq!(create["method"], "session/new");
+            send(&mut writer, json!({"jsonrpc":"2.0","id":create["id"],
+                "error":{"code":-32000,"message":"Authentication required"}})).await;
+            let mut trailing = String::new();
+            assert_eq!(reader.read_line(&mut trailing).await.unwrap(), 0);
+        });
+        let error = ExistingConversation::create(
+            AcpTransport::from_io(output, input),
+            std::env::temp_dir().to_string_lossy().into(),
+            Arc::new(|_| Ok(())),
+            Arc::new(|_| Box::pin(async { None })),
+        ).await.err().expect("unauthenticated session must fail").to_string();
+        assert!(error.contains("sign in using the Agent's own CLI"));
+        assert!(!error.contains("terminal-login"));
+        assert_eq!(error.contains("--auth-method from: protocol-login"), protocol_method);
+        assert_eq!(error.contains("--auth-method"), protocol_method);
+        agent.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn explicit_creation_uses_one_new_session_and_correlates_early_events_and_permissions() {
+    let (client,peer)=tokio::io::duplex(65536);
+    let (input,output)=tokio::io::split(client);
+    let (reader,mut writer)=tokio::io::split(peer);
+    let mut reader=BufReader::new(reader);
+    let agent=tokio::spawn(async move {
+        let initialized=read(&mut reader).await;
+        assert_eq!(initialized["method"],"initialize");
+        send(&mut writer,json!({"jsonrpc":"2.0","id":initialized["id"],"result":{"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"generic-stdio-agent"}}})).await;
+        let create=read(&mut reader).await;
+        assert_eq!(create["method"],"session/new");
+        for (session,text) in [("other","foreign"),("created","early")] {
+            send(&mut writer,json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":text}}}})).await;
+        }
+        send(&mut writer,json!({"jsonrpc":"2.0","id":create["id"],"result":{"sessionId":"created"}})).await;
+        let prompt=read(&mut reader).await;
+        assert_eq!(prompt["method"],"session/prompt");
+        assert_eq!(prompt["params"]["sessionId"],"created");
+        send(&mut writer,json!({"jsonrpc":"2.0","id":"permission","method":"session/request_permission","params":{"sessionId":"created","toolCall":{"toolCallId":"tool"},"options":[{"optionId":"once","name":"Allow once","kind":"allow_once"}]}})).await;
+        let permission=read(&mut reader).await;
+        assert_eq!(permission["id"],"permission");
+        assert_eq!(permission["result"]["outcome"]["optionId"],"once");
+        send(&mut writer,json!({"jsonrpc":"2.0","id":prompt["id"],"result":{"stopReason":"end_turn"}})).await;
+    });
+    let updates=Arc::new(Mutex::new(Vec::new()));
+    let observed=updates.clone();
+    let session=ExistingConversation::create(AcpTransport::from_io(output,input),std::env::temp_dir().to_string_lossy().into(),Arc::new(move|update|{observed.lock().unwrap().push(update.clone());Ok(())}),Arc::new(|params|Box::pin(async move {
+        assert_eq!(params["sessionId"],"created");Some("once".into())
+    }))).await.unwrap();
+    assert_eq!(session.session_id(),"created");
+    assert!(!session.history_replayed());
+    assert_eq!(updates.lock().unwrap().len(),1);
+    assert_eq!(updates.lock().unwrap()[0]["update"]["content"]["text"],"early");
+    let response=session.prompt("test".into()).unwrap().await.unwrap().unwrap();
+    assert_eq!(response["stopReason"],"end_turn");
+    agent.await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_creation_identity_closes_the_transport_without_another_creation() {
+    let (client,peer)=tokio::io::duplex(65536);
+    let (input,output)=tokio::io::split(client);
+    let (reader,mut writer)=tokio::io::split(peer);
+    let mut reader=BufReader::new(reader);
+    let agent=tokio::spawn(async move {
+        let initialized=read(&mut reader).await;
+        send(&mut writer,json!({"jsonrpc":"2.0","id":initialized["id"],"result":{"protocolVersion":1,"agentCapabilities":{}}})).await;
+        let create=read(&mut reader).await;
+        assert_eq!(create["method"],"session/new");
+        send(&mut writer,json!({"jsonrpc":"2.0","id":create["id"],"result":{"sessionId":""}})).await;
+        let mut unexpected=String::new();
+        assert_eq!(tokio::time::timeout(Duration::from_secs(2),reader.read_line(&mut unexpected)).await.unwrap().unwrap(),0);
+    });
+    let result=ExistingConversation::create(AcpTransport::from_io(output,input),std::env::temp_dir().to_string_lossy().into(),Arc::new(|_|Ok(())),Arc::new(|_|Box::pin(async{None}))).await;
+    assert!(result.err().unwrap().to_string().contains("session identity"));
+    agent.await.unwrap();
+}
+
+#[tokio::test]
 async fn prompt_completion_closes_observation_before_a_later_notification_in_the_same_read() {
     use std::sync::atomic::{AtomicBool,Ordering};
     let (client,peer)=tokio::io::duplex(65536);let (input,output)=tokio::io::split(client);

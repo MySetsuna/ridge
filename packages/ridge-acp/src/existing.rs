@@ -1,6 +1,6 @@
 //! ACP operations for an already-running, already-authenticated endpoint.
 //! Runtime must separately verify process/endpoint/session binding before
-//! publishing a Commune member. This driver never spawns or calls session/new.
+//! publishing a Commune member. Only explicit `create` calls session/new.
 use crate::{
     error::AcpErrorWrap,
     protocol::{AcpErrorObj, AcpResponse},
@@ -12,7 +12,7 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -37,6 +37,11 @@ struct Inner {
     agent_info: Option<Value>,
     capabilities: Value,
     history_replayed: bool,
+    replay_info: Option<Value>,
+}
+struct SessionUpdates {
+    session_id: Option<String>,
+    pending: Vec<Value>,
 }
 struct PendingLoad {
     transport: AcpTransport,
@@ -76,6 +81,70 @@ fn rpc_error(code: i64, message: &str) -> AcpErrorObj {
     }
 }
 
+async fn initialize(transport: &AcpTransport) -> Result<Value, AcpErrorWrap> {
+    let initialized = result(transport.call("initialize", json!({
+        "protocolVersion": 1,
+        "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
+        "clientInfo": {"name": "ridge", "version": env!("CARGO_PKG_VERSION")}
+    })).await?)?;
+    if initialized["protocolVersion"] != 1 || !initialized["agentCapabilities"].is_object() {
+        return Err(failure("ACP version/capability mismatch"));
+    }
+    Ok(initialized)
+}
+
+/// Inspect existing conversations without loading or creating one.
+pub async fn list_sessions(
+    transport: &AcpTransport,
+    cwd: &str,
+) -> Result<Vec<Value>, AcpErrorWrap> {
+    let initialized = initialize(transport).await?;
+    if !initialized["agentCapabilities"]["sessionCapabilities"]["list"].is_object() {
+        return Err(failure("Agent did not advertise session listing"));
+    }
+    let mut cursor = None::<String>;
+    let mut seen = std::collections::HashSet::new();
+    let mut sessions = Vec::new();
+    for _ in 0..8 {
+        let mut params = json!({"cwd": cwd});
+        if let Some(cursor) = &cursor {
+            params["cursor"] = json!(cursor);
+        }
+        let page = result(transport.call("session/list", params).await?)?;
+        let rows = page["sessions"]
+            .as_array()
+            .ok_or_else(|| failure("invalid ACP session page"))?;
+        if seen.len() + rows.len() > 128 {
+            return Err(failure(
+                "ACP session listing exceeds the 128-session budget",
+            ));
+        }
+        for row in rows {
+            let id = row["sessionId"]
+                .as_str()
+                .filter(|id| !id.trim().is_empty() && id.len() <= 512)
+                .ok_or_else(|| failure("invalid ACP session identity"))?;
+            if !seen.insert(id.to_owned()) {
+                return Err(failure("duplicate ACP session identity"));
+            }
+            if row["cwd"] == cwd {
+                sessions.push(json!({"sessionId": id, "cwd": cwd,
+                    "title": row["title"].as_str().map(|title| title.chars().take(160).collect::<String>())}));
+            }
+        }
+        cursor = match &page["nextCursor"] {
+            Value::Null => return Ok(sessions),
+            Value::String(value)
+                if !value.is_empty() && value.len() <= 4096 && cursor.as_ref() != Some(value) =>
+            {
+                Some(value.clone())
+            }
+            _ => return Err(failure("invalid ACP session cursor")),
+        };
+    }
+    Err(failure("ACP session listing exceeds the page budget"))
+}
+
 impl ExistingConversation {
     pub async fn load(
         transport: AcpTransport,
@@ -84,11 +153,44 @@ impl ExistingConversation {
         updates: UpdateSink,
         permission: PermissionHandler,
     ) -> Result<Self, AcpErrorWrap> {
-        if session_id.is_empty() || !std::path::Path::new(&cwd).is_absolute() {
+        Self::open(transport,Some(session_id),cwd,updates,permission,None).await
+    }
+
+    /// The caller must have explicit user authorization to create a conversation.
+    /// This operation is never used by discovery, history reads or attachment retries.
+    pub async fn create(
+        transport: AcpTransport,
+        cwd: String,
+        updates: UpdateSink,
+        permission: PermissionHandler,
+    ) -> Result<Self, AcpErrorWrap> {
+        Self::open(transport,None,cwd,updates,permission,None).await
+    }
+
+    /// The caller explicitly selects one authentication method advertised by
+    /// this Agent. Authentication failure never creates or retries a session.
+    pub async fn create_authenticated(
+        transport:AcpTransport,cwd:String,updates:UpdateSink,
+        permission:PermissionHandler,method:String,
+    )->Result<Self,AcpErrorWrap> {
+        Self::open(transport,None,cwd,updates,permission,Some(method)).await
+    }
+
+    async fn open(
+        transport: AcpTransport,
+        requested_session: Option<String>,
+        cwd: String,
+        updates: UpdateSink,
+        permission: PermissionHandler,
+        authentication: Option<String>,
+    ) -> Result<Self, AcpErrorWrap> {
+        if requested_session.as_ref().is_some_and(String::is_empty) || !std::path::Path::new(&cwd).is_absolute() {
             transport.shutdown();
             return Err(failure("existing sessionId and absolute cwd are required"));
         }
-        let selected = session_id.clone();
+        let selected = Arc::new(Mutex::new(SessionUpdates { session_id: requested_session.clone(), pending: Vec::new() }));
+        let observed = selected.clone();
+        let deliver = updates.clone();
         transport.set_notification_sink(Arc::new(move |notification| {
             if notification.method == "session/update" {
                 let params = notification
@@ -98,11 +200,15 @@ impl ExistingConversation {
                 let id = params["sessionId"]
                     .as_str()
                     .ok_or_else(|| failure("session/update missing sessionId"))?;
-                if id == selected {
-                    if !params["update"].is_object() {
-                        return Err(failure("session/update missing update"));
-                    }
-                    updates(params)?;
+                if !params["update"].is_object() {
+                    return Err(failure("session/update missing update"));
+                }
+                let mut state = observed.lock().map_err(|_| failure("ACP session selection unavailable"))?;
+                if let Some(selected) = &state.session_id {
+                    if id == selected { deliver(params)?; }
+                } else {
+                    if state.pending.len() >= 512 { return Err(failure("ACP creation update buffer exhausted")); }
+                    state.pending.push(params.clone());
                 }
             }
             Ok(())
@@ -118,14 +224,14 @@ impl ExistingConversation {
             let busy = busy.clone();
             let cancelled = cancelled.clone();
             let mut cancellation = cancellation.subscribe();
-            let selected = session_id.clone();
+            let selected = selected.clone();
             async move {
                 while let Some(request) = requests.recv().await {
                     cancellation.borrow_and_update();
                     let params = request.params.unwrap_or(Value::Null);
                     let response = if request.method != "session/request_permission" {
                         Err(rpc_error(-32601, "client method not supported"))
-                    } else if params["sessionId"].as_str() != Some(&selected)
+                    } else if !selected.lock().is_ok_and(|state| state.session_id.as_deref().is_some_and(|id| params["sessionId"].as_str() == Some(id)))
                         || params["toolCall"]["toolCallId"]
                             .as_str()
                             .is_none_or(str::is_empty)
@@ -181,12 +287,38 @@ impl ExistingConversation {
             transport: transport.clone(),
             permissions: Some(permissions),
         };
+        let mut creation_requested = false;
         let handshake = async {
-            let initialized=result(transport.call("initialize",json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"ridge","version":env!("CARGO_PKG_VERSION")}})).await?)?;
-            if initialized["protocolVersion"] != 1 || !initialized["agentCapabilities"].is_object()
-            {
-                return Err(failure("ACP version/capability mismatch"));
+            let initialized = initialize(&transport).await?;
+            if let Some(method)=&authentication {
+                if !initialized["authMethods"].as_array().is_some_and(|methods|methods.iter().any(|offered|offered["id"]==*method&&offered["type"]!="terminal")) {
+                    return Err(failure("selected ACP authentication method is not offered for protocol authentication"));
+                }
+                result(transport.call("authenticate",json!({"methodId":method})).await?)?;
             }
+            let Some(session_id) = &requested_session else {
+                creation_requested = true;
+                let created=result(transport.call("session/new",json!({"cwd":cwd,"mcpServers":[]})).await?).map_err(|error| {
+                    if matches!(&error,AcpErrorWrap::Rpc(-32000,message) if message.to_ascii_lowercase().contains("auth")) {
+                        let methods = initialized["authMethods"].as_array().into_iter().flatten()
+                            .filter(|method| method["type"] != "terminal")
+                            .filter_map(|method| method["id"].as_str()).take(16)
+                            .collect::<Vec<_>>().join(", ");
+                        let mut recovery = format!("{error}; sign in using the Agent's own CLI, then start a new collaboration terminal");
+                        if !methods.is_empty() {
+                            recovery.push_str(&format!(", or relaunch with an explicit --auth-method from: {methods}"));
+                        }
+                        failure(&recovery)
+                    }else{error}
+                })?;
+                let session_id=created["sessionId"].as_str().filter(|id|!id.is_empty()).ok_or_else(||failure("session/new response missing session identity"))?.to_owned();
+                let mut state=selected.lock().map_err(|_|failure("ACP session selection unavailable"))?;
+                state.session_id=Some(session_id.clone());
+                for update in std::mem::take(&mut state.pending) {
+                    if update["sessionId"] == session_id { updates(&update)?; }
+                }
+                return Ok((initialized,session_id,false,None));
+            };
             let replay = initialized["agentCapabilities"]["loadSession"] == true;
             let method = if replay {
                 "session/load"
@@ -209,9 +341,9 @@ impl ExistingConversation {
             if !loaded.is_object() {
                 return Err(failure("invalid existing-session response"));
             }
-            Ok((initialized, replay))
+            Ok((initialized, session_id.clone(), replay, loaded.get("_meta").cloned()))
         };
-        let (initialized, history_replayed) =
+        let (initialized, session_id, history_replayed, replay_info) =
             match tokio::time::timeout(Duration::from_secs(30), handshake).await {
                 Ok(Ok(value)) => value,
                 outcome => {
@@ -219,7 +351,9 @@ impl ExistingConversation {
                     return Err(match outcome {
                         Ok(Err(error)) => error,
                         _ => AcpErrorWrap::Transport(
-                            "existing ACP session load timed out; no new session created".into(),
+                            if requested_session.is_none() && authentication.is_some() && !creation_requested { "ACP authentication timed out; no new session requested" }
+                            else if requested_session.is_some() { "existing ACP session load timed out; no new session created" }
+                            else { "ACP session creation timed out; result unknown and not retried" }.into(),
                         ),
                     });
                 }
@@ -238,6 +372,7 @@ impl ExistingConversation {
                 agent_info: initialized.get("agentInfo").cloned(),
                 capabilities: initialized["agentCapabilities"].clone(),
                 history_replayed,
+                replay_info,
             }),
         })
     }
@@ -253,6 +388,7 @@ impl ExistingConversation {
     pub fn history_replayed(&self) -> bool {
         self.inner.history_replayed
     }
+    pub fn replay_info(&self) -> Option<&Value> { self.inner.replay_info.as_ref() }
     pub fn is_busy(&self) -> bool {
         self.inner.busy.load(Ordering::Acquire)
     }

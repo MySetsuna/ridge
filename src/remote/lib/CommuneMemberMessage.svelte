@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Send } from 'lucide-svelte';
-  import type { RemoteLink, TeammateRosterMember } from '@ridge/remote';
+  import { REMOTE_PANEL_CAPABILITY, type RemoteLink, type TeammateRosterMember } from '@ridge/remote';
   import { t, tr } from '$lib/i18n';
   import { locale } from '$lib/i18n/locale';
   import { communeText } from '$lib/teammate/communeUiText';
@@ -9,13 +9,12 @@
 
   let { ws, workspaceId, member }: { ws: RemoteLink; workspaceId: string; member: TeammateRosterMember } = $props();
   let connected = $state(false);
-  let sendAllowed = $state(false);
-  let cancelAllowed = $state(false);
+  let teamAllowed = $state(false);
   const delivery = $derived(memberDelivery(ws, { workspaceId, paneId: member.paneId,
     agentId: member.agentId ?? member.id, generation: member.generation, lease: member.lease }));
-  const canSend = $derived(connected && sendAllowed && !!member.paneId && !!member.generation && !!member.lease && member.canSend === true && member.online === true
+  const canSend = $derived(connected && teamAllowed && !!member.paneId && !!member.generation && !!member.lease && member.canSend === true && member.online === true
     && member.capabilities?.some(value => value === 'conversation.prompt' || value === 'acp.prompt') === true);
-  const canCancel = $derived(connected && cancelAllowed && member.canCancel === true && member.online === true
+  const canCancel = $derived(connected && teamAllowed && member.canCancel === true && member.online === true
     && member.capabilities?.some(value => value === 'conversation.cancel' || value === 'acp.cancel') === true);
   const execution = $derived($delivery.receipt?.execution);
   const active = $derived(deliveryActive($delivery.receipt));
@@ -23,10 +22,7 @@
   onMount(() => {
     connected = ws.state() === 'connected';
     const offState = ws.onStateChange(state => { connected = state === 'connected'; });
-    const refreshPermissions = () => {
-      sendAllowed = ws.hasCapability('send_agent_message');
-      cancelAllowed = ws.hasCapability('cancel_agent_message');
-    };
+    const refreshPermissions = () => { teamAllowed = ws.hasCapability(REMOTE_PANEL_CAPABILITY.team); };
     refreshPermissions();
     const offCapabilities = ws.onCapabilitiesChanged(refreshPermissions);
     void delivery.refresh();
@@ -59,6 +55,7 @@
       {#if execution?.state === 'turn_ended'}{tr('commune.responseEnded', { reason: execution.response?.stopReason ?? $t('commune.unknownReason') })}
       {:else if execution?.state === 'cancelled'}{$t('commune.cancelled')}
       {:else if execution?.state === 'unknown'}{$t('commune.resultUnconfirmed')}
+      {:else if execution?.reason === 'agent_authentication_required'}{$t('commune.agentAuthenticationRequired')}
       {:else if execution?.state === 'rejected' || execution?.state === 'failed'}{tr('commune.notExecuted', { reason: execution.reason ?? $t('commune.unknownReason') })}
       {:else if execution?.state === 'waiting_permission'}{$t('commune.waitingApproval')}
       {:else if execution?.state === 'running'}{$t('commune.agentExecuting')}
@@ -83,4 +80,8 @@
   .note,.receipt,details{font-size:12px;line-height:1.5;margin-top:6px;color:var(--rg-fg-muted)}
   .receipt button{margin:4px}
   pre{white-space:pre-wrap;overflow-wrap:anywhere}
+  @media (pointer: coarse) {
+    .msg-input { box-sizing: border-box; min-height: 44px; font-size: 16px; }
+    .receipt button { min-width: 44px; min-height: 44px; }
+  }
 </style>

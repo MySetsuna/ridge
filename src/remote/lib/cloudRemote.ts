@@ -336,7 +336,7 @@ export class CloudRemoteConnection implements RemoteLink {
     if (this.disposed) { this.terminalErrorUnlisten(); this.terminalErrorUnlisten = null; return; }
     try {
       const stops: UnlistenFn[] = [];
-      for (const name of ['commune-members-changed','commune-session-update','commune-groups-changed','commune-task-changed','teammate://hitl-pending-changed']) {
+      for (const name of ['workspace-list-changed','commune-members-changed','commune-session-update','commune-groups-changed','commune-task-changed','teammate://hitl-pending-changed']) {
         try {
           const stop = await this.bridge.listen(name, event => this.emitMessage({type:'event', name, payload:event.payload}));
           stops.push(stop);
@@ -1000,7 +1000,6 @@ export class CloudRemoteConnection implements RemoteLink {
       generation: target.generation,
       lease: target.lease,
       message,
-      from: 'remote-ui',
       idempotency_key: idempotencyKey,
     });
   }

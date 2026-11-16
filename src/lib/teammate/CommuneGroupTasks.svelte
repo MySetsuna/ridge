@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { locale } from '$lib/i18n/locale';
-  import { communeText, type CommuneUiTextKey } from './communeUiText';
+  import { t } from '$lib/i18n';
+  import { communeRuntimeLabel, communeText, type CommuneUiTextKey } from './communeUiText';
   import { communeGroupDispatch, nativeGroupDispatchOwner } from './communeGroupDispatch';
   import type { AgentHistoryReply, CommuneGroupDispatchRequest, CommuneGroupTask } from '../../../packages/remote/src/shared/transport/wsRemote';
   interface Member {id:string;name:string;workspaceName?:string;paneId?:string;generation?:number;lease?:string;online?:boolean;canSend?:boolean}
@@ -123,94 +124,142 @@
   onDestroy(() => { version++; });
 </script>
 
-<section class:compact class="rg-commune-group-tasks space-y-3 border-t border-[var(--rg-border)] pt-3" data-testid="commune-group-tasks">
+<section class:compact class="rg-commune-group-tasks" data-testid="commune-group-tasks">
   {#if submit}
     <details>
-      <summary class="cursor-pointer text-[11px] text-[var(--rg-accent)]">{ct(compact ? 'dispatchTask' : 'reviewDispatch')}</summary>
-      <div class="mt-2 space-y-2">
-        <label class="block text-[11px]">{ct('action')}
-          <select value={mode} onchange={event => dispatch.edit({mode:event.currentTarget.value as 'broadcast'|'assign'})} disabled={operationBusy} aria-label={ct('action')} class="ml-2 rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] px-2 py-1">
+      <summary class="task-review">{ct(compact ? 'dispatchTask' : 'reviewDispatch')}</summary>
+      <div class="task-composer">
+        <label class="task-mode">{ct('action')}
+          <select value={mode} onchange={event => dispatch.edit({mode:event.currentTarget.value as 'broadcast'|'assign'})} disabled={operationBusy} aria-label={ct('action')} class="task-select">
             <option value="broadcast">{ct('broadcast')}</option><option value="assign">{ct('assign')}</option>
           </select>
         </label>
-        <ul class="space-y-1">
+        <ul class="task-entries">
           {#each candidates as member (member.id)}
-            <li class="space-y-1 text-[11px]">
-              <label class="flex items-center gap-2"><input type="checkbox" checked={!!selected[member.id]} disabled={operationBusy || !eligible(member)} onchange={() => toggle(member)} aria-label={ct('selectMember', {name:member.name})} />
-                <span class="break-all">{member.name}{#if member.workspaceName}<small class="block text-[var(--rg-fg-muted)]" title={member.paneId}>{member.workspaceName}{member.paneId ? ` · ${member.paneId.slice(0,8)}` : ''}</small>{/if}</span><span class="text-[var(--rg-fg-muted)]">{member.online === true ? ct('online') : ct('offline')}{!eligible(member) ? ` · ${ct('noBinding')}` : ''}</span>
+            <li class="task-choice">
+              <label class="task-choice-label"><input type="checkbox" checked={!!selected[member.id]} disabled={operationBusy || !eligible(member)} onchange={() => toggle(member)} aria-label={ct('selectMember', {name:member.name})} />
+                <span>{member.name}{#if member.workspaceName}<small class="task-meta member-source" title={member.paneId}>{member.workspaceName}{member.paneId ? ` · ${member.paneId.slice(0,8)}` : ''}</small>{/if}</span><span class="task-meta">{member.online === true ? ct('online') : ct('offline')}{!eligible(member) ? ` · ${ct('noBinding')}` : ''}</span>
               </label>
-              {#if mode === 'assign' && selected[member.id]}<textarea rows="2" value={objectives[member.id] ?? ''} oninput={event => dispatch.edit({objectives:{...objectives,[member.id]:event.currentTarget.value}})} disabled={operationBusy} aria-label={ct('memberTask', {name:member.name})} placeholder={ct('memberObjective')} class="w-full rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] p-2"></textarea>{/if}
+              {#if mode === 'assign' && selected[member.id]}<textarea rows="2" value={objectives[member.id] ?? ''} oninput={event => dispatch.edit({objectives:{...objectives,[member.id]:event.currentTarget.value}})} disabled={operationBusy} aria-label={ct('memberTask', {name:member.name})} placeholder={ct('memberObjective')} class="task-editor"></textarea>{/if}
             </li>
           {/each}
         </ul>
-        {#if mode === 'broadcast'}<textarea rows="2" value={message} oninput={event => dispatch.edit({message:event.currentTarget.value})} disabled={operationBusy} aria-label={ct('broadcastTarget')} placeholder={ct('broadcastPlaceholder')} class="w-full rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] p-2 text-[11px]"></textarea>{/if}
-        {#if stale}<p role="status" class="text-[11px] text-amber-300">{ct('staleSelection')}<button onclick={() => dispatch.edit({selected:{},selectedRevision:undefined})} class="ml-2 underline">{ct('clearSelection')}</button></p>{/if}
-        <button disabled={busy || !ready} onclick={() => send()} class="rounded border border-[var(--rg-border)] px-2 py-1 text-[11px] disabled:opacity-40">{ct('dispatch',{count:selectedIds.length})}</button>
+        {#if mode === 'broadcast'}<textarea rows="2" value={message} oninput={event => dispatch.edit({message:event.currentTarget.value})} disabled={operationBusy} aria-label={ct('broadcastTarget')} placeholder={ct('broadcastPlaceholder')} class="task-editor"></textarea>{/if}
+        {#if stale}<p role="status" class="task-warning">{ct('staleSelection')}<button onclick={() => dispatch.edit({selected:{},selectedRevision:undefined})} class="task-inline">{ct('clearSelection')}</button></p>{/if}
+        <button disabled={busy || !ready} onclick={() => send()} class="task-submit">{ct('dispatch',{count:selectedIds.length})}</button>
       </div>
     </details>
   {/if}
-  {#if error || $dispatch.error}<p role="alert" class="whitespace-pre-wrap break-all text-[11px] text-red-300">{error || ct('operationFailed',{error:$dispatch.error})}</p>{/if}
+  {#if error || $dispatch.error}<p role="alert" class="task-error">{error || ct('operationFailed',{error:$dispatch.error})}</p>{/if}
   {#if $dispatch.pending}
-    <p role="status" class="text-[11px] text-[var(--rg-fg-muted)]">{ct('groupDispatchPending')}</p>
-    <button disabled={busy || !submit} onclick={() => send(true)} class="text-[11px] underline">{ct('retryDispatch')}</button>
+    <p role="status" class="task-meta">{ct('groupDispatchPending')}</p>
+    <button disabled={busy || !submit} onclick={() => send(true)} class="task-link">{ct('retryDispatch')}</button>
   {/if}
   {#each displayed as task (task.groupTaskId)}
-    <article class="rg-commune-task space-y-2 rounded-xl border border-[var(--rg-border)] p-3 text-[11px]" data-group-task-id={task.groupTaskId}>
-      <p class="break-all">{task.action === 'assign' ? ct('assign') : ct('broadcast')} · {ct('groupRevision',{revision:task.groupRevision})} · {new Date(task.createdAt).toLocaleString()}</p>
-      <p class="break-all text-[10px] text-[var(--rg-fg-muted)]">{ct('groupTask')} {task.groupTaskId}</p>
-      <ul class="space-y-2">
+    <article class="rg-commune-task" data-group-task-id={task.groupTaskId}>
+      <p>{task.action === 'assign' ? ct('assign') : ct('broadcast')} · {ct('groupRevision',{revision:task.groupRevision})} · {new Date(task.createdAt).toLocaleString()}</p>
+      <p class="task-meta">{ct('groupTask')} {task.groupTaskId}</p>
+      <ul class="task-results">
         {#each task.children as child (child.member.agentId)}
           <li data-child-state={child.state}>
-            <p class="flex flex-wrap items-center gap-2 break-all">
-              <span class="font-medium">{members.find(member => member.id === child.member.agentId)?.name ?? child.member.agentId}</span>
+            <p class="task-member">
+              <span class="task-name">{members.find(member => member.id === child.member.agentId)?.name ?? child.member.agentId}</span>
               <span class="rg-task-state" data-state={child.state}>{stateLabel(child.state)}</span>
             </p>
-            <p class="whitespace-pre-wrap break-all text-[var(--rg-fg-muted)]">{child.objective}{child.objectiveTruncated ? ct('objectiveExcerpt') : ''}</p>
-            {#if read && child.objectiveTruncated}<button disabled={busy} onclick={() => readObjective(task.groupTaskId,child.member.agentId)} class="underline">{ct('fullObjective')}</button>{/if}
+            <p class="task-objective">{child.objective}{child.objectiveTruncated ? ct('objectiveExcerpt') : ''}</p>
+            {#if read && child.objectiveTruncated}<button disabled={busy} onclick={() => readObjective(task.groupTaskId,child.member.agentId)} class="task-link">{ct('fullObjective')}</button>{/if}
             {#if detail && detailTask === task.groupTaskId && detail.memberId === child.member.agentId}
-              <pre class="whitespace-pre-wrap break-all">{detail.text}</pre>
+              <pre class="task-output">{detail.text}</pre>
               <p>{detail.offset+1}–{Math.min(detail.offset+4096,detail.length)} / {detail.length}
-                {#if detail.previous}<button disabled={busy} onclick={() => readObjective(task.groupTaskId,child.member.agentId,detail?.previous)} class="ml-2 underline">{ct('previous')}</button>{/if}
-                {#if detail.next}<button disabled={busy} onclick={() => readObjective(task.groupTaskId,child.member.agentId,detail?.next)} class="ml-2 underline">{ct('next')}</button>{/if}
+                {#if detail.previous}<button disabled={busy} onclick={() => readObjective(task.groupTaskId,child.member.agentId,detail?.previous)} class="task-inline">{ct('previous')}</button>{/if}
+                {#if detail.next}<button disabled={busy} onclick={() => readObjective(task.groupTaskId,child.member.agentId,detail?.next)} class="task-inline">{ct('next')}</button>{/if}
               </p>
             {/if}
-            <p class="break-all text-[10px] text-[var(--rg-fg-muted)]">{ct('session')} {child.member.sessionId} · {ct('binding')} {child.member.generation}{child.taskId ? ` · ${ct('task')} ${child.taskId}` : ''}</p>
-            {#if child.submissionError}<p class="break-all text-red-300">{child.submissionError}</p>{/if}
-            {#if child.deliveryError}<p class="break-all text-red-300">{child.deliveryError}</p>{/if}
-            <p class="text-[10px] text-[var(--rg-fg-muted)]">{child.artifactCoverage}</p>
-            <ul class="space-y-1">
+            <p class="task-meta">{ct('session')} {child.member.sessionId} · {ct('binding')} {child.member.generation}{child.taskId ? ` · ${ct('task')} ${child.taskId}` : ''}</p>
+            {#if child.submissionError}<p class="task-error">{child.submissionError}</p>{/if}
+            {#if child.deliveryError}<p class="task-error">{child.deliveryError}</p>{/if}
+            {#if child.execution?.reason === 'agent_authentication_required'}
+              <p class="task-error">{$t('commune.agentAuthenticationRequired')}</p>
+            {/if}
+            <p class="task-meta">{communeRuntimeLabel($locale, child.artifactCoverage)}</p>
+            <ul class="task-entries">
               {#each child.artifacts as output (output.id)}
-                <li class="rounded border border-[var(--rg-border)] p-2" data-protocol-output-kind={output.kind}>
-                  <p class="break-all">{ct('protocolArtifact')} · {output.kind}{output.status ? ` · ${output.status}` : ''} · {ct('unverified')}</p>
-                  {#if output.name || output.uri}<p class="break-all">{output.name} {output.uri}</p>{/if}
-                  {#if output.preview}<pre class="whitespace-pre-wrap break-all">{output.preview}</pre>{/if}
-                  <p class="text-[10px] text-[var(--rg-fg-muted)]">{output.source} · event {output.sequence}</p>
-                  {#if readEvent && output.textCursor}<button disabled={busy} onclick={() => readOutput(output.id,output.textCursor!,child.member.workspaceId)} class="underline">{ct('rawProtocol')}</button>{/if}
+                <li class="task-artifact" data-protocol-output-kind={output.kind}>
+                  <p>{ct('protocolArtifact')} · {communeRuntimeLabel($locale, output.kind)}{output.status ? ` · ${communeRuntimeLabel($locale, output.status)}` : ''} · {ct('unverified')}</p>
+                  {#if output.name || output.uri}<p>{output.name} {output.uri}</p>{/if}
+                  {#if output.preview}<pre class="task-output">{output.preview}</pre>{/if}
+                  <p class="task-meta">{communeRuntimeLabel($locale, output.source)} · {ct('event')} {output.sequence}</p>
+                  {#if readEvent && output.textCursor}<button disabled={busy} onclick={() => readOutput(output.id,output.textCursor!,child.member.workspaceId)} class="task-link">{ct('rawProtocol')}</button>{/if}
                   {#if protocolDetail && protocolOutput===output.id}
-                    <pre class="whitespace-pre-wrap break-all">{protocolDetail.text}</pre>
-                    {#if protocolDetail.previousTextCursor}<button disabled={busy} onclick={() => readOutput(output.id,protocolDetail!.previousTextCursor!,child.member.workspaceId)} class="mr-2 underline">{ct('previous')}</button>{/if}
-                    {#if protocolDetail.textCursor}<button disabled={busy} onclick={() => readOutput(output.id,protocolDetail!.textCursor!,child.member.workspaceId)} class="underline">{ct('next')}</button>{/if}
+                    <pre class="task-output">{protocolDetail.text}</pre>
+                    {#if protocolDetail.previousTextCursor}<button disabled={busy} onclick={() => readOutput(output.id,protocolDetail!.previousTextCursor!,child.member.workspaceId)} class="task-inline">{ct('previous')}</button>{/if}
+                    {#if protocolDetail.textCursor}<button disabled={busy} onclick={() => readOutput(output.id,protocolDetail!.textCursor!,child.member.workspaceId)} class="task-link">{ct('next')}</button>{/if}
                   {/if}
                 </li>
               {/each}
             </ul>
-            {#if child.artifactsHasMore}<p class="text-[10px]">{ct('recentArtifacts')}</p>{/if}
+            {#if child.artifactsHasMore}<p class="task-meta">{ct('recentArtifacts')}</p>{/if}
           </li>
         {/each}
       </ul>
-      {#if cancel && task.children.some(child => ['prepared','queued','dispatching','running','waiting_permission','unknown'].includes(child.state))}<button disabled={busy} onclick={() => cancelTask(task.groupTaskId)} class="underline">{task.cancellationRequested ? ct('queryCancel') : ct('cancelGroupTask')}</button>{/if}
-      <p class="text-[10px] text-[var(--rg-fg-muted)]">{task.cancellationRequested ? ct('cancellationPending') : ct('individualConfirm')}</p>
+      {#if cancel && task.children.some(child => ['prepared','queued','dispatching','running','waiting_permission','unknown'].includes(child.state))}<button disabled={busy} onclick={() => cancelTask(task.groupTaskId)} class="task-link">{task.cancellationRequested ? ct('queryCancel') : ct('cancelGroupTask')}</button>{/if}
+      <p class="task-meta">{task.cancellationRequested ? ct('cancellationPending') : ct('individualConfirm')}</p>
     </article>
   {/each}
-  {#if displayed.length}<p class="text-[10px] text-[var(--rg-fg-muted)]">{ct('recentDispatches')}</p>{/if}
+  {#if displayed.length}<p class="task-meta">{ct('recentDispatches')}</p>{/if}
 </section>
 
 <style>
+  .rg-commune-group-tasks {
+    display: grid; gap: 10px; min-width: 0; padding-top: 10px;
+    border-top: 1px solid var(--rg-border); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere;
+  }
+  .task-review { cursor: pointer; color: var(--rg-accent); font-weight: 600; }
+  .task-composer, .task-results, .task-entries, .task-choice, .rg-commune-task { display: grid; gap: 8px; min-width: 0; }
+  .task-composer { margin-top: 8px; }
+  .task-mode { display: grid; gap: 4px; color: var(--rg-fg-muted); }
+  ul { margin: 0; padding: 0; list-style: none; }
+  p, pre { margin: 0; }
+  .task-choice-label {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px;
+    min-height: 34px; padding: 4px 8px; border-radius: 7px; background: var(--rg-surface); cursor: pointer;
+  }
+  input[type="checkbox"] { accent-color: var(--rg-accent); }
+  button, .task-select, .task-editor {
+    box-sizing: border-box; min-width: 0; max-width: 100%; padding: 5px 9px;
+    border: 1px solid var(--rg-border); border-radius: 7px;
+    background: var(--rg-bg); color: var(--rg-fg); font: inherit;
+  }
+  button { justify-self: start; min-height: 32px; background: var(--rg-surface); cursor: pointer; }
+  button:enabled:is(:hover, :active) { background: var(--rg-surface-2, var(--rg-bg)); }
+  :is(button, select, textarea):disabled { opacity: .45; cursor: default; }
+  :is(button, select, textarea, input, summary):focus-visible { outline: 2px solid var(--rg-accent); outline-offset: 2px; }
+  .task-editor { width: 100%; resize: vertical; }
+  .task-editor::placeholder { color: var(--rg-fg-muted); }
+  .task-submit, .task-link, .task-inline { color: var(--rg-accent); }
+  .task-inline { margin-inline-start: 8px; }
+  .task-meta, .task-objective { color: var(--rg-fg-muted); }
+  .task-meta { font-size: 12px; }
+  .task-warning { color: var(--rg-ansi-yellow, #c99d55); }
+  .task-error { color: var(--rg-ansi-red, #c77d6c); white-space: pre-wrap; }
+  .rg-commune-task { padding: 10px; border: 1px solid var(--rg-border); border-radius: 9px; }
+  .task-results > li, .task-artifact { display: grid; gap: 4px; min-width: 0; }
+  .task-results > li { border-top: 1px solid var(--rg-border); padding-top: 8px; }
+  .task-member { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+  .task-name { font-weight: 600; }
+  .task-objective, .task-output { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .task-output, .task-artifact { padding: 8px; border: 1px solid var(--rg-border); border-radius: 7px; }
+  @media (max-width: 600px) {
+    .rg-commune-group-tasks :is(button, select, .task-choice-label, .task-review) { min-height: 44px; }
+    .task-select, .task-editor { font-size: 16px; }
+  }
+
   .compact{border-top:0;padding-top:0}
   .compact>details>summary{min-height:44px;display:flex;align-items:center;padding:8px 12px;box-sizing:border-box;border:1px solid var(--rg-accent);border-radius:5px;background:color-mix(in srgb,var(--rg-accent) 10%,var(--rg-surface));font-size:12px;font-weight:600}
   .compact :global(label:has(input[type=checkbox])){min-height:44px;gap:10px;flex-wrap:wrap}
   .compact :global(input[type=checkbox]){width:18px;height:18px;flex-shrink:0}
   .compact :global(select),.compact :global(button){min-height:44px;max-width:100%;white-space:normal}
-  .compact :global(textarea){box-sizing:border-box;font-size:13px}
+  .compact :global(textarea){box-sizing:border-box;font-size:16px}
   .compact :global(button:focus-visible),.compact :global(summary:focus-visible){outline:2px solid var(--rg-accent);outline-offset:2px}
+  .member-source{display:block}
 </style>

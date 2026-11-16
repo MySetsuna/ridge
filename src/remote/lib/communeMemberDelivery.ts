@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { AgentMessageReceipt, AgentMessageTarget, RemoteLink } from '@ridge/remote';
+import { REMOTE_PANEL_CAPABILITY, type AgentMessageReceipt, type AgentMessageTarget, type RemoteLink } from '@ridge/remote';
 
 interface DeliveryState {
   draft: string;
@@ -30,13 +30,13 @@ function createDelivery(link: RemoteLink, target: AgentMessageTarget) {
   const store = writable(state);
   const update = (patch: Partial<DeliveryState>) => { state = { ...state, ...patch }; store.set(state); };
   const exact = !!(target.workspaceId && target.paneId && target.agentId && target.generation && target.lease);
-  const online = () => link.state() === 'connected';
+  const connectedTeam = () => link.state() === 'connected' && link.hasCapability(REMOTE_PANEL_CAPABILITY.team);
 
   return {
     subscribe: store.subscribe,
     setDraft(draft: string) { update({ draft }); },
     async send(allowed: boolean): Promise<void> {
-      if (state.busy || !allowed || !exact || !online() || !link.hasCapability('send_agent_message')) return;
+      if (state.busy || !allowed || !exact || !connectedTeam()) return;
       const pending = state.pending ?? { message: state.draft.trim(), key: crypto.randomUUID() };
       if (!pending.message) return;
       const submittedDraft = state.draft;
@@ -50,7 +50,7 @@ function createDelivery(link: RemoteLink, target: AgentMessageTarget) {
       finally { update({ busy: undefined }); }
     },
     async refresh(): Promise<void> {
-      if (state.busy || !state.receipt || !online() || !link.hasCapability('get_agent_message_delivery_status')) return;
+      if (state.busy || !state.receipt || !connectedTeam()) return;
       update({ busy: 'read' });
       try {
         const receipt = await link.getAgentMessageDelivery(target, state.receipt!.deliveryId);
@@ -60,7 +60,7 @@ function createDelivery(link: RemoteLink, target: AgentMessageTarget) {
       finally { update({ busy: undefined }); }
     },
     async cancel(allowed: boolean): Promise<void> {
-      if (state.busy || !allowed || !state.receipt || !deliveryActive(state.receipt) || !online() || !link.hasCapability('cancel_agent_message')) return;
+      if (state.busy || !allowed || !state.receipt || !deliveryActive(state.receipt) || !connectedTeam()) return;
       update({ busy: 'cancel', error: '' });
       try {
         const receipt = await link.cancelAgentMessage(target, state.receipt!.deliveryId);

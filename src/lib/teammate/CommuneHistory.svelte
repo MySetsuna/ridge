@@ -6,6 +6,7 @@
   import { markCommuneRead } from './communeAttention';
   import { t } from '$lib/i18n';
   import { locale } from '$lib/i18n/locale';
+  import { communeRuntimeLabel, communeText, type CommuneUiTextKey } from './communeUiText';
   import { CommuneHistoryPages, compareCommuneHistory, type CommuneHistoryRequest as Request } from './communeHistoryPages';
 
   interface Props {
@@ -22,6 +23,7 @@
   let query = $state('');
   let hasMore = $state(false);
   let pages: CommuneHistoryPages | null = null;
+  const ct = (key: CommuneUiTextKey) => communeText($locale, key);
   let loadedQuery = '';
   let busy = $state(false);
   let error = $state('');
@@ -128,36 +130,74 @@
   });
 </script>
 
-<section class="rg-commune-history flex flex-col gap-3" data-testid="commune-history">
-  <div class="flex items-center gap-2">
+<section class="rg-commune-history" data-testid="commune-history">
+  <div class="history-toolbar">
     <input type="search" bind:value={query} oninput={search} aria-label={$t('commune.historySearchLabel')}
-      placeholder={$t('commune.historySearch')} class="min-w-0 flex-1 rounded-md border border-[var(--rg-border)] bg-[var(--rg-bg)] px-2.5 py-2 text-[13px]" />
-    <button onclick={() => refresh()} disabled={busy || !scopeKey} class="shrink-0 rounded-md border border-[var(--rg-border)] px-2.5 py-2 text-[12px] transition-colors hover:bg-[var(--rg-surface)] disabled:opacity-40">{newEvents ? $t('commune.refreshNew') : $t('commune.refresh')}</button>
+      placeholder={$t('commune.historySearch')} />
+    <button onclick={() => refresh()} disabled={busy || !scopeKey}>{newEvents ? $t('commune.refreshNew') : $t('commune.refresh')}</button>
   </div>
-  <p class="text-[12px] leading-5 text-[var(--rg-fg-muted)]">{$t('commune.historyLedger')}</p>
-  {#if error}<p role="alert" class="text-[13px] text-red-300">{$t('commune.historyError', { error })}</p>{/if}
-  {#if !busy && rows.length === 0}<p class="py-4 text-center text-[13px] text-[var(--rg-fg-muted)]">{$t('commune.historyEmpty')}</p>{/if}
-  <ul class="space-y-1.5">
+  <p class="history-note">{$t('commune.historyLedger')}</p>
+  {#if error}<p role="alert" class="history-error">{$t('commune.historyError', { error })}</p>{/if}
+  {#if !busy && rows.length === 0}<p class="history-empty">{$t('commune.historyEmpty')}</p>{/if}
+  <ul>
     {#each rows as row (key(row))}
-      <li class="rounded-md border-l-2 border-l-[var(--rg-accent)]/50 bg-[var(--rg-surface)]/50 px-3 py-2.5" data-history-kind={row.kind}>
-        <div class="flex flex-wrap items-center gap-2 text-[11px]">
-          <span class="font-semibold text-[var(--rg-fg)]">{row.agent}</span>
-          <span class="text-[var(--rg-fg-muted)]">{row.kind ?? row.title}</span>
-          <time class="ml-auto font-mono text-[10px] text-[var(--rg-fg-muted)]">{row.timestamp ? new Date(row.timestamp).toLocaleString($locale === 'zh' ? 'zh-CN' : 'en-US') : $t('commune.unknownTime')}</time>
+      <li data-history-kind={row.kind}>
+        <div class="history-heading">
+          <strong>{row.agent}</strong>
+          <span>{communeRuntimeLabel($locale, row.kind ?? row.title)}</span>
+          <time>{row.timestamp ? new Date(row.timestamp).toLocaleString($locale === 'zh' ? 'zh-CN' : 'en-US') : $t('commune.unknownTime')}</time>
         </div>
-        <p class="mt-1 break-all text-[10px] text-[var(--rg-fg-muted)]">session {row.sessionId}{row.groupId ? ` · group ${row.groupId}@${row.groupRevision}` : ''}{row.groupTaskId ? ` · group task ${row.groupTaskId}` : ''}{row.taskId ? ` · task ${row.taskId}` : ''}{row.deliveryId ? ` · delivery ${row.deliveryId}` : ''}</p>
-        <p class="mt-1 text-[10px] text-[var(--rg-fg-muted)]">{row.source} · {row.coverage}</p>
-        <pre class="mt-2 whitespace-pre-wrap break-all text-[12px] leading-5 text-[var(--rg-fg)]" class:line-clamp-4={!expanded[key(row)]}>{row.text}</pre>
-        <div class="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
-          <button onclick={() => { expanded = { ...expanded, [key(row)]: !expanded[key(row)] }; }} class="text-[var(--rg-accent)]">{expanded[key(row)] ? $t('commune.collapse') : $t('commune.expand')}</button>
-          {#if row.previousTextCursor}<button onclick={() => textPage(row, row.previousTextCursor!)} disabled={busy} class="text-[var(--rg-accent)]">{$t('commune.previousText')}</button>{/if}
-          {#if row.textCursor}<button onclick={() => textPage(row, row.textCursor!)} disabled={busy} class="text-[var(--rg-accent)]">{$t('commune.nextText')}</button>{/if}
-          {#if row.textLength && row.textLength > 4096}<span class="text-[var(--rg-fg-muted)]">{(row.textOffset ?? 0) + 1}–{Math.min((row.textOffset ?? 0) + 4096, row.textLength)} / {row.textLength}</span>{/if}
-          {#if canLocate(row)}<button onclick={() => onLocate?.(row)} class="text-[var(--rg-accent)]">{$t('commune.locateTerminal')}</button>
-          {:else}<span class="text-[var(--rg-fg-muted)]">{$t('commune.offlineRestore')}</span>{/if}
+        <p class="history-meta">{ct('session')} {row.sessionId}{row.groupId ? ` · ${ct('group')} ${row.groupId}@${row.groupRevision}` : ''}{row.groupTaskId ? ` · ${ct('groupTask')} ${row.groupTaskId}` : ''}{row.taskId ? ` · ${ct('task')} ${row.taskId}` : ''}{row.deliveryId ? ` · ${ct('delivery')} ${row.deliveryId}` : ''}</p>
+        <p class="history-meta">{[row.source, row.coverage].filter(Boolean).map(value => communeRuntimeLabel($locale, value)).join(' · ')}</p>
+        <pre class:collapsed={!expanded[key(row)]}>{row.kind === 'permission_requested' ? communeRuntimeLabel($locale, row.text) : row.text}</pre>
+        <div class="history-actions">
+          <button aria-expanded={!!expanded[key(row)]} onclick={() => { expanded = { ...expanded, [key(row)]: !expanded[key(row)] }; }}>{expanded[key(row)] ? $t('commune.collapse') : $t('commune.expand')}</button>
+          {#if row.previousTextCursor}<button onclick={() => textPage(row, row.previousTextCursor!)} disabled={busy}>{$t('commune.previousText')}</button>{/if}
+          {#if row.textCursor}<button onclick={() => textPage(row, row.textCursor!)} disabled={busy}>{$t('commune.nextText')}</button>{/if}
+          {#if row.textLength && row.textLength > 4096}<span>{(row.textOffset ?? 0) + 1}–{Math.min((row.textOffset ?? 0) + 4096, row.textLength)} / {row.textLength}</span>{/if}
+          {#if canLocate(row)}<button onclick={() => onLocate?.(row)}>{$t('commune.locateTerminal')}</button>
+          {:else}<span>{$t('commune.offlineRestore')}</span>{/if}
         </div>
       </li>
     {/each}
   </ul>
-  {#if hasMore}<button onclick={() => refresh(true)} disabled={busy} class="self-center rounded-md border border-[var(--rg-border)] px-3 py-1.5 text-[12px] disabled:opacity-40">{$t('commune.earlier')}</button>{/if}
+  {#if hasMore}<button onclick={() => refresh(true)} disabled={busy} class="history-earlier">{$t('commune.earlier')}</button>{/if}
 </section>
+
+<style>
+  .rg-commune-history { display: grid; gap: 10px; min-width: 0; overflow-wrap: anywhere; }
+  .history-toolbar { display: flex; gap: 8px; align-items: stretch; }
+  input, button {
+    min-height: 32px; box-sizing: border-box; padding: 5px 9px;
+    border: 1px solid var(--rg-border); border-radius: 7px;
+    background: var(--rg-bg); color: var(--rg-fg); font: inherit; font-size: 13px;
+  }
+  input { flex: 1; min-width: 0; }
+  input::placeholder { color: var(--rg-fg-muted); }
+  button { background: var(--rg-surface); cursor: pointer; }
+  button:enabled:is(:hover, :active) { background: var(--rg-surface-2, var(--rg-bg)); }
+  button:disabled { opacity: .45; cursor: default; }
+  :is(button, input):focus-visible { outline: 2px solid var(--rg-accent); outline-offset: 2px; }
+  .history-note, .history-error, .history-empty, .history-meta { margin: 0; line-height: 1.5; color: var(--rg-fg-muted); }
+  .history-note, .history-error, .history-empty { font-size: 13px; }
+  .history-error { color: var(--rg-ansi-red, #c77d6c); }
+  .history-empty { padding: 12px; text-align: center; }
+  ul { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; list-style: none; }
+  li {
+    display: grid; gap: 4px; min-width: 0; padding: 10px 12px;
+    border-inline-start: 2px solid color-mix(in srgb, var(--rg-accent) 52%, var(--rg-border));
+    border-radius: 8px; background: var(--rg-surface);
+  }
+  .history-heading, .history-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+  .history-heading, .history-meta, .history-actions { font-size: 12px; color: var(--rg-fg-muted); }
+  strong { color: var(--rg-fg); font-weight: 600; }
+  time { margin-inline-start: auto; font-size: 11px; font-variant-numeric: tabular-nums; }
+  pre { margin: 3px 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.55; color: var(--rg-fg); }
+  pre.collapsed { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; overflow: hidden; }
+  .history-actions button { color: var(--rg-accent); }
+  .history-earlier { justify-self: center; }
+  @media (max-width: 600px) {
+    .rg-commune-history :is(input, button) { min-height: 44px; }
+    input { font-size: 16px; }
+  }
+</style>

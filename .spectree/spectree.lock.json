@@ -1,40 +1,511 @@
 {
   "version": 1,
-  "changeId": "CHG-124",
-  "specHash": "4aba0a5dca7f33f70ef5cca6bfe753c90d36522e16ab2b0bf11e78b9bd763e62",
+  "changeId": "CHG-125",
+  "specHash": "f71cc61e8d040531d66a3ad5a782654a25da2717e9150d6e17474319e3d6c114",
   "units": [
     {
-      "id": "L4-CLOUD-PANE-SUBSCRIPTION-CONTINUITY",
-      "level": "L4",
-      "nodeHash": "d658b9052eb23ce65cce0944e9ae97187e14cab5d15b493bafc45d432e43b3f5",
+      "id": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+      "level": "L3",
+      "nodeHash": "e82e46542857f968f690f2e02226485c25282cfb4e9fd8f3557f39d545907d70",
       "codeTargets": [
-        "src/remote/lib/cloudRemote.ts",
-        "packages/ridge-kernel/src/cloud/connection.rs"
+        "packages/ridge-acp/**",
+        "packages/ridge-mcp/**",
+        "packages/ridge-tmux/**",
+        "packages/ridge-kernel/**",
+        "packages/ridge-core/**",
+        "packages/ridge-cli/**",
+        "packages/remote/**",
+        "src/lib/teammate/**",
+        "src/lib/agent-chat/**",
+        "src/lib/components/SettingsPanel.svelte",
+        "src/routes/+layout.svelte",
+        "src/remote/**",
+        "src-tauri/src/teammate/**",
+        "src-tauri/src/bridge/**",
+        "src-tauri/src/commands/**",
+        "src-tauri/src/state.rs",
+        "src-tauri/src/lib.rs",
+        "docs/archive/**",
+        "src/lib/i18n/**",
+        "src/lib/components/SplitContainer.svelte"
       ],
       "testTargets": [
-        "src/remote/lib/cloudRemote.test.ts",
-        "scripts/kernel-cloud-owner-acceptance.mjs"
+        "packages/ridge-acp/**",
+        "packages/ridge-mcp/**",
+        "packages/ridge-kernel/**",
+        "src/lib/teammate/**",
+        "packages/remote/**",
+        "tests/e2e/commune.spec.ts",
+        "src/remote/lib/SidebarTeamRoster.test.ts",
+        "scripts/commune-permission-ui-acceptance.mjs",
+        "scripts/commune-permission-ui-client.mjs",
+        "src/lib/components/interactionContracts.test.ts",
+        "scripts/commune-global-ui-acceptance.mjs",
+        "scripts/commune-a2a-sdk-acceptance.py",
+        "scripts/commune-sdk-acceptance.mjs",
+        "scripts/commune-live-history-acceptance.mjs"
+      ],
+      "status": "LOCKED"
+    },
+    {
+      "id": "L4-CLOUD-RELEASE-0198",
+      "level": "L4",
+      "nodeHash": "9efb0a7d388fc526aec511e43d3f3f33f10eceebf6828e8e8919dd6d33d0a870",
+      "codeTargets": [
+        "package.json",
+        "Cargo.lock",
+        "src-tauri/Cargo.toml",
+        "src-tauri/tauri.conf.json"
+      ],
+      "testTargets": [
+        "scripts/check-release-version.mjs",
+        "scripts/check-release-version.test.mjs"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "cloud-pane-subscription-activation",
+          "id": "release-version",
+          "command": [
+            "node",
+            "scripts/check-release-version.mjs"
+          ],
+          "description": "四处产品版本一致为 0.1.100，独立 crate 版本保持兼容"
+        },
+        {
+          "id": "release-version-regression",
           "command": [
             "pnpm",
             "exec",
             "vitest",
             "run",
-            "src/remote/lib/cloudRemote.test.ts"
+            "scripts/check-release-version.test.mjs"
           ],
-          "description": "退订携带原分屏的激活标识，无有效标识则跳过，覆盖分屏切换与旧回调"
+          "description": "版本及 tag 契约拒绝缺失或不一致"
+        }
+      ]
+    },
+    {
+      "id": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+      "level": "L4",
+      "nodeHash": "7dca01c12c59b0f688f2710bc2df1a8e320bf09f8c22d6ef962a28335d04e11d",
+      "codeTargets": [
+        "packages/ridge-kernel/src/agent_profiles.rs",
+        "packages/ridge-kernel/src/agent_discovery.rs",
+        "packages/ridge-kernel/src/commune.rs",
+        "packages/ridge-kernel/src/app_server.rs",
+        "packages/ridge-acp/src/**",
+        "packages/ridge-core/src/process_identity.rs",
+        "src/lib/teammate/TerminalAgentRow.svelte",
+        "src/lib/teammate/CommuneConnectionDialog.svelte",
+        "src/lib/teammate/communeMembership.ts",
+        "src/lib/i18n/messages/commune.ts",
+        "src/remote/lib/CommuneWorkspaceRoster.svelte",
+        "packages/remote/src/shared/transport/wsRemote.ts",
+        "packages/ridge-kernel/src/managed_agent.rs",
+        "packages/ridge-kernel/src/lib.rs",
+        "packages/ridge-kernel/src/commune_connection.rs",
+        "packages/ridge-cli/src/main.rs",
+        "packages/ridge-cli/src/managed_agent.rs",
+        "src/lib/teammate/AgentCenterPanel.svelte",
+        "packages/ridge-core/src/commands/shell.rs",
+        "packages/ridge-kernel/src/commune_history.rs",
+        "packages/ridge-kernel/src/managed_console.rs",
+        "packages/ridge-kernel/src/main.rs",
+        "packages/ridge-kernel/src/domain.rs",
+        "packages/ridge-cli/src/tui/lan_session.rs",
+        "src/lib/teammate/CommuneStartDialog.svelte",
+        "src/lib/teammate/communeLaunch.ts",
+        "packages/ridge-kernel/src/server.rs",
+        "packages/ridge-kernel/src/pty.rs",
+        "Cargo.lock",
+        "packages/ridge-kernel/Cargo.toml",
+        "packages/ridge-kernel/src/commune_endpoint.rs"
+      ],
+      "testTargets": [
+        "packages/ridge-kernel/tests/agent_catalog_runtime.rs",
+        "packages/ridge-kernel/tests/commune_registration.rs",
+        "src/lib/teammate/communeMembership.test.ts",
+        "scripts/commune-global-ui-acceptance.mjs",
+        "packages/ridge-kernel/tests/managed_agent.rs",
+        "scripts/commune-agent-interop-acceptance.mjs",
+        "src/lib/teammate/communeLaunch.test.ts"
+      ],
+      "status": "LOCKED",
+      "acceptanceChecks": [
+        {
+          "id": "build-standard-stdio-fixture",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "ridge-acp",
+            "--bin",
+            "fake_acp_agent"
+          ],
+          "description": "先构建唯一受控 stdio 验收进程，供真实管道与生命周期测试使用"
         },
         {
-          "id": "cloud-pane-switch-browser",
+          "id": "build-collaboration-cli",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "ridge-cli"
+          ],
+          "description": "先构建实际终端入口，后续经 CLI、PTY 与 Runtime 验证"
+        },
+        {
+          "id": "shared-acp-driver",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-acp",
+            "--test",
+            "existing_conversation"
+          ],
+          "description": "精确会话、显式鉴权、拒绝鉴权无创建、早期事件、审批与取消"
+        },
+        {
+          "id": "kernel-protocol-drivers",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--lib"
+          ],
+          "description": "协议线格式、WebSocket 鉴权、发现误判、历史覆盖及公共 Runtime 回归"
+        },
+        {
+          "id": "catalog-discovery",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "agent_catalog_runtime"
+          ],
+          "description": "已知 Agent、包装命令和通用 ACP 声明的识别，以及未知能力、精确来源与失效引用处理"
+        },
+        {
+          "id": "existing-session-registration",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "commune_registration"
+          ],
+          "description": "精确原会话接入、鉴权与所有权、原组和 agentId 保留，以及失败与重复接入无副作用"
+        },
+        {
+          "id": "managed-protocol-session",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "managed_agent"
+          ],
+          "description": "真实子进程 stdio、唯一会话、桥接接入、权限路由、取消、失联及生命周期无孤立进程"
+        },
+        {
+          "id": "installed-agent-initialization",
           "command": [
             "node",
-            "scripts/kernel-cloud-owner-acceptance.mjs"
+            "scripts/commune-agent-interop-acceptance.mjs",
+            "--skip-grok"
           ],
-          "description": "真实浏览器与 Kernel 经 WebRTC/E2EE 切换两个 shell 和一个无 PTY 分屏，验证控制连接、输入连续性及旧退订作用域"
+          "description": "真实 Codex、Claude、OpenCode 初始化与正常退出；用户明确豁免本轮 Grok 实机验证，证据须标 SKIPPED，不能计作通过或完整对话验收。其他缺适配器、鉴权或创建失败仍失败。"
+        }
+      ]
+    },
+    {
+      "id": "L4-COMMUNE-CONNECTION-WIZARD",
+      "level": "L4",
+      "nodeHash": "dae45ec6b240cd688e326b125fbc8283a2520663b3c3e28c586e0dd4fce7cbfd",
+      "codeTargets": [
+        "src/lib/teammate/CommuneConnectionDialog.svelte",
+        "src/lib/teammate/communeMembership.ts"
+      ],
+      "testTargets": [
+        "src/lib/teammate/communeMembership.test.ts",
+        "scripts/commune-permission-ui-acceptance.mjs"
+      ],
+      "status": "LOCKED",
+      "acceptanceChecks": [
+        {
+          "id": "connection-kernel-build",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--bin",
+            "ridge-kernel"
+          ],
+          "description": "构建当前 Runtime 供真实接入验收使用"
+        },
+        {
+          "id": "connection-fixture-build",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "commune_registration",
+            "--no-run"
+          ],
+          "description": "构建隔离的已运行 ACP 会话端点"
+        },
+        {
+          "id": "connection-ui",
+          "command": [
+            "node",
+            "scripts/commune-permission-ui-acceptance.mjs",
+            "--membership"
+          ],
+          "description": "真实 Chromium 文件选择、预览、错误重试、取消与既有会话注册及移出，不新建替身会话"
+        }
+      ]
+    },
+    {
+      "id": "L4-COMMUNE-EXECUTABLE-IMAGE",
+      "level": "L4",
+      "nodeHash": "b8ed52ffa30a0933c066a2a76589c90764768762b703e977b497aac0c1a00764",
+      "codeTargets": [
+        "packages/ridge-kernel/src/agent_discovery.rs"
+      ],
+      "testTargets": [
+        "packages/ridge-kernel/tests/commune_registration.rs"
+      ],
+      "status": "LOCKED",
+      "acceptanceChecks": [
+        {
+          "id": "existing-process-enrollment",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "commune_registration",
+            "--",
+            "--test-threads=1"
+          ],
+          "description": "真实长名协议进程发现、精确登记、原终端保留与组织重启恢复"
+        }
+      ]
+    },
+    {
+      "id": "L4-COMMUNE-GROUP-DISPATCH-INTENT",
+      "level": "L4",
+      "nodeHash": "84742ae21ed4b67ce4915fd3d5df33973a4621cc6ac0af2674235500419d8a6b",
+      "codeTargets": [
+        "src/lib/teammate/communeGroupDispatch.ts",
+        "src/lib/teammate/CommuneGroupTasks.svelte",
+        "src/lib/teammate/HostCommuneGroups.svelte",
+        "src/remote/lib/CommuneWorkspaceRoster.svelte",
+        "src/lib/teammate/communeUiText.ts"
+      ],
+      "testTargets": [
+        "src/lib/teammate/communeGroupDispatch.test.ts",
+        "scripts/commune-permission-ui-acceptance.mjs"
+      ],
+      "status": "LOCKED",
+      "acceptanceChecks": [
+        {
+          "id": "group-intent-kernel-build",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--bin",
+            "ridge-kernel"
+          ],
+          "description": "构建现有组派发幂等与冻结目标的真实 Runtime"
+        },
+        {
+          "id": "group-intent-fixture-build",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "commune_registration",
+            "--no-run"
+          ],
+          "description": "构建既有 ACP 会话 fixture"
+        },
+        {
+          "id": "group-intent-ui",
+          "command": [
+            "node",
+            "scripts/commune-permission-ui-acceptance.mjs"
+          ],
+          "description": "真实组任务在提交后回执丢失、输入新草稿和组件重挂后，确认原派发不重复执行并保留新输入；回归审批、取消和产物"
+        }
+      ]
+    },
+    {
+      "id": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY",
+      "level": "L4",
+      "nodeHash": "5ae05adc4c36869a74143f851cda4ca8d5c469713455e59fe2f16c8b27179384",
+      "codeTargets": [
+        "src/lib/teammate/CommuneGroupTasks.svelte"
+      ],
+      "testTargets": [
+        "scripts/commune-permission-ui-acceptance.mjs"
+      ],
+      "status": "LOCKED",
+      "acceptanceChecks": [
+        {
+          "id": "online-kernel-build",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--bin",
+            "ridge-kernel"
+          ],
+          "description": "构建当前真实 Runtime"
+        },
+        {
+          "id": "online-fixture-build",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "commune_registration",
+            "--no-run"
+          ],
+          "description": "构建连接可断开但原进程保活的已有 ACP fixture"
+        },
+        {
+          "id": "online-group-ui",
+          "command": [
+            "node",
+            "scripts/commune-permission-ui-acceptance.mjs"
+          ],
+          "description": "真实连接断开后离线成员不能新选；已提交丢失回执的组派发仍能确认原请求，不重复执行；回归审批、组分工和产物"
+        }
+      ]
+    },
+    {
+      "id": "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
+      "level": "L4",
+      "nodeHash": "4da69abbbfd305d6002c8d97477d690cbe02e2fb0cbf17b38c9d00ac13cd0b76",
+      "codeTargets": [
+        "src/lib/teammate/teammateGroups.svelte.ts",
+        "src/lib/teammate/HostCommuneGroups.svelte",
+        "src/lib/i18n/messages/commune.ts"
+      ],
+      "testTargets": [
+        "src/lib/teammate/teammateGroups.test.ts",
+        "scripts/commune-global-ui-acceptance.mjs"
+      ],
+      "status": "LOCKED",
+      "acceptanceChecks": [
+        {
+          "id": "group-refresh-races",
+          "command": [
+            "pnpm",
+            "exec",
+            "vitest",
+            "run",
+            "src/lib/teammate/teammateGroups.test.ts"
+          ],
+          "description": "覆盖初次加载、后台读取中写入、过期读取与错误返回、写入并发拒绝、作用域切换、失败后显式重试及 legacy 迁移互斥"
+        },
+        {
+          "id": "group-refresh-ui",
+          "command": [
+            "node",
+            "scripts/commune-global-ui-acceptance.mjs"
+          ],
+          "description": "生产 Commune 组件在后台读取挂起时仍可编辑与提交，读取旧回包不能回退新投影，窄屏状态可读且既有编组、派发、审批和接入回归成立"
+        }
+      ]
+    },
+    {
+      "id": "L4-COMMUNE-GROUP-USABILITY",
+      "level": "L4",
+      "nodeHash": "41be677ecd614dc0a2e9de2e32a6b24de2ae959cdad0f604c58ead25055ddb25",
+      "codeTargets": [
+        "src/lib/teammate/TerminalAgentRow.svelte",
+        "src/lib/teammate/HostCommuneGroups.svelte",
+        "src/lib/teammate/teammateGroups.svelte.ts",
+        "src/lib/teammate/AgentCenterPanel.svelte",
+        "src/remote/lib/GlobalCommuneRoster.svelte",
+        "src/lib/i18n/messages/commune.ts",
+        "src/lib/teammate/communeVisual.css"
+      ],
+      "testTargets": [
+        "src/lib/teammate/teammateGroups.test.ts",
+        "scripts/commune-global-ui-acceptance.mjs"
+      ],
+      "status": "LOCKED",
+      "acceptanceChecks": [
+        {
+          "id": "commune-group-usability-ui",
+          "command": [
+            "node",
+            "scripts/commune-global-ui-acceptance.mjs"
+          ],
+          "description": "真实 Kernel 和受控既有 ACP 会话上验证协作入口可见、跨来源成员选择、候选接入解释、已归组成员可见与原子移动、派发记录保留和窄屏可用性"
+        }
+      ]
+    },
+    {
+      "id": "L4-COMMUNE-LINUX-PROCESS-OBSERVATION",
+      "level": "L4",
+      "nodeHash": "3e1c8f6b9073da296bd754bc3d900bd16aba6058b8a2eba53f9827d0f043f4dc",
+      "codeTargets": [
+        "packages/ridge-kernel/src/agent_discovery.rs"
+      ],
+      "testTargets": [
+        "packages/ridge-kernel/tests/commune_registration.rs"
+      ],
+      "status": "LOCKED",
+      "acceptanceChecks": [
+        {
+          "id": "process-enrollment",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "commune_registration",
+            "--",
+            "--test-threads=1"
+          ],
+          "description": "真实有线程的长名进程发现、登记、原会话及组织恢复"
         }
       ]
     },
@@ -71,60 +542,265 @@
       ]
     },
     {
-      "id": "L4-REMOTE-ACTIVE-PANE-CWD",
+      "id": "L4-COMMUNE-ORGANIZATION-MEMBERS",
       "level": "L4",
-      "nodeHash": "ee884321a94e7fb78f46b7440473d1a5f508d7356ca8a77817929740834164d6",
+      "nodeHash": "21d13cc3132b945d4384ac76c85f53d65cc0730d2db7e280993c8c4726c2ba69",
       "codeTargets": [
-        "src/remote/MainApp.svelte"
+        "src/lib/teammate/AgentCenterPanel.svelte",
+        "src/lib/teammate/TerminalAgentRow.svelte",
+        "src/lib/teammate/AgentMemberRow.svelte",
+        "src/lib/teammate/HostCommuneGroups.svelte",
+        "src/lib/teammate/communeMembership.ts",
+        "src/lib/teammate/teammateGroups.svelte.ts",
+        "src/remote/lib/GlobalCommuneRoster.svelte",
+        "src/remote/lib/CommuneWorkspaceRoster.svelte",
+        "packages/ridge-kernel/src/agent_discovery.rs",
+        "packages/ridge-kernel/src/commune.rs",
+        "packages/ridge-kernel/src/commune_groups.rs",
+        "packages/remote/src/shared/transport/wsRemote.ts",
+        "src/lib/teammate/teammateModel.ts",
+        "src/lib/teammate/CommuneGroupTasks.svelte",
+        "src/lib/teammate/communeGroupDispatch.ts",
+        "src/lib/i18n/messages/commune.ts",
+        "packages/ridge-kernel/src/server.rs",
+        "packages/ridge-kernel/src/commune_permissions.rs",
+        "src/lib/teammate/CommuneConnectionDialog.svelte",
+        "packages/ridge-kernel/src/domain.rs",
+        "packages/ridge-kernel/src/kernel_mcp.rs",
+        "packages/ridge-core/src/process_identity.rs"
       ],
       "testTargets": [
-        "src/remote/MainApp.test.ts",
-        "scripts/remote-cwd-acceptance.mjs"
+        "packages/ridge-kernel/tests/commune_registration.rs",
+        "scripts/commune-global-ui-acceptance.mjs",
+        "src/lib/teammate/communeMembership.test.ts",
+        "src/lib/teammate/teammateGroups.test.ts",
+        "packages/ridge-kernel/tests/agent_catalog_runtime.rs",
+        "src/lib/teammate/communeGroupDispatch.test.ts",
+        "scripts/commune-permission-ui-acceptance.mjs",
+        "packages/ridge-kernel/src/commune_groups.rs",
+        "packages/ridge-core/src/process_identity.rs"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "remote-current-pane-cwd",
+          "id": "organization-socket-attestation",
           "command": [
-            "pnpm",
-            "exec",
-            "vitest",
-            "run",
-            "src/remote/MainApp.test.ts"
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-core",
+            "process_identity"
           ],
-          "description": "当前分屏无 cwd 时清空，跨工作区和迟到元数据维持作用域隔离"
+          "description": "精确进程与 TCP 归属校验，未可观察状态有界等待，错误 PID 和歧义归属始终拒绝"
         },
         {
-          "id": "remote-current-pane-cwd-browser",
+          "id": "organization-runtime",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "commune_registration"
+          ],
+          "description": "真实 Runtime 的候选入组、身份复用、并发、只读与旧任务隔离，fixture 不代替外部 Agent"
+        },
+        {
+          "id": "organization-storage",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--lib",
+            "commune_groups"
+          ],
+          "description": "组文档 version 1/2/3、原子提交、归档、CAS 与迁移失败保护"
+        },
+        {
+          "id": "organization-kernel-build",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--bin",
+            "ridge-kernel"
+          ],
+          "description": "以当前源构建后续 UI 使用的真实 Kernel"
+        },
+        {
+          "id": "organization-global-ui",
           "command": [
             "node",
-            "scripts/remote-cwd-acceptance.mjs"
+            "scripts/commune-global-ui-acceptance.mjs"
           ],
-          "description": "生产页面经隔离 LAN 与 Cloud 连接真实 shell，验证 cd、无 cwd 分屏的页头与文件作用域及切回原分屏"
+          "description": "Native/Remote 统一成员与候选先入组后接入、同名来源、成员移动与能力反馈"
+        },
+        {
+          "id": "organization-catalog",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "ridge-kernel",
+            "--test",
+            "agent_catalog_runtime"
+          ],
+          "description": "Native/Remote 可信发现、只读投影、来源脱敏与工作区关闭后引用失效"
+        },
+        {
+          "id": "organization-membership-ui",
+          "command": [
+            "node",
+            "scripts/commune-permission-ui-acceptance.mjs",
+            "--membership"
+          ],
+          "description": "真实 Runtime 的已有会话连接文件向导、鉴权与进程校验拒绝、修正重试和断开保留历史"
+        },
+        {
+          "id": "organization-dispatch-regression",
+          "command": [
+            "node",
+            "scripts/commune-permission-ui-acceptance.mjs"
+          ],
+          "description": "审批、协议历史、旧工作区组兼容及 CHG-098/099 的失联回执确认保护"
+        }
+      ]
+    },
+    {
+      "id": "L4-COMMUNE-REMOTE-DELIVERY",
+      "level": "L4",
+      "nodeHash": "4a9913fc9b8eb0834c22f393c58b5099622f541ccecbecfe3cd3b98be5fb359a",
+      "codeTargets": [
+        "packages/remote/src/shared/transport/wsRemote.ts",
+        "src/remote/lib/cloudRemote.ts",
+        "src/remote/lib/CommuneWorkspaceRoster.svelte",
+        "src/remote/lib/CommuneMemberMessage.svelte",
+        "src/remote/lib/communeMemberDelivery.ts",
+        "src/lib/teammate/communeUiText.ts"
+      ],
+      "testTargets": [
+        "src/remote/lib/communeMemberDelivery.test.ts",
+        "src/remote/lib/cloudRemote.test.ts",
+        "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+        "scripts/commune-global-ui-acceptance.mjs",
+        "src/lib/stores/hosts.connect.test.ts"
+      ],
+      "status": "LOCKED",
+      "acceptanceChecks": [
+        {
+          "id": "commune-remote-delivery-ui",
+          "command": [
+            "node",
+            "scripts/commune-global-ui-acceptance.mjs"
+          ],
+          "description": "真实受控 ACP 进程及 Kernel 上验证手机单成员消息、丢回执同键重试、连点防重和新草稿保留，同时保持跨来源编组、历史与 Remote 权限边界"
         }
       ]
     }
   ],
   "allowedPaths": [
     ".stcignore",
-    "packages/ridge-kernel/src/cloud/connection.rs",
+    "Cargo.lock",
+    "docs/archive/**",
+    "package.json",
+    "packages/remote/**",
+    "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+    "packages/remote/src/shared/transport/wsRemote.ts",
+    "packages/ridge-acp/**",
+    "packages/ridge-acp/src/**",
+    "packages/ridge-cli/**",
+    "packages/ridge-cli/src/main.rs",
+    "packages/ridge-cli/src/managed_agent.rs",
+    "packages/ridge-cli/src/tui/lan_session.rs",
+    "packages/ridge-core/**",
+    "packages/ridge-core/src/commands/shell.rs",
+    "packages/ridge-core/src/process_identity.rs",
+    "packages/ridge-kernel/**",
+    "packages/ridge-kernel/Cargo.toml",
+    "packages/ridge-kernel/src/agent_discovery.rs",
+    "packages/ridge-kernel/src/agent_profiles.rs",
+    "packages/ridge-kernel/src/app_server.rs",
+    "packages/ridge-kernel/src/commune.rs",
+    "packages/ridge-kernel/src/commune_connection.rs",
+    "packages/ridge-kernel/src/commune_endpoint.rs",
+    "packages/ridge-kernel/src/commune_groups.rs",
+    "packages/ridge-kernel/src/commune_history.rs",
+    "packages/ridge-kernel/src/commune_permissions.rs",
+    "packages/ridge-kernel/src/domain.rs",
+    "packages/ridge-kernel/src/kernel_mcp.rs",
+    "packages/ridge-kernel/src/lib.rs",
+    "packages/ridge-kernel/src/main.rs",
+    "packages/ridge-kernel/src/managed_agent.rs",
+    "packages/ridge-kernel/src/managed_console.rs",
+    "packages/ridge-kernel/src/pty.rs",
+    "packages/ridge-kernel/src/server.rs",
+    "packages/ridge-kernel/tests/agent_catalog_runtime.rs",
+    "packages/ridge-kernel/tests/commune_registration.rs",
+    "packages/ridge-kernel/tests/managed_agent.rs",
+    "packages/ridge-mcp/**",
+    "packages/ridge-tmux/**",
+    "scripts/check-release-version.mjs",
+    "scripts/check-release-version.test.mjs",
+    "scripts/commune-a2a-sdk-acceptance.py",
+    "scripts/commune-agent-interop-acceptance.mjs",
     "scripts/commune-global-ui-acceptance.mjs",
-    "scripts/kernel-cloud-owner-acceptance.mjs",
-    "scripts/remote-cwd-acceptance.mjs",
+    "scripts/commune-live-history-acceptance.mjs",
+    "scripts/commune-permission-ui-acceptance.mjs",
+    "scripts/commune-permission-ui-client.mjs",
+    "scripts/commune-sdk-acceptance.mjs",
+    "src-tauri/Cargo.toml",
+    "src-tauri/src/bridge/**",
+    "src-tauri/src/commands/**",
+    "src-tauri/src/lib.rs",
+    "src-tauri/src/state.rs",
+    "src-tauri/src/teammate/**",
+    "src-tauri/tauri.conf.json",
+    "src/lib/agent-chat/**",
+    "src/lib/components/SettingsPanel.svelte",
+    "src/lib/components/SplitContainer.svelte",
+    "src/lib/components/interactionContracts.test.ts",
+    "src/lib/i18n/**",
     "src/lib/i18n/messages/commune.ts",
+    "src/lib/stores/hosts.connect.test.ts",
+    "src/lib/teammate/**",
+    "src/lib/teammate/AgentCenterPanel.svelte",
+    "src/lib/teammate/AgentMemberRow.svelte",
+    "src/lib/teammate/CommuneConnectionDialog.svelte",
     "src/lib/teammate/CommuneGroupTasks.svelte",
+    "src/lib/teammate/CommuneStartDialog.svelte",
     "src/lib/teammate/HostCommuneGroups.svelte",
+    "src/lib/teammate/TerminalAgentRow.svelte",
+    "src/lib/teammate/communeGroupDispatch.test.ts",
+    "src/lib/teammate/communeGroupDispatch.ts",
+    "src/lib/teammate/communeLaunch.test.ts",
+    "src/lib/teammate/communeLaunch.ts",
+    "src/lib/teammate/communeMembership.test.ts",
+    "src/lib/teammate/communeMembership.ts",
     "src/lib/teammate/communeUiText.ts",
     "src/lib/teammate/communeVisual.css",
+    "src/lib/teammate/teammateGroups.svelte.ts",
+    "src/lib/teammate/teammateGroups.test.ts",
+    "src/lib/teammate/teammateModel.ts",
+    "src/remote/**",
     "src/remote/CloudAuthScreen.svelte",
-    "src/remote/MainApp.svelte",
-    "src/remote/MainApp.test.ts",
     "src/remote/lib/CommuneMemberMessage.svelte",
     "src/remote/lib/CommuneWorkspaceRoster.svelte",
     "src/remote/lib/GlobalCommuneRoster.svelte",
     "src/remote/lib/RemoteSidebar.svelte",
+    "src/remote/lib/SidebarTeamRoster.test.ts",
     "src/remote/lib/cloudRemote.test.ts",
-    "src/remote/lib/cloudRemote.ts"
+    "src/remote/lib/cloudRemote.ts",
+    "src/remote/lib/communeMemberDelivery.test.ts",
+    "src/remote/lib/communeMemberDelivery.ts",
+    "src/routes/+layout.svelte",
+    "tests/e2e/commune.spec.ts"
   ],
   "testCommand": [
     "npm",
@@ -148,7 +824,7 @@
     ".vscode/extensions.json": "926925a0d7f8b5e0e9e84667ac901095f7ffdb83afb54de65662d6e4cfb78ad1",
     ".vscode/settings.json": "54224dc29195ac0e0ae6a3ce38d5cd7aeb390357259a37c860a28a3f1087ef71",
     "AGENTS.md": "f79dcdcc868100c55ce91dda383e287ad1283226b7a24de3fed95123864fc0bf",
-    "Cargo.lock": "1e2954395b010b5e8b12970defa917afdbddeb7095f8dc90a6fdfc575d7918fe",
+    "Cargo.lock": "7263769c843b7b09ab7515db2e5591ddf17a4e959319020e093cbd8cd457ee0a",
     "Cargo.toml": "957354d0468d8acd0df1e15ccdb5440a943a46b84f4bb0536c68edcdaf1442d6",
     "changes/BASELINE-001.md": "014956323df88e7e740dc6669f035bef10d139cb72d42de7c963ae2b1d0b1aae",
     "changes/CHG-001.md": "1108fb4f66a90c53a26b1fba64da1315e81c851d822c4a5736fd84640d9d685d",
@@ -251,6 +927,7 @@
     "changes/CHG-100.md": "7cb9f7fd3ecc2f65c632772a985821e4aae08da2ebff31578a65b16c6ffeafa0",
     "changes/CHG-101.md": "de0a35e4056440063d23ac286b10953608fa49d1015d9c3d5f69d3950a50eb71",
     "changes/CHG-102.md": "67713fa4961c9cdc1c4de9f34631700b740fb233ebf6b87f3bc70a493c438da5",
+    "changes/CHG-103.md": "db8ee38623c2bd64c4f26059cc039b60dc6cae66e0fed2434419adfed60afe8b",
     "changes/CHG-104.md": "701f3d41deebc2ebeab89ffbae31801f80597cc419150975e6b4afd5d74f8e1b",
     "changes/CHG-105.md": "75423db63f94375898cddb5864e72ad8067acf7428ca1c0b74b3fc117260b266",
     "changes/CHG-106.md": "a5e121ead338ae3bddb5d81b5d6379c824f3cdb3c6d22e7e9055a6907dfaf107",
@@ -272,6 +949,7 @@
     "changes/CHG-122.md": "11a86c1b4dd8efc7b1bc5f7fa60aeb20a4df976363804b7fea6a8c9db0550292",
     "changes/CHG-123.md": "9915fa842febe720168285b5da578627ca53b3ba2b1c83c2a255866352b1a4ca",
     "changes/CHG-124.md": "931c73f26def54ca3c23eb9bca78da02f8c6350729651dcd54c19e79e70b1a8f",
+    "changes/CHG-125.md": "0d86e349ff969430423508dd8fffeb7d36cd9b69b0b95aac2a1ffea154970128",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -512,8 +1190,8 @@
     "packages/remote/src/shared/transport/types.ts": "175d9c8268a6d649352567f4d281a7db15030bd6ccd7e05342c1aa2f0530a839",
     "packages/remote/src/shared/transport/unknownText.test.ts": "9ef6eb2dd61145aa2af8bec1cefe49fec7cba8eccc1b12d1835d635ff245a0a3",
     "packages/remote/src/shared/transport/unknownText.ts": "7364fc7fc183a44ea2b26b665da64c1e6ded6d18e2ec80012ebb6a294fd2b66d",
-    "packages/remote/src/shared/transport/wsRemote.behavior.test.ts": "b0cc4e53e6538b92f1b108bbcbd7442403011fc9a23662ca770ed39dab9bb2f4",
-    "packages/remote/src/shared/transport/wsRemote.ts": "0f9d4bcf816db19614068bb4f64671ea85c64ce001cbdecbd09330ec1b82d112",
+    "packages/remote/src/shared/transport/wsRemote.behavior.test.ts": "2ae38db10434940491d23b4d29c4dfd8a7f5a9afa0afc7e4738850567de7db03",
+    "packages/remote/src/shared/transport/wsRemote.ts": "7f37073b2a72b2ae390d1cac7662e1a8210ac9eb0c376eaf3a471a6a6307e91a",
     "packages/remote/src/shared/transport/wsRemotePending.test.ts": "894c0e2732ea59df167edd0799aa2bcc4d38bcb6c8734925daa8e25c8287c93d",
     "packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts": "05fb5d1829c71f830603a6f955739d29abec0ac53c7c60ffae083883faa74339",
     "packages/remote/src/shared/transport/wsRemoteUrl.test.ts": "cf32e04e3a20137228fc7b96bb13ae995cf52fc8c6836bf68c79deb2289af412",
@@ -548,15 +1226,15 @@
     "packages/ridge-acp/Cargo.toml": "28350bd01a35e5460054827faa41767c04612b2f533af84425dc23d63f3fe017",
     "packages/ridge-acp/README.md": "318d7bcbfdef9b23ba16225750bcb2fe64337da3708fe92bcdaae8adfa716693",
     "packages/ridge-acp/src/bin/broken_acp_agent.rs": "5949d8edcd75cd4e11d0d3451147739093c60caf663f5b7b4499164116056b91",
-    "packages/ridge-acp/src/bin/fake_acp_agent.rs": "68ced5a3108c6999bfcafa2441c855c4ea6927d5f307f198f1b2aeeee9462fcb",
+    "packages/ridge-acp/src/bin/fake_acp_agent.rs": "017884fb2a4343ffe7d7398e309643eb59baa0129d118f1a33ce89875cae263d",
     "packages/ridge-acp/src/bin/live_acp_agent.rs": "3681b16c892b859afd192ecd589ee853fa2886860c001a3550d88d19d8728c79",
     "packages/ridge-acp/src/error.rs": "854bc245912107704379a11dbbe21f06ef2422d4bba05c25024d62a848485827",
     "packages/ridge-acp/src/events.rs": "1a1f7d5585bbb03e47e92b00361fd5d0ba7172020e27538f08928f8508c24a53",
-    "packages/ridge-acp/src/existing.rs": "b74cfb28d9d789c3540de69fa98a4492ffa5c3b9b586b7bd1c9640eaa28798bf",
+    "packages/ridge-acp/src/existing.rs": "fa9252eb886736bee266e9fb29aa31d5b8303566a3bf34e5f19a36d207de55fc",
     "packages/ridge-acp/src/lib.rs": "fd07d76528c0945dd52253b2018a7b9dc2684fdcabc4a0879c0e511fb1630783",
     "packages/ridge-acp/src/lifecycle.rs": "869136c9ea58cf5140ef9a4aa262d36ab90bad3d6356482c03779370d8c009cb",
     "packages/ridge-acp/src/prompt_loop.rs": "98f5657085459fbbabbef18a58bc47ce048ede5deeaae4e94a1d0036a79e475b",
-    "packages/ridge-acp/src/protocol.rs": "3d3a54d1710fbe9ae63a2d8e0860e42e965f1c56126952d7b2eb32c9f2736947",
+    "packages/ridge-acp/src/protocol.rs": "11bbc0010f0a0b229ac36b6991af0aa067639eb8eb494084e9566b423e1ada2b",
     "packages/ridge-acp/src/provider.rs": "9f5f653b36e08ffe06c746ca43cca83bcbbcbc5fac7b7d358150491d07670033",
     "packages/ridge-acp/src/session.rs": "210e15789fb2cf0b6b2ba943d8f0e356ba8f9a675e4dd58fa2962c94e338de66",
     "packages/ridge-acp/src/task.rs": "abeca97e06cfb6934e21c0742ad874655c916ed44ee976223e8f3d7d285b9822",
@@ -569,7 +1247,7 @@
     "packages/ridge-acp/tests/duplex_requests.rs": "5febcbd509c7a913ecc22b3d3d59f803eab8e6067b1b9453150d3dab71604a07",
     "packages/ridge-acp/tests/e2e_acp_lifecycle.rs": "8dbfb9c24130cb62092f46e46f64a921fe893aa960ce0b4820800e55175974cf",
     "packages/ridge-acp/tests/e2e_session_snapshot_json.rs": "c4831f3e004957e0e2d128cf37d703e0e34af4eefdb0518806ddc4910c9f5d95",
-    "packages/ridge-acp/tests/existing_conversation.rs": "fecd1ab40206cec16a0c15fc08c551af9c293cd4b436b0bcc32fed424f0bece0",
+    "packages/ridge-acp/tests/existing_conversation.rs": "e8885b3d80e5ba0d6ebfc12eaf97e6d0c0a05493719ece7bd6dc0c85104668fe",
     "packages/ridge-acp/tests/m21_lifecycle_acceptance.rs": "397c7c9763644fb41388e91bb137e74a568fbc6477e3cf68f225d58bd529c82f",
     "packages/ridge-acp/tests/mobile_consumer_protocol.rs": "e7431aaf1930803656f08356ef8b96b2a312879e11c50657fb23ee2e20620710",
     "packages/ridge-acp/tests/real_acp_e2e.rs": "83d31bb1096c6fcbc486821ba840ffd617377cdd35b147b90e24cd15f0aa73b8",
@@ -597,7 +1275,8 @@
     "packages/ridge-cli/src/kernel_host_impl.rs": "9041745dbbb65c9f7496003f52e224b1440288fe692a4023f281977b22e949fb",
     "packages/ridge-cli/src/key_binding.rs": "8508246404205e83162064cbbc7a66325a40c29fc9cf6a0d96b1fec336cbe9ab",
     "packages/ridge-cli/src/login_flow.rs": "7e95016ba9dc25f503bf4035de018d886329ccf4f21bc8537113abb6c69e37b7",
-    "packages/ridge-cli/src/main.rs": "2438030f4ef9b67532cc19698b4003bcdec6e7008b8296dc4602adcf064835fd",
+    "packages/ridge-cli/src/main.rs": "6b47aaccf54f7286bfcff4b5dbda0bfe7d1ce6b3d3cd52ad176651b367d49ab6",
+    "packages/ridge-cli/src/managed_agent.rs": "51cc978e819b52116e5566c61014617e4249b2b309bce6c207df2ec164003d64",
     "packages/ridge-cli/src/mux.rs": "f7b3b543288e1461940e28353bc5416a1065f7a19b40b780d44366f3dec38052",
     "packages/ridge-cli/src/protocol.rs": "ad40091eb6a4bdce4fde8b4fe42b39a91593fab9f6e84f8e104020a5a8418262",
     "packages/ridge-cli/src/pty.rs": "32c3c6092a67edb2d4a6e0918afa6e8884af732e4eefb803b638eb600691996c",
@@ -611,7 +1290,7 @@
     "packages/ridge-cli/src/tui/dashboard.rs": "e9c02ea4a58d4d24f1577111c6f199429508e9d904bc8e06712cabec15ee1d38",
     "packages/ridge-cli/src/tui/keymap.rs": "f18b4e273069ec5bf113b807d194a40cb2a0bb87157e4e632a06e1c968f2a9f3",
     "packages/ridge-cli/src/tui/lan_proto.rs": "daff835b97c79a271220cd1c0ad8cc96199f6c7d8819465bb5250bd50c110ec4",
-    "packages/ridge-cli/src/tui/lan_session.rs": "8ad216b6952549cef6a16a5048ffca44ead0102f3bbd42a0b20a4f7c8c9e1fb4",
+    "packages/ridge-cli/src/tui/lan_session.rs": "253cdbc942b79f38bc875126d1eb46aa1fe682f7a3721d8df2a82a2150ebd408",
     "packages/ridge-cli/src/tui/mod.rs": "7655b19eba3cfbc8244394370ef1193f9a41a26c9d16c75aed44a22f3b33491c",
     "packages/ridge-cli/src/tui/pager.rs": "ded1eea1be4178f2459698b28703c8984bc4bc36678092edc9fee98079463b27",
     "packages/ridge-cli/src/tui/performance.rs": "f526a99568ef0f5cf13f12f1e6682d2b393a7915e7f233094901561b1da951c2",
@@ -628,7 +1307,7 @@
     "packages/ridge-core/src/commands/mod.rs": "4b6f9e65b62784d3329e4b07ddd3a13f5293f006237133a5880b99fe3b6e8cf4",
     "packages/ridge-core/src/commands/process.rs": "e6d9a6512a3f383e1fac8584501cccbbe83efb2edb08b473d131e735ba80032b",
     "packages/ridge-core/src/commands/settings.rs": "25a28eb6e091ef665ffab7f080a4c568d1ac35b0dbba4bb707a49436b9994410",
-    "packages/ridge-core/src/commands/shell.rs": "62a30e30414d0c163726ff073fc125d9dac8a144ad76cdf56352ae3bbace2f5d",
+    "packages/ridge-core/src/commands/shell.rs": "2096e9ef52c39aca80b723fdf2d9d0d62ecfb74bdbfdb3116ac75ee676229c5a",
     "packages/ridge-core/src/commands/theme.rs": "3e124b430cc64d0a4929ccdd3027379b1477f5edde3b9a0d0662283615572689",
     "packages/ridge-core/src/commands/workspace.rs": "3fad9484e2de2c9888945a114228de3373d82070b6ff8bcbbf3cbc1fe355bec2",
     "packages/ridge-core/src/ctx.rs": "2d33414a52eaa846245ef65b294ef389a1a42706b80c8c57affa28f1432ccec3",
@@ -643,7 +1322,7 @@
     "packages/ridge-core/src/grant_store.rs": "321330360ad190c8dfe14741b2d420f9fb3ad8894d911a2c1cac6a9cdeb68b63",
     "packages/ridge-core/src/lib.rs": "4b9d08b2953538b7eb480fceb5a4a7b765126470c84378cf9bd706f78b1b241d",
     "packages/ridge-core/src/process_guard.rs": "9534685e0ddcd868b1f7096bf5ce7c3c2a76ebe8e6da5ae25a1199031992a1d8",
-    "packages/ridge-core/src/process_identity.rs": "3f50f165566c77e8e0d2f99437ec0b74c0e509098cb255bbca3a17452ffed12a",
+    "packages/ridge-core/src/process_identity.rs": "75883f03cede08fabb6409bb0b781a7791f265e31e49604ad09ef9dde166cd4c",
     "packages/ridge-core/src/protocol_guard.rs": "df246d77c23d0348257f08f27e43e4ad6f86b092d4a0837e27b7c9bb1eca7eb0",
     "packages/ridge-core/src/pty/chunk.rs": "5c8cd599f447c138ffb47cfd676fd511f876afe19d0a6b88fabf18487c1a3aaf",
     "packages/ridge-core/src/pty/cwd.rs": "70a097f83e4118293eb9bfbec2e80aaf667dfc20c24eeb10178d35c8d819edf2",
@@ -670,11 +1349,11 @@
     "packages/ridge-core/src/workspace/mod.rs": "ade190c6c82d8eb951aab24640da6500a0af2369af7b207712c2ccf65806d174",
     "packages/ridge-core/src/workspace/mode.rs": "c9fa4739511c4abcb2667e77a9de9d68e62690e662ed6585cd4f2359c176c4f6",
     "packages/ridge-core/src/workspace/pane_tree.rs": "598e17f6c797ee65794b9dabace3b6f16536f3d21d6a5974d5f920007022c0b4",
-    "packages/ridge-kernel/Cargo.toml": "4f1941a27630f1507c26f55cf5d340ff9922f04fa54979c0e55f5f5715eaf95d",
-    "packages/ridge-kernel/src/agent_discovery.rs": "c336a02f2457c86b7477acc8c298dc50ef6053a0609b2437fa2bb60fcb73d855",
-    "packages/ridge-kernel/src/agent_profiles.rs": "2255c83cfbe959cb24ca4263ecf403daed18c762711dfcbfb304c575bb570f26",
+    "packages/ridge-kernel/Cargo.toml": "a034606f5434aa616485b7e1b2fa945a883190a180a328a3eac60c812f94a277",
+    "packages/ridge-kernel/src/agent_discovery.rs": "8a43bbd49fb14f4cf2618f62e9eaf59e818fcdcc81ed937e849539cd8edff0f3",
+    "packages/ridge-kernel/src/agent_profiles.rs": "513476a16fecdee31ee29157b4f0f9ec7b7eb5b91cd0a4f1a2dc00f68d4e7ccb",
     "packages/ridge-kernel/src/agent_terminal.rs": "202d4642c8765dfc70c3eed67383f4f8be7bd32e0b9b9f2e4e0a4374eb6deead",
-    "packages/ridge-kernel/src/app_server.rs": "f8348145dcb5bd4f1618fbe822e4ff3e1c062f7cabd52b810c411dce673b07dc",
+    "packages/ridge-kernel/src/app_server.rs": "7397b44d1307321a0f8a913ec2b1133eaf42129dd564677b3f8aba1ef63019ad",
     "packages/ridge-kernel/src/auth_client.rs": "f260d21d4734edb4ee8f3c06e0ec5265d49a8637f7dbd1a43ad05bb9b6e75574",
     "packages/ridge-kernel/src/business.rs": "6d745b7caeac0ce2c0313565631fc7e09e12920c670ebd1a9160c018f1842b56",
     "packages/ridge-kernel/src/client.rs": "47dc8d489220833305fc3c4e09105387c933ac568aeac233c5df66cc626dcb19",
@@ -698,20 +1377,21 @@
     "packages/ridge-kernel/src/cloud/session_control.rs": "721ebcf546f32eb1d0620abbd7a8a20653cd91ac5a8de494a872c6de22b2c7cd",
     "packages/ridge-kernel/src/cloud/signaling.rs": "fd096bdfd09c4534a25e441df64f198d0abd100befbadbd5b88a6d9205edb867",
     "packages/ridge-kernel/src/cloud/workspace_scope.rs": "d1acf2431b03674b073d667445c27fc6616bc5d23c71909c28172aad5a6e422e",
-    "packages/ridge-kernel/src/commune_connection.rs": "8cfed612f5a822ec75426427a33f42173751bb471a971b1584252410f404b15c",
+    "packages/ridge-kernel/src/commune_connection.rs": "01fe0a0511e1d3b1d210464f23b70ad35615c16b71a82eed9476e1ca79b8246a",
+    "packages/ridge-kernel/src/commune_endpoint.rs": "39261b45d129e4e710330e281bdb211c96ee35151b3058afdbd735ef6e3d4169",
     "packages/ridge-kernel/src/commune_groups.rs": "f198119c7f9bf6a6fdf3ee372751581fdc4d4210e79fb9e1f0a847f6c5718ce9",
-    "packages/ridge-kernel/src/commune_history.rs": "1b13dfc31fcee9cd2a82ffae581f9ae67cf294303ce3f3c3e608147150756908",
+    "packages/ridge-kernel/src/commune_history.rs": "a0071ae387bbc737cbe18ae79ab6d4d19bb6e994cc6b812c485111c50b4933dd",
     "packages/ridge-kernel/src/commune_outputs.rs": "95db6ba23c1a5d5d3e468773086d3ec2022b3e82e4253914e50ea7365014d0c0",
-    "packages/ridge-kernel/src/commune_permissions.rs": "82961d40ebf9a25597cbd0294c78ab31dcb765d12a30dcb345f5fafb69ef3753",
-    "packages/ridge-kernel/src/commune_tasks.rs": "b7717f8327e1daf75782935710089fe343ab0408ee6db5d1c330fcab14a41eae",
-    "packages/ridge-kernel/src/commune.rs": "3c948a980f29c8eacccef8df6b48ebd9c66f7b75c0311b5d6ae90bccbe72c6c9",
+    "packages/ridge-kernel/src/commune_permissions.rs": "8023c9cf70604ab66ed7f458600c529e7c82af258386082cd30e39f19adb0481",
+    "packages/ridge-kernel/src/commune_tasks.rs": "3ae6140dede4d39622fdbe72e2af7efb1aa01d70a02627dc4b735e2cc5fece91",
+    "packages/ridge-kernel/src/commune.rs": "fd7b9ebffcb2c56ec0763b554052edbbece28ba1b0948f1cc3310965c209323e",
     "packages/ridge-kernel/src/controller_identity.rs": "045207e20fd553dcc077fdded3fa23af954264b1988c3fd09dde1b8887d63393",
-    "packages/ridge-kernel/src/domain.rs": "f63838c4a5529292dbcc1c6bd1ff50b7f97f9ee3c07cf456f916e05f6b8adae1",
+    "packages/ridge-kernel/src/domain.rs": "49ee7045eedd574dce09250da88cb1691c47e0ab8c9e6cdca02b525ab9566460",
     "packages/ridge-kernel/src/execution_rejections.rs": "2bdffc4154af6a545dde96f03dd1dd99eebc6aef7928d5746fa87db232a011ee",
     "packages/ridge-kernel/src/foreign_panes.rs": "24e198827db3a1cf84703673ecbbecf3759ee5e8f88be0787de7bcf729577744",
     "packages/ridge-kernel/src/foreign_terminal.rs": "dc529acbdba716b72bb0edc358d23428be111fe808ba16e7aa6655fdec7fc18f",
     "packages/ridge-kernel/src/fs_watch.rs": "c04d6a04daff54c7150276268f93352026c09264696248515f6ae655f79a2fa4",
-    "packages/ridge-kernel/src/gateway_permissions.rs": "8f8ca68adab04f40de56e628c858e711b520fc9a9c1bc7f86a6f5ef14d356507",
+    "packages/ridge-kernel/src/gateway_permissions.rs": "1a64c99abe917563d707e503223e33ff9535318a131a4825e46452b96b4c7acf",
     "packages/ridge-kernel/src/git_commands.rs": "19fc2f8c409e508dabc4743c685e4036cd74bdd6f6278f57301d409009749c20",
     "packages/ridge-kernel/src/headless.rs": "e42d6fd95fb547f9dc0bc1b8819cef8bf682c0c97910d987ffa187cf143af147",
     "packages/ridge-kernel/src/host_core.rs": "186d47b640e097ee4220d1f8453bb1f924a8df24956cb105a35b1b28b661f94b",
@@ -722,18 +1402,20 @@
     "packages/ridge-kernel/src/installer.rs": "8f79838dce1eb79d85453eda3c8a6859f4f60fbdadf1c1f64647366abb21188a",
     "packages/ridge-kernel/src/kernel_backed_handle.rs": "61a81a1948c1682841c144cf26511780e84604d4bfc144cfcf9e4d459ac8ca76",
     "packages/ridge-kernel/src/kernel_mcp.rs": "9b1800f3fa95d087c9998c9976034e08bd17b6c838b9fba5c4063482c74b4cc2",
-    "packages/ridge-kernel/src/lib.rs": "ce7b675a7b031310d96e23db0d364f907eb0afe17ef3bbf4fabe685aa79e0d78",
+    "packages/ridge-kernel/src/lib.rs": "a96cd0475c3fea88d736a734ca83d9624076b8894a2b87a16bee81fc755dbd0a",
     "packages/ridge-kernel/src/lifecycle.rs": "aa48f044f51b9149e8195ce7ab65faa029a3d91034701ebd58c5e19ad2ec4e8d",
     "packages/ridge-kernel/src/local_client.rs": "ae4e3e3d853e9a412e4afcd3da5c462a777e324b4eaafa2cd437ca361187a42a",
     "packages/ridge-kernel/src/lsp.rs": "1800ebaa41f6d997e606dff10fead6d038de1f7e64f45c62f70a01f8983c5f0b",
-    "packages/ridge-kernel/src/main.rs": "2c5044fe88ca693524f7d657c1662a854863194ed4e3cdbdb77f6c21dc75ae5d",
+    "packages/ridge-kernel/src/main.rs": "4b4f0783e37e583069b39a0ba510adbfd23aac08ea24bf2c98c2b8d363328f4c",
+    "packages/ridge-kernel/src/managed_agent.rs": "cd3ccdaeebab037bacb2151c3224a421b52a6452d096d2cdf0de67a08f7d42ac",
+    "packages/ridge-kernel/src/managed_console.rs": "b137c87937bcbeac3a2b3a2424741e5c5091edf920d90cce8375b766aef12607",
     "packages/ridge-kernel/src/metrics.rs": "7264b4d80698aa9b46a78ca26cd2f427501eacbd4a12eb6c6e348a8ea72b92ec",
-    "packages/ridge-kernel/src/orchestration_health.rs": "90a08326d5cbf71c12e5a769fac32371bbe02e3e467f7d846b4b3745f55bb42b",
+    "packages/ridge-kernel/src/orchestration_health.rs": "d265a1dc065a100b088cf646700c7f5b3fbe680ea238fe941dd6813b46c547ec",
     "packages/ridge-kernel/src/outbound_hosts.rs": "d592f6148fb2678668bf16c5378813f35cf4cb38efc950bef084a41fb91eea6d",
     "packages/ridge-kernel/src/processes.rs": "d910bea581c1baf42ecb949b2c61873851ee2db04f2ac9156a195b901666344b",
     "packages/ridge-kernel/src/project_store.rs": "5d0d9282cd69abe654c833ca6c2fa951e74bf1c83efda0403867646cb32b7c09",
     "packages/ridge-kernel/src/projects.rs": "ece5d3a88baeeeeb01a6040197ef8e17e12781d03945fc7ca44330abeb9a15d0",
-    "packages/ridge-kernel/src/pty.rs": "80e25c6797d0609ff98c87a8560aad8929376483c3761c7922ba26975a7c11b5",
+    "packages/ridge-kernel/src/pty.rs": "5a2a20392f9299b8cfad2ca6f681c419fdb123951e89c2b57105fac38b3db0d7",
     "packages/ridge-kernel/src/registry.rs": "f3397fccc2e7e8c033f12d899a2fcfaa8629231a4a7b2d83f2462f90b23b6b42",
     "packages/ridge-kernel/src/remote_auth.rs": "33cb5abfc8d7c0b8d9accc8452869a6710b91d0b0b6e34e713ff187e2e72d4f0",
     "packages/ridge-kernel/src/remote_control.rs": "80f1875966aa97c8ea0faea8e1f10d5c183d09e9d7d8c399b36bc4581f2d8fbf",
@@ -742,7 +1424,7 @@
     "packages/ridge-kernel/src/rtp1_session.rs": "b30d796011b03ed8ff84e8dc35cf4a66f059d4575863348797921268c5a87325",
     "packages/ridge-kernel/src/rtp1_ws.rs": "5534cac0afc60db02543ae577d863e1bb77b6377db73431adfeeda3dd0746e35",
     "packages/ridge-kernel/src/rtp1.rs": "6f962cc48ca9d131f4bf31094e8781c1139e297c8d5d657c679bfd8a4dda587b",
-    "packages/ridge-kernel/src/server.rs": "f9c4df2664a9717a1483c4dd856857a42b2c18d3e7466541da8f496aba799bab",
+    "packages/ridge-kernel/src/server.rs": "e904d7a7a02f7d47f2e6455825d0d14474b80cc9238691ba83ed145b6ee4c024",
     "packages/ridge-kernel/src/settings.rs": "a116dbaf72067f657afeeb8b04031ccb44608f6c47604617e54d5327b848eeef",
     "packages/ridge-kernel/src/terminal_lifecycle.rs": "e6c1836f345dac0f7dba0f60441848f8b8810294bf866b45d2625cb23b9d3c9d",
     "packages/ridge-kernel/src/terminal_ops.rs": "bab6ba34704ce95458c4fd135e673ba82e7e18e4989522840f0fa7a5a6cf44f8",
@@ -750,14 +1432,14 @@
     "packages/ridge-kernel/src/workspace_commands.rs": "68313e90f6578c87497bd83aefc7bc554de18af3fcc17cded038f2ee42b2cdab",
     "packages/ridge-kernel/src/workspace_files.rs": "fcecd27aa35644d443ff909dc4dcaae3b3bb34229ebfaeb38538c31d1f8f60fa",
     "packages/ridge-kernel/src/workspace_history.rs": "56d9382226d5831d6e7d121aa3f57ff132c6dfad4cbe4fa87939a1c2de269ae3",
-    "packages/ridge-kernel/src/workspace_memory.rs": "07a9ea182072f90514d47b361541dcd72de8b2c95d7b461e592670381401bf84",
+    "packages/ridge-kernel/src/workspace_memory.rs": "9ca83319b7398b3a1d46eb8b4de60aac00dea12c072ea9230d8be19f9c4cde68",
     "packages/ridge-kernel/src/workspace_rollback.rs": "347e46f49e5992f5cb93c8ab931ea9e7539d34eed0ec50d71a6ad28953559905",
     "packages/ridge-kernel/tests/agent_catalog_runtime.rs": "f8ce10bfb5d2b16a649935eec81478c67c4fd3348b2afaeb96f769275064e46f",
     "packages/ridge-kernel/tests/cloud_http_runtime.rs": "d5e964223c1d76756c2840dd27da94dc17abf7ff19298ad59afb5f7496b79de8",
-    "packages/ridge-kernel/tests/common/commune_fixture.rs": "4093a0a21494138df9e51bcde6854b232e4a3442ba0eed517d3adedf7ed0ec53",
+    "packages/ridge-kernel/tests/common/commune_fixture.rs": "be9d91d2c0266e21719f9ee62d2d226c1618ef52aefa4813e3185bb62cb7d582",
     "packages/ridge-kernel/tests/common/runtime_fixture.rs": "cc8d6dbf512a72798d66a9b3a7cc4494a32c02168a40810977df11ff2b00c7bc",
     "packages/ridge-kernel/tests/commune_group_tasks.rs": "6e02a0669c9999e9d8212f1781e3126681652172f836e139685333f95d6f8dea",
-    "packages/ridge-kernel/tests/commune_registration.rs": "623234d108dbf1c70aad66f25f7125b95b29d281805dbfe0fb1305fb3b3ceb68",
+    "packages/ridge-kernel/tests/commune_registration.rs": "e5118bdd0ef187eeca226e3d2515828b3617fef7d7fa4a1d01ae42d16da80bab",
     "packages/ridge-kernel/tests/conformance_contract.rs": "bf5c273fe8230e1098baba0244c510e1667b2597716a2421535397354fc43467",
     "packages/ridge-kernel/tests/conformance_kernel_backed.rs": "83538d6dc7d7e9cf6b588c678c9f6ea1c3beb9dc4222e7e3cbaca0ad344070de",
     "packages/ridge-kernel/tests/conformance_replay.rs": "18ee75bc11eb6c0050238cfa5d3340697d37bf52e557fb5ed63b5aa8783b4516",
@@ -771,7 +1453,7 @@
     "packages/ridge-kernel/tests/execution_rejections_runtime.rs": "a9b45f70a31ff5dc4995423610211ad1b0e0f39e4224a6ba1659cc3990eea3c1",
     "packages/ridge-kernel/tests/foundation_conformance.rs": "693c72d7364b7a7448cc14b906b830ed1d0fd05f8539ab1115cb3919e46e9b19",
     "packages/ridge-kernel/tests/fs_watch_runtime.rs": "9863cfab5c306790b149c85153ce6318995b38ed5c090086a1b37c0e7931ec1d",
-    "packages/ridge-kernel/tests/gateway_permissions_runtime.rs": "3ef64699aaeb930b932df7cb684aadb9a82559af15e088f255773107454cabf5",
+    "packages/ridge-kernel/tests/gateway_permissions_runtime.rs": "d4974a1f808e006d89841c71c2367ea78c5eb642f400912b874b568eaccb5702",
     "packages/ridge-kernel/tests/gateway_settings_runtime.rs": "8625ceb6cb27c1b8277c89e8f33f69dc70abf2f1412a5a3dde79b270fe3352a2",
     "packages/ridge-kernel/tests/git_commands_runtime.rs": "2dd996422766728cd843167c8f105da7f8861d415159c8a1e334ca1a7dffc120",
     "packages/ridge-kernel/tests/headless_runtime.rs": "6f4976568f59547fb668a89bc9ee688588f1c0d14085a0d599c012002b6acf5f",
@@ -780,6 +1462,7 @@
     "packages/ridge-kernel/tests/kernel_backend_waterfall.rs": "f0c210e9cb51cde7d085cdc3cf10e865d56f05ca9df6f406183029920701703b",
     "packages/ridge-kernel/tests/local_client.rs": "09368f8d3ff717e9b4ac5906774e9c42681dc116ba22dae559465c478e368680",
     "packages/ridge-kernel/tests/lsp_runtime.rs": "26e7e024ac83e09b79ac3873b5080c0ed1944b9c5988821a4c574b428627a5a1",
+    "packages/ridge-kernel/tests/managed_agent.rs": "415f829aab8e621dff49e5c514b88c649d0bf9b0f4d44acb8d97d8838b197eaa",
     "packages/ridge-kernel/tests/migration_runtime.rs": "c84cbac5b9e34da1a60dc3ca8796e110db8534fc70bf381a45c1d807bfb66ce0",
     "packages/ridge-kernel/tests/outbound_hosts_runtime.rs": "6d8290ee0f588c55218eb56987e54991957699d6972e2a01885240fe3a8b2d02",
     "packages/ridge-kernel/tests/owned_pty_process_tree.rs": "1115ea51a0f45e34bf272929d8302bc0a3097907162940bc78cfb846d94930b8",
@@ -960,9 +1643,10 @@
     "scripts/cloud-protocol-ssot.test.ts": "fdeee989232a03f5d2f7c31b51c13b10d0f6472efd4d00ebddd0e80132fbcac9",
     "scripts/cloud-terminal-system-acceptance.mjs": "f0a03609fe2eddd911450fcaa6dc05ad5622ffc1729a4fbd6ee6eb3a79a50677",
     "scripts/commune-a2a-sdk-acceptance.py": "736542a6c0f790db9fc6e20630620ebefbae39c6a2a1d54e2edb5238ce143e91",
-    "scripts/commune-global-ui-acceptance.mjs": "5be0078e73b372229ca4cebac4644634d08a5d75578700bf3ea264f7a6004c74",
+    "scripts/commune-agent-interop-acceptance.mjs": "439ba89a6fd40e10cf83288845a4ebfd36291cc7913a9d88b5067ef93c76d140",
+    "scripts/commune-global-ui-acceptance.mjs": "ea90ce6a8b3741a8ae7badc6c77c651c5cbed10986a3591042652b238d198e7c",
     "scripts/commune-live-history-acceptance.mjs": "7de73d4c29c8dd6c8402ffea6692c20dc6d3d2485fc1c78233df3b688ccffaa0",
-    "scripts/commune-permission-ui-acceptance.mjs": "c9bb28592f7f0ae985e51c121b3d8cc009078305d6659b8b82a18ad5bb96984d",
+    "scripts/commune-permission-ui-acceptance.mjs": "9e2c1178f904b20656fe59318fc9515c09eb5fbff91fe4cf88d9b8d913ab6d6b",
     "scripts/commune-permission-ui-client.mjs": "06a3047d9fd1774332953d2a8141ece0dd11a50fc1597d90583ca788e8b58215",
     "scripts/commune-sdk-acceptance.mjs": "ffb9662c18f9a6df982baba9fe831c8a1c57e136f3e84a055863060d88e6de45",
     "scripts/copy-teammate-shim.mjs": "2d372d8773beca4fc7f5b4d07e4a29c585637cccdf4ecc984de6d291fc793cb9",
@@ -1199,7 +1883,7 @@
     "specs/l2-unified-client-runtime.md": "aa64ddea82a6223fa3ca58dc7b6042776ae41713ba6fcdaf88d96a81fd149ae6",
     "specs/l3-architecture-documentation.md": "dc875cf045b1128fea4aaec8489631bc5991ef87638faaa323f18c26dfa9de9a",
     "specs/l3-cli-independent-terminal-creation.md": "f7c908f33f6346042f846363336b86f3b3cd5bff1566e83a80a910499fae5081",
-    "specs/l3-commune-protocol-membership.md": "3b61a6adee2c9473febba33590a9a9d32e0bb7ecdf1e8fe5546fb340d67b043f",
+    "specs/l3-commune-protocol-membership.md": "234c02f60fa7dc0d42c73429892618918526c72404fd729f5c44557a927a7060",
     "specs/l3-perf-remote-production-diagnosis.md": "f9e9793827d4e2225d0a33f26d712887970e1288796204dc442e9f2d70bc05d1",
     "specs/l3-remote-interaction-reliability.md": "e67f22893476eaeb98692fb8be0ebabe76087883f2327b157361ab063d1727a4",
     "specs/l3-runtime-live-cwd-push.md": "6c1fad40dddacb076a616e6d88fafbf61f568cfaae0df007302562b5957119c0",
@@ -1213,6 +1897,7 @@
     "specs/l4-cloud-pane-subscription-continuity.md": "58a4b21827341908ab3ad2417c738b54b1cda2f8991662b696b8d6a9afa1d3df",
     "specs/l4-cloud-release-0198.md": "6b32cb3757af98269c2752858cf3f0794f24d24839a7bd1154b1075d3e5fef29",
     "specs/l4-cloud-turn-credential-type.md": "541f222eb1502931431950b4cefc02880e3dfe14f19f2eb1e781f33a41c41028",
+    "specs/l4-commune-automatic-agent-connection.md": "c58db9b7ea804eab0a2e1c2dd3a11ca92d0d09267ecdd6f3c2a996de3f15b0bc",
     "specs/l4-commune-connection-wizard.md": "55e0d08a4f29a319f1eb7154228661d1e9585f54ce75ebda007858fad433b505",
     "specs/l4-commune-executable-image.md": "b466605696afbafc421ac3d0fefa6313773009402ab26d19c9e3e78f7140e815",
     "specs/l4-commune-group-dispatch-intent.md": "29265c991a0a8cd463e077c07e8811c152d439cb13c91c09bd5f733d37689810",
@@ -2309,7 +2994,7 @@
     "src/lib/hosts/remotePaneBindings.ts": "2e4c808cd3b4b6d79285aec6d21b6e3a4cc2acbfe0485509b416b26dc59444b4",
     "src/lib/i18n/index.ts": "a8af59042b7f1c57e3bda6ebbe788b9397bb77dda16d8b591c582e09f0e005f4",
     "src/lib/i18n/locale.ts": "839d90ddf2abb58baf6db2430d6490db5db913f316023af4cad69c02d8459a65",
-    "src/lib/i18n/messages/commune.ts": "005adcf9044f325120c7d2af900fbfbd6704e1c2b3917318038c4f1ff0d814fe",
+    "src/lib/i18n/messages/commune.ts": "655e617153ded9d047f83007abfb4f0925034662b9ea26f1c3d4b7855aae93b3",
     "src/lib/i18n/messages/editor.ts": "aca76ae96415c11a982026d4f71adecc5c9b2e1a8b7874b08f62f3519be774f7",
     "src/lib/i18n/messages/explorer.ts": "abfbbcb952b109d938c953bf21bd0d8b4ac137d6fede8d63bbd218d1ddcfc73a",
     "src/lib/i18n/messages/index.ts": "df575b052745e4ccb25f88dd275c196f593017590ff0836dcf182d10befae437",
@@ -2403,33 +3088,36 @@
     "src/lib/stores/themes.test.ts": "2ef223c8501520cadd5092188eb61c4f3f12b62198d3677c8879e11df4c8a27c",
     "src/lib/stores/themes.ts": "ba8215f9272564084323fee23461ef136a6a70fd98bfde6c569d7fa5ad960b36",
     "src/lib/stores/toast.ts": "b668056ef5e1a150dfbb60c35e7c8af5510eb65dc40384fa33ef82404bfe02b7",
-    "src/lib/teammate/AgentCenterPanel.svelte": "4041e16c0c43074a344a66990d380183fced10da6c0ebb5d5d7409b1620a866f",
+    "src/lib/teammate/AgentCenterPanel.svelte": "6fb5096153acba47b31411e107b42863a3858df5571668e612bb0c9ab3e85b4f",
     "src/lib/teammate/agentCommuneModel.test.ts": "555cc66265abde175336dd4730acd7cf7d32597959d5d2bec8e34c2198a8e953",
     "src/lib/teammate/agentCommuneModel.ts": "7b91b24957204278ab134cfa0417d565a675843bfbf932bc8a85d9b4b76eeeb6",
-    "src/lib/teammate/AgentMemberRow.svelte": "ac87338a9d49d6f59518998eb8b6c20846d30e9c357bae2446809b0cec2f10d2",
+    "src/lib/teammate/AgentMemberRow.svelte": "6e68f9f89a1053e6668ee659810da09a8e7eed44ea1271af94236e260a24b2d7",
     "src/lib/teammate/AgentPaneHighlightSync.svelte": "3a1b16480060b1cd28d1eba8149434e41c465a7eb79f6d01b619499ca8e86294",
     "src/lib/teammate/agentPaneHighlightSync.test.ts": "9f120bdedc35205f6402ab0f8394f82a1b0a0078f4ada752e37fd318b3d2a700",
     "src/lib/teammate/agentPaneHighlightSync.ts": "f4cf8e20d19bf6ec7401e4fa064d22411a4a03967226a074b7df1962bbcfe827",
     "src/lib/teammate/communeAttention.test.ts": "a0dbe096db226ed849d07002879d0ae00ee5964410df017926eba2dd45a6d1bf",
     "src/lib/teammate/communeAttention.ts": "17ad885738dd37e4ed9233f431fb54028c0da9d1b0155de0a6eb29fc2adfb517",
-    "src/lib/teammate/CommuneConnectionDialog.svelte": "5b94bd075a1943b07d816da733fe6f92f257c3d79170c4dbb0ba9da8518ef0de",
+    "src/lib/teammate/CommuneConnectionDialog.svelte": "654b540f99cd4bf0931c5a05fb331059319d44b1be08f2f1b66d2299292f6ab2",
     "src/lib/teammate/communeGroupDispatch.test.ts": "4aa085e3f18d9fde4de89cf71d0af51e683e4d6d7a93b47d26b4fee61d81110a",
     "src/lib/teammate/communeGroupDispatch.ts": "ff5ae1f9d50a5daeb910948ab4d92fafb00af3a7ef263158f68bce668bc650f0",
-    "src/lib/teammate/CommuneGroupTasks.svelte": "0d27f0a9af1853f1f428924d78fcb7eeeecc53fe61807634c2860df25aac270f",
-    "src/lib/teammate/CommuneHistory.svelte": "80a58cc58f4cea1f2069829691ca04e4f2cd067e1a860f7aec3f9e95005d7b89",
+    "src/lib/teammate/CommuneGroupTasks.svelte": "0a3a9f742ce0629eb44f92cbecadcde416b050849ef3ad5f1d468e1ec0f0b6cc",
+    "src/lib/teammate/CommuneHistory.svelte": "01e41d4e516839fcc6eb7f04b42c6b77a0d60295f0e121fd96c467e2b435bc6c",
     "src/lib/teammate/communeHistoryPages.test.ts": "bcbda9ac1ed4aae5e1779f577a6770bc9afe780677c0e36e9a43b2881fc8b411",
     "src/lib/teammate/communeHistoryPages.ts": "0287a3cc1e4d129cfb0b421d1efe225a3ccf207f0562b07df1e2be40bc822039",
+    "src/lib/teammate/communeLaunch.test.ts": "a553bbc4ba1fbc52a270dd19e864b277b79a33fda692a86f4c07b77c9d55905c",
+    "src/lib/teammate/communeLaunch.ts": "50bd5e913d3ce06249fe3cf109317a207d25fe72825da8bb9e3d34caf35d3797",
     "src/lib/teammate/communeMembership.test.ts": "a60f1fce487b8c3b4cbbdf31fd13c3278b3344e302788e706e3a0935879c80b2",
-    "src/lib/teammate/communeMembership.ts": "8882d1a6fc52b0354305df78eb1bcb9393271f5a7f43f94065cc223d3cff39cb",
-    "src/lib/teammate/communeUiText.test.ts": "4c80b61acbf266a33f3cc8557246b3d36b8878387e33b282d3f555526f240dd2",
-    "src/lib/teammate/communeUiText.ts": "6224c10c4a52e71176639d3d3c643a7db7c9c0c28ad8fa638ff73dd695b8f8b8",
+    "src/lib/teammate/communeMembership.ts": "4e6ddb6041add4ea37d630f81739cc717d802d1b32999f9199b117d97b67b160",
+    "src/lib/teammate/CommuneStartDialog.svelte": "679788c8b1c5f96678bc911fce843e077633aaf2e2975408e9a62f04ad9425eb",
+    "src/lib/teammate/communeUiText.test.ts": "3f8a2c5519393ab310b2af7b45d2397a07cecfeab4bb37a835cc09ab35819ee4",
+    "src/lib/teammate/communeUiText.ts": "e49df4be0a6b61056e8834c71f6676e6893af0fad73c5b3e5e6759eafd2b6e19",
     "src/lib/teammate/communeVisual.css": "07c87f36a8f88438d1348f9b8d8b1a0b726e82c167d27406b95c8275d7724c22",
     "src/lib/teammate/HitlApprovalModal.svelte": "131dbe33668430800484ac80d9d35087796f07e72b66a8067c4fd8f83e048839",
     "src/lib/teammate/hitlAuditFilter.test.ts": "477ac88678423e96ca71f0b383c2236883e92c71333a4b5c6fc839fe9a609f2b",
     "src/lib/teammate/hitlAuditFilter.ts": "e9941010cd85f0196a77a30216e8e3fd10d24582e6756016e365bc0380209aa6",
     "src/lib/teammate/hitlAuditPanel.test.ts": "e063045f1337f3d02600e9659ab2770224c68f200eb2f2d8b9e620e704634e4e",
     "src/lib/teammate/hitlAuditPanel.ts": "7195e22dff87d4856cbcabf577ee71eedd4ba2f66b69a015d8c1d4fd601ee4a1",
-    "src/lib/teammate/HostCommuneGroups.svelte": "7151e4b5120819271c29a59416b5ac50adc80c5ad42c3a7e72e10ed831dd9dfa",
+    "src/lib/teammate/HostCommuneGroups.svelte": "e7ea416ac1e6c570d1610427cd25911df347006e9470924a3fa27b9749d648f7",
     "src/lib/teammate/locateTerminal.ts": "610ab7464990b6caf847a4ca52437720dfa459e9b1b745fabb672fb808cd8f1b",
     "src/lib/teammate/memberTasks.test.ts": "483e8d23b40fc9017a9e45668c972f5b1662793fa5391b77fa9ef205fd35ea2e",
     "src/lib/teammate/memberTasks.ts": "387d02aee3f991af36fc5c6565d71148c7642822521bf00794d4ba28fd6f5386",
@@ -2444,7 +3132,7 @@
     "src/lib/teammate/teammateSettings.ts": "277110894b5863a07ee1fe0c10190453dc788ec72f154faad2163532e240765b",
     "src/lib/teammate/terminalAgent.test.ts": "123a6238cc0b26717ee05433e5c648c00c75d6ebf800585ae4462fd6370fc562",
     "src/lib/teammate/terminalAgent.ts": "545f8be4c1365611cf081e46040ab8b2df48eb23b5e35d29533e8444cda368b9",
-    "src/lib/teammate/TerminalAgentRow.svelte": "edc8fe89b2242e1bf6d5ddaa749773e5806c66dcae0048097690c366d7c65995",
+    "src/lib/teammate/TerminalAgentRow.svelte": "52bdf4a33381f51193e9b43c8106274da24d2b5762a5b63951e24a1894149189",
     "src/lib/teammate/workspaceMemory.test.ts": "59e10d567de7568f1a33ffa8433688f471ae19c2c4ae8cd874732da33849af95",
     "src/lib/teammate/workspaceMemory.ts": "ad4de2efe2363d60e453a761eb711c7ea56b9aa4d9d0b40255d44f2b5f6b5bf4",
     "src/lib/terminal/desktopPaneResize.test.ts": "8765b275b55643a5817b6b7a14dd2acb9b835454a95f274e7a99abbfb2de3352",
@@ -2519,24 +3207,24 @@
     "src/remote/BottomTabBar.svelte": "a073881f3ebdbf7def38664df60b4472c294436901250665a5ff6a4fbb3a942b",
     "src/remote/BottomTabBar.test.ts": "d78b6d6c310b569d3d08e11bba1fd6dcc4ab39fbc5bf07940cd78e5abdf49d90",
     "src/remote/CertTrustGuide.svelte": "930e9c637cabe467ae63922bf811de6370c7bd587447980ded0882cca6a47a73",
-    "src/remote/CloudAuthScreen.svelte": "f9e333d49292ea6f335091a7a2be84e6041ca57a9ea31e3b5c3ae7f472575507",
+    "src/remote/CloudAuthScreen.svelte": "1be551a4ad1c6dee7cc68141e894b7176e15c574ff6a529d31fc0b570d8d9d40",
     "src/remote/index.html": "0572bceaeffcbc9a6fae11055223a8742f65ec4cac921c514a2fca69b38f6b06",
     "src/remote/lib/agentNavigation.test.ts": "679e6fe8761cf1956e96e4b91046220c2ddea31b31fda1c172d6f5f6854aa965",
     "src/remote/lib/agentNavigation.ts": "86cce58a815a667ecc01dce4333518000697e2e4b272a02caddc02a1ebc6746b",
     "src/remote/lib/clipboard.test.ts": "193c8770ebe7a5ffe239fbb126ebedb63de7c3c1797b88e3081811852dd90538",
     "src/remote/lib/clipboard.ts": "eb5114470fff3122d310d8b7af8fdb1130c4e380943208684748ec9efd062463",
-    "src/remote/lib/cloudRemote.test.ts": "29fc5a3723c3e918c099f91aba8e23045bb855ac6b1a043c1e8cd1d8611e8f88",
-    "src/remote/lib/cloudRemote.ts": "2e7542a63b5321290aa3e10a5087bcab0a185234367238cc897617d561b7133f",
-    "src/remote/lib/communeMemberDelivery.test.ts": "0212f399efbf2becb4b0d0dc24503bc89c3b023303f58f4cda4f9489d78c419c",
-    "src/remote/lib/communeMemberDelivery.ts": "86abb070221786a225f1695c58dfae714d12c238e2f14fc4eec1e51e0b437e5e",
-    "src/remote/lib/CommuneMemberMessage.svelte": "3a1e091140da8f90a76710d69d8f583bb8ba390ee51f25c428f384ad6b521ad1",
-    "src/remote/lib/CommuneWorkspaceRoster.svelte": "567695dfb690861a81ca75ed3bf343ae99694b91c9d058cd6d1bc223d619e046",
+    "src/remote/lib/cloudRemote.test.ts": "e615d050e851c072d1c8a25889ed51a19c362f6f7bc68001a36a32b8229f61a4",
+    "src/remote/lib/cloudRemote.ts": "fd88f88dd9ce7bd6089e1ece717ef3995c997498282d248536fc4739b4136a99",
+    "src/remote/lib/communeMemberDelivery.test.ts": "ce02b975bb5baab58373eaf76dd2d85ba28bf0dfa2a1a750e68589810f3f8d8c",
+    "src/remote/lib/communeMemberDelivery.ts": "130044ed901c94e9d4f5bfd55c74feb136cd741f2b232b5bc2a5445fda4a651b",
+    "src/remote/lib/CommuneMemberMessage.svelte": "7c8544831cbd3072ac9887ff856b5f8996f96d2fdfd5e2aee5d83ce11239c1ea",
+    "src/remote/lib/CommuneWorkspaceRoster.svelte": "d015ef45ea20b0f6140101dad2b6eaacd998b30c40968be932c1d9b0806d01f0",
     "src/remote/lib/deviceClass.test.ts": "167f95f9086abe437d9824fe5c15af603a18b70969c4ab537018b53e2e834bba",
     "src/remote/lib/deviceClass.ts": "21303195a10b45f8ec6f896f91ecabdbfdbe26929e3e712040b64c0c2dab16f6",
     "src/remote/lib/FileViewer.svelte": "6d204bc5fc518900017c53288e3d7099aef28e8ed504e9c7ded0bdf804ccc6c2",
     "src/remote/lib/generationGuard.test.ts": "b0f08e505186944fa4397c6d1429152960186f609c791a25fb1565613ade8c2c",
     "src/remote/lib/generationGuard.ts": "74da229bfe89693ad129f4ea611b8749ed172277ce57a7608687a722919588b1",
-    "src/remote/lib/GlobalCommuneRoster.svelte": "f87e2b317557a10b2d46abceac6b897889008754cb98032e2225d4de7c2625b8",
+    "src/remote/lib/GlobalCommuneRoster.svelte": "73223331df2c767d54ca70303ddf5789183c5d4a7cbf2547df1dc4dec948308e",
     "src/remote/lib/keyboardOffset.test.ts": "f193b1713df3b56735feaf9ff3f54b6a6db94ee289a3a9a15451bbe96a1568d7",
     "src/remote/lib/keyboardOffset.ts": "8e3cb63c03a276e2bfce4c7538811d84bd87931b693f21c3360f9578acaac669",
     "src/remote/lib/listenerCleanup.test.ts": "3b57100f028b77cdc5006bedb53121bb1eba4ab4d69130c98a4d16ec4f0dd4e5",
@@ -2587,7 +3275,7 @@
     "src/remote/lib/WorkspaceTree.test.ts": "2bc782a46108952860366e1502741c409b347ed43c7d8856b46ad51c06864ba0",
     "src/remote/main.test.ts": "642393d572e77be6f64e6976197d5104aa8db32a963629beb942ed99cec71e86",
     "src/remote/main.ts": "c80e3785691d42b05874c33c0f4e0c61fc1418f5e9323e09fa188664096c6249",
-    "src/remote/MainApp.svelte": "774fff882a93685992c68dcf4fee46778ec2775f4cd6e58c9f5f83a906c38d3a",
+    "src/remote/MainApp.svelte": "978e93f7f1a27aac1637f2de03ddc8f9cf324369181fcecf1fdf54549afcdd61",
     "src/remote/MainApp.test.ts": "7e1eeb8e702a7b49279440fdd3e00477f9ac24a6af3c86011fdc6b5cf10a3f82",
     "src/remote/public/apple-touch-icon.png": "fcf04070e1ae0e72599b39cf3c118a81c57d01dbb98b894b6ba988bda26cc01e",
     "src/remote/public/favicon.png": "7b0d863efa5a660174ce0242b3b356c70cd952eceda2589da50819aa82cc02ac",
@@ -2694,6 +3382,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-425250fce7fa",
-  "manifestHash": "425250fce7fa267a7470460346bbb455a293af70f7f479cabbd7cbfb0abcab0d"
+  "buildId": "BUILD-634c08bc2d21",
+  "manifestHash": "634c08bc2d21e97a58f6262f272fe9698bb022cbf19b42dedfc80a14be0483c0"
 }

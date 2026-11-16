@@ -22,7 +22,7 @@ pub fn builtin_profiles() -> Vec<AgentProfile> {
     vec![
         AgentProfile {
             id: "claude".into(),
-            process_names: vec!["claude".into(), "claude-code".into()],
+            process_names: vec!["claude".into(), "claude-code".into(), "claude-agent-acp".into()],
             executable: "claude".into(),
             resume_argv: vec!["--resume".into(), "{session}".into()],
             yolo_args: vec!["--dangerously-skip-permissions".into()],
@@ -30,7 +30,7 @@ pub fn builtin_profiles() -> Vec<AgentProfile> {
         },
         AgentProfile {
             id: "codex".into(),
-            process_names: vec!["codex".into()],
+            process_names: vec!["codex".into(), "codex-acp".into()],
             executable: "codex".into(),
             resume_argv: vec!["resume".into(), "{session}".into()],
             yolo_args: vec!["--dangerously-bypass-approvals-and-sandbox".into()],
@@ -38,10 +38,18 @@ pub fn builtin_profiles() -> Vec<AgentProfile> {
         },
         AgentProfile {
             id: "grok".into(),
-            process_names: vec!["grok".into()],
+            process_names: vec!["grok".into(), "grok-build".into()],
             executable: "grok".into(),
             resume_argv: vec!["--resume".into(), "{session}".into()],
             yolo_args: vec!["--always-approve".into()],
+            yolo_position: "before".into(),
+        },
+        AgentProfile {
+            id: "opencode".into(),
+            process_names: vec!["opencode".into(), "opencode-acp".into()],
+            executable: "opencode".into(),
+            resume_argv: vec![],
+            yolo_args: vec![],
             yolo_position: "before".into(),
         },
         AgentProfile {
@@ -91,12 +99,26 @@ mod tests {
     #[test]
     fn unverified_builtins_fail_closed_for_resume() {
         let profiles = builtin_profiles();
-        for id in ["gemini", "cursor-agent", "aider"] {
+        for id in ["gemini", "cursor-agent", "aider", "opencode"] {
             let profile = profiles.iter().find(|profile| profile.id == id).unwrap();
             assert!(
                 profile.resume_argv.is_empty(),
                 "unexpected resume contract for {id}"
             );
+        }
+    }
+
+    #[test]
+    fn collaboration_commands_are_data_and_preserve_the_agents_permission_defaults() {
+        let profiles = catalog("list_agent_profiles", &serde_json::json!({"overrides":[]})).unwrap();
+        for (id, command, args, protocol) in [
+            ("codex", "codex", vec!["app-server", "--stdio"], "app-server"),
+            ("claude", "claude-agent-acp", vec![], "acp"),
+            ("grok", "grok", vec!["agent", "stdio"], "acp"),
+            ("opencode", "opencode", vec!["acp"], "acp"),
+        ] {
+            let profile = profiles.as_array().unwrap().iter().find(|profile| profile["id"] == id).unwrap();
+            assert_eq!(profile["collaboration"], serde_json::json!({"command":command,"args":args,"protocol":protocol}));
         }
     }
 }
@@ -124,6 +146,10 @@ pub fn merge_profiles(overrides: &[AgentProfile]) -> Vec<AgentProfile> {
     for profile in overrides { if !profile.id.trim().is_empty() {profiles.insert(profile.id.clone(),profile.clone());} }
     profiles.into_values().collect()
 }
+pub fn list_profiles() -> Result<serde_json::Value, String> {
+    catalog("list_agent_profiles", &serde_json::json!({}))
+}
+
 pub(crate) fn catalog(method: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
     use serde_json::{json, Value};
     let _guard = OVERRIDE_WRITES.lock().map_err(|_| "Agent catalog unavailable")?;
@@ -146,6 +172,20 @@ pub(crate) fn catalog(method: &str, args: &serde_json::Value) -> Result<serde_js
     let overrides = if args["overrides"].is_null() {read_overrides()?} else {validate_overrides(&args["overrides"])?;args["overrides"].clone()};
     let mut merged = builtin_profiles().into_iter().map(|profile| Ok((profile.id.clone(),serde_json::to_value(profile).map_err(|error|error.to_string())?)))
         .collect::<Result<std::collections::BTreeMap<_,_>,String>>()?;
+    for (id, command, arguments, protocol) in [
+        ("codex", "codex", vec!["app-server", "--stdio"], "app-server"),
+        ("claude", "claude-agent-acp", vec![], "acp"),
+        ("grok", "grok", vec!["agent", "stdio"], "acp"),
+        ("opencode", "opencode", vec!["acp"], "acp"),
+    ] {
+        merged.get_mut(id).expect("builtin profile")["collaboration"] = json!({
+            "command": command, "args": arguments, "protocol": protocol,
+        });
+    }
+    merged.get_mut("codex").expect("builtin profile")["listener"] = json!({
+        "command": ["app-server"], "endpointFlag": "--listen", "protocol": "app-server",
+        "credentialFileFlag": "--ws-token-file", "authFlag": "--ws-auth", "authValue": "capability-token",
+    });
     for profile in overrides.as_array().ok_or("overrides must be an array")? {
         let typed: AgentProfile=serde_json::from_value(profile.clone()).map_err(|error|error.to_string())?;
         let id=typed.id.clone();

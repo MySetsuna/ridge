@@ -44,6 +44,10 @@ async fn gateway_pending_and_decisions_use_runtime_with_exact_terminal_binding()
  assert_eq!(rpc(&mut socket,3,"get_pending_hitl_count",json!({})).await["result"],1);
  let remote=rpc(&mut socket,4,"list_hitl_pending",json!({})).await;assert!(!remote.to_string().contains("private-secret"));
  let id=local["id"].clone();let nonce=local["resolutionNonce"].clone();
+ let wrong_canonical=rpc(&mut socket,90,"resolve_hitl_remote",json!({"id":id,"nonce":"wrong","verdict":"reject"})).await;
+ assert_eq!(wrong_canonical["result"]["outcome"],"nonce-mismatch","{wrong_canonical}");
+ let conflicting=rpc(&mut socket,91,"resolve_hitl_remote",json!({"id":id,"nonce":"wrong","resolutionNonce":nonce,"verdict":"reject"})).await;
+ assert_eq!(conflicting["result"]["outcome"],"nonce-mismatch","{conflicting}");
  let wrong=rpc(&mut socket,5,"resolve_hitl_remote",json!({"id":id,"resolutionNonce":"wrong","verdict":"approve"})).await;assert_eq!(wrong["result"]["outcome"],"nonce-mismatch");
  let modify=rpc(&mut socket,6,"resolve_hitl_remote",json!({"id":id,"resolutionNonce":nonce,"verdict":"modify","replacement":"echo safe"})).await;assert_eq!(modify["result"]["outcome"],"bad-verdict");
  assert_eq!(rpc(&mut socket,7,"resolve_hitl_request",json!({"id":id,"verdict":"modify","replacement":"echo approved replacement"})).await["result"],true);
@@ -75,10 +79,12 @@ async fn gateway_pending_and_decisions_use_runtime_with_exact_terminal_binding()
  assert!(rpc(&mut observer,5,"set_automation_input_paused",json!({"workspaceId":wid,"paneId":pane,"paused":false})).await["error"].is_null());
  let endpoint=owned.endpoint.clone();let workspace=wid.clone();
  let stale_waiter=tokio::task::spawn_blocking(move||client::request_json(&endpoint,"POST","/v1/domain/commands",Some(&json!({"method":"request_gateway_approval","native":true,"roots":[],"connectionId":Uuid::new_v4(),"args":{"workspaceId":workspace,"paneId":pane,"initiator":"owned-requester","action":"rm -rf /"}}))).unwrap());
- let stale=tokio::time::timeout(std::time::Duration::from_secs(10),async{loop{let pending=rpc(&mut socket,13,"list_hitl_pending_local",json!({})).await;if pending["result"].as_array().is_some_and(|rows|!rows.is_empty()){break pending["result"][0]["id"].clone();}tokio::time::sleep(std::time::Duration::from_millis(20)).await;}}).await.unwrap();
+ let stale=tokio::time::timeout(std::time::Duration::from_secs(10),async{loop{let pending=rpc(&mut socket,13,"list_hitl_pending_local",json!({})).await;if pending["result"].as_array().is_some_and(|rows|!rows.is_empty()){break pending["result"][0].clone();}tokio::time::sleep(std::time::Duration::from_millis(20)).await;}}).await.unwrap();
  let closed=client::request_json(&owned.endpoint,"DELETE",&format!("/v1/domain/ptys/{pane}"),None).unwrap();assert_eq!(closed["ok"],true,"{closed}");
- assert!(rpc(&mut socket,14,"resolve_hitl_request",json!({"id":stale,"verdict":"approve"})).await["error"].is_object());
- assert_eq!(rpc(&mut socket,15,"resolve_hitl_request",json!({"id":stale,"verdict":"reject"})).await["result"],true);
+ assert!(rpc(&mut socket,14,"resolve_hitl_request",json!({"id":stale["id"],"verdict":"approve"})).await["error"].is_object());
+ let reject=json!({"id":stale["id"],"nonce":stale["resolutionNonce"],"verdict":"reject"});
+ assert_eq!(rpc(&mut socket,15,"resolve_hitl_remote",reject.clone()).await["result"]["outcome"],"consumed");
+ assert_eq!(rpc(&mut socket,16,"resolve_hitl_remote",reject).await["result"]["outcome"],"already-resolved");
  assert_eq!(stale_waiter.await.unwrap()["value"]["verdict"],"reject");
  drop(socket);drop(owned);let restarted=start(&root).await;let mut socket=attach(&restarted.endpoint).await;
  let replay=rpc(&mut socket,11,"list_hitl_audit_remote",json!({})).await;assert!(replay["result"]["items"].as_array().unwrap().iter().any(|row|row["id"]==id));

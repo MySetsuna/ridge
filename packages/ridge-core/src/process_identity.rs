@@ -243,13 +243,19 @@ mod platform {
         }
         let owners = matching
             .iter()
-            .filter(|row| row[0] == 5)
+            // Live Windows connections can report incorrect states, including
+            // 0 and LISTEN with a nonzero peer port. Identity comes from the
+            // exact four-tuple and unique PID. The caller keeps the connected
+            // stream and must still complete the protocol handshake.
             .map(|row| row[5])
             .collect::<HashSet<_>>();
         if owners.is_empty() || owners == HashSet::from([0]) {
+            let endpoint_rows=table[1..1+count*6].chunks_exact(6)
+                .filter(|row|row[1]==u32::from_ne_bytes(server.ip().octets()) && u16::from_be(row[2] as u16)==server.port())
+                .take(8).map(|row|(row[0],u16::from_be(row[4] as u16),row[5])).collect::<Vec<_>>();
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
-                "protocol socket ownership is not yet observable",
+                format!("protocol socket ownership is not yet observable (endpoint {server}, client {client}, expected PID {pid}, endpoint rows [state, peer port, PID] {endpoint_rows:?})"),
             ));
         }
         if owners.len() != 1 {
@@ -283,8 +289,10 @@ mod platform {
                 table.extend(rows.into_iter().flatten());
                 table
             };
-            assert!(connection_owner(&table(vec![row(5, 42)]), 42, server, client).unwrap());
-            for rows in [vec![], vec![row(4, 42)], vec![row(5, 0)]] {
+            for state in [0,2,4,5,6,12] {
+                assert!(connection_owner(&table(vec![row(state, 42)]), 42, server, client).unwrap());
+            }
+            for rows in [vec![], vec![row(5, 0)], vec![row(0, 0)]] {
                 assert_eq!(
                     connection_owner(&table(rows), 42, server, client)
                         .unwrap_err()
@@ -292,11 +300,23 @@ mod platform {
                     io::ErrorKind::WouldBlock
                 );
             }
+            let mut listener=row(2,42);
+            listener[3]=0;listener[4]=0;
+            let mut other_peer=row(5,42);
+            other_peer[4]=0;
+            for unrelated in [listener,other_peer] {
+                assert_eq!(connection_owner(&table(vec![unrelated]),42,server,client).unwrap_err().kind(),io::ErrorKind::WouldBlock);
+            }
             for rows in [
                 vec![row(5, 43)],
+                vec![row(0, 43)],
+                vec![row(2, 43)],
                 vec![row(4, 43)],
+                vec![row(6, 43)],
                 vec![row(5, 42), row(5, 0)],
                 vec![row(5, 42), row(5, 43)],
+                vec![row(0, 42), row(0, 0)],
+                vec![row(0, 42), row(0, 43)],
             ] {
                 assert_eq!(
                     connection_owner(&table(rows), 42, server, client)

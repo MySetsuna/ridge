@@ -4,118 +4,193 @@ use std::{
     io::{BufRead, BufReader, Write},
 };
 pub fn run() {
-    let path = std::env::var_os("RIDGE_COMMUNE_FIXTURE").expect("fixture path");
+    let descriptor = std::env::var_os("RIDGE_COMMUNE_FIXTURE").expect("fixture path");
+    let lists_sessions = std::env::var_os("RIDGE_COMMUNE_LIST_SESSIONS").is_some();
+    #[cfg(any(unix, windows))]
+    if let Some(socket_path) = std::env::var_os("RIDGE_COMMUNE_FIXTURE_SOCKET") {
+        #[cfg(unix)]
+        use std::os::unix::net::UnixListener;
+        #[cfg(windows)]
+        use uds_windows::UnixListener;
+
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        publish(
+            &descriptor,
+            format!("unix://{}", std::path::Path::new(&socket_path).display()),
+        );
+        for accepted in listener.incoming() {
+            let socket = accepted.unwrap();
+            serve(
+                BufReader::new(socket.try_clone().unwrap()),
+                socket,
+                lists_sessions,
+            );
+        }
+        return;
+    }
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    fs::write(path,serde_json::to_vec(&json!({"process":ridge_core::process_identity::instance(std::process::id()).unwrap(),"endpoint":listener.local_addr().unwrap().to_string(),"sessionId":"fixture-existing"})).unwrap()).unwrap();
+    publish(&descriptor, listener.local_addr().unwrap().to_string());
     for accepted in listener.incoming() {
-        let mut socket = accepted.unwrap();
-        let mut reader = BufReader::new(socket.try_clone().unwrap());
-        let mut pending = Value::Null;
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line).unwrap() == 0 {
-                break;
+        let socket = accepted.unwrap();
+        serve(
+            BufReader::new(socket.try_clone().unwrap()),
+            socket,
+            lists_sessions,
+        );
+    }
+}
+
+fn publish(descriptor: &std::ffi::OsStr, endpoint: String) {
+    let process = ridge_core::process_identity::instance(std::process::id()).unwrap();
+    fs::write(
+        descriptor,
+        serde_json::to_vec(&json!({
+            "process":process,"endpoint":endpoint,"sessionId":"fixture-existing"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+fn serve(mut reader: impl BufRead, mut socket: impl Write, lists_sessions: bool) {
+    let mut pending = Value::Null;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap() == 0 {
+            break;
+        }
+        let value: Value = serde_json::from_str(&line).unwrap();
+        let method = value["method"].as_str().unwrap();
+        if lists_sessions {
+            let mut log = fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open("session-operations")
+                .unwrap();
+            writeln!(log, "{method} {}", value["params"]["sessionId"]).unwrap();
+        }
+        let result = match method {
+            "initialize" => {
+                let mut reply = json!({"protocolVersion":1,"agentCapabilities":{"loadSession":true},"agentInfo":{"name":std::env::var("RIDGE_COMMUNE_LABEL").unwrap_or_else(|_|"unknown-protocol-process".into()),"version":"fixture"}});
+                if lists_sessions {
+                    reply["agentCapabilities"]["sessionCapabilities"] = json!({"list":{}});
+                }
+                reply
             }
-            let value: Value = serde_json::from_str(&line).unwrap();
-            let result = match value["method"].as_str().unwrap() {
-                "initialize" => {
-                    json!({"protocolVersion":1,"agentCapabilities":{"loadSession":true},"agentInfo":{"name":std::env::var("RIDGE_COMMUNE_LABEL").unwrap_or_else(|_|"unknown-protocol-process".into()),"version":"fixture"}})
+            "session/list" if lists_sessions => {
+                let cwd = std::env::current_dir().unwrap();
+                assert_eq!(value["params"]["cwd"], json!(cwd));
+                if value["params"]["cursor"].is_null() {
+                    json!({"sessions":[{"sessionId":"fixture-existing","cwd":cwd,"title":"First"}],"nextCursor":"page-two"})
+                } else {
+                    assert_eq!(value["params"]["cursor"], "page-two");
+                    json!({"sessions":[{"sessionId":"fixture-alternative","cwd":cwd,"title":"Second"},
+                        {"sessionId":"unrelated","cwd":cwd.join("unrelated"),"title":"Outside"}]})
                 }
-                "session/load" => {
-                    assert_eq!(value["params"]["sessionId"], "fixture-existing");
-                    writeln!(socket,"{}",json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture-existing","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"existing history"}}}})).unwrap();
-                    json!({})
-                }
-                "session/prompt" => {
-                    assert_eq!(value["params"]["sessionId"], "fixture-existing");
-                    assert!(pending.is_null(), "one writer per existing conversation");
-                    let text = value["params"]["prompt"][0]["text"].as_str().unwrap();
-                    if text == "permission-needed" || text == "cancel-permission" {
-                        writeln!(socket,"{}",json!({"jsonrpc":"2.0","id":"external-permission","method":"session/request_permission",
-                            "params":{"sessionId":"fixture-existing","toolCall":{"toolCallId":"tool","title":"private-operation","rawInput":{"secret":"private-argument"}},
-                            "options":[{"optionId":"once","name":"Allow once","kind":"allow_once"},{"optionId":"always","name":"Allow always","kind":"allow_always"},{"optionId":"deny","name":"Reject","kind":"reject_once"}]}})).unwrap();
-                        let mut cancelled = false;
-                        let outcome = loop {
-                            let mut line = String::new();
-                            assert!(reader.read_line(&mut line).unwrap() > 0);
-                            let reply: Value = serde_json::from_str(&line).unwrap();
-                            if reply["method"] == "session/cancel" {
-                                cancelled = true;
-                                continue;
-                            }
-                            assert_eq!(reply["id"], "external-permission");
-                            assert!(reply["error"].is_null(), "permission response: {reply}");
-                            break reply["result"]["outcome"].clone();
-                        };
-                        if text == "cancel-permission" {
-                            assert_eq!(outcome["outcome"], "cancelled");
-                            if !cancelled {
-                                let mut line = String::new();
-                                reader.read_line(&mut line).unwrap();
-                                assert_eq!(
-                                    serde_json::from_str::<Value>(&line).unwrap()["method"],
-                                    "session/cancel"
-                                );
-                            }
-                        } else {
-                            assert_eq!(outcome["optionId"], "once");
+            }
+            "session/load" => {
+                let session = value["params"]["sessionId"].as_str().unwrap();
+                assert!(
+                    session == "fixture-existing"
+                        || (lists_sessions && session == "fixture-alternative")
+                );
+                writeln!(socket,"{}",json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"existing history"}}}})).unwrap();
+                json!({})
+            }
+            "session/prompt" => {
+                assert_eq!(value["params"]["sessionId"], "fixture-existing");
+                assert!(pending.is_null(), "one writer per existing conversation");
+                let text = value["params"]["prompt"][0]["text"].as_str().unwrap();
+                if text == "permission-needed" || text == "cancel-permission" {
+                    writeln!(socket,"{}",json!({"jsonrpc":"2.0","id":"external-permission","method":"session/request_permission",
+                        "params":{"sessionId":"fixture-existing","toolCall":{"toolCallId":"tool","title":"private-operation","rawInput":{"secret":"private-argument"}},
+                        "options":[{"optionId":"once","name":"Allow once","kind":"allow_once"},{"optionId":"always","name":"Allow always","kind":"allow_always"},{"optionId":"deny","name":"Reject","kind":"reject_once"}]}})).unwrap();
+                    let mut cancelled = false;
+                    let outcome = loop {
+                        let mut line = String::new();
+                        assert!(reader.read_line(&mut line).unwrap() > 0);
+                        let reply: Value = serde_json::from_str(&line).unwrap();
+                        if reply["method"] == "session/cancel" {
+                            cancelled = true;
+                            continue;
                         }
-                        let mut log = fs::OpenOptions::new()
-                            .append(true)
-                            .create(true)
-                            .open("permission-decisions")
-                            .unwrap();
-                        writeln!(log, "{outcome}").unwrap();
-                        writeln!(socket,"{}",json!({"jsonrpc":"2.0","id":value["id"],"result":{"stopReason":if text=="cancel-permission" {"cancelled"}else{"end_turn"}}})).unwrap();
-                        continue;
+                        assert_eq!(reply["id"], "external-permission");
+                        assert!(reply["error"].is_null(), "permission response: {reply}");
+                        break reply["result"]["outcome"].clone();
+                    };
+                    if text == "cancel-permission" {
+                        assert_eq!(outcome["outcome"], "cancelled");
+                        if !cancelled {
+                            let mut line = String::new();
+                            reader.read_line(&mut line).unwrap();
+                            assert_eq!(
+                                serde_json::from_str::<Value>(&line).unwrap()["method"],
+                                "session/cancel"
+                            );
+                        }
+                    } else {
+                        assert_eq!(outcome["optionId"], "once");
                     }
                     let mut log = fs::OpenOptions::new()
                         .append(true)
                         .create(true)
-                        .open("prompt-log")
+                        .open("permission-decisions")
                         .unwrap();
-                    writeln!(log, "{text}").unwrap();
-                    if text == "produce-outputs" {
-                        fs::write("result.txt","new").unwrap();
-                        let path=std::env::current_dir().unwrap().join("result.txt");
-                        let notify=|update|json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture-existing","update":update}});
-                        writeln!(socket,"{}",notify(json!({"sessionUpdate":"tool_call","toolCallId":"same-tool-id","title":"Write result","status":"pending","content":[{"type":"content","content":{"type":"resource_link","uri":"urn:fixture:obsolete","name":"obsolete"}}],"rawInput":{"secret":"private-tool-input"}}))).unwrap();
-                        writeln!(socket,"{}",notify(json!({"sessionUpdate":"tool_call_update","toolCallId":"same-tool-id","status":"completed","content":[{"type":"diff","path":path,"oldText":"old","newText":"new"},{"type":"content","content":{"type":"resource","resource":{"uri":"urn:fixture:result","mimeType":"text/plain","text":"new"}}}]}))).unwrap();
-                        writeln!(socket,"{}",notify(json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"done is not a verified deliverable"}}))).unwrap();
-                        writeln!(socket,"{}",notify(json!({"sessionUpdate":"agent_message_chunk","content":{"type":"resource_link","uri":"urn:fixture:response","name":"result reference"}}))).unwrap();
-                        writeln!(socket,"{}",json!({"jsonrpc":"2.0","id":value["id"],"result":{"stopReason":"end_turn"}})).unwrap();
-                        writeln!(socket,"{}",notify(json!({"sessionUpdate":"agent_message_chunk","content":{"type":"resource_link","uri":"urn:fixture:late","name":"outside turn"}}))).unwrap();
-                        continue;
-                    }
-                    if text == "disconnect-during-prompt" {
-                        break;
-                    }
-                    if text == "wait-for-cancel" {
-                        pending = value["id"].clone();
-                        continue;
-                    }
-                    json!({"stopReason":"end_turn"})
+                    writeln!(log, "{outcome}").unwrap();
+                    writeln!(socket,"{}",json!({"jsonrpc":"2.0","id":value["id"],"result":{"stopReason":if text=="cancel-permission" {"cancelled"}else{"end_turn"}}})).unwrap();
+                    continue;
                 }
-                "session/cancel" => {
-                    assert_eq!(value["params"]["sessionId"], "fixture-existing");
-                    assert!(!pending.is_null());
+                let mut log = fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open("prompt-log")
+                    .unwrap();
+                writeln!(log, "{text}").unwrap();
+                if text == "produce-outputs" {
+                    fs::write("result.txt", "new").unwrap();
+                    let path = std::env::current_dir().unwrap().join("result.txt");
+                    let notify = |update| json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture-existing","update":update}});
+                    writeln!(socket,"{}",notify(json!({"sessionUpdate":"tool_call","toolCallId":"same-tool-id","title":"Write result","status":"pending","content":[{"type":"content","content":{"type":"resource_link","uri":"urn:fixture:obsolete","name":"obsolete"}}],"rawInput":{"secret":"private-tool-input"}}))).unwrap();
+                    writeln!(socket,"{}",notify(json!({"sessionUpdate":"tool_call_update","toolCallId":"same-tool-id","status":"completed","content":[{"type":"diff","path":path,"oldText":"old","newText":"new"},{"type":"content","content":{"type":"resource","resource":{"uri":"urn:fixture:result","mimeType":"text/plain","text":"new"}}}]}))).unwrap();
+                    writeln!(socket,"{}",notify(json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"done is not a verified deliverable"}}))).unwrap();
+                    writeln!(socket,"{}",notify(json!({"sessionUpdate":"agent_message_chunk","content":{"type":"resource_link","uri":"urn:fixture:response","name":"result reference"}}))).unwrap();
                     writeln!(
                         socket,
                         "{}",
-                        json!({"jsonrpc":"2.0","id":pending,"result":{"stopReason":"cancelled"}})
+                        json!({"jsonrpc":"2.0","id":value["id"],"result":{"stopReason":"end_turn"}})
                     )
                     .unwrap();
-                    pending = Value::Null;
+                    writeln!(socket,"{}",notify(json!({"sessionUpdate":"agent_message_chunk","content":{"type":"resource_link","uri":"urn:fixture:late","name":"outside turn"}}))).unwrap();
                     continue;
                 }
-                other => panic!("registration must not call {other}"),
-            };
-            writeln!(
-                socket,
-                "{}",
-                json!({"jsonrpc":"2.0","id":value["id"],"result":result})
-            )
-            .unwrap();
-        }
+                if text == "disconnect-during-prompt" {
+                    break;
+                }
+                if text == "wait-for-cancel" {
+                    pending = value["id"].clone();
+                    continue;
+                }
+                json!({"stopReason":"end_turn"})
+            }
+            "session/cancel" => {
+                assert_eq!(value["params"]["sessionId"], "fixture-existing");
+                assert!(!pending.is_null());
+                writeln!(
+                    socket,
+                    "{}",
+                    json!({"jsonrpc":"2.0","id":pending,"result":{"stopReason":"cancelled"}})
+                )
+                .unwrap();
+                pending = Value::Null;
+                continue;
+            }
+            other => panic!("registration must not call {other}"),
+        };
+        writeln!(
+            socket,
+            "{}",
+            json!({"jsonrpc":"2.0","id":value["id"],"result":result})
+        )
+        .unwrap();
     }
 }

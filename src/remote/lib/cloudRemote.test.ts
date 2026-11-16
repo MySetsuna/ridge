@@ -182,20 +182,20 @@ describe('CloudRemoteConnection.init', () => {
     expect(owner.workspaceShared).toBe(false);
   });
 
-  it('forwards quiet Commune membership and session updates and releases subscriptions', async () => {
+  it('forwards quiet workspace and Commune updates and releases subscriptions', async () => {
     const conn = await connected();
     const seen: WsMessage[] = [];
     conn.onMessage(message => { if (message.type === 'event') seen.push(message); });
-    for (const name of ['commune-members-changed', 'commune-session-update']) {
+    const events = ['workspace-list-changed', 'commune-members-changed', 'commune-session-update'];
+    for (const name of events) {
       expect(handlers[name]).toBeTypeOf('function');
       handlers[name]({ payload: { workspaceId: 'ws2', kind: 'agent_message_chunk' } });
     }
-    expect(seen).toEqual(['commune-members-changed', 'commune-session-update'].map(name => ({
+    expect(seen).toEqual(events.map(name => ({
       type: 'event', name, payload: { workspaceId: 'ws2', kind: 'agent_message_chunk' },
     })));
     conn.disconnect();
-    expect(handlers['commune-members-changed']).toBeUndefined();
-    expect(handlers['commune-session-update']).toBeUndefined();
+    for (const name of events) expect(handlers[name]).toBeUndefined();
   });
 
   it('reads the active workspace and reaches connected', async () => {
@@ -1197,7 +1197,7 @@ describe('CloudRemoteConnection bounded parity guards', () => {
     await expect(conn.listWorkspaces()).resolves.toEqual({ workspaces: [] });
     await expect(conn.sendAgentMessage({ ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease' }, 'hello', 'stable-intent'))
       .resolves.toMatchObject({ messageId: 'm' });
-    expect(invokeMock).toHaveBeenCalledWith('send_agent_message', expect.objectContaining({ ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease', message: 'hello', idempotency_key: 'stable-intent' }));
+    expect(invokeMock).toHaveBeenCalledWith('send_agent_message', { ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease', message: 'hello', idempotency_key: 'stable-intent' });
     invokeMock.mockResolvedValueOnce({ deliveryId: 'd', execution: { state: 'running' } });
     await expect(conn.getAgentMessageDelivery({ ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease' }, 'd')).resolves.toMatchObject({ deliveryId: 'd' });
     expect(invokeMock).toHaveBeenLastCalledWith('get_agent_message_delivery_status', { ...PANE, agentId: 'agent-1', generation: 2, lease: 'lease', deliveryId: 'd' });

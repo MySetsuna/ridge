@@ -323,6 +323,8 @@
         · {$t('commune.cancelled')}
       {:else if deliveryReceipt.execution?.state === 'unknown'}
         · {$t('commune.resultUnconfirmed')}
+      {:else if deliveryReceipt.execution?.reason === 'agent_authentication_required'}
+        · {$t('commune.agentAuthenticationRequired')}
       {:else if deliveryReceipt.execution?.state === 'rejected'}
         · {$t('commune.notExecuted', { reason: deliveryReceipt.execution.reason ?? $t('commune.requestRejected') })}
       {:else if deliveryReceipt.execution?.state === 'running'}

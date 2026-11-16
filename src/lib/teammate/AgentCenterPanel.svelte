@@ -11,14 +11,14 @@
   import { listen } from '@tauri-apps/api/event';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
-  import { Bot, ShieldCheck, BookOpen } from 'lucide-svelte';
+  import { Bot, ShieldCheck, BookOpen, Plus } from 'lucide-svelte';
   import CommuneHistory from './CommuneHistory.svelte';
   import type { AgentHistoryReply } from '../../../packages/remote/src/shared/transport/wsRemote';
   import AgentMemberRow from './AgentMemberRow.svelte';
   import TerminalAgentRow from './TerminalAgentRow.svelte';
   import { locateTerminal } from './locateTerminal';
   import { collectTerminalAgents, matchesTerminalAgent, terminalAgentKey } from './terminalAgent';
-  import { registerCommuneMember } from './communeMembership';
+  import { registerCommuneMember, startCommuneTerminal } from './communeMembership';
   import { communeUnreadWorkspaces, markCommuneRead } from './communeAttention';
   import { settingsStore } from '$lib/stores/settings';
   import { fileEditorStore } from '$lib/stores/fileEditor';
@@ -30,6 +30,7 @@
     paneForegroundProcessStore,
     paneCwdStore,
     collapseCwd,
+    activePaneId,
   } from '$lib/stores/paneTree';
   import {
     refreshHosts,
@@ -83,8 +84,16 @@
   const terminalAgents = $derived(collectTerminalAgents($workspacesList, $agentTopologyStore));
   let expandedTerminal = $state('');
 
-  async function connectDiscovered(ownerWorkspaceId: string, paneId: string, memberAgentId?: string) {
-    try { await registerCommuneMember(ownerWorkspaceId, paneId, memberAgentId); await refreshSharedState(); }
+  async function newCollaboration() {
+    try {
+      const receipt = await startCommuneTerminal(workspaceId, $activePaneId || undefined);
+      if (!receipt) return;
+      await refreshSharedState();
+    } catch (error) { void alertDialog({ title: tr('commune.launchTitle'), message: String(error) }); }
+  }
+
+  async function connectDiscovered(ownerWorkspaceId: string, paneId: string, memberAgentId?: string, candidateRef?: string) {
+    try { await registerCommuneMember(ownerWorkspaceId, paneId, memberAgentId, candidateRef); await refreshSharedState(); }
     catch (error) { void alertDialog({ title: tr('commune.connectExistingAgent'), message: String(error) }); }
   }
   /** Aggregate display only; every action retains its original workspace binding. */
@@ -556,6 +565,14 @@
 
       {#if teamTab === 'members'}
         <div id="commune-panel-members" role="tabpanel" aria-labelledby="commune-tab-members">
+        {#if !import.meta.env.RIDGE_WEB_REMOTE}
+          <div class="mb-3 flex justify-end">
+            <button type="button" data-testid="commune-new-collaboration" onclick={newCollaboration}
+              class="inline-flex min-h-9 items-center gap-1.5 rounded-md border border-[var(--rg-border)] px-3 text-xs text-[var(--rg-fg)] hover:bg-[var(--rg-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--rg-accent)]">
+              <Plus class="h-3.5 w-3.5" /> {$t('commune.launchTitle')}
+            </button>
+          </div>
+        {/if}
         <!-- 跨工作区聚合；成员行仍复用完整监控/干预组件。 -->
         <ul class="space-y-3">
           {#each terminalAgents as entry (terminalAgentKey(entry.agent))}
@@ -571,7 +588,7 @@
               {:else}
                 <li class="text-[11px] text-[var(--rg-fg-muted)]">
                   <p>{candidate.reason}</p>
-                  <button class="mt-2 text-[var(--rg-accent)]" onclick={() => connectDiscovered(candidate.workspaceId, candidate.paneId)}>{$t('commune.connectSession')}</button>
+                  <button class="mt-2 text-[var(--rg-accent)]" onclick={() => connectDiscovered(candidate.workspaceId, candidate.paneId, candidate.agentId, candidate.candidateRef)}>{$t('commune.connectSession')}</button>
                 </li>
               {/if}
             </TerminalAgentRow>
@@ -600,7 +617,7 @@
         </ul>
         <HostCommuneGroups members={allMembers.map(member => ({...member.profile,workspaceId:member.workspaceId,workspaceName:member.workspaceName}))}
           candidates={terminalAgents.filter(entry => !entry.agent.protocolConnected).map(entry => ({...entry.agent,workspaceName:entry.workspaceName}))}
-          onConnect={candidate => connectDiscovered(candidate.workspaceId,candidate.paneId,candidate.memberAgentId)} />
+          onConnect={candidate => connectDiscovered(candidate.workspaceId,candidate.paneId,candidate.memberAgentId,candidate.candidateRef)} />
         </div>
       {:else}
         <div id="commune-panel-history" role="tabpanel" aria-labelledby="commune-tab-history">

@@ -167,7 +167,7 @@
           <span><strong title={id}>{memberName}</strong><small title={member?.workspaceId}>{member?.workspaceName ?? member?.workspaceId ?? $t('commune.groupIdentity')}{member?.paneId ? ` · ${member.paneId.slice(0,8)}` : ''}</small>
             <small>{member?.protocolConnected || member?.online ? $t('commune.protocolConnected') : member?.terminalAvailable ? $t('commune.groupTerminalReady') : $t('commune.groupOffline')}</small></span>
           {#if onConnect && member?.workspaceId && member?.paneId && !member.online}
-            <button disabled={store.busy || !member.terminalAvailable} onclick={() => onConnect?.({workspaceId:member.workspaceId!,paneId:member.paneId!,name:memberName,memberAgentId:member.id})}>{$t('commune.connectSession')}</button>
+            <button disabled={store.busy || !member.terminalAvailable} onclick={() => onConnect?.({workspaceId:member.workspaceId!,paneId:member.paneId!,name:memberName,memberAgentId:member.id,candidateRef:member.candidateRef})}>{$t('commune.connectSession')}</button>
           {/if}
           <button aria-pressed={group.leaderAgentId === id} disabled={store.busy} onclick={() => store.setLeader(group.id,group.leaderAgentId === id ? null : id)}>{group.leaderAgentId === id ? $t('commune.unsetLeader') : $t('commune.setLeader')}</button>
           {#if store.groups.length > 1}

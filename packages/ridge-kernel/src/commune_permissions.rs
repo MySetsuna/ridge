@@ -150,6 +150,7 @@ impl Permissions {
     ) -> Option<String> {
         let id = Uuid::new_v4().to_string();
         let nonce = Uuid::new_v4().simple().to_string();
+        let workspace_id = binding.workspace_id.clone();
         let (sender, receiver) = oneshot::channel();
         let inserted = (|| -> Result<Value, String> {
             let mut pending = self
@@ -202,10 +203,11 @@ impl Permissions {
         let _waiting = Waiting {
             permissions: self.clone(),
             id,
+            workspace_id: workspace_id.clone(),
             events: events.clone(),
         };
         events.broadcast("teammate://hitl-approval-required", request);
-        events.broadcast("teammate://hitl-pending-changed", Value::Null);
+        events.broadcast("teammate://hitl-pending-changed", json!({"workspaceId":workspace_id}));
         receiver.await.ok()
     }
     pub fn snapshot(&self, local: bool) -> Result<Value, String> {
@@ -310,6 +312,7 @@ impl Permissions {
 struct Waiting {
     permissions: Arc<Permissions>,
     id: String,
+    workspace_id: String,
     events: BusinessEvents,
 }
 impl Drop for Waiting {
@@ -322,7 +325,7 @@ impl Drop for Waiting {
             }
         }
         self.events
-            .broadcast("teammate://hitl-pending-changed", Value::Null);
+            .broadcast("teammate://hitl-pending-changed", json!({"workspaceId":self.workspace_id}));
     }
 }
 

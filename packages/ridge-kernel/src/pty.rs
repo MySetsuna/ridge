@@ -1174,6 +1174,10 @@ impl PtyRegistry {
         self.lifecycle.lock().get(&id).map(|e| e.state)
     }
 
+    pub(crate) fn exit_code(&self, id: Uuid) -> Option<i32> {
+        self.lifecycle.lock().get(&id).and_then(|entry| entry.exit_code)
+    }
+
     /// Subscribe to the per-PTY exit broadcast. The first message received
     /// after subscribe is the most recent exit (if any). Used by RTP1
     /// sessions to dispatch `session_event{event:"exited"}` to attached

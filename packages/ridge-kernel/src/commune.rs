@@ -9,7 +9,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
-use ridge_acp::{existing::ExistingConversation, transport::AcpTransport};
+use ridge_acp::{existing::ExistingConversation, protocol::AUTH_REQUIRED, transport::AcpTransport, AcpErrorWrap};
 use crate::commune_connection::Conversation;
 use ridge_core::{
     process_identity::{self, ProcessInstance},
@@ -21,7 +21,6 @@ use ridge_mcp::server::McpHost;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
-    net::{SocketAddr, SocketAddrV4},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -31,6 +30,8 @@ pub fn owns_method(method: &str) -> bool {
     matches!(
         method,
         "register_commune_member"
+            | "prepare_commune_connection"
+            | "get_collaboration_launch_options"
             | "get_agent_terminal_view"
             | "write_agent_terminal_input"
             | "release_teammate_agent"
@@ -87,7 +88,8 @@ pub async fn dispatch(
         }
         "get_orchestration_health"=>{
             let state=state.clone();
-            tokio::task::spawn_blocking(move||crate::orchestration_health::read(&state)).await.map_err(|error|error.to_string())?
+            let workspace=args["workspaceId"].as_str().map(str::to_owned);
+            tokio::task::spawn_blocking(move||crate::orchestration_health::read(&state,workspace.as_deref())).await.map_err(|error|error.to_string())?
         }
         "rollback_workspace"=>{if !native{return Err("rollback requires native trust".into());}crate::workspace_rollback::rollback(state,args).await}
 
@@ -173,15 +175,65 @@ pub async fn dispatch(
                 .await
                 .map_err(|e| e.to_string())?
         }
+        "get_collaboration_launch_options" => {
+            if !native { return Err("collaboration launch options require native trust".into()); }
+            let profiles = crate::agent_profiles::list_profiles()?;
+            let profiles = profiles.as_array().ok_or("invalid Agent catalog")?.iter()
+                .filter(|profile| profile["collaboration"].is_object()).cloned().collect::<Vec<_>>();
+            let cwd = match (args["workspaceId"].as_str(), args["paneId"].as_str()) {
+                (Some(workspace), Some(pane)) => {
+                    let workspace = Uuid::parse_str(workspace).map_err(|_| "invalid workspace")?;
+                    let pane = Uuid::parse_str(pane).map_err(|_| "invalid pane")?;
+                    state.workspaces.lock().map_err(|_| "workspace graph unavailable")?
+                        .workspace(workspace).and_then(|workspace| workspace.pane_tree.panes.get(&pane))
+                        .and_then(|pane| pane.cwd.as_ref()).map(|cwd| cwd.to_string_lossy().into_owned())
+                }
+                _ => None,
+            }.or(crate::settings::default_cwd()?);
+            Ok(json!({"runtimeEpoch":state.runtime_epoch,"cwd":cwd,"profiles":profiles}))
+        }
+        "prepare_commune_connection" => {
+            if !native { return Err("connection preparation requires native trust".into()); }
+            let mut preview = prepare_candidate(state, args).await?;
+            let request = candidate_request(&preview)?;
+            let reference = preview["candidateRef"].as_str().ok_or("candidate reference unavailable")?;
+            if request.session_id.is_empty() {
+                preview["sessionChoices"] = json!(list_candidate_sessions(state, &request, reference).await?);
+            } else {
+                validate_endpoint(&request)?;
+                let root = validate_candidate_source(state, &request)?;
+                // Establish OS peer ownership without sending a protocol request.
+                drop(request.endpoint.connect(&request.endpoint_owner).await?);
+                if validate_candidate_source(state, &request)? != root {
+                    return Err("candidate process changed during connection preparation".into());
+                }
+                preview["sessionRef"] = json!(session_reference(&request, reference, &request.session_id));
+            }
+            preview.as_object_mut().map(|object| object.remove("bearerTokenFile"));
+            Ok(preview)
+        }
         "register_commune_member" => {
             if !native {
                 return Err("only a native trusted client may register an existing process".into());
             }
-            attach(
-                state,
-                serde_json::from_value(args.clone()).map_err(|e| e.to_string())?,
-            )
-            .await
+            let request = if let Some(reference) = args["candidateRef"].as_str() {
+                let descriptor = prepare_candidate(state, args).await?;
+                let mut request = candidate_request(&descriptor)?;
+                let selected = args["sessionRef"].as_str();
+                if request.session_id.is_empty() {
+                    let selected = selected.ok_or("select one existing protocol session")?;
+                    let choices = list_candidate_sessions(state, &request, reference).await?;
+                    request.session_id = choices.iter().find(|choice| choice["sessionRef"] == selected)
+                        .and_then(|choice| choice["sessionId"].as_str())
+                        .ok_or("selected session or endpoint changed; refresh discovery")?.to_owned();
+                } else if selected.is_some_and(|choice| choice != session_reference(&request, reference, &request.session_id)) {
+                    return Err("selected session or endpoint changed; refresh discovery".into());
+                }
+                request
+            } else {
+                serde_json::from_value(args.clone()).map_err(|error| error.to_string())?
+            };
+            attach(state, request).await
         }
         "release_teammate_agent" => {
             if !native{return Err("membership removal requires native trust".into());}
@@ -259,12 +311,12 @@ pub async fn dispatch(
             profile["discovered"] = if native {discovered} else {crate::agent_discovery::public_projection(discovered)};
             Ok(profile)
         }
-        "list_hitl_pending" => pending_snapshot(state,false),
+        "list_hitl_pending" => pending_snapshot(state,false,args["workspaceId"].as_str()),
         "list_hitl_pending_local" => {
             if !native {
                 return Err("local permission details require native trust".into());
             }
-            pending_snapshot(state,true)
+            pending_snapshot(state,true,None)
         }
         "get_pending_hitl_count" => Ok(json!(state
             .permissions
@@ -278,7 +330,6 @@ pub async fn dispatch(
             }
             let remote=method=="resolve_hitl_remote";
             if let Some(outcome)=state.gateway_permissions.resolve(state,args,!remote&&native)? {
-                state.business_events.broadcast("teammate://hitl-pending-changed",Value::Null);
                 return if remote {Ok(json!({"outcome":outcome}))}else if outcome=="bad-verdict" {Err("invalid gateway verdict".into())}else {Ok(json!(outcome=="consumed"))};
             }
             if !args["replacement"].is_null() {
@@ -338,9 +389,6 @@ pub async fn dispatch(
                 native,
             )?;
             drop(roster);
-            state
-                .business_events
-                .broadcast("teammate://hitl-pending-changed", Value::Null);
             if method == "resolve_hitl_request" {
                 if outcome == "bad-verdict" {
                     return Err("select an option actually offered by the Agent".into());
@@ -354,9 +402,9 @@ pub async fn dispatch(
             if args.get("groupAction").is_some() || args.get("groupTaskId").is_some() {
                 let state = state.clone(); let args = args.clone(); let method = method.to_owned();
                 return tokio::task::spawn_blocking(move || match method.as_str() {
-                    "send_agent_message" => crate::commune_tasks::send(&state,&args),
-                    "cancel_agent_message" => crate::commune_tasks::cancel(&state,&args),
-                    _ => crate::commune_tasks::status(&state,&args),
+                    "send_agent_message" => crate::commune_tasks::send(&state,&args,native),
+                    "cancel_agent_message" => crate::commune_tasks::cancel(&state,&args,native),
+                    _ => crate::commune_tasks::status(&state,&args,native),
                 }).await.map_err(|e| e.to_string())?;
             }
             let grouped = method == "send_agent_message" && args.get("groupId").is_some();
@@ -434,11 +482,14 @@ pub struct RegisterRequest {
     protocol: String,
     #[serde(default)]
     bearer_token_file: Option<std::path::PathBuf>,
+    #[serde(default)]
+    expected_terminal_epoch: Option<String>,
     workspace_id: Uuid,
     pane_id: Uuid,
     process: ProcessInstance,
     endpoint_owner: ProcessInstance,
-    endpoint: SocketAddrV4,
+    endpoint: crate::commune_endpoint::LocalEndpoint,
+    #[serde(default)]
     session_id: String,
     cwd: String,
 }
@@ -498,24 +549,153 @@ fn pane_process(state: &AppState, request: &RegisterRequest) -> Result<ProcessIn
     Ok(root)
 }
 
+async fn prepare_candidate(state: &AppState, args: &Value) -> Result<Value, String> {
+    let state = state.clone();
+    let args = args.clone();
+    tokio::task::spawn_blocking(move || crate::agent_discovery::prepare(&state, &args))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn candidate_request(descriptor: &Value) -> Result<RegisterRequest, String> {
+    let mut descriptor = descriptor.clone();
+    descriptor
+        .as_object_mut()
+        .map(|object| object.remove("candidateRef"));
+    serde_json::from_value(descriptor).map_err(|error| error.to_string())
+}
+
+fn session_reference(request: &RegisterRequest, candidate: &str, session: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let scope = json!([
+        candidate,
+        request.expected_terminal_epoch,
+        request.process,
+        request.endpoint_owner,
+        request.endpoint.to_string(),
+        request.protocol,
+        request.cwd,
+        request.session_id.is_empty(),
+        session
+    ]);
+    format!("{:x}", Sha256::digest(scope.to_string().as_bytes()))
+}
+
+fn validate_candidate_source(
+    state: &AppState,
+    request: &RegisterRequest,
+) -> Result<ProcessInstance, String> {
+    let epoch = request
+        .expected_terminal_epoch
+        .as_deref()
+        .ok_or("candidate terminal epoch unavailable")?;
+    let root = pane_process(state, request)?;
+    if state.ptys.terminal_metadata(request.pane_id, Some(epoch)).is_none() {
+        return Err("candidate terminal epoch changed; refresh discovery".into());
+    }
+    Ok(root)
+}
+
+async fn list_candidate_sessions(
+    state: &AppState,
+    request: &RegisterRequest,
+    candidate: &str,
+) -> Result<Vec<Value>, String> {
+    validate_endpoint(request)?;
+    let root = validate_candidate_source(state, request)?;
+    let mut sessions = tokio::time::timeout(Duration::from_secs(12), async {
+        let stream = request.endpoint.connect(&request.endpoint_owner).await?;
+        let transport = connect_protocol(request, stream).await?;
+        let sessions = if request.protocol == "app-server" {
+            crate::app_server::list_sessions(&transport, &request.cwd).await
+        } else {
+            ridge_acp::existing::list_sessions(&transport, &request.cwd).await
+        };
+        transport.shutdown();
+        sessions.map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "existing session listing timed out")??;
+    if validate_candidate_source(state, request)? != root {
+        return Err("candidate process changed during session discovery".into());
+    }
+    for session in &mut sessions {
+        let id = session["sessionId"]
+            .as_str()
+            .ok_or("missing listed session identity")?;
+        session["sessionRef"] = json!(session_reference(request, candidate, id));
+    }
+    Ok(sessions)
+}
+
+fn validate_endpoint(request: &RegisterRequest) -> Result<(), String> {
+    if !matches!(request.protocol.as_str(), "acp" | "acp-ws" | "app-server") {
+        return Err("unsupported conversation protocol".into());
+    }
+    if request.protocol == "acp" && request.bearer_token_file.is_some() {
+        return Err("ACP byte-stream registration does not accept a WebSocket credential".into());
+    }
+    if request.protocol == "acp"
+        && matches!(&request.endpoint, crate::commune_endpoint::LocalEndpoint::WebSocket(..))
+    {
+        return Err("ACP byte-stream registration does not accept a WebSocket route".into());
+    }
+    if !std::path::Path::new(&request.cwd).is_absolute() {
+        return Err("absolute working directory required".into());
+    }
+    Ok(())
+}
+
+async fn connect_protocol(
+    request: &RegisterRequest,
+    stream: crate::commune_endpoint::LocalStream,
+) -> Result<AcpTransport, String> {
+    Ok(if request.protocol != "acp" {
+        let token = if let Some(path) = &request.bearer_token_file {
+            if !path.is_absolute() {
+                return Err("protocol credential reference must be absolute".into());
+            }
+            let file = std::fs::File::open(path)
+                .map_err(|_| "cannot read protocol credential reference")?;
+            use std::io::Read;
+            let mut token = String::new();
+            file.take(4097)
+                .read_to_string(&mut token)
+                .map_err(|_| "invalid protocol credential")?;
+            let token = token.trim().to_owned();
+            if token.is_empty() || token.len() > 4096 || token.contains(['\r', '\n']) {
+                return Err("invalid protocol credential".into());
+            }
+            Some(token)
+        } else {
+            None
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let url = request.endpoint.websocket_url();
+            if request.protocol == "app-server" {
+                crate::app_server::transport(stream, &url, token).await
+            } else {
+                crate::app_server::acp_transport(stream, &url, token).await
+            }
+        })
+        .await
+        .map_err(|_| "protocol WebSocket handshake timed out")??
+    } else {
+        let (read, write) = tokio::io::split(stream);
+        AcpTransport::from_io(write, read)
+    })
+}
+
 pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result<Value, String> {
     if state.shutting_down.load(std::sync::atomic::Ordering::Acquire){return Err("Runtime is shutting down".into());}
-    if !matches!(request.protocol.as_str(),"acp"|"app-server") {return Err("unsupported conversation protocol".into());}
-    if request.protocol=="acp" && request.bearer_token_file.is_some(){return Err("ACP TCP registration does not accept a WebSocket credential".into());}
-    if !request.endpoint.ip().is_loopback()
-        || request.endpoint.port() == 0
-        || request.session_id.trim().is_empty()
-        || !std::path::Path::new(&request.cwd).is_absolute()
-    {
-        return Err("existing session, absolute cwd and local endpoint are required".into());
+    validate_endpoint(&request)?;
+    if request.session_id.trim().is_empty() {
+        return Err("existing session identity is required".into());
     }
     // One control connection per authenticated peer/session. No new Agent or session.
     let mut connections = state.commune.lock().await;
     let root = pane_process(state, &request)?;
-    let peer_namespace = format!(
-        "os-tcp:{}:{}:{}",
-        request.endpoint_owner.pid, request.endpoint_owner.start_instance, request.endpoint
-    );
+    let peer_namespace = request.endpoint.namespace(&request.endpoint_owner);
     let existing = state
         .roster
         .lock()
@@ -567,6 +747,7 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
             .into(),
         process: request.process.clone(),
     };
+    if request.expected_terminal_epoch.as_ref().is_some_and(|epoch|epoch!=&source.terminal_epoch){return Err("candidate terminal epoch changed; refresh discovery".into());}
     let (organization_id, organization) = {
         let groups = state
             .groups
@@ -651,18 +832,7 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
             return Err("original member connection, task or approval is active; finish or disconnect it before rebinding".into());
         }
     }
-    let stream = tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::net::TcpStream::connect(request.endpoint),
-    )
-    .await
-    .map_err(|_| "ACP endpoint connection timed out")?
-    .map_err(|error| error.to_string())?;
-    let SocketAddr::V4(client) = stream.local_addr().map_err(|error| error.to_string())? else {
-        return Err("ACP connection address family mismatch".into());
-    };
-    process_identity::owns_connection(&request.endpoint_owner, request.endpoint, client)
-        .map_err(|error| error.to_string())?;
+    let stream = request.endpoint.connect(&request.endpoint_owner).await?;
     if agent_id.is_empty() || agent_id.len() > 128 || !agent_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') {
         return Err("organization member ID cannot be used as a protocol history key; preserve it for recovery".into());
     }
@@ -739,32 +909,24 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
                 permissions.request(approval, params, log, events, context).await
             })
         });
+    let transport = connect_protocol(&request, stream).await?;
     let session=if request.protocol=="app-server" {
-        let token=if let Some(path)=&request.bearer_token_file {
-            if !path.is_absolute(){return Err("protocol credential reference must be absolute".into());}
-            let file=std::fs::File::open(path).map_err(|_|"cannot read protocol credential reference")?;
-            use std::io::Read;
-            let mut token=String::new();file.take(4097).read_to_string(&mut token).map_err(|_|"invalid protocol credential")?;
-            let token=token.trim().to_owned();
-            if token.is_empty()||token.len()>4096||token.contains(['\r','\n']){return Err("invalid protocol credential".into());}Some(token)
-        }else{None};
-        let transport=tokio::time::timeout(Duration::from_secs(5),crate::app_server::transport(stream,&format!("ws://{}/",request.endpoint),token)).await.map_err(|_|"app-server handshake timed out")??;
         Conversation::AppServer(crate::app_server::Conversation::load(transport,request.session_id.clone(),request.cwd.clone(),updates,permission).await.map_err(|error|error.to_string())?)
     }else{
-        let (read,write)=stream.into_split();
-        Conversation::Acp(ExistingConversation::load(AcpTransport::from_io(write,read),request.session_id.clone(),request.cwd.clone(),updates,permission).await.map_err(|error|error.to_string())?)
+        Conversation::Acp(ExistingConversation::load(transport,request.session_id.clone(),request.cwd.clone(),updates,permission).await.map_err(|error|error.to_string())?)
     };
     let session = Arc::new(session);
     let lifecycle = state.retired_workspaces.lock().map_err(|_| "workspace lifecycle unavailable")?;
     let rechecked = pane_process(state, &request);
     if rechecked.as_ref() != Ok(&root)
+        || state.ptys.agent_terminal_view(request.pane_id,request.workspace_id,0).ok().is_none_or(|view|view["terminalEpoch"]!=source.terminal_epoch)
         || process_identity::validate(&request.process).is_err()
         || process_identity::validate(&request.endpoint_owner).is_err()
     {
         session.disconnect();
         return Err("Agent/pane process instance changed during registration".into());
     }
-    if let Err(error) = connection_history.append(json!({"kind":if session.history_replayed(){"replay_committed"}else{"session_reconnected"},"agentId":agent_id,"sessionId":request.session_id,"replayId":replay_id,"generation":generation,"agentInfo":session.agent_info()})) {
+    if let Err(error) = connection_history.append(json!({"kind":if session.history_replayed(){"replay_committed"}else{"session_reconnected"},"agentId":agent_id,"sessionId":request.session_id,"replayId":replay_id,"generation":generation,"agentInfo":session.agent_info(),"replayInfo":session.replay_info()})) {
         session.disconnect();
         return Err(error);
     }
@@ -809,10 +971,10 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
                 "conversation.prompt".into(),
                 "conversation.cancel".into(),
             ];
-            if request.protocol=="acp" {capabilities.extend(["acp.prompt".into(),"acp.cancel".into()]);}
+            if request.protocol!="app-server" {capabilities.extend(["acp.prompt".into(),"acp.cancel".into()]);}
             if session.history_replayed() {
                 capabilities.push("conversation.history".into());
-                if request.protocol=="acp" {capabilities.push("acp.history".into());}
+                if request.protocol!="app-server" {capabilities.push("acp.history".into());}
             }
             capabilities
         },
@@ -921,6 +1083,8 @@ pub(crate) async fn attach(state: &AppState, request: RegisterRequest) -> Result
         json!({"agentId":agent_id,"generation":generation,"lease":lease,"sessionId":request.session_id,"binding":binding}),
     )
 }
+
+pub(crate) const AGENT_AUTHENTICATION_REQUIRED: &str = "agent_authentication_required";
 
 /// One bounded Hub receiver per exact conversation; one prompt at a time.
 /// No retry after a transport error: the Agent may already have executed it.
@@ -1048,6 +1212,9 @@ async fn consume_deliveries(
                         Ok(Ok(result)) => {
                             json!({"state":if result["stopReason"] == "cancelled" {"cancelled"} else {"turn_ended"},"response":result})
                         }
+                        Ok(Err(AcpErrorWrap::Rpc(AUTH_REQUIRED, _))) if matches!(session.as_ref(), Conversation::Acp(_)) => {
+                            json!({"state":"rejected","reason":AGENT_AUTHENTICATION_REQUIRED})
+                        }
                         Ok(Err(error)) => json!({"state":"unknown","reason":error.to_string()}),
                         Err(error) => json!({"state":"unknown","reason":error.to_string()}),
                     }
@@ -1091,9 +1258,10 @@ pub async fn register(
     }))
 }
 
-fn pending_snapshot(state:&AppState,local:bool)->Result<Value,String> {
+pub(crate) fn pending_snapshot(state:&AppState,local:bool,workspace:Option<&str>)->Result<Value,String> {
     let mut rows=state.permissions.snapshot(local)?.as_array().ok_or("invalid pending snapshot")?.clone();
     rows.extend(state.gateway_permissions.snapshot(local)?);
+    if let Some(workspace)=workspace {rows.retain(|row|row["workspaceId"]==workspace);}
     rows.sort_by(|a,b|a["createdAt"].as_u64().cmp(&b["createdAt"].as_u64()).then_with(||a["id"].as_str().cmp(&b["id"].as_str())));
     Ok(json!(rows))
 }

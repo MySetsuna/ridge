@@ -20,6 +20,535 @@ mod commune_fixture;
 #[path = "common/runtime_fixture.rs"]
 mod runtime_fixture;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn paired_lan_client_operates_existing_commune_session() {
+    use cloud_ws::tungstenite::{
+        client::IntoClientRequest as LanRequest, Error as WsError, Message,
+    };
+    use futures::SinkExt;
+    use std::sync::Arc;
+
+    let root = std::env::temp_dir().join(format!("ridge-lan-commune-{}", Uuid::new_v4()));
+    let owned = runtime_fixture::start_with_env(
+        &root,
+        &[
+            ("RIDGE_TEST_TLS_DIR", root.join("tls")),
+            ("RIDGE_TEST_ALLOW_NON_BREAKAWAY", "1".into()),
+        ],
+    )
+    .await;
+    let endpoint = &owned.endpoint;
+    let workspace = client::request_json(endpoint, "POST", "/v1/domain/workspaces", None).unwrap()
+        ["workspace_id"]
+        .clone();
+    let graph = client::request_json(
+        endpoint,
+        "GET",
+        &format!("/v1/domain/workspaces/{}", workspace.as_str().unwrap()),
+        None,
+    )
+    .unwrap();
+    let pane = &graph["panes"][0];
+    let descriptor = root.join("existing-endpoint.json");
+    let created = client::request_json(
+        endpoint,
+        "POST",
+        "/v1/domain/ptys",
+        Some(&json!({
+            "pty_id":pane,"workspace_id":workspace,"program":std::env::current_exe().unwrap(),
+            "args":["--exact","existing_protocol_endpoint_fixture","--ignored"],"cwd":root,
+            "env":{"RIDGE_COMMUNE_FIXTURE":descriptor},"role":"shell"
+        })),
+    )
+    .unwrap();
+    assert_eq!(created["ok"], true, "{created}");
+    let mut source: Value = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(bytes) = fs::read(&descriptor) {
+                if let Ok(source) = serde_json::from_slice(&bytes) {
+                    break source;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("ACP fixture descriptor");
+    source["workspaceId"] = workspace.clone();
+    source["paneId"] = pane.clone();
+    source["cwd"] = json!(root);
+    source["endpointOwner"] = source["process"].clone();
+    let attached = command(endpoint, "register_commune_member", source, true);
+    assert_eq!(attached["sessionId"], "fixture-existing");
+
+    let mut owner = runtime_fixture::attach(endpoint).await;
+    let enabled = runtime_fixture::rpc(
+        &mut owner,
+        1,
+        "set_remote_enabled",
+        json!({"enabled":true,"port":0}),
+    )
+    .await;
+    assert!(enabled["error"].is_null(), "{enabled}");
+    let info =
+        runtime_fixture::rpc(&mut owner, 2, "get_remote_info", json!({})).await["result"].clone();
+    assert_eq!(info["tls"], true);
+    let addr = format!("127.0.0.1:{}", info["port"]);
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(fs::read(root.join("tls/ca.der")).unwrap().into())
+        .unwrap();
+    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .https_only(true)
+        .use_preconfigured_tls(tls.clone())
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let device = "commune-lan-acceptance";
+    let paired: Value = http
+        .post(format!("https://{addr}/verify"))
+        .form(&[
+            ("code", info["totpCode"].as_str().unwrap()),
+            ("device", device),
+        ])
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(paired["success"], true);
+    let token = paired["token"].as_str().unwrap();
+    let connect = |device: &str| {
+        let url = format!("wss://{addr}/ws?device={device}");
+        let mut request = LanRequest::into_client_request(url).unwrap();
+        request
+            .headers_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            cloud_ws::connect_async_tls_with_config(
+                request,
+                None,
+                false,
+                Some(cloud_ws::Connector::Rustls(Arc::new(tls.clone()))),
+            ),
+        )
+    };
+    assert!(
+        matches!(connect("wrong-device").await.unwrap(), Err(WsError::Http(reply)) if reply.status() == 401)
+    );
+    let (mut socket, _) = connect(device)
+        .await
+        .unwrap()
+        .expect("authenticated LAN WebSocket");
+    let mut id = 0_u64;
+    macro_rules! rpc {
+        ($method:literal, $params:expr) => {{
+            id += 1;
+            socket.send(Message::Text(json!({
+                "jsonrpc":"2.0","id":id,"method":$method,"params":$params
+            }).to_string())).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let Message::Text(frame) = socket.next().await.unwrap().unwrap() {
+                        assert!(!frame.contains("private-argument"), "LAN leaked local permission payload");
+                        let reply: Value = serde_json::from_str(&frame).unwrap();
+                        if reply["id"] == id {
+                            break reply;
+                        }
+                    }
+                }
+            }).await.expect($method)
+        }};
+    }
+    assert_eq!(
+        rpc!("switch_workspace", json!({"workspaceId":workspace}))["result"]["success"],
+        true
+    );
+    let topology = rpc!("get_teammate_topology", json!({"workspaceId":workspace}));
+    let member = &topology["result"]["roster"][0];
+    assert_eq!(member["agentId"], attached["agentId"], "{topology}");
+    assert_eq!(member["sessionId"], "fixture-existing");
+    assert_eq!(member["canSend"], true);
+    assert_eq!(topology["result"]["discovered"], json!([]));
+    let history = rpc!(
+        "read_agent_recent_replies",
+        json!({"workspaceId":workspace,"limit":20})
+    );
+    assert!(
+        history["result"].to_string().contains("existing history"),
+        "{history}"
+    );
+    assert!(rpc!("list_hitl_pending_local", json!({}))["error"].is_object());
+
+    let host_groups = rpc!("get_teammate_topology", json!({"groupScope":"host"}));
+    let group = json!({"id":"lan-group","name":"LAN group","color":"#60a5fa",
+        "memberAgentIds":[member["agentId"]],"createdAt":1});
+    let edit = rpc!(
+        "set_teammate_groups",
+        json!({"groupScope":"host",
+        "expectedRevision":host_groups["result"]["groupsRevision"],"groups":[group]})
+    );
+    let revision = &edit["result"]["groups"][0]["revision"];
+    assert!(revision.is_number(), "{edit}");
+    let dispatch = json!({"groupScope":"host","groupId":"lan-group","groupRevision":revision,
+        "groupAction":"broadcast","message":"permission-needed","idempotency_key":"lan-group-prompt",
+        "targets":[{"agentId":member["agentId"],"generation":member["generation"],"lease":member["lease"]}]});
+    let receipt = rpc!("send_agent_message", &dispatch);
+    let delivery = &receipt["result"]["children"][0]["deliveryId"];
+    assert!(delivery.is_string(), "{receipt}");
+    assert_eq!(receipt["result"]["groupId"], "lan-group");
+    assert_eq!(
+        receipt["result"]["children"][0]["member"]["agentId"],
+        member["agentId"]
+    );
+    let retry = rpc!("send_agent_message", &dispatch);
+    assert_eq!(
+        retry["result"]["groupTaskId"],
+        receipt["result"]["groupTaskId"]
+    );
+    assert_eq!(retry["result"]["children"][0]["deliveryId"], *delivery);
+
+    let pending = wait_permission(endpoint);
+    let projection = rpc!("list_hitl_pending", json!({}));
+    let approval = &projection["result"][0];
+    assert_eq!(
+        rpc!("list_hitl_pending", json!({"workspaceId":workspace}))["result"],
+        projection["result"]
+    );
+    assert_eq!(
+        rpc!("list_hitl_pending", json!({"workspaceId":Uuid::new_v4()}))["result"],
+        json!([])
+    );
+    assert_eq!(
+        rpc!("get_orchestration_health", json!({"workspaceId":workspace}))["result"]["pendingHitl"],
+        1
+    );
+    assert_eq!(approval["id"], pending["id"], "{projection}");
+    assert!(approval["toolCall"].is_null() && approval["options"].is_null());
+    let mut decision = json!({"id":approval["id"],"nonce":"wrong","verdict":"approve"});
+    assert_eq!(
+        rpc!("resolve_hitl_remote", &decision)["result"]["outcome"],
+        "nonce-mismatch"
+    );
+    decision["nonce"] = approval["resolutionNonce"].clone();
+    assert_eq!(
+        rpc!("resolve_hitl_remote", &decision)["result"]["outcome"],
+        "consumed"
+    );
+    assert_eq!(
+        rpc!("resolve_hitl_remote", &decision)["result"]["outcome"],
+        "already-resolved"
+    );
+    wait_execution(
+        endpoint,
+        &json!({"workspace_id":workspace,"agent_id":member["agentId"],
+        "generation":member["generation"],"lease":member["lease"]}),
+        delivery,
+        "turn_ended",
+    );
+    let decisions = fs::read_to_string(root.join("permission-decisions")).unwrap();
+    assert_eq!(decisions.lines().count(), 1);
+    assert!(decisions.contains("\"optionId\":\"once\""));
+
+    let mut outputs_request = dispatch.clone();
+    outputs_request["message"] = json!("produce-outputs");
+    outputs_request["idempotency_key"] = json!("lan-group-outputs");
+    let outputs = rpc!("send_agent_message", &outputs_request);
+    wait_execution(
+        endpoint,
+        &json!({"workspace_id":workspace,"agent_id":member["agentId"],
+        "generation":member["generation"],"lease":member["lease"]}),
+        &outputs["result"]["children"][0]["deliveryId"],
+        "turn_ended",
+    );
+    let task = json!({"groupScope":"host","groupTaskId":outputs["result"]["groupTaskId"]});
+    let native = command(
+        endpoint,
+        "get_agent_message_delivery_status",
+        task.clone(),
+        true,
+    );
+    assert!(native["children"][0]["artifacts"]
+        .to_string()
+        .contains("urn:fixture:result"));
+    let status = rpc!("get_agent_message_delivery_status", &task);
+    let replay = rpc!("send_agent_message", &outputs_request);
+    for projection in [status, replay] {
+        let artifacts = projection["result"]["children"][0]["artifacts"]
+            .as_array()
+            .unwrap();
+        assert_eq!(artifacts.len(), 3);
+        for artifact in artifacts {
+            assert!(
+                artifact["uri"].is_null() && artifact["textCursor"].is_null(),
+                "{artifact}"
+            );
+        }
+    }
+
+    let sessions = runtime_fixture::rpc(&mut owner, 3, "list_remote_sessions", json!({})).await;
+    let session = &sessions["result"][0];
+    assert_eq!(session["deviceId"], device);
+    let revoked = runtime_fixture::rpc(
+        &mut owner,
+        4,
+        "disconnect_session",
+        json!({"id":session["id"]}),
+    )
+    .await;
+    assert_eq!(revoked["result"], true, "{revoked}");
+    assert!(
+        matches!(connect(device).await.unwrap(), Err(WsError::Http(reply)) if reply.status() == 401)
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unix_endpoint_requires_the_actual_socket_peer_before_protocol_data() {
+    let root = std::env::temp_dir().join(format!(
+        "ridge-uds-{}",
+        &Uuid::new_v4().simple().to_string()[..8]
+    ));
+    let owned = runtime_fixture::start(&root).await;
+    let mut sources = Vec::new();
+    for id in ["one", "two"] {
+        let workspace = client::request_json(
+            &owned.endpoint,
+            "POST",
+            "/v1/domain/workspaces",
+            Some(&json!({"name":id})),
+        )
+        .unwrap()["workspace_id"]
+            .clone();
+        let graph = client::request_json(
+            &owned.endpoint,
+            "GET",
+            &format!("/v1/domain/workspaces/{}", workspace.as_str().unwrap()),
+            None,
+        )
+        .unwrap();
+        let pane = &graph["panes"][0];
+        let descriptor = root.join(format!("{id}.json"));
+        let socket = root.join(format!("{id}.sock"));
+        let created = client::request_json(
+            &owned.endpoint,
+            "POST",
+            "/v1/domain/ptys",
+            Some(&json!({
+                "pty_id":pane,"workspace_id":workspace,"program":std::env::current_exe().unwrap(),
+                "args":["--exact","existing_protocol_endpoint_fixture","--ignored"],"cwd":root,
+                "env":{"RIDGE_COMMUNE_FIXTURE":descriptor,"RIDGE_COMMUNE_FIXTURE_SOCKET":socket,
+                    "RIDGE_COMMUNE_LIST_SESSIONS":"1"},"role":"shell"
+            })),
+        )
+        .unwrap();
+        assert_eq!(created["ok"], true, "{created}");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut source: Value = loop {
+            if let Ok(bytes) = fs::read(&descriptor) {
+                if let Ok(source) = serde_json::from_slice(&bytes) {
+                    break source;
+                }
+            }
+            assert!(Instant::now() < deadline, "Unix socket fixture unavailable");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        source["workspaceId"] = workspace;
+        source["paneId"] = pane.clone();
+        source["cwd"] = json!(root);
+        source["endpointOwner"] = source["process"].clone();
+        sources.push(source);
+    }
+    let mut wrong = sources[0].clone();
+    wrong["endpoint"] = sources[1]["endpoint"].clone();
+    let rejected = command_reply(&owned.endpoint, "register_commune_member", wrong, true);
+    assert_eq!(rejected["ok"], false);
+    assert!(
+        rejected["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Unix socket peer"),
+        "{rejected}"
+    );
+    assert!(!root.join("session-operations").exists());
+    assert!(!root.join("agent-roster.json").exists());
+    let attached = command(
+        &owned.endpoint,
+        "register_commune_member",
+        sources.remove(0),
+        true,
+    );
+    assert_eq!(attached["sessionId"], "fixture-existing");
+    assert!(attached["binding"]["endpoint"]
+        .as_str()
+        .unwrap()
+        .starts_with("unix://"));
+    let operations = fs::read_to_string(root.join("session-operations")).unwrap();
+    assert_eq!(operations.lines().count(), 2);
+    assert!(operations.contains("session/load"));
+    drop(owned);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listing_requires_an_explicit_current_session_choice_from_the_exact_process() {
+    use sha2::{Digest, Sha256};
+
+    let root = std::env::temp_dir().join(format!("ridge-session-choice-{}", Uuid::new_v4()));
+    let owned = runtime_fixture::start(&root).await;
+    let workspace = client::request_json(
+        &owned.endpoint,
+        "POST",
+        "/v1/domain/workspaces",
+        Some(&json!({"name":"session choice"})),
+    )
+    .unwrap()["workspace_id"]
+        .clone();
+    let graph = client::request_json(
+        &owned.endpoint,
+        "GET",
+        &format!("/v1/domain/workspaces/{}", workspace.as_str().unwrap()),
+        None,
+    )
+    .unwrap();
+    let pane = &graph["panes"][0];
+    let descriptor_path = root.join("endpoint.json");
+    let created = client::request_json(&owned.endpoint, "POST", "/v1/domain/ptys", Some(&json!({
+        "pty_id":pane,"workspace_id":workspace,"program":std::env::current_exe().unwrap(),
+        "args":["--exact","existing_protocol_endpoint_fixture","--ignored"],"cwd":root,
+        "env":{"RIDGE_COMMUNE_FIXTURE":descriptor_path,"RIDGE_COMMUNE_LIST_SESSIONS":"1"},"role":"shell"
+    }))).unwrap();
+    assert_eq!(created["ok"], true, "{created}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let endpoint: Value = loop {
+        if let Ok(bytes) = fs::read(&descriptor_path) {
+            if let Ok(endpoint) = serde_json::from_slice(&bytes) {
+                break endpoint;
+            }
+        }
+        assert!(Instant::now() < deadline, "fixture endpoint unavailable");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let process = &endpoint["process"];
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(process["startInstance"].as_str().unwrap().as_bytes())
+    );
+    let registry = root.join("agent-connections");
+    fs::create_dir(&registry).unwrap();
+    let published = registry.join(format!("{}-{digest}.json", process["pid"]));
+    let descriptor = json!({
+        "agentName":"multi-session-fixture","protocol":"acp","process":process,"endpointOwner":process,
+        "endpoint":endpoint["endpoint"],"cwd":root,
+    });
+    let publish = |value: &Value| fs::write(&published, serde_json::to_vec(value).unwrap()).unwrap();
+    let source = json!({"workspaceId":workspace,"paneId":pane});
+    let mut unowned = descriptor.clone();
+    unowned["sessionId"] = json!("fixture-existing");
+    unowned["endpointOwner"] = json!(ridge_core::process_identity::instance(std::process::id()).unwrap());
+    publish(&unowned);
+    let denied = command_reply(&owned.endpoint, "prepare_commune_connection", source.clone(), true);
+    assert_eq!(denied["ok"], false, "{denied}");
+    assert!(denied.to_string().contains("exact pane process tree"), "{denied}");
+
+    let unrelated = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    unowned["endpointOwner"] = process.clone();
+    unowned["endpoint"] = json!(unrelated.local_addr().unwrap().to_string());
+    publish(&unowned);
+    let denied = command_reply(&owned.endpoint, "prepare_commune_connection", source.clone(), true);
+    assert_eq!(denied["ok"], false, "the actual socket must belong to the claimed process: {denied}");
+
+    unowned["endpoint"] = endpoint["endpoint"].clone();
+    publish(&unowned);
+    let verified = command(&owned.endpoint, "prepare_commune_connection", source.clone(), true);
+    assert!(verified["sessionRef"].is_string(), "{verified}");
+    assert!(!root.join("session-operations").exists(), "ownership preview must not send an ACP request");
+    publish(&descriptor);
+    assert_eq!(
+        command_reply(
+            &owned.endpoint,
+            "prepare_commune_connection",
+            source.clone(),
+            false
+        )["ok"],
+        false
+    );
+    assert!(!root.join("session-operations").exists());
+    let preview = command(&owned.endpoint, "prepare_commune_connection", source, true);
+    let choices = preview["sessionChoices"].as_array().unwrap();
+    assert_eq!(
+        choices
+            .iter()
+            .map(|choice| choice["sessionId"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["fixture-existing", "fixture-alternative"]
+    );
+    assert!(preview["sessionId"].is_null());
+    let log = || fs::read_to_string(root.join("session-operations")).unwrap();
+    assert_eq!(log().lines().count(), 3);
+    assert!(!root.join("agent-roster.json").exists());
+    let mut registration =
+        json!({"candidateRef":preview["candidateRef"],"workspaceId":workspace,"paneId":pane});
+    assert_eq!(
+        command_reply(
+            &owned.endpoint,
+            "register_commune_member",
+            registration.clone(),
+            true
+        )["ok"],
+        false
+    );
+    assert_eq!(
+        log().lines().count(),
+        3,
+        "missing choice must not open a protocol client"
+    );
+    registration["sessionRef"] = json!("stale-or-forged");
+    assert_eq!(
+        command_reply(
+            &owned.endpoint,
+            "register_commune_member",
+            registration.clone(),
+            true
+        )["ok"],
+        false
+    );
+    assert!(!log().contains("session/load"));
+    assert!(!root.join("agent-roster.json").exists());
+    registration["sessionRef"] = choices[1]["sessionRef"].clone();
+    let identity = command(
+        &owned.endpoint,
+        "register_commune_member",
+        registration,
+        true,
+    );
+    assert_eq!(identity["sessionId"], "fixture-alternative");
+    let operations = log();
+    assert_eq!(
+        operations
+            .lines()
+            .filter(|line| line.starts_with("session/load"))
+            .collect::<Vec<_>>(),
+        ["session/load \"fixture-alternative\""]
+    );
+    assert!(!operations.contains("session/new"));
+    assert!(!operations.contains("session/prompt"));
+    drop(owned);
+    let _ = fs::remove_dir_all(root);
+}
+
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 async fn membership_retirement_fences_turns_preserves_process_history_and_survives_restart(){
     let root=std::env::temp_dir().join(format!("ridge-membership-{}",Uuid::new_v4()));
@@ -872,6 +1401,7 @@ fn registration_validates_real_instances_and_keeps_existing_process() {
             assert_ne!(value["name"], "teammate://hitl-approval-required");
             assert!(!value.to_string().contains("private-argument"));
             if value["name"] == "teammate://hitl-pending-changed" {
+                assert_eq!(value["payload"]["workspaceId"], workspace);
                 break;
             }
         }

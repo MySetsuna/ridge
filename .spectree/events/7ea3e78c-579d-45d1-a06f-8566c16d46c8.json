@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "7ea3e78c-579d-45d1-a06f-8566c16d46c8",
+  "at": "2026-11-16T04:46:52.016Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-125",
+  "data": {
+    "changeId": "CHG-125",
+    "specHash": "a4416f5bea8e990836c76a1b2ecfe2934168f0946a5fe44be681dc8d69020e4d",
+    "approvedAt": "2026-11-16T04:46:52.013Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "沿用全部授权整合 CHG-103，纳入主仓遗留的同名空白草案以维持图一致；实现及验收范围不变。",
+    "attributionVerified": false
+  }
+}

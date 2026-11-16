@@ -3,6 +3,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { mount, unmount } from 'svelte';
 import { choiceDialog } from '$lib/components/RidgeDialog.svelte';
 import { parseTopologySnapshot, type TeammateProfile } from './teammateModel';
+import type { LaunchReceipt } from './communeLaunch';
+import { refreshWorkspaces } from '$lib/stores/paneTree';
+import { locateTerminal } from './locateTerminal';
 
 export function connectionRequest(text: string, workspaceId: string, paneId: string): Record<string, unknown> {
   if (new TextEncoder().encode(text).byteLength > 65536) throw new Error(tr('commune.connectionTooLarge'));
@@ -18,22 +21,48 @@ export function connectionRequest(text: string, workspaceId: string, paneId: str
 
 let connectionDialogOpen = false;
 
-export async function registerCommuneMember(workspaceId: string, paneId: string, memberAgentId?: string): Promise<void> {
+export async function startCommuneTerminal(workspaceId?: string, paneId?: string): Promise<LaunchReceipt | undefined> {
   if (connectionDialogOpen) throw new Error(tr('commune.connectionAlreadyOpen'));
   connectionDialogOpen = true;
   const previousFocus = document.activeElement;
+  let receipt: LaunchReceipt | undefined;
   try {
-    const { default: ConnectionDialog } = await import('./CommuneConnectionDialog.svelte');
-    await new Promise<void>((resolve, reject) => {
-      const dialog = mount(ConnectionDialog, { target: document.body, props: {
-        workspaceId, paneId, memberAgentId,
-        onfinish: () => { void unmount(dialog).then(resolve, reject); },
+    const { default: StartDialog } = await import('./CommuneStartDialog.svelte');
+    receipt = await new Promise<LaunchReceipt | undefined>((resolve, reject) => {
+      const dialog = mount(StartDialog, { target: document.body, props: {
+        workspaceId, paneId,
+        onfinish: (receipt?: LaunchReceipt) => { void unmount(dialog).then(() => resolve(receipt), reject); },
       } });
     });
   } finally {
     connectionDialogOpen = false;
     if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
   }
+  if (receipt) {
+    await refreshWorkspaces();
+    await locateTerminal(receipt.workspaceId, receipt.paneId);
+  }
+  return receipt;
+}
+
+export async function registerCommuneMember(workspaceId: string, paneId: string, memberAgentId?: string, candidateRef?: string): Promise<void> {
+  if (connectionDialogOpen) throw new Error(tr('commune.connectionAlreadyOpen'));
+  connectionDialogOpen = true;
+  const previousFocus = document.activeElement;
+  let next: 'launch' | undefined;
+  try {
+    const { default: ConnectionDialog } = await import('./CommuneConnectionDialog.svelte');
+    next = await new Promise<'launch' | undefined>((resolve, reject) => {
+      const dialog = mount(ConnectionDialog, { target: document.body, props: {
+        workspaceId, paneId, memberAgentId, candidateRef,
+        onfinish: (action?: 'launch') => { void unmount(dialog).then(() => resolve(action), reject); },
+      } });
+    });
+  } finally {
+    connectionDialogOpen = false;
+    if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+  }
+  if (next === 'launch') await startCommuneTerminal(workspaceId, paneId);
 }
 
 export async function removeCommuneMember(workspaceId: string, member: TeammateProfile): Promise<void> {

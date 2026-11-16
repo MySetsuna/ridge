@@ -5716,6 +5716,7 @@ name = "ridge-kernel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-io",
  "axum",
  "base64 0.22.1",
  "bytes",
@@ -5750,12 +5751,15 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.21.0",
  "tokio-tungstenite 0.23.1",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "uds_windows",
  "url",
  "uuid",
  "webpki-roots 0.26.11",
  "webrtc",
+ "windows-sys 0.61.2",
  "x25519-dalek",
 ]
 
@@ -7759,6 +7763,7 @@ checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
  "pin-project-lite",
  "tokio",

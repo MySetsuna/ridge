@@ -7,7 +7,7 @@ const target = { workspaceId: 'workspace', paneId: 'pane', agentId: 'member', ge
 const receipt = { deliveryId: 'delivery-1', status: 'queued', execution: { state: 'running' } } as AgentMessageReceipt;
 function fixture() {
   const link = {
-    state: vi.fn(() => 'connected'), hasCapability: vi.fn(() => true),
+    state: vi.fn(() => 'connected'), hasCapability: vi.fn((capability: string) => capability === 'teammate'),
     sendAgentMessage: vi.fn<RemoteLink['sendAgentMessage']>(async () => receipt),
     getAgentMessageDelivery: vi.fn<RemoteLink['getAgentMessageDelivery']>(async () => receipt),
     cancelAgentMessage: vi.fn<RemoteLink['cancelAgentMessage']>(async () => receipt),

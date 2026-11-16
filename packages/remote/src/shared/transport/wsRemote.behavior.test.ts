@@ -202,7 +202,7 @@ describe('RemoteConnection public communication contract', () => {
 		await expect(topology).resolves.toEqual({ roster: [], leaderId: null, edges: [] });
 		const target = { ...pane, agentId: 'agent-1', generation: 2, lease: 'lease-2' };
 		const receipt = conn.sendAgentMessage(target, 'hello', 'stable-intent');
-		expect(ws.sent.at(-1)).toMatchObject({ args: { ...target, message: 'hello', idempotency_key: 'stable-intent' } });
+		expect(ws.sent.at(-1)?.args).toEqual({ ...target, message: 'hello', idempotency_key: 'stable-intent' });
 		invoke(ws, 'send_agent_message', {
 			messageId: 'm1', deliveryId: 'd1', targetKey: 'workspace-a:pane-a', status: 'accepted',
 			deliveryAdapter: 'hub', deliveryReliability: 'durable', terminalAccepted: false, agentAcknowledged: true,

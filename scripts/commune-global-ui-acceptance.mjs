@@ -5,32 +5,38 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chromium, expect } from '@playwright/test';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ridge-global-commune-'));
 const evidenceDir=process.env.RIDGE_COMMUNE_EVIDENCE_DIR ?? 'artifacts/commune084';
 const output = path.resolve(evidenceDir,'global-ui.json');
 fs.mkdirSync(path.dirname(output), { recursive: true });
-const fixture = fs.readdirSync('target/debug/deps').filter(name => /^commune_registration-[a-f0-9]+\.exe$/.test(name))
-  .map(name => path.resolve('target/debug/deps', name)).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
+const target=process.env.CARGO_TARGET_DIR ?? path.resolve('target');
+const fixture = fs.readdirSync(path.join(target,'debug/deps')).filter(name => /^commune_registration-[a-f0-9]+\.exe$/.test(name))
+  .map(name => path.resolve(target,'debug/deps', name)).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
 assert.ok(fixture, 'build commune_registration first');
 const evidence = { scope: 'Owned ACP process fixtures + real Kernel native RPC + production desktop/mobile Commune components; no external Agent/WAN claim', checks: [], result: 'RUNNING' };
 let kernel, vite, browser, page, endpoint;
+let devUrl=process.env.RIDGE_TEST_DEV_URL;
 const until = async check => { const deadline = Date.now() + 30000; while (Date.now() < deadline) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 30)); } throw Error('owned global Commune readiness timeout'); };
 const call = async (method, url, body) => {
   const response = await fetch(`http://127.0.0.1:${endpoint.port}${url}`, { method,
     headers: { 'x-ridge-kernel-token': endpoint.token, 'content-type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(6000) });
+    body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(6000) })
+    .catch(cause => { throw new Error(`${method} ${url} failed: ${cause.message}`, { cause }); });
   assert.ok(response.ok); return response.json();
 };
 try {
+  if(!devUrl) {
   const port = await new Promise(resolve => { const server = net.createServer(); server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => resolve(port)); }); });
-  const devUrl = `http://127.0.0.1:${port}`;
+  devUrl = `http://127.0.0.1:${port}`;
   const log = fs.openSync(path.join(root, 'vite.log'), 'a');
   vite = spawn(process.execPath, ['node_modules/vite/bin/vite.js'], { windowsHide: true, stdio: ['ignore', log, log],
     env: { ...process.env, RIDGE_WEB_REMOTE: '', RIDGE_NATIVE_RUNTIME: '1', RIDGE_DEV_SERVER_PORT: String(port) } }); fs.closeSync(log);
+  }
   await until(async () => fetch(devUrl + '/@vite/client', { signal: AbortSignal.timeout(1000) }).then(response => response.ok, () => false));
-  kernel = spawn(path.resolve('target/debug/ridge-kernel.exe'), [], { windowsHide: true, stdio: 'ignore',
+  kernel = spawn(path.resolve(target,'debug/ridge-kernel.exe'), [], { windowsHide: true, stdio: 'ignore',
     env: { ...process.env, RIDGE_KERNEL_DATA_DIR: root, RIDGE_AUTH_FILE: path.join(root, 'auth.json') } });
   await until(() => { if (!fs.existsSync(path.join(root, 'kernel.json'))) return false; endpoint = JSON.parse(fs.readFileSync(path.join(root, 'kernel.json'))); return endpoint.pid === kernel.pid; });
   const workspaces = [];
@@ -55,6 +61,9 @@ try {
   const terminalDescriptor=JSON.parse(fs.readFileSync(terminalDescriptorPath));
   const terminalConnectionPath=path.join(root,'terminal-connection.json');
   fs.writeFileSync(terminalConnectionPath,JSON.stringify({workspaceId:terminalWorkspace,paneId:terminalPane,process:terminalDescriptor.process,endpointOwner:terminalDescriptor.process,endpoint:terminalDescriptor.endpoint,sessionId:terminalDescriptor.sessionId,cwd:root}));
+  const publishedDirectory=path.join(root,'agent-connections');fs.mkdirSync(publishedDirectory);
+  const publishedName=`${terminalDescriptor.process.pid}-${createHash('sha256').update(terminalDescriptor.process.startInstance).digest('hex')}.json`;
+  fs.copyFileSync(terminalConnectionPath,path.join(publishedDirectory,publishedName));
   const command=async(method,args,native=true)=>{const reply=await call('POST','/v1/domain/commands',{method,args,native,roots:[],connectionId:crypto.randomUUID()});assert.equal(reply.ok,true,JSON.stringify(reply));return reply.value;};
   await command('save_agent_profile_overrides',{overrides:[{id:'owned-unregistered',processNames:[path.basename(fixture)],executable:'node',resumeArgv:[],yoloArgs:[]}]});
   workspaces.push({id:terminalWorkspace,name:'Global terminal'});
@@ -84,7 +93,10 @@ try {
     const [{ initThemeSystem, getThemeIds }, { applyTheme }] = await Promise.all([
       import('/src/lib/stores/themes.ts'), import('/src/lib/stores/settings.ts'),
     ]);
-    await initThemeSystem(); applyTheme(getThemeIds()[0]);
+    await initThemeSystem();
+    const themeId = getThemeIds()[0];
+    if (!themeId) throw Error('Acceptance Runtime is missing its ridge.theme resource');
+    applyTheme(themeId);
     paneTree.workspacesList.set(workspaces);
     await highlight.refreshAgentPaneHighlight({ workspaceIds: workspaces.map(workspace => workspace.id), invoke });
     const groupReadFault={active:true};
@@ -348,6 +360,57 @@ try {
   assert.equal(fs.readFileSync(individualLog, 'utf8').split('owned-delayed-ack').length - 1, 1);
   await expect(page.locator('.member-card').first().locator('[data-delivery-state="turn_ended"]')).toBeVisible({ timeout: 10000 });
   evidence.checks.push('A delayed real delivery ACK blocks duplicate click/Enter and retains subsequent typing');
+
+  const touch = await page.context().newCDPSession(page);
+  await touch.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  await page.setViewportSize({ width: 320, height: 844 });
+  assert.equal(await page.evaluate(() => matchMedia('(pointer: coarse)').matches), true);
+  await memberInput.fill('permission-needed');
+  await memberSend.click();
+  const mobileApproval = page.locator('.approval .act.approve').first();
+  await expect(mobileApproval).toBeVisible({ timeout: 15000 });
+  const touchControls = page.locator('.global-tabs button, .approval .act, .member-approval .act, .member-card .receipt button');
+  for (const control of await touchControls.all()) {
+    const bounds = await control.boundingBox();
+    assert.ok(bounds && bounds.height >= 44 && bounds.width >= 44, 'tabs, approvals and receipt actions need 44px touch targets');
+  }
+  const inputSize = await memberInput.evaluate(input => ({ height: input.getBoundingClientRect().height, font: getComputedStyle(input).fontSize }));
+  assert.ok(inputSize.height >= 44 && parseFloat(inputSize.font) >= 16, 'the mobile message field needs touch height and readable type');
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.evaluate(() => {
+    const current = window.globalCommune;
+    const resolve = current.link.resolveHitlRemote.bind(current.link);
+    const delayDecision = new Promise(done => { current.releaseApproval = done; });
+    current.approvalCalls = 0;
+    current.restoreApproval = () => { current.link.resolveHitlRemote = resolve; };
+    current.link.resolveHitlRemote = async (...args) => {
+      const call = ++current.approvalCalls;
+      await delayDecision;
+      if (call === 1) throw Error('Owned approval interrupted before delivery');
+      await resolve(...args);
+      throw Error('Owned approval ACK lost after commit');
+    };
+  });
+  await mobileApproval.click();
+  const memberReject = page.locator('.member-approval .act.reject').first();
+  await expect(mobileApproval).toBeDisabled();
+  await expect(memberReject).toBeDisabled();
+  await memberReject.dispatchEvent('click');
+  assert.equal(await page.evaluate(() => window.globalCommune.approvalCalls), 1);
+  await page.evaluate(() => window.globalCommune.releaseApproval());
+  await expect(page.locator('.roster .note[role="status"]').filter({ hasText: /still pending|仍待审批/i })).toBeVisible();
+  await expect(mobileApproval).toBeEnabled();
+  await mobileApproval.click();
+  await expect(mobileApproval).toHaveCount(0);
+  await expect(page.locator('.roster .note[role="status"]').filter({ hasText: /no longer pending|已不在待审批列表/i })).toBeVisible();
+  assert.equal(await page.evaluate(() => window.globalCommune.approvalCalls), 2);
+  await page.evaluate(() => window.globalCommune.restoreApproval());
+  await touch.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await touch.detach();
+  await page.setViewportSize({ width: 412, height: 915 });
+  evidence.checks.push('At 320px with a coarse pointer, the mobile tabs, approval and receipt actions have 44px touch targets; the message field uses 16px text');
+  evidence.checks.push('Both mobile entry points block a conflicting verdict in flight. A failed send retries only after the real pending list confirms it is still open. A lost ACK after commit refreshes the list without replaying the verdict.');
+
   await page.getByRole('button', { name: /^(History|历史)$/ }).click();
   await expect(page.locator('[data-history-kind="agent_message_chunk"]')).toHaveCount(2);
   await page.evaluate(async () => {
@@ -393,6 +456,45 @@ try {
   await expect(page.getByTestId('commune-terminal-agent')).toHaveCount(1);
   await page.getByTestId('commune-terminal-agent').getByRole('button',{name:/连接会话|Connect session/i}).click();
   const wizard=page.getByRole('dialog');
+  await expect(wizard.getByLabel('会话预览')).toContainText(terminalDescriptor.sessionId);
+  await expect(wizard.getByText('此终端的已有会话',{exact:true})).toBeVisible();
+  evidence.checks.push('Runtime prepares the exact terminal session automatically before any file selection, and keeps credentials inside Runtime');
+  await wizard.getByRole('button',{name:'取消',exact:true}).click();
+  assert.equal((await command('get_teammate_topology',{workspaceId:terminalWorkspace})).roster.length,0);
+  const connectOriginal=page.getByTestId('commune-terminal-agent').getByRole('button',{name:/连接会话|Connect session/i});
+  const publishedPath=path.join(publishedDirectory,publishedName);
+  const originalFile=fs.readFileSync(publishedPath);
+  const otherEndpoint=JSON.parse(fs.readFileSync(path.join(root,workspaces[0].id,'endpoint.json'))).endpoint;
+  fs.writeFileSync(publishedPath,JSON.stringify({...JSON.parse(originalFile),endpoint:otherEndpoint}));
+  await connectOriginal.click();
+  await expect(wizard.getByRole('alert')).toContainText('无法核实端点属于此终端');
+  await expect(wizard.getByRole('button',{name:'连接',exact:true})).toBeDisabled();
+  await expect(wizard.getByRole('button',{name:'新建协作终端',exact:true})).toHaveCount(0);
+  await wizard.getByRole('button',{name:'取消',exact:true}).click();
+
+  const beforeFallback=(await call('GET','/v1/domain/ptys')).ptys.length;
+  fs.writeFileSync(publishedPath,originalFile);
+  fs.renameSync(publishedPath,publishedPath+'.held');
+  try {
+    await page.setViewportSize({width:390,height:844});
+    await connectOriginal.click();
+    await expect(wizard.getByRole('alert')).toContainText('此终端尚未公布可接入的会话');
+    await expect(wizard.getByRole('button',{name:'连接',exact:true})).toBeDisabled();
+    const fallback=wizard.getByRole('button',{name:'新建协作终端',exact:true});
+    await expect(fallback).toBeInViewport();
+    await page.screenshot({path:path.resolve(evidenceDir,'connection-missing-endpoint-narrow.png')});
+    await fallback.click();
+    await expect(wizard.getByRole('heading',{name:'新建协作终端',exact:true})).toBeVisible();
+    await expect(wizard.getByLabel('Agent',{exact:true})).toHaveValue('');
+    assert.equal((await call('GET','/v1/domain/ptys')).ptys.length,beforeFallback);
+    await wizard.getByRole('button',{name:'取消',exact:true}).click();
+    assert.equal((await command('get_teammate_topology',{workspaceId:terminalWorkspace})).roster.length,0);
+  } finally {
+    fs.renameSync(publishedPath+'.held',publishedPath);
+    await page.setViewportSize({width:1100,height:950});
+  }
+  evidence.checks.push('Wrong endpoint ownership blocks confirmation. An unpublished endpoint can open the separate launch dialog without creating a terminal, Agent, or session.');
+  await connectOriginal.click();
   await wizard.getByLabel('选择连接文件').setInputFiles(terminalConnectionPath);
   await expect(wizard.getByLabel('会话预览')).toContainText(terminalDescriptor.sessionId);
   // Windows may expose a new listener after the first ownership snapshot.
@@ -461,7 +563,96 @@ try {
   evidence.checks.push('Global v3 group retains an unconfirmed dispatch through actual disconnect and component remount; offline effective permissions disable new work while explicit original-key confirmation avoids replay');
   assert.deepEqual(pageErrors,[]);
   await page.screenshot({path:path.resolve(evidenceDir,'organization-connected-desktop.png')});
-  evidence.checks.push('Native file wizard attaches the exact existing terminal session to its Remote-enrolled agentId and original group without rewriting organization data; one real group prompt reaches that process');
+  evidence.checks.push('Automatic preview and advanced file compatibility retain the exact Remote-enrolled agentId and original group without rewriting organization data; one real group prompt reaches that process');
+  const launchPtysBefore = (await call('GET','/v1/domain/ptys')).ptys.length;
+  const launchFixture = path.resolve(target, 'debug', process.platform === 'win32' ? 'fake_acp_agent.exe' : 'fake_acp_agent');
+  const originalOverrides = await command('read_agent_profile_overrides', {});
+  await command('save_agent_profile_overrides', { overrides: [...originalOverrides, {
+    id: 'owned-acp-launch', processNames: ['fake_acp_agent'], executable: launchFixture,
+    resumeArgv: [], yoloArgs: [], collaboration: { protocol: 'acp', command: launchFixture, args: ['--standard-stdio'] },
+  }] });
+  await page.evaluate(() => {
+    const current=window.globalCommune;const invoke=current.bridge.invoke.bind(current.bridge);
+    current.launchRequests=[];
+    current.bridge.invoke=async(method,args,...rest)=>{
+      if(method!=='create_independent_terminal')return invoke(method,args,...rest);
+      current.launchRequests.push(structuredClone(args));
+      const result=await invoke(method,args,...rest);
+      if(current.launchRequests.length===1)throw Error('Owned collaboration creation ACK lost after commit');
+      return result;
+    };
+  });
+  await page.getByTestId('commune-new-collaboration').click();
+  const launchDialog=page.getByRole('dialog');
+  await expect(launchDialog.getByLabel('Agent',{exact:true})).toHaveValue('');
+  await launchDialog.getByLabel('Agent',{exact:true}).selectOption('owned-acp-launch');
+  await launchDialog.getByLabel('工作目录',{exact:true}).fill(root);
+  await page.setViewportSize({width:390,height:844});
+  await page.screenshot({path:path.resolve(evidenceDir,'collaboration-launch-narrow.png')});
+  await launchDialog.getByRole('button',{name:'创建并查看终端',exact:true}).click();
+  await expect(launchDialog.getByRole('alert')).toContainText('Owned collaboration creation ACK lost after commit');
+  await expect(launchDialog.getByLabel('Agent',{exact:true})).toBeDisabled();
+  await launchDialog.getByRole('button',{name:'取消',exact:true}).click();
+  await page.getByTestId('commune-new-collaboration').click();
+  await expect(launchDialog.getByLabel('Agent',{exact:true})).toHaveValue('owned-acp-launch');
+  await expect(launchDialog.getByLabel('Agent',{exact:true})).toBeDisabled();
+  await page.screenshot({path:path.resolve(evidenceDir,'collaboration-launch-unconfirmed.png')});
+  await launchDialog.getByRole('button',{name:'重试原请求',exact:true}).click();
+  await expect(launchDialog).toHaveCount(0);
+  const launchRequests=await page.evaluate(()=>window.globalCommune.launchRequests);
+  assert.equal(launchRequests.length,2);assert.deepEqual(launchRequests[0],launchRequests[1]);
+  assert.equal((await call('GET','/v1/domain/ptys')).ptys.length,launchPtysBefore+1);
+  await until(async()=>{
+    const topology=await command('get_teammate_topology',{workspaceId:launchRequests[0].workspaceId});
+    return topology.discovered.some(candidate=>candidate.connectionReady===true);
+  });
+  const launchedGraph=await call('GET',`/v1/domain/workspaces/${launchRequests[0].workspaceId}`);
+  assert.ok(launchedGraph.panes.includes(launchRequests[0].paneId));
+  assert.deepEqual(pageErrors,[]);
+  evidence.checks.push('Explicit desktop launch creates a real owned ACP terminal. A committed creation with lost ACK survives dialog remount and exact retry without a second workspace, process or session. Narrow layout and focusable controls inspected.');
+  const choiceWorkspace = (await call('POST','/v1/domain/workspaces',{name:'Session choice'})).workspace_id;
+  const choicePane = (await call('GET',`/v1/domain/workspaces/${choiceWorkspace}`)).panes[0];
+  const choiceFile = path.join(root,'choice-endpoint.json');
+  const choicePty = await call('POST','/v1/domain/ptys',{workspace_id:choiceWorkspace,pty_id:choicePane,program:fixture,
+    args:['--exact','existing_protocol_endpoint_fixture','--ignored'],cwd:root,
+    env:{RIDGE_COMMUNE_FIXTURE:choiceFile,RIDGE_COMMUNE_LIST_SESSIONS:'1'},role:'shell',cols:80,rows:24});
+  assert.equal(choicePty.ok,true);
+  await until(()=>fs.existsSync(choiceFile));
+  const {process: choiceProcess, endpoint: choiceEndpoint}=JSON.parse(fs.readFileSync(choiceFile));
+  const choicePublished=`${choiceProcess.pid}-${createHash('sha256').update(choiceProcess.startInstance).digest('hex')}.json`;
+  fs.writeFileSync(path.join(publishedDirectory,choicePublished),JSON.stringify({
+    protocol:'acp',agentName:'Multi-session Agent',process:choiceProcess,endpointOwner:choiceProcess,endpoint:choiceEndpoint,cwd:root,
+  }));
+  await until(async()=>{
+    const topology=await command('get_teammate_topology',{workspaceId:choiceWorkspace});
+    return topology.discovered.some(candidate=>candidate.paneId===choicePane&&candidate.connectionReady);
+  });
+  await page.evaluate(async workspaceId => {
+    const paneTree=await import('/src/lib/stores/paneTree.ts');
+    await paneTree.refreshWorkspaces();
+    const highlight=await import('/src/lib/teammate/agentPaneHighlightSync.ts');
+    await highlight.refreshAgentPaneHighlight({workspaceIds:[workspaceId],invoke:window.globalCommune.invoke});
+  }, choiceWorkspace);
+  const choiceRow=page.locator(`[data-testid="commune-terminal-agent"][data-pane-id="${choicePane}"]`);
+  await choiceRow.getByRole('button',{name:/连接会话|Connect session/i}).click();
+  const choiceDialog=page.getByRole('dialog');
+  const select=choiceDialog.getByLabel('选择已有会话');
+  await expect(select).toHaveValue('');
+  await expect(select.locator('option')).toHaveCount(3);
+  const confirm=choiceDialog.getByRole('button',{name:'连接',exact:true});
+  await expect(confirm).toBeDisabled();
+  await select.selectOption({label:'Second · fixture-alternative'});
+  await expect(confirm).toBeEnabled();
+  await expect(confirm).toBeInViewport();
+  await page.screenshot({path:path.resolve(evidenceDir,'connection-session-choice-narrow.png')});
+  await confirm.click();
+  await expect(choiceDialog).toHaveCount(0);
+  const chosen=(await command('get_teammate_topology',{workspaceId:choiceWorkspace})).roster;
+  assert.equal(chosen.length,1);assert.equal(chosen[0].sessionId,'fixture-alternative');
+  const choiceOperations=fs.readFileSync(path.join(root,'session-operations'),'utf8');
+  assert.deepEqual(choiceOperations.split(/\r?\n/).filter(line=>line.startsWith('session/load')),['session/load "fixture-alternative"']);
+  assert.doesNotMatch(choiceOperations,/session\/(new|prompt)/);
+  evidence.checks.push('Desktop requires an explicit choice between two live protocol-returned session IDs and loads only the selected second session. Out-of-directory sessions and prompt/creation side effects are absent.');
   evidence.result = 'PASS';
 } catch (error) {
   evidence.result = 'FAIL'; evidence.error = String(error); process.exitCode = 1;
@@ -473,6 +664,12 @@ try {
 finally {
   await browser?.close();
   if (endpoint?.pid === kernel?.pid) await call('POST', '/v1/shutdown').catch(() => {});
+  if (kernel?.pid && kernel.exitCode === null && kernel.signalCode === null) {
+    await Promise.race([new Promise(resolve => kernel.once('exit', resolve)), new Promise(resolve => setTimeout(resolve, 3000))]);
+    if (kernel.exitCode === null && kernel.signalCode === null) {
+      await new Promise(resolve => spawn('taskkill', ['/PID', String(kernel.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).once('exit', resolve));
+    }
+  }
   if (vite?.pid) await new Promise(resolve => spawn('taskkill', ['/PID', String(vite.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).once('exit', resolve));
   evidence.fixtureDirectory = root; fs.writeFileSync(output, JSON.stringify(evidence, null, 2));
   console.log(JSON.stringify({ result: evidence.result, evidence: output }));

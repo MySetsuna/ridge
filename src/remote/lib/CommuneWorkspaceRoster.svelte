@@ -5,8 +5,11 @@
   import CommuneGroupTasks from '$lib/teammate/CommuneGroupTasks.svelte';
   import CommuneMemberMessage from './CommuneMemberMessage.svelte';
   import { onMount, untrack } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
   import { invoke } from '@tauri-apps/api/core';
   import { t, tr } from '$lib/i18n';
+  import { locale } from '$lib/i18n/locale';
+  import { communeRuntimeLabel, communeText, type CommuneUiTextKey } from '$lib/teammate/communeUiText';
   import { ArrowDown, ArrowUp, Check, Crown, Palette, ShieldAlert, X } from 'lucide-svelte';
   import type {
     HitlPendingItem,
@@ -76,8 +79,8 @@
   let pending = $state<HitlPendingItem[]>([]);
   let health = $state<OrchestrationHealth>({ suspendedAgents: 0, pendingHitl: 0 });
   let failed = $state(false);
-  // P2 阶段 2：最近一次裁决反馈（consumed 之外的结局给一行提示，下轮轮询消隐）。
-  let resolveNote = $state('');
+  const approvalAttempts = new SvelteMap<string, { refreshAfter: number }>();
+  let resolveNote = $state<{ id: string; key: CommuneUiTextKey } | null>(null);
 
   // 编组镜像（workspace-memory；Remote 写回同一投影，桌面重开可见）。
   let groups = $state<TeammateGroup[]>([]);
@@ -98,6 +101,7 @@
 
   const scopeGuard = createTeamRosterScopeGuard();
   let currentScopeKey = '';
+  let approvalScopeKey = '';
   let disposed = false;
   /** Previous live status; completion attention is a working→idle edge. */
   let observedAgentStatuses = new Map<string, AgentPaneStatus>();
@@ -298,14 +302,25 @@
   }
 
   async function decide(p: HitlPendingItem, verdict: 'approve' | 'reject') {
+    if (approvalAttempts.has(p.id)) return;
+    const attempt = { refreshAfter: Infinity };
+    approvalAttempts.set(p.id, attempt);
+    if (resolveNote?.id === p.id) resolveNote = null;
+    let key: CommuneUiTextKey | undefined;
     try {
       const outcome = await ws.resolveHitlRemote(p.id, p.resolutionNonce, verdict);
-      resolveNote = outcome === 'consumed' ? '' : `#${p.id}: ${outcome}`;
+      if (outcome !== 'consumed') {
+        key = outcome === 'already-resolved' ? 'approvalExpired'
+          : outcome === 'nonce-mismatch' ? 'approvalChanged' : 'approvalInvalid';
+      }
     } catch {
-      resolveNote = `#${p.id}: failed`;
+      key = 'approvalCheckStatus';
     }
-    await invalidateRosterQuery();
-    await startRefresh();
+    if (disposed || approvalAttempts.get(p.id) !== attempt) return;
+    if (key) resolveNote = { id: p.id, key };
+    // An already-running refresh may still contain the old pending request.
+    attempt.refreshAfter = refreshToken;
+    await startRefresh(false, true);
   }
 
   async function refresh(generation: number, signal: AbortSignal, force = false) {
@@ -349,6 +364,13 @@
         groupsRevision = t.groupsRevision;
       }
       pending = p.filter(item => item.workspaceId ? item.workspaceId === workspaceId : t.roster.some(member => member.paneId === item.initiator || member.id === item.initiator));
+      for (const [id, attempt] of approvalAttempts) {
+        if (token <= attempt.refreshAfter) continue;
+        approvalAttempts.delete(id);
+        if (resolveNote?.id === id && resolveNote.key === 'approvalCheckStatus') {
+          resolveNote = { id, key: pending.some(item => item.id === id) ? 'approvalStillPending' : 'approvalNoLongerPending' };
+        }
+      }
       health = h;
       onAttentionChange?.(attentionEvents(t.roster, pending));
       if (recent) {
@@ -391,6 +413,12 @@
     currentScopeKey = nextScopeKey;
     groupMutationVersion++;
     groups = []; groupsRevision = undefined; groupBusy = false; groupNote = "";
+    const nextApprovalScope = `${remoteSessionId(ws)}\u0000${workspaceId}`;
+    if (nextApprovalScope !== approvalScopeKey) {
+      approvalScopeKey = nextApprovalScope;
+      untrack(() => approvalAttempts.clear());
+      resolveNote = null;
+    }
     void startRefresh(true);
   });
 
@@ -447,16 +475,16 @@
   {/if}
   {#if pending.length > 0 || resolveNote}
     <p class="section">{$t('commune.pendingApprovals')}</p>
-    {#if resolveNote}<p class="note">{resolveNote}</p>{/if}
+    {#if resolveNote}<p class="note" role="status" title={resolveNote.id}>{communeText($locale, resolveNote.key)}</p>{/if}
     {#each pending as p (p.id)}
-      <div class="approval" title={p.id}>
+      <div class="approval" title={p.id} aria-busy={approvalAttempts.has(p.id)}>
         <ShieldAlert class="w-3 h-3 risk" />
-        <span class="name">{p.reason}</span>
+        <span class="name">{communeRuntimeLabel($locale, p.reason)}</span>
         <span class="role">{p.initiator}</span>
-        <button class="act approve" title={$t('commune.approve')} onclick={() => void decide(p, 'approve')}>
+        <button class="act approve" title={$t('commune.approve')} disabled={approvalAttempts.has(p.id)} onclick={() => void decide(p, 'approve')}>
           <Check class="w-3 h-3" />
         </button>
-        <button class="act reject" title={$t('commune.reject')} onclick={() => void decide(p, 'reject')}>
+        <button class="act reject" title={$t('commune.reject')} disabled={approvalAttempts.has(p.id)} onclick={() => void decide(p, 'reject')}>
           <X class="w-3 h-3" />
         </button>
       </div>
@@ -482,7 +510,7 @@
       <div class="member-card" data-testid="remote-terminal-agent" data-workspace-id={candidate.workspaceId} data-pane-id={candidate.paneId}>
         <div class="member-head">
           <span class="name">{candidate.name}</span><span class="tag">{$t('commune.autoDetected')}</span>
-          <button class="act" onclick={() => onSelectPane?.(candidate.paneId)}>{$t('commune.locateTerminal')}</button>
+          <button class="act terminal-locate" onclick={() => onSelectPane?.(candidate.paneId)}>{$t('commune.locateTerminal')}</button>
         </div>
         <p class="note">{organizationGroup ? organizationGroup.name + ' · ' : ''}{$t('commune.groupTerminalReady')}</p>
         <pre class="reply">{candidate.recentOutput || $t('commune.terminalWaitingOutput')}</pre>
@@ -635,12 +663,13 @@
 
     {#if pendingFor(m).length > 0}
       {#each pendingFor(m) as p (p.id)}
-        <div class="member-approval">
-          <span class="name" title={p.reason}>{tr('commune.approvalReason', { reason: p.reason })}</span>
-          <button class="act approve" title={$t('commune.approve')} onclick={() => void decide(p, 'approve')}>
+        {@const reason = communeRuntimeLabel($locale, p.reason)}
+        <div class="member-approval" aria-busy={approvalAttempts.has(p.id)}>
+          <span class="name" title={reason}>{tr('commune.approvalReason', { reason })}</span>
+          <button class="act approve" title={$t('commune.approve')} disabled={approvalAttempts.has(p.id)} onclick={() => void decide(p, 'approve')}>
             <Check class="w-3 h-3" />
           </button>
-          <button class="act reject" title={$t('commune.reject')} onclick={() => void decide(p, 'reject')}>
+          <button class="act reject" title={$t('commune.reject')} disabled={approvalAttempts.has(p.id)} onclick={() => void decide(p, 'reject')}>
             <X class="w-3 h-3" />
           </button>
         </div>
@@ -684,6 +713,8 @@
   .approval :global(.risk){color:var(--rg-accent);flex-shrink:0}
   .note{margin:0 2px 4px;font-size:11px;color:var(--rg-fg-muted)}
   .act{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border:none;border-radius:7px;background:var(--rg-surface);color:var(--rg-fg-muted);cursor:pointer;flex-shrink:0;line-height:1}
+  .act:disabled{opacity:.45;cursor:default}
+  .act.terminal-locate{width:auto;min-width:44px;min-height:44px;padding:0 10px;white-space:nowrap;line-height:1.2}
   .act.approve:active{color:#34d399}
   .act.reject:active{color:#f87171}
   .empty{margin:12px;font-size:12px;color:var(--rg-fg-muted);text-align:center}
@@ -737,4 +768,8 @@
   .dot.stopped{background:var(--rg-ansi-red,#f85149)}
   .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .role{font-size:11px;line-height:1.2;color:var(--rg-fg-muted)}
+  @media (pointer: coarse) {
+    .subtabs button { min-height: 44px; }
+    .act:is(.approve, .reject) { width: 44px; height: 44px; }
+  }
 </style>

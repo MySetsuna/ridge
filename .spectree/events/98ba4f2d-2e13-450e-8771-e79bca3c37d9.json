@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "98ba4f2d-2e13-450e-8771-e79bca3c37d9",
+  "at": "2026-11-16T04:41:08.168Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-125",
+  "data": {
+    "title": "整合已验收的 Agent 自动识别与通用协作启动",
+    "implementation": "REQUIRED"
+  }
+}

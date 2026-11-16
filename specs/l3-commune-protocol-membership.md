@@ -96,7 +96,7 @@ depends_on:
 
 **真实能力边界：** ACP v1 标准 stdio 是客户端启动子进程、通过换行 JSON-RPC 通信；不是任意普通 CLI 的附加接口。已运行 Agent 必须已有可连接的 ACP/通用协议端点或由其运行方提供共同的传输入口；普通终端 stdin/stdout 不能强夺或混写 ACP。用户新增一项清单不能把不支持协议的 CLI 变成协议 Agent。[ACP transports](https://agentclientprotocol.com/protocol/v1/transports)
 
-可复用通用 IPC/双向消息转发，但它只转发协议，不能根据品牌解析 CLI 或另启模型会话。只有 stdio 且未暴露既有连接的 Agent 可识别、定位终端，不能宣称已 ACP 接入。协议持有者若不支持同时控制，Commune 明示控制权不可用；不得用两个 client 同写 stdin。此限制须在第一阶段用真实外部 Agent 验证，不能用新启动 fixture 的通过替代。
+既有会话附加可复用通用 IPC/双向消息转发，但它只转发协议，不能根据品牌解析 CLI 或另启模型会话。只有 stdio 且未暴露既有连接的 Agent 可识别、定位终端，不能宣称已 ACP 接入。协议持有者若不支持同时控制，Commune 明示控制权不可用；不得用两个 client 同写 stdin。此限制须在第一阶段用真实外部 Agent 验证，不能用新启动 fixture 的通过替代。
 
 ## 3. 成员页签：谁在运行、能做什么
 
@@ -263,3 +263,7 @@ Remote LAN and Cloud must deliver the existing member, session, group, task and 
 History input immediately fences old list/text-page results before its debounce. A successful response must still match source set, query and request generation before it can change rows, errors or read markers. Live events coalesce behind active reads instead of continuously superseding them. Browsing earlier history preserves that slice and shows the existing new-events indicator; explicit refresh returns to recent entries. Source/query changes and unmount cancel pending timers and fence old work. Text pages must retain the selected event's source and identity. Failure preserves confirmed rows and supports deliberate retry.
 
 Global history merge keeps each source's opaque cursor and buffered rows. Fill empty sources with at most four concurrent reads; consume buffered rows without scheduling a fresh all-source Promise batch per row. Do not prefetch after satisfying the requested page. Validate ordered, duplicate-free pagination, independent failures and no read-side Agent/input side effects. Compare fixed multi-source pagination CPU time against the previous implementation. Browser acceptance must exercise actual current components with delayed reads, bursts, source switching, search races and earlier-history navigation; distinguish injected failures and owned protocol fixtures from external/device/network coverage.
+
+## 用户显式协作启动
+
+用户已批准 CHG-103。用户在终端执行显式协作启动或确认新协作会话时，可由通用终端桥创建新的 ACP/app-server 进程与协议会话，详细行为由 L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION 维护。上述既有会话附加的禁止创建规则继续约束发现、预览、附加、同步历史和失败重试。两种路径须明确区分，普通原生终端不隐式切换。桥接持有同一实际协议进程的唯一 stdio，所有端点、身份、历史、派发、审批、取消和编组仍复用共同 Runtime 契约。

@@ -905,6 +905,7 @@ pub(crate) struct IndependentTerminal {
     pub cwd: Option<String>,
     pub port: Option<u16>,
     pub cloud: Option<Value>,
+    pub collaboration: Option<crate::managed_console::AgentArgs>,
 }
 
 impl IndependentTerminal {
@@ -919,9 +920,18 @@ impl IndependentTerminal {
         }
         if !matches!(
             request.entry.as_str(),
-            "tui" | "dashboard" | "lan" | "cloud"
+            "tui" | "dashboard" | "lan" | "cloud" | "agent"
         ) {
             return Err("invalid terminal entry".into());
+        }
+        if (request.entry == "agent") != request.collaboration.is_some() {
+            return Err("collaboration configuration requires the Agent entry".into());
+        }
+        if let Some(config) = &request.collaboration {
+            config.validate().map_err(|error| error.to_string())?;
+            if request.shell.is_some() || config.cwd.is_some() {
+                return Err("collaboration uses the terminal working directory and its own executable".into());
+            }
         }
         if request.workspace_id.is_nil()
             || request.pane_id.is_nil()
@@ -956,7 +966,17 @@ pub(crate) fn create_independent_terminal(
         .workspaces
         .lock()
         .map_err(|_| "workspace graph unavailable")?;
-    let profile = (request.entry != "cloud").then_some("ridge-interactive");
+    let collaboration_profile = request.collaboration.as_ref().map(|config| {
+        use sha2::{Digest, Sha256};
+        serde_json::to_vec(config)
+            .map(|bytes| format!("ridge-collaboration:{:x}", Sha256::digest(bytes)))
+    }).transpose().map_err(|error| error.to_string())?;
+    let profile = collaboration_profile.as_deref()
+        .or_else(|| (request.entry != "cloud").then_some("ridge-interactive"));
+    let program = request.collaboration.as_ref().map(|_| {
+        std::env::current_exe().map(|path| path.to_string_lossy().into_owned())
+            .map_err(|error| error.to_string())
+    }).transpose()?;
     let result = json!({"workspaceId":request.workspace_id,"paneId":request.pane_id});
     if let Some(workspace) = graph.workspace(request.workspace_id) {
         let pane = workspace
@@ -974,7 +994,7 @@ pub(crate) fn create_independent_terminal(
             .cwd
             .as_deref()
             .is_some_and(|cwd| pane.cwd.as_deref() != Some(std::path::Path::new(cwd)))
-            || pane.shell_kind != request.shell
+            || pane.shell_kind.as_deref() != program.as_deref().or(request.shell.as_deref())
             || pty.launch_profile.as_deref() != profile
         {
             return Err("creation retry changed its launch parameters".into());
@@ -994,10 +1014,17 @@ pub(crate) fn create_independent_terminal(
     {
         return Err("terminal working directory is outside the Runtime roots".into());
     }
+    let arguments = if let Some(mut config) = request.collaboration {
+        config.cwd = cwd.as_ref().map(std::path::PathBuf::from);
+        vec![
+            crate::client::KERNEL_HOST_ARG.into(), "--agent-console".into(),
+            serde_json::to_string(&config).map_err(|error| error.to_string())?,
+        ]
+    } else { Vec::new() };
     let launch = PtyCreateRequest {
         pty_id: Some(request.pane_id),
-        program: None,
-        args: Vec::new(),
+        program,
+        args: arguments,
         env: HashMap::new(),
         shell: request.shell,
         cwd,
@@ -1016,7 +1043,7 @@ pub(crate) fn create_independent_terminal(
     st.ptys
         .spawn_command_for_with_env(PtyLaunch {
             id: request.pane_id,
-            program: launch.shell.as_deref(),
+            program: launch.program.as_deref().or(launch.shell.as_deref()),
             args: &launch.args,
             cwd: launch.cwd.as_deref(),
             workspace_id: launch.workspace_id,
@@ -1190,6 +1217,7 @@ pub async fn domain_pty_list(
                 "launch_profile": info.launch_profile,
                 "cwd": info.cwd,
                 "status": info.status,
+                "exit_code": st.ptys.exit_code(info.id),
                 "child_pid": info.child_pid,
                 "child_start_instance": info.child_start_instance,
                 "cols": info.cols,

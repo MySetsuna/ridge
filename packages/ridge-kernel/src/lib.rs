@@ -4,6 +4,8 @@
 //! `ridge-kernel` binary owns the process; shells consume this small contract.
 
 pub mod agent_profiles;
+pub mod managed_agent;
+pub mod managed_console;
 mod agent_discovery;
 mod agent_terminal;
 mod app_server;
@@ -35,6 +37,7 @@ mod git_commands;
 mod lsp;
 mod fs_watch;
 mod commune;
+mod commune_endpoint;
 mod commune_history;
 mod commune_groups;
 mod commune_tasks;

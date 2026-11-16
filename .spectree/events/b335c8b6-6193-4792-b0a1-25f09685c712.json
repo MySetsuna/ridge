@@ -1,0 +1,832 @@
+{
+  "version": 1,
+  "id": "b335c8b6-6193-4792-b0a1-25f09685c712",
+  "at": "2026-11-16T05:18:16.711Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-125",
+  "buildId": "BUILD-bfce91262e6b",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-bfce91262e6b",
+    "changeId": "CHG-125",
+    "specHash": "a4416f5bea8e990836c76a1b2ecfe2934168f0946a5fe44be681dc8d69020e4d",
+    "workspaceHash": "3cf8d036168e69686915bfa54893d747c423c85c40b9e3f0ae83bcf4c36dc0ed",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "PASS",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-CLOUD-RELEASE-0198",
+        "checkId": "release-version",
+        "command": [
+          "node",
+          "scripts/check-release-version.mjs"
+        ],
+        "description": "四处产品版本一致为 0.1.100，独立 crate 版本保持兼容",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-CLOUD-RELEASE-0198",
+        "checkId": "release-version-regression",
+        "command": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "scripts/check-release-version.test.mjs"
+        ],
+        "description": "版本及 tag 契约拒绝缺失或不一致",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "build-standard-stdio-fixture",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-acp",
+          "--bin",
+          "fake_acp_agent"
+        ],
+        "description": "先构建唯一受控 stdio 验收进程，供真实管道与生命周期测试使用",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "build-collaboration-cli",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-cli"
+        ],
+        "description": "先构建实际终端入口，后续经 CLI、PTY 与 Runtime 验证",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "shared-acp-driver",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-acp",
+          "--test",
+          "existing_conversation"
+        ],
+        "description": "精确会话、显式鉴权、拒绝鉴权无创建、早期事件、审批与取消",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "kernel-protocol-drivers",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--lib"
+        ],
+        "description": "协议线格式、WebSocket 鉴权、发现误判、历史覆盖及公共 Runtime 回归",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "catalog-discovery",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "agent_catalog_runtime"
+        ],
+        "description": "已知 Agent、包装命令和通用 ACP 声明的识别，以及未知能力、精确来源与失效引用处理",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "existing-session-registration",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration"
+        ],
+        "description": "精确原会话接入、鉴权与所有权、原组和 agentId 保留，以及失败与重复接入无副作用",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "managed-protocol-session",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "managed_agent"
+        ],
+        "description": "真实子进程 stdio、唯一会话、桥接接入、权限路由、取消、失联及生命周期无孤立进程",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+        "checkId": "installed-agent-initialization",
+        "command": [
+          "node",
+          "scripts/commune-agent-interop-acceptance.mjs",
+          "--skip-grok"
+        ],
+        "description": "真实 Codex、Claude、OpenCode 初始化与正常退出；用户明确豁免本轮 Grok 实机验证，证据须标 SKIPPED，不能计作通过或完整对话验收。其他缺适配器、鉴权或创建失败仍失败。",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-CONNECTION-WIZARD",
+        "checkId": "connection-kernel-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--bin",
+          "ridge-kernel"
+        ],
+        "description": "构建当前 Runtime 供真实接入验收使用",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-CONNECTION-WIZARD",
+        "checkId": "connection-fixture-build",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--no-run"
+        ],
+        "description": "构建隔离的已运行 ACP 会话端点",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-CONNECTION-WIZARD",
+        "checkId": "connection-ui",
+        "command": [
+          "node",
+          "scripts/commune-permission-ui-acceptance.mjs",
+          "--membership"
+        ],
+        "description": "真实 Chromium 文件选择、预览、错误重试、取消与既有会话注册及移出，不新建替身会话",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-EXECUTABLE-IMAGE",
+        "checkId": "existing-process-enrollment",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--",
+          "--test-threads=1"
+        ],
+        "description": "真实长名协议进程发现、精确登记、原终端保留与组织重启恢复",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-DISPATCH-INTENT",
+        "checkId": "group-intent-kernel-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--bin",
+          "ridge-kernel"
+        ],
+        "description": "构建现有组派发幂等与冻结目标的真实 Runtime",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-DISPATCH-INTENT",
+        "checkId": "group-intent-fixture-build",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--no-run"
+        ],
+        "description": "构建既有 ACP 会话 fixture",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-DISPATCH-INTENT",
+        "checkId": "group-intent-ui",
+        "command": [
+          "node",
+          "scripts/commune-permission-ui-acceptance.mjs"
+        ],
+        "description": "真实组任务在提交后回执丢失、输入新草稿和组件重挂后，确认原派发不重复执行并保留新输入；回归审批、取消和产物",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY",
+        "checkId": "online-kernel-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--bin",
+          "ridge-kernel"
+        ],
+        "description": "构建当前真实 Runtime",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY",
+        "checkId": "online-fixture-build",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--no-run"
+        ],
+        "description": "构建连接可断开但原进程保活的已有 ACP fixture",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-ONLINE-ELIGIBILITY",
+        "checkId": "online-group-ui",
+        "command": [
+          "node",
+          "scripts/commune-permission-ui-acceptance.mjs"
+        ],
+        "description": "真实连接断开后离线成员不能新选；已提交丢失回执的组派发仍能确认原请求，不重复执行；回归审批、组分工和产物",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
+        "checkId": "group-refresh-races",
+        "command": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "src/lib/teammate/teammateGroups.test.ts"
+        ],
+        "description": "覆盖初次加载、后台读取中写入、过期读取与错误返回、写入并发拒绝、作用域切换、失败后显式重试及 legacy 迁移互斥",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
+        "checkId": "group-refresh-ui",
+        "command": [
+          "node",
+          "scripts/commune-global-ui-acceptance.mjs"
+        ],
+        "description": "生产 Commune 组件在后台读取挂起时仍可编辑与提交，读取旧回包不能回退新投影，窄屏状态可读且既有编组、派发、审批和接入回归成立",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-GROUP-USABILITY",
+        "checkId": "commune-group-usability-ui",
+        "command": [
+          "node",
+          "scripts/commune-global-ui-acceptance.mjs"
+        ],
+        "description": "真实 Kernel 和受控既有 ACP 会话上验证协作入口可见、跨来源成员选择、候选接入解释、已归组成员可见与原子移动、派发记录保留和窄屏可用性",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-LINUX-PROCESS-OBSERVATION",
+        "checkId": "process-enrollment",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration",
+          "--",
+          "--test-threads=1"
+        ],
+        "description": "真实有线程的长名进程发现、登记、原会话及组织恢复",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-MOBILE-GROUP-NAVIGATION",
+        "checkId": "commune-mobile-group-navigation",
+        "command": [
+          "node",
+          "scripts/commune-global-ui-acceptance.mjs"
+        ],
+        "description": "真实隔离 Kernel 上的生产组件，验证首屏到编组与派发的路径、同名成员区分、触控区、状态和既有权限",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-socket-attestation",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-core",
+          "process_identity"
+        ],
+        "description": "精确进程与 TCP 归属校验，未可观察状态有界等待，错误 PID 和歧义归属始终拒绝",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-runtime",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "commune_registration"
+        ],
+        "description": "真实 Runtime 的候选入组、身份复用、并发、只读与旧任务隔离，fixture 不代替外部 Agent",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-storage",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--lib",
+          "commune_groups"
+        ],
+        "description": "组文档 version 1/2/3、原子提交、归档、CAS 与迁移失败保护",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-kernel-build",
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--bin",
+          "ridge-kernel"
+        ],
+        "description": "以当前源构建后续 UI 使用的真实 Kernel",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-global-ui",
+        "command": [
+          "node",
+          "scripts/commune-global-ui-acceptance.mjs"
+        ],
+        "description": "Native/Remote 统一成员与候选先入组后接入、同名来源、成员移动与能力反馈",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-catalog",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "ridge-kernel",
+          "--test",
+          "agent_catalog_runtime"
+        ],
+        "description": "Native/Remote 可信发现、只读投影、来源脱敏与工作区关闭后引用失效",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-membership-ui",
+        "command": [
+          "node",
+          "scripts/commune-permission-ui-acceptance.mjs",
+          "--membership"
+        ],
+        "description": "真实 Runtime 的已有会话连接文件向导、鉴权与进程校验拒绝、修正重试和断开保留历史",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-ORGANIZATION-MEMBERS",
+        "checkId": "organization-dispatch-regression",
+        "command": [
+          "node",
+          "scripts/commune-permission-ui-acceptance.mjs"
+        ],
+        "description": "审批、协议历史、旧工作区组兼容及 CHG-098/099 的失联回执确认保护",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-REMOTE-DELIVERY",
+        "checkId": "commune-remote-delivery-ui",
+        "command": [
+          "node",
+          "scripts/commune-global-ui-acceptance.mjs"
+        ],
+        "description": "真实受控 ACP 进程及 Kernel 上验证手机单成员消息、丢回执同键重试、连点防重和新草稿保留，同时保持跨来源编组、历史与 Remote 权限边界",
+        "status": "PASS",
+        "exitCode": 0
+      }
+    ],
+    "valid": true,
+    "verifiedAt": "2026-11-16T05:18:16.706Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "Cargo.lock",
+        "before": "1e2954395b010b5e8b12970defa917afdbddeb7095f8dc90a6fdfc575d7918fe",
+        "after": "7263769c843b7b09ab7515db2e5591ddf17a4e959319020e093cbd8cd457ee0a"
+      },
+      {
+        "path": "changes/CHG-103.md",
+        "before": null,
+        "after": "db8ee38623c2bd64c4f26059cc039b60dc6cae66e0fed2434419adfed60afe8b"
+      },
+      {
+        "path": "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+        "before": "b0cc4e53e6538b92f1b108bbcbd7442403011fc9a23662ca770ed39dab9bb2f4",
+        "after": "2ae38db10434940491d23b4d29c4dfd8a7f5a9afa0afc7e4738850567de7db03"
+      },
+      {
+        "path": "packages/remote/src/shared/transport/wsRemote.ts",
+        "before": "0f9d4bcf816db19614068bb4f64671ea85c64ce001cbdecbd09330ec1b82d112",
+        "after": "7f37073b2a72b2ae390d1cac7662e1a8210ac9eb0c376eaf3a471a6a6307e91a"
+      },
+      {
+        "path": "packages/ridge-acp/src/bin/fake_acp_agent.rs",
+        "before": "68ced5a3108c6999bfcafa2441c855c4ea6927d5f307f198f1b2aeeee9462fcb",
+        "after": "017884fb2a4343ffe7d7398e309643eb59baa0129d118f1a33ce89875cae263d"
+      },
+      {
+        "path": "packages/ridge-acp/src/existing.rs",
+        "before": "b74cfb28d9d789c3540de69fa98a4492ffa5c3b9b586b7bd1c9640eaa28798bf",
+        "after": "fa9252eb886736bee266e9fb29aa31d5b8303566a3bf34e5f19a36d207de55fc"
+      },
+      {
+        "path": "packages/ridge-acp/src/protocol.rs",
+        "before": "3d3a54d1710fbe9ae63a2d8e0860e42e965f1c56126952d7b2eb32c9f2736947",
+        "after": "11bbc0010f0a0b229ac36b6991af0aa067639eb8eb494084e9566b423e1ada2b"
+      },
+      {
+        "path": "packages/ridge-acp/tests/existing_conversation.rs",
+        "before": "fecd1ab40206cec16a0c15fc08c551af9c293cd4b436b0bcc32fed424f0bece0",
+        "after": "e8885b3d80e5ba0d6ebfc12eaf97e6d0c0a05493719ece7bd6dc0c85104668fe"
+      },
+      {
+        "path": "packages/ridge-cli/src/main.rs",
+        "before": "2438030f4ef9b67532cc19698b4003bcdec6e7008b8296dc4602adcf064835fd",
+        "after": "6b47aaccf54f7286bfcff4b5dbda0bfe7d1ce6b3d3cd52ad176651b367d49ab6"
+      },
+      {
+        "path": "packages/ridge-cli/src/managed_agent.rs",
+        "before": null,
+        "after": "51cc978e819b52116e5566c61014617e4249b2b309bce6c207df2ec164003d64"
+      },
+      {
+        "path": "packages/ridge-cli/src/tui/lan_session.rs",
+        "before": "8ad216b6952549cef6a16a5048ffca44ead0102f3bbd42a0b20a4f7c8c9e1fb4",
+        "after": "253cdbc942b79f38bc875126d1eb46aa1fe682f7a3721d8df2a82a2150ebd408"
+      },
+      {
+        "path": "packages/ridge-core/src/commands/shell.rs",
+        "before": "62a30e30414d0c163726ff073fc125d9dac8a144ad76cdf56352ae3bbace2f5d",
+        "after": "2096e9ef52c39aca80b723fdf2d9d0d62ecfb74bdbfdb3116ac75ee676229c5a"
+      },
+      {
+        "path": "packages/ridge-core/src/process_identity.rs",
+        "before": "3f50f165566c77e8e0d2f99437ec0b74c0e509098cb255bbca3a17452ffed12a",
+        "after": "75883f03cede08fabb6409bb0b781a7791f265e31e49604ad09ef9dde166cd4c"
+      },
+      {
+        "path": "packages/ridge-kernel/Cargo.toml",
+        "before": "4f1941a27630f1507c26f55cf5d340ff9922f04fa54979c0e55f5f5715eaf95d",
+        "after": "a034606f5434aa616485b7e1b2fa945a883190a180a328a3eac60c812f94a277"
+      },
+      {
+        "path": "packages/ridge-kernel/src/agent_discovery.rs",
+        "before": "c336a02f2457c86b7477acc8c298dc50ef6053a0609b2437fa2bb60fcb73d855",
+        "after": "8a43bbd49fb14f4cf2618f62e9eaf59e818fcdcc81ed937e849539cd8edff0f3"
+      },
+      {
+        "path": "packages/ridge-kernel/src/agent_profiles.rs",
+        "before": "2255c83cfbe959cb24ca4263ecf403daed18c762711dfcbfb304c575bb570f26",
+        "after": "513476a16fecdee31ee29157b4f0f9ec7b7eb5b91cd0a4f1a2dc00f68d4e7ccb"
+      },
+      {
+        "path": "packages/ridge-kernel/src/app_server.rs",
+        "before": "f8348145dcb5bd4f1618fbe822e4ff3e1c062f7cabd52b810c411dce673b07dc",
+        "after": "7397b44d1307321a0f8a913ec2b1133eaf42129dd564677b3f8aba1ef63019ad"
+      },
+      {
+        "path": "packages/ridge-kernel/src/commune.rs",
+        "before": "3c948a980f29c8eacccef8df6b48ebd9c66f7b75c0311b5d6ae90bccbe72c6c9",
+        "after": "fd7b9ebffcb2c56ec0763b554052edbbece28ba1b0948f1cc3310965c209323e"
+      },
+      {
+        "path": "packages/ridge-kernel/src/commune_connection.rs",
+        "before": "8cfed612f5a822ec75426427a33f42173751bb471a971b1584252410f404b15c",
+        "after": "01fe0a0511e1d3b1d210464f23b70ad35615c16b71a82eed9476e1ca79b8246a"
+      },
+      {
+        "path": "packages/ridge-kernel/src/commune_endpoint.rs",
+        "before": null,
+        "after": "39261b45d129e4e710330e281bdb211c96ee35151b3058afdbd735ef6e3d4169"
+      },
+      {
+        "path": "packages/ridge-kernel/src/commune_history.rs",
+        "before": "1b13dfc31fcee9cd2a82ffae581f9ae67cf294303ce3f3c3e608147150756908",
+        "after": "a0071ae387bbc737cbe18ae79ab6d4d19bb6e994cc6b812c485111c50b4933dd"
+      },
+      {
+        "path": "packages/ridge-kernel/src/commune_permissions.rs",
+        "before": "82961d40ebf9a25597cbd0294c78ab31dcb765d12a30dcb345f5fafb69ef3753",
+        "after": "8023c9cf70604ab66ed7f458600c529e7c82af258386082cd30e39f19adb0481"
+      },
+      {
+        "path": "packages/ridge-kernel/src/commune_tasks.rs",
+        "before": "b7717f8327e1daf75782935710089fe343ab0408ee6db5d1c330fcab14a41eae",
+        "after": "3ae6140dede4d39622fdbe72e2af7efb1aa01d70a02627dc4b735e2cc5fece91"
+      },
+      {
+        "path": "packages/ridge-kernel/src/domain.rs",
+        "before": "f63838c4a5529292dbcc1c6bd1ff50b7f97f9ee3c07cf456f916e05f6b8adae1",
+        "after": "49ee7045eedd574dce09250da88cb1691c47e0ab8c9e6cdca02b525ab9566460"
+      },
+      {
+        "path": "packages/ridge-kernel/src/gateway_permissions.rs",
+        "before": "8f8ca68adab04f40de56e628c858e711b520fc9a9c1bc7f86a6f5ef14d356507",
+        "after": "1a64c99abe917563d707e503223e33ff9535318a131a4825e46452b96b4c7acf"
+      },
+      {
+        "path": "packages/ridge-kernel/src/lib.rs",
+        "before": "ce7b675a7b031310d96e23db0d364f907eb0afe17ef3bbf4fabe685aa79e0d78",
+        "after": "a96cd0475c3fea88d736a734ca83d9624076b8894a2b87a16bee81fc755dbd0a"
+      },
+      {
+        "path": "packages/ridge-kernel/src/main.rs",
+        "before": "2c5044fe88ca693524f7d657c1662a854863194ed4e3cdbdb77f6c21dc75ae5d",
+        "after": "4b4f0783e37e583069b39a0ba510adbfd23aac08ea24bf2c98c2b8d363328f4c"
+      },
+      {
+        "path": "packages/ridge-kernel/src/managed_agent.rs",
+        "before": null,
+        "after": "cd3ccdaeebab037bacb2151c3224a421b52a6452d096d2cdf0de67a08f7d42ac"
+      },
+      {
+        "path": "packages/ridge-kernel/src/managed_console.rs",
+        "before": null,
+        "after": "b137c87937bcbeac3a2b3a2424741e5c5091edf920d90cce8375b766aef12607"
+      },
+      {
+        "path": "packages/ridge-kernel/src/orchestration_health.rs",
+        "before": "90a08326d5cbf71c12e5a769fac32371bbe02e3e467f7d846b4b3745f55bb42b",
+        "after": "d265a1dc065a100b088cf646700c7f5b3fbe680ea238fe941dd6813b46c547ec"
+      },
+      {
+        "path": "packages/ridge-kernel/src/pty.rs",
+        "before": "80e25c6797d0609ff98c87a8560aad8929376483c3761c7922ba26975a7c11b5",
+        "after": "5a2a20392f9299b8cfad2ca6f681c419fdb123951e89c2b57105fac38b3db0d7"
+      },
+      {
+        "path": "packages/ridge-kernel/src/server.rs",
+        "before": "f9c4df2664a9717a1483c4dd856857a42b2c18d3e7466541da8f496aba799bab",
+        "after": "e904d7a7a02f7d47f2e6455825d0d14474b80cc9238691ba83ed145b6ee4c024"
+      },
+      {
+        "path": "packages/ridge-kernel/src/workspace_memory.rs",
+        "before": "07a9ea182072f90514d47b361541dcd72de8b2c95d7b461e592670381401bf84",
+        "after": "9ca83319b7398b3a1d46eb8b4de60aac00dea12c072ea9230d8be19f9c4cde68"
+      },
+      {
+        "path": "packages/ridge-kernel/tests/common/commune_fixture.rs",
+        "before": "4093a0a21494138df9e51bcde6854b232e4a3442ba0eed517d3adedf7ed0ec53",
+        "after": "be9d91d2c0266e21719f9ee62d2d226c1618ef52aefa4813e3185bb62cb7d582"
+      },
+      {
+        "path": "packages/ridge-kernel/tests/commune_registration.rs",
+        "before": "623234d108dbf1c70aad66f25f7125b95b29d281805dbfe0fb1305fb3b3ceb68",
+        "after": "e5118bdd0ef187eeca226e3d2515828b3617fef7d7fa4a1d01ae42d16da80bab"
+      },
+      {
+        "path": "packages/ridge-kernel/tests/gateway_permissions_runtime.rs",
+        "before": "3ef64699aaeb930b932df7cb684aadb9a82559af15e088f255773107454cabf5",
+        "after": "d4974a1f808e006d89841c71c2367ea78c5eb642f400912b874b568eaccb5702"
+      },
+      {
+        "path": "packages/ridge-kernel/tests/managed_agent.rs",
+        "before": null,
+        "after": "415f829aab8e621dff49e5c514b88c649d0bf9b0f4d44acb8d97d8838b197eaa"
+      },
+      {
+        "path": "scripts/commune-agent-interop-acceptance.mjs",
+        "before": null,
+        "after": "439ba89a6fd40e10cf83288845a4ebfd36291cc7913a9d88b5067ef93c76d140"
+      },
+      {
+        "path": "scripts/commune-global-ui-acceptance.mjs",
+        "before": "5be0078e73b372229ca4cebac4644634d08a5d75578700bf3ea264f7a6004c74",
+        "after": "ea90ce6a8b3741a8ae7badc6c77c651c5cbed10986a3591042652b238d198e7c"
+      },
+      {
+        "path": "scripts/commune-permission-ui-acceptance.mjs",
+        "before": "c9bb28592f7f0ae985e51c121b3d8cc009078305d6659b8b82a18ad5bb96984d",
+        "after": "9e2c1178f904b20656fe59318fc9515c09eb5fbff91fe4cf88d9b8d913ab6d6b"
+      },
+      {
+        "path": "src/lib/i18n/messages/commune.ts",
+        "before": "005adcf9044f325120c7d2af900fbfbd6704e1c2b3917318038c4f1ff0d814fe",
+        "after": "655e617153ded9d047f83007abfb4f0925034662b9ea26f1c3d4b7855aae93b3"
+      },
+      {
+        "path": "src/lib/teammate/AgentCenterPanel.svelte",
+        "before": "4041e16c0c43074a344a66990d380183fced10da6c0ebb5d5d7409b1620a866f",
+        "after": "6fb5096153acba47b31411e107b42863a3858df5571668e612bb0c9ab3e85b4f"
+      },
+      {
+        "path": "src/lib/teammate/AgentMemberRow.svelte",
+        "before": "ac87338a9d49d6f59518998eb8b6c20846d30e9c357bae2446809b0cec2f10d2",
+        "after": "6e68f9f89a1053e6668ee659810da09a8e7eed44ea1271af94236e260a24b2d7"
+      },
+      {
+        "path": "src/lib/teammate/CommuneConnectionDialog.svelte",
+        "before": "5b94bd075a1943b07d816da733fe6f92f257c3d79170c4dbb0ba9da8518ef0de",
+        "after": "654b540f99cd4bf0931c5a05fb331059319d44b1be08f2f1b66d2299292f6ab2"
+      },
+      {
+        "path": "src/lib/teammate/CommuneGroupTasks.svelte",
+        "before": "0d27f0a9af1853f1f428924d78fcb7eeeecc53fe61807634c2860df25aac270f",
+        "after": "0a3a9f742ce0629eb44f92cbecadcde416b050849ef3ad5f1d468e1ec0f0b6cc"
+      },
+      {
+        "path": "src/lib/teammate/CommuneHistory.svelte",
+        "before": "80a58cc58f4cea1f2069829691ca04e4f2cd067e1a860f7aec3f9e95005d7b89",
+        "after": "01e41d4e516839fcc6eb7f04b42c6b77a0d60295f0e121fd96c467e2b435bc6c"
+      },
+      {
+        "path": "src/lib/teammate/CommuneStartDialog.svelte",
+        "before": null,
+        "after": "679788c8b1c5f96678bc911fce843e077633aaf2e2975408e9a62f04ad9425eb"
+      },
+      {
+        "path": "src/lib/teammate/HostCommuneGroups.svelte",
+        "before": "7151e4b5120819271c29a59416b5ac50adc80c5ad42c3a7e72e10ed831dd9dfa",
+        "after": "e7ea416ac1e6c570d1610427cd25911df347006e9470924a3fa27b9749d648f7"
+      },
+      {
+        "path": "src/lib/teammate/TerminalAgentRow.svelte",
+        "before": "edc8fe89b2242e1bf6d5ddaa749773e5806c66dcae0048097690c366d7c65995",
+        "after": "52bdf4a33381f51193e9b43c8106274da24d2b5762a5b63951e24a1894149189"
+      },
+      {
+        "path": "src/lib/teammate/communeLaunch.test.ts",
+        "before": null,
+        "after": "a553bbc4ba1fbc52a270dd19e864b277b79a33fda692a86f4c07b77c9d55905c"
+      },
+      {
+        "path": "src/lib/teammate/communeLaunch.ts",
+        "before": null,
+        "after": "50bd5e913d3ce06249fe3cf109317a207d25fe72825da8bb9e3d34caf35d3797"
+      },
+      {
+        "path": "src/lib/teammate/communeMembership.ts",
+        "before": "8882d1a6fc52b0354305df78eb1bcb9393271f5a7f43f94065cc223d3cff39cb",
+        "after": "4e6ddb6041add4ea37d630f81739cc717d802d1b32999f9199b117d97b67b160"
+      },
+      {
+        "path": "src/lib/teammate/communeUiText.test.ts",
+        "before": "4c80b61acbf266a33f3cc8557246b3d36b8878387e33b282d3f555526f240dd2",
+        "after": "3f8a2c5519393ab310b2af7b45d2397a07cecfeab4bb37a835cc09ab35819ee4"
+      },
+      {
+        "path": "src/lib/teammate/communeUiText.ts",
+        "before": "6224c10c4a52e71176639d3d3c643a7db7c9c0c28ad8fa638ff73dd695b8f8b8",
+        "after": "e49df4be0a6b61056e8834c71f6676e6893af0fad73c5b3e5e6759eafd2b6e19"
+      },
+      {
+        "path": "src/remote/CloudAuthScreen.svelte",
+        "before": "f9e333d49292ea6f335091a7a2be84e6041ca57a9ea31e3b5c3ae7f472575507",
+        "after": "1be551a4ad1c6dee7cc68141e894b7176e15c574ff6a529d31fc0b570d8d9d40"
+      },
+      {
+        "path": "src/remote/MainApp.svelte",
+        "before": "774fff882a93685992c68dcf4fee46778ec2775f4cd6e58c9f5f83a906c38d3a",
+        "after": "978e93f7f1a27aac1637f2de03ddc8f9cf324369181fcecf1fdf54549afcdd61"
+      },
+      {
+        "path": "src/remote/lib/CommuneMemberMessage.svelte",
+        "before": "3a1e091140da8f90a76710d69d8f583bb8ba390ee51f25c428f384ad6b521ad1",
+        "after": "7c8544831cbd3072ac9887ff856b5f8996f96d2fdfd5e2aee5d83ce11239c1ea"
+      },
+      {
+        "path": "src/remote/lib/CommuneWorkspaceRoster.svelte",
+        "before": "567695dfb690861a81ca75ed3bf343ae99694b91c9d058cd6d1bc223d619e046",
+        "after": "d015ef45ea20b0f6140101dad2b6eaacd998b30c40968be932c1d9b0806d01f0"
+      },
+      {
+        "path": "src/remote/lib/GlobalCommuneRoster.svelte",
+        "before": "f87e2b317557a10b2d46abceac6b897889008754cb98032e2225d4de7c2625b8",
+        "after": "73223331df2c767d54ca70303ddf5789183c5d4a7cbf2547df1dc4dec948308e"
+      },
+      {
+        "path": "src/remote/lib/cloudRemote.test.ts",
+        "before": "29fc5a3723c3e918c099f91aba8e23045bb855ac6b1a043c1e8cd1d8611e8f88",
+        "after": "e615d050e851c072d1c8a25889ed51a19c362f6f7bc68001a36a32b8229f61a4"
+      },
+      {
+        "path": "src/remote/lib/cloudRemote.ts",
+        "before": "2e7542a63b5321290aa3e10a5087bcab0a185234367238cc897617d561b7133f",
+        "after": "fd88f88dd9ce7bd6089e1ece717ef3995c997498282d248536fc4739b4136a99"
+      },
+      {
+        "path": "src/remote/lib/communeMemberDelivery.test.ts",
+        "before": "0212f399efbf2becb4b0d0dc24503bc89c3b023303f58f4cda4f9489d78c419c",
+        "after": "ce02b975bb5baab58373eaf76dd2d85ba28bf0dfa2a1a750e68589810f3f8d8c"
+      },
+      {
+        "path": "src/remote/lib/communeMemberDelivery.ts",
+        "before": "86abb070221786a225f1695c58dfae714d12c238e2f14fc4eec1e51e0b437e5e",
+        "after": "130044ed901c94e9d4f5bfd55c74feb136cd741f2b232b5bc2a5445fda4a651b"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/b335c8b6-6193-4792-b0a1-25f09685c712.log"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "0dc2343a-2ed2-4471-a9a3-c8f071bdc61e",
+  "at": "2026-11-16T04:42:06.372Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-125",
+  "data": {
+    "changeId": "CHG-125",
+    "specHash": "96a17c5b7436263cebd223f8d6f2a25710acfc35806be81d5789b2a06f39fb4d",
+    "approvedAt": "2026-11-16T04:42:06.369Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "沿用用户全部授权及 CHG-103 已批准方案，整合最新主仓并保留 CHG-124；Grok 明确跳过，其余重新验收。",
+    "attributionVerified": false
+  }
+}

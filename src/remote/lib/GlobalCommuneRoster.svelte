@@ -37,8 +37,9 @@
       catch { if (alive && version === generation) failed = true; }
     };
     void refreshScopes();
-    const stops = [ws.onReconnect(() => { void refreshScopes(); void teammateGroupStore().refresh(); }), ws.onMessage(message => {
+    const stops = [ws.onReconnect(() => { void refreshScopes(); if (!ws.workspaceShared) void teammateGroupStore().refresh(); }), ws.onMessage(message => {
       if (message.type === 'workspaces') discoveredScopes = message.workspaces;
+      if (message.type === 'event' && message.name === 'workspace-list-changed' && !workspaces) void refreshScopes();
     })];
     return () => { alive = false; generation++; stops.forEach(stop => stop()); };
   });
@@ -85,4 +86,7 @@
   .global-tabs button.active{color:var(--rg-accent);border-color:var(--rg-accent);background:color-mix(in srgb,var(--rg-accent) 10%,var(--rg-surface))}
   .global-tabs button:focus-visible{outline:2px solid var(--rg-accent);outline-offset:2px}
   .global-empty{padding:24px 8px;text-align:center;color:var(--rg-fg-muted);font-size:12px}
+  @media (pointer: coarse) {
+    .global-tabs button { min-height: 44px; }
+  }
 </style>

@@ -147,7 +147,22 @@ pub async fn connect_local(
     shell: Option<String>,
     cwd: Option<String>,
 ) -> Result<(LanControllerSession, mpsc::Receiver<Vec<u8>>)> {
-    let (grant, args) = tokio::task::spawn_blocking(move || -> Result<_> {
+    let (session, output, _) = connect_local_launch(shell, cwd, None).await?;
+    Ok((session, output))
+}
+
+pub(crate) async fn connect_collaboration(mut config: ridge_kernel::managed_console::AgentArgs)
+    -> Result<(LanControllerSession, mpsc::Receiver<Vec<u8>>, ridge_kernel::registry::KernelEndpoint)> {
+    config.validate()?;
+    let cwd = config.cwd.take().map(|cwd| cwd.into_os_string().into_string()
+        .map_err(|_| anyhow!("collaboration working directory must be valid UTF-8"))).transpose()?;
+    connect_local_launch(None, cwd, Some(config)).await
+}
+
+async fn connect_local_launch(
+    shell: Option<String>, cwd: Option<String>, collaboration: Option<ridge_kernel::managed_console::AgentArgs>,
+) -> Result<(LanControllerSession, mpsc::Receiver<Vec<u8>>, ridge_kernel::registry::KernelEndpoint)> {
+    let (endpoint, grant, args) = tokio::task::spawn_blocking(move || -> Result<_> {
         use ridge_kernel::client;
         let endpoint = crate::kernel_ctl::ensure_kernel_running().map_err(anyhow::Error::msg)?;
         let device = format!("ridge-cli-local-{}", uuid::Uuid::new_v4());
@@ -170,11 +185,13 @@ pub async fn connect_local(
             return Err(anyhow!("local Runtime grant identity mismatch"));
         }
         let cwd = local_cwd(cwd.as_deref())?;
-        let args = independent_terminal_request(&endpoint, "tui", shell.as_deref(), Some(&cwd))?;
+        let entry = if collaboration.is_some() { "agent" } else { "tui" };
+        let mut args = independent_terminal_request(&endpoint, entry, shell.as_deref(), Some(&cwd))?;
+        if let Some(config) = collaboration { args["collaboration"] = serde_json::to_value(config)?; }
         if args["runtimeEpoch"] != grant.runtime_epoch {
             return Err(anyhow!("Runtime changed during client authorization"));
         }
-        Ok((grant, args))
+        Ok((endpoint, grant, args))
     })
     .await??;
     let connection = ConnectionTarget::Local(grant);
@@ -204,7 +221,7 @@ pub async fn connect_local(
     let target = terminal_result(&args, &reply["result"])?;
     let (session, output) = session_from_stream(stream, connection, Some(target.clone()));
     session.activate(target)?;
-    Ok((session, output))
+    Ok((session, output, endpoint))
 }
 
 async fn create_over_stream(

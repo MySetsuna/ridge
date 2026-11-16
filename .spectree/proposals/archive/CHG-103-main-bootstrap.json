@@ -1,0 +1,46 @@
+{
+  "changeId": "CHG-103",
+  "remove": [],
+  "nodes": [
+    {
+      "id": "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION",
+      "level": "L4",
+      "parent": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+      "title": "终端 Agent 自动识别与通用协议接入",
+      "codeTargets": [
+        "packages/ridge-kernel/src/agent_profiles.rs",
+        "packages/ridge-kernel/src/agent_discovery.rs",
+        "packages/ridge-kernel/src/commune.rs",
+        "packages/ridge-kernel/src/app_server.rs",
+        "packages/ridge-acp/src/**",
+        "packages/ridge-core/src/process_identity.rs",
+        "src/lib/teammate/TerminalAgentRow.svelte",
+        "src/lib/teammate/CommuneConnectionDialog.svelte",
+        "src/lib/teammate/communeMembership.ts",
+        "src/lib/i18n/messages/commune.ts",
+        "src/remote/lib/CommuneWorkspaceRoster.svelte",
+        "packages/remote/src/shared/transport/wsRemote.ts"
+      ],
+      "testTargets": [
+        "packages/ridge-kernel/tests/agent_catalog_runtime.rs",
+        "packages/ridge-kernel/tests/commune_registration.rs",
+        "src/lib/teammate/communeMembership.test.ts",
+        "scripts/commune-global-ui-acceptance.mjs"
+      ],
+      "dependsOn": ["L4-COMMUNE-ORGANIZATION-MEMBERS"],
+      "acceptanceChecks": [
+        {
+          "id": "catalog-discovery",
+          "command": ["cargo", "test", "--locked", "-p", "ridge-kernel", "--test", "agent_catalog_runtime"],
+          "description": "已知 Agent、包装命令和通用 ACP 声明的识别，以及未知能力、精确来源与失效引用处理"
+        },
+        {
+          "id": "existing-session-registration",
+          "command": ["cargo", "test", "--locked", "-p", "ridge-kernel", "--test", "commune_registration"],
+          "description": "精确原会话接入、鉴权与所有权、原组和 agentId 保留，以及失败与重复接入无副作用"
+        }
+      ],
+      "body": "# 自动识别与通用协议接入草案\n\n## 需求与批准状态\n用户明确要求自动识别 Codex、Claude、Grok Build、OpenCode，并覆盖可扩展 Agent 与支持 ACP 的 Agent。保留原生独立终端、原进程与原会话，以及 CHG-092 的 agentId 和原组连续性。标准 ACP stdio 的显式协作启动模式仍待产品决策，本草案尚未应用和锁定，不能据此编辑业务代码。\n\n## 已核实现状\n内置清单包含 codex、claude、grok 等，缺少 opencode。进程发现依赖清单匹配，自动接入仅消费 connection.autoConnect 与 descriptorFile，当前未替用户完成端点和已有 session 的发现。ACP 原会话接入使用已有 TCP 字节流，app-server 使用 TCP WebSocket。已有 fixture 和界面通过记录不能证明标准 stdio、Grok WebSocket 或本机共享 daemon 接入。已运行本机四种 CLI 的帮助命令，未启动模型会话。Codex 0.162.1 已导出实验协议 schema，并确认 canAcceptDirectInput 字段存在，不能凭公共文档缺少该字段便移除校验。\n\n## 自动识别\n补齐四种具名工具及其实际包装进程识别。通用 Agent 沿用可扩展清单与协议自报身份，通用 ACP 接入不设品牌白名单。辨认执行映像或真实包装入口，用户 prompt、任意文件路径及普通参数中的品牌文本不能冒充 Agent。每个候选继续精确绑定 host、workspace、pane、terminalEpoch 和 process start instance，Remote 保持脱敏。浏览发现不登记成员、不发送 prompt、不触发新会话。\n\n## 自动连接准备\n主流程由 Runtime 从已验证本地进程的已公布端点、运行方连接元数据或既有受信连接登记生成候选，用户无需自行编写或寻找 JSON。仅枚举精确候选的本地通信资源，不能扫描任意端口或按 cwd、名称推断 session。多个已有会话时展示协议返回的准确会话供用户选择，无法证明目标终端归属时保持待连接并解释原因。Native 一键连接提交 candidateRef 和明确选择，不接受客户端伪造 PID 或新增会话身份。自动附加继续遵守显式 autoConnect 授权，发现进程不自动等同授予控制权。\n\n## 协议与能力\n复用共享会话、投递、审批、历史和组织链路，按协议与传输实现通用连接，不为品牌复制业务状态机。覆盖已存在的 ACP 字节流、ACP WebSocket、已有 app-server 传输与已有 IPC 转发路径。每条路径须核验端点进程启动实例、既有会话、鉴权及可接受控制状态。共享 daemon 不可用相同 cwd 冒充原终端归属，须另有可核验的客户端或会话关联。身份、历史、派发、取消和审批按实际握手及协议事件展示。缺少回放、只读或控制权占用分别说明；手工连接文件保留为高级兼容入口。\n\n## 待决的标准 stdio 路径\nACP v1 标准以 stdio 通信，常规启动方式由客户端创建 Agent 子进程。已经运行的普通原生 TUI 未必存在可附加协议通道。现行父契约禁止为附加已有会话另起 Agent、创建新 session 或混写原终端 stdin。建议另增用户显式选择的协作启动模式，使用户在终端启动的 ACP 进程拥有唯一协议输入输出持有者，并在同一终端来源呈现其实际会话、任务和审批。该模式涉及会话创建与终端呈现边界，须先获批并同步修订父契约，不能以发现或接入动作暗中启用。保留原生已运行 TUI 的普通终端交互与精确附加路径。\n\n## 验收\n按工具及传输逐项记录真实 CLI 版本、识别、端点发现、精确 session 选择、身份、历史、派发、审批、取消、失联重连与原组保留。具名四种工具和非内置名称 ACP Agent 均须有真实互操作证据。隔离样本覆盖同名多进程、同目录多会话、PID 复用、端点属于另一进程、旧代际、鉴权拒绝、控制权占用与未知结果。发现、预览和鉴权失败均不能产生模型 prompt、新会话、重复派发或组变更。完整模型轮次及真实网络验收按实际可用环境记录，不能以帮助文本、fixture 或按钮存在宣称全面支持。\n\n## 来源\nhttps://learn.chatgpt.com/docs/app-server\nhttps://learn.chatgpt.com/docs/developer-commands\nhttps://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/15-agent-mode.md\nhttps://docs.opencode.ai/docs/acp/\nhttps://agentclientprotocol.com/protocol/v1/transports\nhttps://github.com/agentclientprotocol/claude-agent-acp\n"
+    }
+  ]
+}

@@ -69,8 +69,8 @@ impl Gateway {
     "nextStep":"Approval releases the original input request; terminal acceptance does not prove command execution."});
    pending.insert(id.clone(),Pending{request,sender,log});
   }
-  let _waiting=Waiting{gateway:self.clone(),id,events:state.business_events.clone()};
-  state.business_events.broadcast("teammate://hitl-pending-changed",Value::Null);
+  let _waiting=Waiting{gateway:self.clone(),id,workspace_id:workspace.to_owned(),events:state.business_events.clone()};
+  state.business_events.broadcast("teammate://hitl-pending-changed",json!({"workspaceId":workspace}));
   Ok(tokio::time::timeout(std::time::Duration::from_secs(120),receiver).await.ok().and_then(Result::ok).unwrap_or_else(||json!({"verdict":"reject"})))
  }
  pub(crate) fn snapshot(&self,local:bool)->Result<Vec<Value>,String> {
@@ -85,7 +85,10 @@ impl Gateway {
   if !args["workspaceId"].is_null()&&args["workspaceId"]!=entry.request["workspaceId"] {return Err("gateway workspace mismatch".into());}
   if !args["optionId"].is_null() {return Ok(Some("bad-verdict"));}
   if !native {
-   let nonce=args["resolutionNonce"].as_str().ok_or("missing remote permission nonce")?;
+   let canonical=args.get("nonce");
+   let legacy=args.get("resolutionNonce");
+   if canonical.zip(legacy).is_some_and(|(a,b)|a!=b) {return Ok(Some("nonce-mismatch"));}
+   let nonce=canonical.or(legacy).and_then(Value::as_str).ok_or("missing remote permission nonce")?;
    let expected=entry.request["resolutionNonce"].as_str().ok_or("gateway nonce missing")?;
    if nonce.len()!=expected.len()||nonce.bytes().zip(expected.bytes()).fold(0u8,|difference,(a,b)|difference|(a^b))!=0 {return Ok(Some("nonce-mismatch"));}
   }
@@ -110,5 +113,5 @@ impl Gateway {
   }Ok(rows.into_iter().collect())
  }
 }
-struct Waiting {gateway:Arc<Gateway>,id:String,events:BusinessEvents}
-impl Drop for Waiting {fn drop(&mut self){if let Ok(mut pending)=self.gateway.pending.lock(){if let Some(entry)=pending.remove(&self.id){if let Err(error)=entry.log.append(json!({"kind":"gateway_permission_cancelled","id":self.id,"workspaceId":entry.request["workspaceId"],"paneId":entry.request["paneId"],"source":"cancellation","verdict":"reject"})){tracing::error!(%error,"gateway cancellation ledger unavailable");}}}self.events.broadcast("teammate://hitl-pending-changed",Value::Null);}}
+struct Waiting {gateway:Arc<Gateway>,id:String,workspace_id:String,events:BusinessEvents}
+impl Drop for Waiting {fn drop(&mut self){if let Ok(mut pending)=self.gateway.pending.lock(){if let Some(entry)=pending.remove(&self.id){if let Err(error)=entry.log.append(json!({"kind":"gateway_permission_cancelled","id":self.id,"workspaceId":entry.request["workspaceId"],"paneId":entry.request["paneId"],"source":"cancellation","verdict":"reject"})){tracing::error!(%error,"gateway cancellation ledger unavailable");}}}self.events.broadcast("teammate://hitl-pending-changed",json!({"workspaceId":self.workspace_id}));}}

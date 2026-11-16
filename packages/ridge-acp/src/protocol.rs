@@ -15,6 +15,9 @@ use serde_json::{Map, Value};
 /// MOCK_FIXTURE.
 pub const ACP_PROTOCOL_VERSION: u32 = 1;
 
+/// ACP JSON-RPC error code for an authentication-gated request.
+pub const AUTH_REQUIRED: i64 = -32000;
+
 // JSON-RPC 2.0 method names.
 pub const METHOD_INITIALIZE: &str = "initialize";
 pub const METHOD_SESSION_NEW: &str = "session/new";

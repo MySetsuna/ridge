@@ -992,6 +992,9 @@
       if (msg.type === 'create-workspace-result' || msg.type === 'close-workspace-result') {
         refreshWorkspaces();
       }
+      if (msg.type === 'event' && msg.name === 'workspace-list-changed') {
+        void queryClient.invalidateQueries({ queryKey: remoteQueryKeys.workspaces(sessionId()) });
+      }
       if (msg.type === 'workspace-renamed') {
         queryClient.setQueryData(
           remoteQueryKeys.workspaces(sessionId()),

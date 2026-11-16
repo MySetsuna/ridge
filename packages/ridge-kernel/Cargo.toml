@@ -55,6 +55,12 @@ url = "2"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+async-io = "2.6"
+tokio-util = { version = "0.7", features = ["compat"] }
+uds_windows = "1.2"
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock", "Win32_System_IO"] }
+
 [dev-dependencies]
 # integration smoke via binary spawn uses std only
 ed25519-dalek = { version = "2", features = ["std", "zeroize"] }

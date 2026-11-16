@@ -88,6 +88,9 @@ try {
   page.on('pageerror', error => pageErrors.push(error.message));
   await page.goto(devUrl + '/__commune_permission_ui', { waitUntil: 'domcontentloaded', timeout: 45000 });
   const target = { workspaceId, paneId, agentId: identity.agentId, generation: identity.generation, lease: identity.lease };
+  // Only bootstrap reads may retry after Vite's initial dependency reload.
+  for(let boot=0;boot<3;boot++) {
+    try {
   await page.evaluate(async target => {
     const osCalls = [];
     window.isTauri = true;
@@ -136,6 +139,12 @@ try {
       reconnect: async () => { connection = await connectPresentationRuntime(); bridge.attach(connection.transport, { useGlobalWorkspace: false }); },
       dispose: async () => { await unmount(workspaceTabs); await unmount(groups); await unmount(history); await unmount(modal); bridge.detach(); connection.disconnect(); } };
   }, target);
+      break;
+    } catch(error) {
+      if(boot===2 || !/Execution context was destroyed|most likely because of a navigation/i.test(String(error))) throw error;
+      await page.goto(devUrl + '/__commune_permission_ui', {waitUntil:'domcontentloaded',timeout:45000});
+    }
+  }
   if(membershipOnly){
     evidence.scope='Owned existing ACP process + production connection/removal dialogs + actual Runtime RPC; no external Agent claim';
     const memberRoot=path.join(root,'membership');fs.mkdirSync(memberRoot);
@@ -170,10 +179,10 @@ try {
     await connect.getByLabel('会话预览').waitFor();
     await connect.getByRole('button',{name:'连接',exact:true}).click();
     await connect.getByRole('alert').waitFor();
-    assert.ok((await connect.textContent()).includes('输入已保留'));
-    await connect.locator('summary').click();
+    assert.ok((await connect.textContent()).includes('当前选择已保留'));
+    await connect.locator('summary').filter({hasText:'高级'}).click();
     assert.ok((await connect.getByRole('textbox').inputValue()).includes('invalid-owned-instance'));
-    await connect.locator('summary').click();
+    await connect.locator('summary').filter({hasText:'高级'}).click();
     await upload(JSON.stringify(description));
     await connect.getByLabel('会话预览').waitFor();
     const beforeConnect=await page.evaluate(async workspaceId=>window.ownedApproval.invoke('get_teammate_topology',{workspaceId}),workspaceId);

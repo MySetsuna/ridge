@@ -157,7 +157,7 @@
           hostDevice: scoped.deviceName,
           username: grant.ownerUsername,
           ...callbacks,
-        });
+        }, { useGlobalWorkspace: false });
       } catch (e) {
         phase = 'error';
         error = e instanceof Error ? e.message : '共享工作区接入失败';

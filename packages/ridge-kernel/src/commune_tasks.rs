@@ -1,5 +1,5 @@
 //! Frozen parent/child relations; execution and receipts remain owned by the Hub.
-use crate::{commune_groups::Group, server::AppState};
+use crate::{commune::AGENT_AUTHENTICATION_REQUIRED, commune_groups::Group, server::AppState};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ridge_core::EventSink;
 use serde::{Deserialize, Serialize};
@@ -131,7 +131,7 @@ pub fn project(state: &AppState, task: &Dispatch, native: bool) -> Result<Value,
         children.push(json!({"member":child.binding,"objective":child.objective.chars().take(512).collect::<String>(),"objectiveTruncated":child.objective.chars().count()>512,"state":status,"submissionError":child.error,
             "deliveryError":receipt.as_ref().map(|receipt| &receipt["deliveryError"]),
             "deliveryId":receipt.as_ref().map(|receipt| &receipt["deliveryId"]),"taskId":receipt.as_ref().map(|receipt| &receipt["taskId"]),
-            "execution":receipt.as_ref().map(|receipt| json!({"state":receipt["execution"]["state"],"stopReason":receipt["execution"]["response"]["stopReason"]})),"cancellationRequested":receipt.as_ref().map(|receipt| &receipt["cancellationRequested"]),
+            "execution":receipt.as_ref().map(|receipt| json!({"state":receipt["execution"]["state"],"stopReason":receipt["execution"]["response"]["stopReason"],"reason":receipt["execution"]["reason"].as_str().filter(|reason| *reason == AGENT_AUTHENTICATION_REQUIRED)})),"cancellationRequested":receipt.as_ref().map(|receipt| &receipt["cancellationRequested"]),
             "artifacts":outputs["items"],"artifactsHasMore":outputs["hasMore"],"artifactCoverage":"协议报告的内容；仅关联观察区间，未核验目标完成。无内容时覆盖未知。"}));
     }
     Ok(
@@ -203,13 +203,13 @@ impl Drop for Coordinating<'_> {
         }
     }
 }
-pub fn status(state: &AppState, args: &Value) -> Result<Value, String> {
+pub fn status(state: &AppState, args: &Value, native: bool) -> Result<Value, String> {
     let task = task(
         state,
         scope(args)?,
         args["groupTaskId"].as_str().ok_or("missing groupTaskId")?,
     )?;
-    let mut result = project(state, &task, true)?;
+    let mut result = project(state, &task, native)?;
     let detail = if let Some(cursor) = args["objectiveCursor"].as_str() {
         if cursor.len() > 8192 {
             return Err("objective cursor too large".into());
@@ -289,7 +289,7 @@ fn cancel_child(state: &AppState, child: &Child) -> Result<(), String> {
     ).map_err(|error| error.message)?;
     Ok(())
 }
-pub fn cancel(state: &AppState, args: &Value) -> Result<Value, String> {
+pub fn cancel(state: &AppState, args: &Value, native: bool) -> Result<Value, String> {
     let workspace = scope(args)?;
     let id = args["groupTaskId"].as_str().ok_or("missing groupTaskId")?;
     let task = update(state, workspace, id, |task| {
@@ -308,7 +308,7 @@ pub fn cancel(state: &AppState, args: &Value) -> Result<Value, String> {
         "commune-task-changed",
         json!({"workspaceId":workspace,"groupTaskId":id}),
     );
-    let mut projection = project(state, &task, true)?;
+    let mut projection = project(state, &task, native)?;
     projection["cancellationErrors"] = json!(errors);
     Ok(projection)
 }
@@ -318,7 +318,7 @@ fn valid_objective(value: &str) -> Result<(), String> {
     }
     Ok(())
 }
-pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
+pub fn send(state: &AppState, args: &Value, native: bool) -> Result<Value, String> {
     let request: Request = serde_json::from_value(args.clone()).map_err(|e| e.to_string())?;
     if !matches!(request.group_action.as_str(), "broadcast" | "assign")
         || request.targets.is_empty()
@@ -367,7 +367,7 @@ pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
         }
         drop(store);
         drop(retired);
-        return project(state, &previous, true);
+        return project(state, &previous, native);
     }
     if !host_scope && store.host_authoritative() {return Err("legacy group scope cannot create new tasks; use Host-global groups".into());}
     let group = store
@@ -438,7 +438,7 @@ pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
         if previous.request != dispatch.request {
             return Err("group idempotency conflict".into());
         }
-        return project(state, &previous, true);
+        return project(state, &previous, native);
     }
     let coordinator = Coordinating {
         state,
@@ -488,7 +488,7 @@ pub fn send(state: &AppState, args: &Value) -> Result<Value, String> {
     project(
         state,
         &task(state, dispatch.request.scope(), &dispatch.id)?,
-        true,
+        native,
     )
 }
 

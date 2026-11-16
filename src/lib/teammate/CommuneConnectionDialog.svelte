@@ -5,8 +5,8 @@
   import type { CommuneOrganizationMember } from '../../../packages/remote/src/shared/transport/wsRemote';
   import { connectionRequest } from './communeMembership';
 
-  let { workspaceId, paneId, memberAgentId, onfinish }: {
-    workspaceId: string; paneId: string; memberAgentId?: string; onfinish: () => void;
+  let { workspaceId, paneId, memberAgentId, candidateRef, onfinish }: {
+    workspaceId: string; paneId: string; memberAgentId?: string; candidateRef?: string; onfinish: (next?: 'launch') => void;
   } = $props();
   type NativeMember = CommuneOrganizationMember & { process?:unknown; source?:{process?:unknown} | null };
   let selectedMember = $state(untrack(() => memberAgentId ?? ''));
@@ -16,13 +16,24 @@
   let raw = $state('');
   let source = $state('');
   let request = $state<Record<string, unknown> | null>(null);
+  type SessionChoice = { sessionId: string; sessionRef: string; title?: string | null };
+  let selectedSession = $state('');
+  const sessionChoices = $derived(request?.candidateRef && Array.isArray(request.sessionChoices)
+    ? request.sessionChoices as SessionChoice[] : null);
   let error = $state('');
+  const missingEndpoint = $derived(!request && /no published or declared local endpoint|has not published a connection endpoint/.test(error));
+  const unverifiedOwner = $derived([
+    'exact pane process tree', 'endpoint does not own the declared Agent process',
+    'socket belongs to a different process', 'socket ownership is not yet observable',
+    'socket ownership is ambiguous', 'socket peer does not match the declared process',
+  ].some(reason => error.includes(reason)));
   let connecting = $state(false);
   let reading = $state(false);
   let readGeneration = 0;
 
   onMount(() => {
     dialog.showModal();
+    void prepare();
     let active = true;
     void invoke<{members?:NativeMember[]}>('get_teammate_topology',{groupScope:'host'})
       .then(projection => { if(active) members=(projection.members ?? []).filter(member => !member.archived); })
@@ -30,6 +41,23 @@
     return () => { active=false; };
   });
   onDestroy(() => { readGeneration++; });
+
+  async function prepare(): Promise<void> {
+    const generation = ++readGeneration;
+    reading = true;
+    error = '';
+    request = null;
+    selectedSession = '';
+    source = tr('commune.connectionRuntime');
+    try {
+      const preview = await invoke<Record<string, unknown>>('prepare_commune_connection', { workspaceId, paneId, ...(candidateRef ? { candidateRef } : {}) });
+      if (generation === readGeneration) request = preview;
+    } catch (cause) {
+      if (generation === readGeneration) error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      if (generation === readGeneration) reading = false;
+    }
+  }
 
   function preview(text: string): void {
     request = null;
@@ -85,12 +113,16 @@
   }
 
   async function connect(): Promise<void> {
-    if (!request || connecting || reading) return;
+    if (!request || connecting || reading || (sessionChoices && !selectedSession)) return;
     connecting = true;
     error = '';
     try {
       const {memberAgentId: _descriptorMember, ...descriptor} = request;
-      await invoke('register_commune_member', { ...descriptor, ...(selectedMember ? {memberAgentId:selectedMember} : {}) });
+      const connection = descriptor.candidateRef ? {
+        candidateRef: descriptor.candidateRef, workspaceId, paneId,
+        sessionRef: sessionChoices ? selectedSession : descriptor.sessionRef,
+      } : descriptor;
+      await invoke('register_commune_member', { ...connection, ...(selectedMember ? {memberAgentId:selectedMember} : {}) });
       onfinish();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
@@ -108,15 +140,38 @@
     <h2 id="commune-connect-title">{$t('commune.connectExistingAgent')}</h2>
     <p>{$t('commune.connectionIntro')}</p>
   </header>
-  <div class="body">
+  <div class="body rg-scroll">
+    <section class="automatic" aria-busy={reading}>
+      <strong>{$t('commune.connectionRuntime')}</strong>
+      <p class="hint">{$t('commune.connectionAutoHint')}</p>
+      <button type="button" onclick={prepare} disabled={connecting || reading}>{reading ? $t('commune.connectionReading') : $t('commune.connectionFindAgain')}</button>
+    </section>
+    {#if error}
+      <section class="error" role="alert">
+        <strong>{$t('commune.connectionFailure')}</strong>
+        {#if missingEndpoint}
+          <p>{$t('commune.connectionEndpointMissing')}</p>
+          <button type="button" class="primary" onclick={() => onfinish('launch')}>{$t('commune.launchTitle')}</button>
+        {:else if unverifiedOwner}
+          <p>{$t('commune.connectionEndpointUnverified')}</p>
+          <details><summary>{$t('commune.connectionTechnicalDetails')}</summary><p>{error}</p></details>
+        {:else}
+          <p>{error}</p>
+          {#if request}<p>{$t('commune.connectionRetryHint')}</p>{/if}
+        {/if}
+      </section>
+    {/if}
+    <details>
+      <summary>{$t('commune.connectionFile')}</summary>
     <label class="file-picker">
       <span>{$t('commune.connectionFile')}</span>
       <span class="hint">{$t('commune.connectionFormat')}</span>
       <input type="file" accept=".json,application/json" aria-label={$t('commune.connectionFile')} onchange={readFile} disabled={connecting} />
     </label>
     <p class="hint">{$t('commune.connectionHint')}</p>
-    {#if source}<p class="source">{reading ? $t('commune.connectionReading') : $t('commune.connectionSource') } · {source}</p>{/if}
-    {#if members.length}
+    </details>
+    {#if source && (request || reading)}<p class="source">{reading ? $t('commune.connectionReading') : $t('commune.connectionSource') } · {source}</p>{/if}
+    {#if request && members.length}
       <label for="commune-member">{$t('commune.connectionReuseMember')}</label>
       <select id="commune-member" bind:value={selectedMember} disabled={connecting}>
         <option value="">{$t('commune.connectionAutomatic')}</option>
@@ -124,10 +179,23 @@
       </select>
       <p class="hint">{$t('commune.connectionRebindHint')}</p>
     {/if}
+    {#if sessionChoices}
+      {#if sessionChoices.length}
+        <label for="commune-existing-session">{$t('commune.connectionChooseSession')}</label>
+        <select id="commune-existing-session" bind:value={selectedSession} disabled={connecting || reading}>
+          <option value="">{$t('commune.connectionChooseSession')}</option>
+          {#each sessionChoices as session (session.sessionRef)}
+            <option value={session.sessionRef}>{session.title ? `${session.title} · ${session.sessionId}` : session.sessionId}</option>
+          {/each}
+        </select>
+      {:else}
+        <p class="hint">{$t('commune.connectionNoSessions')}</p>
+      {/if}
+    {/if}
     {#if request}
       <dl aria-label={$t('commune.connectionPreview')}>
         <div><dt>{$t('commune.connectionProtocol')}</dt><dd>{String(request.protocol ?? 'acp')}</dd></div>
-        <div><dt>{$t('commune.connectionSession')}</dt><dd>{String(request.sessionId ?? $t('commune.connectionUnprovided'))}</dd></div>
+        {#if !sessionChoices}<div><dt>{$t('commune.connectionSession')}</dt><dd>{String(request.sessionId ?? $t('commune.connectionUnprovided'))}</dd></div>{/if}
         <div><dt>{$t('commune.connectionCwd')}</dt><dd>{String(request.cwd ?? $t('commune.connectionUnprovided'))}</dd></div>
         <div><dt>{$t('commune.connectionPane')}</dt><dd>{paneId}</dd></div>
         <div><dt>{$t('commune.connectionProcess')}</dt><dd>{JSON.stringify(request.process ?? $t('commune.connectionUnprovided'))}</dd></div>
@@ -146,33 +214,28 @@
       <textarea id="commune-description" bind:value={raw} oninput={editDescription} disabled={connecting} spellcheck="false"></textarea>
       <button type="button" onclick={() => preview(raw)} disabled={connecting || reading || !raw.trim()}>{$t('commune.connectionPreviewAction')}</button>
     </details>
-    {#if error}
-      <section class="error" role="alert">
-        <strong>{$t('commune.connectionFailure')}</strong>
-        <p>{error}</p>
-        <p>{$t('commune.connectionRetryHint')}</p>
-      </section>
-    {/if}
   </div>
   <footer>
     <span aria-live="polite">{connecting ? $t('commune.connectionValidating') : $t('commune.connectionCapabilities') }</span>
-    <button type="button" onclick={onfinish} disabled={connecting}>{$t('commune.connectionCancel')}</button>
-    <button type="button" class="primary" onclick={connect} disabled={!request || connecting || reading}>{connecting ? $t('commune.connectionConnecting') : $t('commune.connectionConnect') }</button>
+    <button type="button" onclick={() => onfinish()} disabled={connecting}>{$t('commune.connectionCancel')}</button>
+    <button type="button" class="primary" onclick={connect} disabled={!request || connecting || reading || (sessionChoices !== null && !selectedSession)}>{connecting ? $t('commune.connectionConnecting') : $t('commune.connectionConnect') }</button>
   </footer>
 </dialog>
 
 <style>
-  dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 0; color: var(--rg-fg); background: var(--rg-surface); border: 1px solid var(--rg-border); border-radius: 14px; box-shadow: 0 24px 80px #0006; overflow: auto; }
+  dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 0; color: var(--rg-fg); background: var(--rg-surface); border: 1px solid var(--rg-border); border-radius: 14px; box-shadow: 0 24px 80px #0006; overflow: hidden; }
+  dialog[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
   dialog::backdrop { background: #0007; }
   header { padding: 24px 24px 16px; border-bottom: 1px solid var(--rg-border); }
   .eyebrow { color: var(--rg-fg-muted); font-size: 11px; letter-spacing: .08em; }
   h2 { margin: 8px 0; font-size: 18px; font-weight: 600; }
   p { margin: 8px 0 0; line-height: 1.6; font-size: 13px; overflow-wrap: anywhere; }
-  .body { padding: 20px 24px; display: grid; gap: 14px; }
+  .body { padding: 20px 24px; display: grid; gap: 14px; overflow-y: auto; overscroll-behavior: contain; }
   .file-picker { position: relative; display: grid; gap: 10px; padding: 16px; border: 1px dashed var(--rg-border); border-radius: 9px; font-size: 13px; cursor: pointer; }
   .file-picker:focus-within { outline: 2px solid var(--rg-accent); outline-offset: 3px; }
   input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
   .hint, .source { color: var(--rg-fg-muted); margin: 0; font-size: 12px; }
+  .automatic { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--rg-border); border-radius: 9px; background: var(--rg-bg); font-size: 13px; }
   dl { margin: 0; padding: 12px; background: var(--rg-bg); border: 1px solid var(--rg-border); border-radius: 9px; font-size: 12px; }
   dl div { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 10px; padding: 5px 0; }
   dt { color: var(--rg-fg-muted); } dd { margin: 0; overflow-wrap: anywhere; }
@@ -188,5 +251,6 @@
   footer span { flex: 1 1 140px; color: var(--rg-fg-muted); font-size: 11px; }
   .error { border-left: 2px solid var(--rg-ansi-red, #c77d6c); padding: 10px 12px; background: var(--rg-bg); }
   .error strong { font-size: 13px; }
+  .error button { margin-top: 10px; }
   @media (max-width: 600px) { button, summary { min-height: 44px; } header, .body, footer { padding-left: 16px; padding-right: 16px; } }
 </style>

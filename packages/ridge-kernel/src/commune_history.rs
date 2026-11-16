@@ -110,12 +110,16 @@ struct Replay {
     id: Option<String>,
     committed: u64,
     agent: Option<String>,
+    bridge_observed: bool,
+    truncated: bool,
     items:std::collections::HashMap<String,u64>,
 }
 fn replay(path: &Path, length: u64) -> Result<Replay, String> {
     let mut latest = Replay::default();
     records(path, length, |sequence, record| {
         if record["kind"] == "replay_committed" {
+            latest.bridge_observed=record["replayInfo"]["historySource"]=="terminal_bridge_observed";
+            latest.truncated=record["replayInfo"]["historyTruncated"]==true;
             latest.id = record["replayId"].as_str().map(str::to_owned);
             latest.committed = sequence;
             latest.agent = record["agentInfo"]["title"]
@@ -242,7 +246,7 @@ fn row(
         "sessionId":member.session_id,"sequence":sequence,"agent":replay.agent.as_deref().unwrap_or(&member.agent_id),"cwd":if native {Some(&member.cwd)}else{None},
         "title":kind,"kind":kind,"text":fragment,"timestamp":record["timestamp"].as_u64().unwrap_or(0),"timestampSource":"observed",
         "source":if record["params"]["protocol"]=="app-server" {if record["phase"]=="replay" {"app-server-replay"}else{"app-server-live"}}else if record["phase"]=="replay" {"acp-replay"}else if !record["params"]["update"].is_null() {"acp-live"}else{"ridge-ledger"},
-        "coverage":if replay.id.is_some() {"Agent 回放与接入后记录；接入前完整度未独立验证"}else{"自接入起记录；接入前覆盖未知"},
+        "coverage":if replay.bridge_observed {if replay.truncated {"协作终端观测记录；早期记录已超出回放窗口"}else{"协作终端启动后观测记录"}}else if replay.id.is_some() {"Agent 回放与接入后记录；接入前完整度未独立验证"}else{"自接入起记录；接入前覆盖未知"},
         "textOffset":offset,"textLength":count,"textCursor":next,"previousTextCursor":previous,
         "groupId":record["payload"]["groupContext"]["groupId"],"groupRevision":record["payload"]["groupContext"]["groupRevision"],"groupTaskId":record["groupTaskId"].as_str().or(record["payload"]["groupContext"]["groupTaskId"].as_str()),
         "deliveryId":record["deliveryId"],"taskId":record["taskId"],"correlationId":record["correlationId"],"causationId":record["causationId"]}),

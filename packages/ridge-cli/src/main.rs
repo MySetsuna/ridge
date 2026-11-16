@@ -30,6 +30,7 @@ mod ice;
 mod kernel_ctl;
 mod kernel_host_impl;
 mod key_binding;
+mod managed_agent;
 mod login_flow;
 mod mux;
 mod protocol;
@@ -65,6 +66,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Start a new collaboration terminal with one shared Agent protocol session.
+    Agent(managed_agent::AgentArgs),
     /// 交互式 TUI（默认）：在终端里跑一个可交互会话。无子命令时即进入此模式。
     /// 本轮承载本地 shell（passthrough）；LAN/公网控制端将接入同一界面（见
     /// docs/plans/ridge-interactive-tui-and-lan.md）。
@@ -269,6 +272,7 @@ async fn main() -> Result<()> {
 
 async fn run_command(command: Option<Command>) -> Result<()> {
     match command {
+        Some(Command::Agent(args)) => managed_agent::run(args).await,
         Some(Command::Tui(args)) => run_tui(args).await,
         Some(Command::Login(args)) => run_login(args).await,
         Some(Command::Remote(args)) => daemon::run(args.shell, args.cwd, args.root).await,

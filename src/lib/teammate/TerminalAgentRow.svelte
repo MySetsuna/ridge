@@ -139,7 +139,7 @@
   .agent-name, .workspace { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .agent-name { font-weight: 600; line-height: 18px; }
   .workspace { margin-top: 2px; font-size: 10px; color: var(--rg-fg-muted); }
-  .locate { display: flex; align-items: center; gap: 4px; flex-shrink: 0; padding: 5px 4px; border-radius: 4px; color: var(--rg-fg-muted); font-size: 10px; }
+  .locate { display: flex; align-items: center; gap: 4px; flex-shrink: 0; padding: 5px 4px; border-radius: 4px; color: var(--rg-fg-muted); font-size: 10px; white-space: nowrap; }
   .locate:hover { background: var(--rg-bg-raised); color: var(--rg-fg); }
   .output { position: relative; margin: 0 10px; padding: 8px 9px; border-radius: 5px; background: var(--rg-bg-raised); }
   .output-heading { display: flex; justify-content: space-between; gap: 6px; margin-bottom: 6px; color: var(--rg-fg-muted); font-size: 10px; }

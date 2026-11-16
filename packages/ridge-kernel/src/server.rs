@@ -233,6 +233,15 @@ async fn shutdown(
 }
 
 pub async fn run(host: &str, requested_port: u16) -> Result<()> {
+    // Embedded desktop and CLI hosts enter here before their own argument parser.
+    if crate::client::kernel_host_requested() {
+        let mut args = std::env::args().skip(2);
+        if args.next().as_deref() == Some("--agent-console") {
+            let config = args.next().ok_or_else(|| anyhow::anyhow!("missing collaboration launch configuration"))?;
+            anyhow::ensure!(args.next().is_none(), "unexpected collaboration launch argument");
+            return crate::managed_console::run(serde_json::from_str(&config)?).await;
+        }
+    }
     if let Some(endpoint) = running_endpoint() {
         tracing::info!(
             pid = endpoint.pid,
