@@ -1,0 +1,49 @@
+---
+id: L4-COMMUNE-MOBILE-GROUP-NAVIGATION
+level: L4
+title: 手机 Commune 编组与派发导航
+status: LOCKED
+lifecycle: ACTIVE
+parent: L3-COMMUNE-PROTOCOL-MEMBERSHIP
+code_targets:
+  - src/remote/lib/GlobalCommuneRoster.svelte
+  - src/remote/lib/CommuneWorkspaceRoster.svelte
+  - src/remote/lib/CommuneMemberMessage.svelte
+  - src/remote/lib/RemoteSidebar.svelte
+  - src/lib/teammate/HostCommuneGroups.svelte
+  - src/lib/teammate/CommuneGroupTasks.svelte
+  - src/lib/teammate/communeVisual.css
+  - src/lib/teammate/communeUiText.ts
+  - src/lib/i18n/messages/commune.ts
+  - .stcignore
+  - src/remote/CloudAuthScreen.svelte
+test_targets:
+  - scripts/commune-global-ui-acceptance.mjs
+acceptance_checks:
+  - id: commune-mobile-group-navigation
+    command:
+      - node
+      - scripts/commune-global-ui-acceptance.mjs
+    description: 真实隔离 Kernel 上的生产组件，验证首屏到编组与派发的路径、同名成员区分、触控区、状态和既有权限
+depends_on:
+  - L4-COMMUNE-GROUP-RESPONSIVE-STATE
+  - L4-COMMUNE-GROUP-USABILITY
+---
+
+# 手机 Commune 编组与派发导航
+
+## 范围
+
+重排手机 Remote 的 Commune 入口，覆盖成员、编组、历史。沿用桌面组件和现有主题令牌。接入身份、权限、组文档、组 revision 与派发意图仍由现行 Runtime 契约管理。
+
+## 行为
+
+拥有主机组视图的手机用户从 Commune 首屏直接进入「编组」。进入后显示组、成员摘要和组派发入口。组卡将「派发任务」置于成员详情之前，保留既有的选人、填写目标、确认和结果反馈。创建、加成员、移组、改名和解散维持可达，管理动作在视觉上次于派发；解散仍需确认。受限工作区遵循已有授权和入口可见性。
+
+成员与组内选人优先呈现可读的工作区或终端名称，让同名 Agent 可区分。完整路径和原标识可按现行权限查看。使用宿主主题色，明确选中、待接入、运行、待审批和失败状态。手机侧栏的标签与关闭按钮采用至少 44×44 CSS px 的有效触控区；固定导航有连续背景且不遮挡内容。用紧凑标签、边界和状态层次保持与终端界面一致。
+
+成员和组的操作使用已有同步与重试链路。切换视图保留未确认派发及新草稿。已有任务、审批和历史继续按原会话归属呈现。
+
+## 验收
+
+用含两个同名、不同工作区成员和一个已有组的隔离 Runtime，在 320 和 390 CSS px 粗指针视口验证中英文。打开 Commune 后无需滚动成员列表即可进入编组，选组后首屏可见「派发任务」。核对同名成员来源、键盘焦点、侧栏触控尺寸、滚动和安全区，无横向溢出。回归从终端先编组再接入、无成员、失联、组派发、丢回执后重试及受限工作区可见性。保留桌面布局及现有测试，执行 npm test、npm run lint、npm run typecheck 与 SpecTree 门禁。

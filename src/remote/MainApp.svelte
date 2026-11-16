@@ -217,7 +217,7 @@
   // Read-only file / git-diff viewer overlay. Opened from the sidebar (tap a
   // file in the tree / a search hit → 'file'; tap a changed file in git → 'diff').
   // Active pane's working dir — roots the sidebar at the same place ridge shows.
-  let activeCwd = $state('');
+  const activeCwd = $derived(activePane?.cwd ?? '');
   let sidebarDirectory = $state('');
   let sidebarSearchQuery = $state('');
   let viewerProvider = $state.raw<SidebarProvider | null>(null);
@@ -1042,7 +1042,7 @@
       }
       // iter-60 G9: mirror cwd into the pane list too, so the pane-switcher
       // popup shows live per-pane cwd（此前只有 active pane 的侧栏根会更新）.
-      if (cwd != null && cwd.length > 0) {
+      if (cwd != null) {
         queryClient.setQueryData(
           remoteQueryKeys.panes(sessionId(), workspaceId),
           (current: PaneInfo[] | undefined) =>
@@ -1052,8 +1052,6 @@
       if (paneId === ui.activePaneId && workspaceId === ui.activeWorkspaceId) {
         // Title drives the document/tab title directly.
         if (title != null && title.length > 0) document.title = title;
-        // cwd roots the sidebar (file tree / git / search) at the pane's dir.
-        if (cwd != null && cwd.length > 0) activeCwd = cwd;
       }
     }));
     stops.push(ws.onPtyResize((pane, rows, cols) => {
@@ -1300,12 +1298,6 @@
     if (wsState === 'connected' && ui.viewer) {
       fileViewerPromise ??= loadFileViewer();
     }
-  });
-
-  // Seed the sidebar root from the active pane's cwd (pty-meta refines it live).
-  $effect(() => {
-    const p = panes.find((pp) => pp.id === ui.activePaneId);
-    if (p?.cwd) activeCwd = p.cwd;
   });
 
   // §header-pin（虚拟键盘顶吸）: keep the header (which holds the virtual keyboard)

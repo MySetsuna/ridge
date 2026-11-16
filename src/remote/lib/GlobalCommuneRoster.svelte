@@ -17,8 +17,9 @@
   } = $props();
   let discoveredScopes = $state<WorkspaceInfo[]>([]);
   let snapshots = $state<Record<string, TeammateTopology>>({});
-  let tab = $state<'members' | 'history'>('members');
+  let tab = $state<'members' | 'groups' | 'history'>('members');
   let failed = $state(false);
+  const workspaceShared = $derived('workspaceShared' in ws && ws.workspaceShared === true);
   const scopes = $derived(workspaces ?? discoveredScopes);
   const scopeKey = $derived(scopes.map(scope => scope.id).sort().join(','));
   const memberCount = $derived(scopes.reduce((count, scope) => count + (snapshots[scope.id]?.roster.length ?? 0)
@@ -45,25 +46,30 @@
 
 <section class="rg-commune global-roster" data-testid="global-commune-roster">
   <nav class="global-tabs" aria-label="Agent's Commune">
-    <button class:active={tab === 'members'} onclick={() => tab = 'members'}>{$t('commune.membersCount', { count: memberCount })}</button>
-    <button class:active={tab === 'history'} onclick={() => tab = 'history'}>{$t('commune.history')}</button>
+    <button class:active={tab === 'members'} aria-pressed={tab === 'members'} onclick={() => tab = 'members'}>{$t('commune.membersCount', { count: memberCount })}</button>
+    {#if !workspaceShared}<button class:active={tab === 'groups'} aria-pressed={tab === 'groups'} onclick={() => tab = 'groups'}>{$t('commune.groups')}</button>{/if}
+    <button class:active={tab === 'history'} aria-pressed={tab === 'history'} onclick={() => tab = 'history'}>{$t('commune.history')}</button>
   </nav>
   {#if failed}<p role="alert">{$t('commune.healthSnapshotFailed')}</p>{/if}
   <div hidden={tab !== 'members'}>
     {#key remoteSessionId(ws)}
       {#each scopes as scope (scope.id)}
-        <CommuneWorkspaceRoster {ws} workspaceId={scope.id} {queryClient} panes={scope.id === workspaceId ? panes : []}
+        <CommuneWorkspaceRoster {ws} workspaceId={scope.id} workspaceName={scope.name} {queryClient} panes={scope.id === workspaceId ? panes : []}
           attentionPaneIds={attentionPaneKeys ? attentionPaneKeys.filter(key => key.startsWith(scope.id + ':')).map(key => key.slice(scope.id.length + 1)) : scope.id === workspaceId ? attentionPaneIds : []} globalView
           onSnapshot={snapshot => snapshots = { ...snapshots, [scope.id]: snapshot }}
           onSelectPane={paneId => onSelectPane?.(paneId, scope.id)}
           onAttentionChange={paneIds => onAttentionChange?.(paneIds, scope.id)} />
       {/each}
     {/key}
-    <HostCommuneGroups members={scopes.flatMap(scope => (snapshots[scope.id]?.roster ?? []).map(member => ({...member,workspaceName:scope.name,workspaceId:scope.id})))}
-      candidates={scopes.flatMap(scope => (snapshots[scope.id]?.discovered ?? []).filter(candidate => !candidate.protocolConnected).map(candidate => ({...candidate,workspaceName:scope.name})))}
-      onLocate={candidate => onSelectPane?.(candidate.paneId,candidate.workspaceId)} identity={ws} />
     {#if memberCount === 0}<p class="global-empty">{$t('commune.allWorkspacesEmpty')}</p>{/if}
   </div>
+  {#if !workspaceShared}
+    <div hidden={tab !== 'groups'} class="groups-view">
+    <HostCommuneGroups members={scopes.flatMap(scope => (snapshots[scope.id]?.roster ?? []).map(member => ({...member,workspaceName:scope.name,workspaceId:scope.id})))}
+      candidates={scopes.flatMap(scope => (snapshots[scope.id]?.discovered ?? []).filter(candidate => !candidate.protocolConnected).map(candidate => ({...candidate,workspaceName:scope.name})))}
+      onLocate={candidate => onSelectPane?.(candidate.paneId,candidate.workspaceId)} identity={ws} compact />
+    </div>
+  {/if}
   {#if tab === 'history'}
     <CommuneHistory workspaceIds={scopes.map(scope => scope.id)} visible
       load={request => ws.listAgentHistory(request.workspaceId, request.limit, request.cursor, request.query, request.textCursor)}
@@ -74,8 +80,9 @@
 
 <style>
   .global-roster{height:100%;overflow:auto;padding:10px;box-sizing:border-box}
-  .global-tabs{display:flex;gap:8px;margin-bottom:12px;position:sticky;top:0;background:var(--rg-surface);z-index:1}
-  .global-tabs button{flex:1;padding:8px;border:1px solid var(--rg-border);border-radius:8px;background:transparent;color:var(--rg-fg-muted)}
-  .global-tabs button.active{color:var(--rg-accent);border-color:var(--rg-accent)}
+  .global-tabs{display:flex;gap:8px;margin-bottom:12px;position:sticky;top:0;background:var(--rg-bg,var(--rg-surface));z-index:2;padding:4px 0 10px;border-bottom:1px solid var(--rg-border)}
+  .global-tabs button{flex:1;min-height:44px;padding:8px;border:1px solid var(--rg-border);border-radius:5px;background:var(--rg-surface);color:var(--rg-fg-muted)}
+  .global-tabs button.active{color:var(--rg-accent);border-color:var(--rg-accent);background:color-mix(in srgb,var(--rg-accent) 10%,var(--rg-surface))}
+  .global-tabs button:focus-visible{outline:2px solid var(--rg-accent);outline-offset:2px}
   .global-empty{padding:24px 8px;text-align:center;color:var(--rg-fg-muted);font-size:12px}
 </style>

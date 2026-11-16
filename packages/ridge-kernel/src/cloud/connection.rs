@@ -40,7 +40,17 @@ async fn drive(state:&AppState,config:&super::manager::Config,cid:&str,signals:&
                 if crypto.is_none()&&started.elapsed()>Duration::from_secs(30){return Err("Cloud handshake timed out".into());}
                 if let Some(peer)=peer_key {
                     if !bound {match decide_key_binding(&peer,hint.as_ref().map(|hint:&[u8;32]|hint.as_slice()),started.elapsed()>Duration::from_secs(3)) {
-                        KeyBindingDecision::Reject=>return Err("Cloud key binding mismatch".into()),KeyBindingDecision::Accept=>{bound=true;let _=status.send((cid.into(),"connected".into())).await;},KeyBindingDecision::Wait=>{},
+                        KeyBindingDecision::Reject=>return Err("Cloud key binding mismatch".into()),
+                        KeyBindingDecision::Accept=>{
+                            bound=true;
+                            if scope.is_some() {
+                                let frame=mux::encode_control(&json!({"t":"totp-result","ok":true,"source":"workspace-share"}));
+                                let cipher=crypto.as_mut().ok_or("Cloud encryption unavailable")?.seal(&frame).map_err(|error|error.to_string())?;
+                                send_cipher(io,&cipher,&mut message).await?;
+                            }
+                            let _=status.send((cid.into(),"connected".into())).await;
+                        },
+                        KeyBindingDecision::Wait=>{},
                     }}
                 }
                 if trust.totp_failures>=session_control::MAX_TOTP_ATTEMPTS {return Err("Cloud authentication attempts exhausted".into());}
@@ -118,9 +128,14 @@ async fn drive(state:&AppState,config:&super::manager::Config,cid:&str,signals:&
                             }
                         }else{(method.to_owned(),args,None)};
                         if matches!(method.as_str(),"subscribe-pane"|"unsubscribe-pane") {
+                            let result: Result<(), String> = async {
                             let workspace=Uuid::parse_str(args["workspaceId"].as_str().ok_or("missing terminal workspace")?).map_err(|_|"invalid terminal workspace")?;
                             let pane=Uuid::parse_str(args["paneId"].as_str().ok_or("missing terminal pane")?).map_err(|_|"invalid terminal pane")?;
                             let activation=args["activationId"].as_u64().filter(|id|*id>0).ok_or("invalid terminal activation")?;
+                            // A pane error belongs to this operation, never the control connection.
+                            let belongs={let graph=state.workspaces.lock().map_err(|_|"workspaces unavailable")?;graph.workspace(workspace).is_some_and(|metadata|metadata.pane_tree.get_all_leaves().contains(&pane))};
+                            if !belongs {return Err("terminal outside workspace".into());}
+
                             crate::remote_invoke::execute(state.clone(),json!({"clientId":cid,"workspaceId":workspace,"paneId":pane,"activationId":activation,"active":method=="subscribe-pane"}),true,connection.clone(),true).await.map_err(|error|error["message"].as_str().unwrap_or("terminal binding failed").to_owned())?;
                             if method=="unsubscribe-pane" {
                                 if streams.0.get(&(workspace,pane)).is_some_and(|(current,_)|*current==activation) {if let Some((_,task))=streams.0.remove(&(workspace,pane)){task.abort();}}
@@ -132,6 +147,12 @@ async fn drive(state:&AppState,config:&super::manager::Config,cid:&str,signals:&
                                 if let Some((_,old))=streams.0.remove(&(workspace,pane)){old.abort();}
                                 let task=tokio::spawn(async move {while let Some(Ok(packet))=stream.next().await {if let tokio_tungstenite::tungstenite::Message::Binary(bytes)=packet {if target.send((workspace,pane,activation,bytes)).await.is_err(){break;}}}});
                                 streams.0.insert((workspace,pane),(activation,task));
+                            }
+                                Ok(())
+                            }.await;
+                            if request.get("id").is_some() {
+                                let reply=match result {Ok(())=>json!({"jsonrpc":"2.0","id":request["id"],"result":null}),Err(error)=>json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32000,"message":error}})};
+                                let cipher=crypto.seal(&mux::encode_json(&reply)).map_err(|error|error.to_string())?;send_cipher(io,&cipher,&mut message).await?;
                             }
                             continue;
                         }

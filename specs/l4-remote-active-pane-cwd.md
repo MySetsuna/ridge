@@ -1,0 +1,51 @@
+---
+id: L4-REMOTE-ACTIVE-PANE-CWD
+level: L4
+title: Remote 当前分屏目录投影
+status: LOCKED
+lifecycle: ACTIVE
+parent: L3-REMOTE-INTERACTION-RELIABILITY
+code_targets:
+  - src/remote/MainApp.svelte
+test_targets:
+  - src/remote/MainApp.test.ts
+  - scripts/remote-cwd-acceptance.mjs
+acceptance_checks:
+  - id: remote-current-pane-cwd
+    command:
+      - pnpm
+      - exec
+      - vitest
+      - run
+      - src/remote/MainApp.test.ts
+    description: 当前分屏无 cwd 时清空，跨工作区和迟到元数据维持作用域隔离
+  - id: remote-current-pane-cwd-browser
+    command:
+      - node
+      - scripts/remote-cwd-acceptance.mjs
+    description: 生产页面经隔离 LAN 与 Cloud 连接真实 shell，验证 cd、无 cwd 分屏的页头与文件作用域及切回原分屏
+depends_on:
+  - L3-RUNTIME-LIVE-CWD-PUSH
+---
+
+# Remote 当前分屏目录投影
+
+## 范围
+
+约束 Remote 手机与桌面布局中当前分屏的页头目录，以及文件、Git 和搜索侧栏的目录作用域。目录来源为 Runtime 的分屏快照与同一通道的元数据事件。
+
+## 行为
+
+当前目录始终对应当前 workspaceId 和 paneId。切换到没有目录的分屏，或切换时当前分屏快照尚未到达，清空上一个分屏的目录。当前分屏目录就绪后，页头与侧栏采用同一值。目录未知时，文件、Git、搜索均不得以先前分屏的目录发请求或显示先前目录结果。
+
+元数据按 workspaceId 和 paneId 更新对应分屏的缓存。其他分屏及旧工作区的迟到事件仅更新原作用域。当前分屏返回有效新目录时，页头实时更新。用户切回分屏后显示其最新确认目录。
+
+独立终端与其运行状态沿用现有生命周期。创建分屏、查询目录和切换作用域各自使用现有 Runtime 边界。
+
+## 满足条件
+
+真实生产 Remote 页面连接同一个隔离 Runtime，工作区含两个真实 shell 和一个无 cwd 的未启动分屏。第一分屏执行 cd 后，页头在无需浏览器刷新的情况下显示新目录。切到第二分屏时显示第二分屏目录。切到无目录分屏后清空页头目录。在上一分屏目录预置独有文件，确认连接仍在线，三个侧栏均不沿用原目录，文件面板也不能返回该文件。切回第一分屏后恢复其最新目录。
+
+切换工作区并延迟投递旧作用域的元数据，核对页头及文件、Git、搜索侧栏作用域均对应当前分屏。该行为分别通过 LAN HTTPS/WSS 与 Cloud WebRTC/E2EE 的生产页面验收，Cloud 账号与信令可使用隔离服务，证据注明环境边界。
+
+现有 MainApp 测试记录作用域与目录投影的回归，生产浏览器验收记录真实 shell、切换和迟到元数据。执行 npm test、npm run lint、npm run typecheck、SpecTree verify 和 complete。

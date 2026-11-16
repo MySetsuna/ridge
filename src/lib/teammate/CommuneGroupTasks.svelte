@@ -4,8 +4,9 @@
   import { communeText, type CommuneUiTextKey } from './communeUiText';
   import { communeGroupDispatch, nativeGroupDispatchOwner } from './communeGroupDispatch';
   import type { AgentHistoryReply, CommuneGroupDispatchRequest, CommuneGroupTask } from '../../../packages/remote/src/shared/transport/wsRemote';
-  interface Member {id:string;name:string;generation?:number;lease?:string;online?:boolean;canSend?:boolean}
+  interface Member {id:string;name:string;workspaceName?:string;paneId?:string;generation?:number;lease?:string;online?:boolean;canSend?:boolean}
   interface Props {
+    compact?: boolean;
     workspaceId?: string;
     groupScope?: 'host';
     dispatchOwner?: object;
@@ -18,7 +19,7 @@
     readEvent?: (request:{workspaceId:string;textCursor:string}) => Promise<AgentHistoryReply[]>;
     onRefresh?: () => void | Promise<void>;
   }
-  let {workspaceId,groupScope,dispatchOwner=nativeGroupDispatchOwner,group,members,tasks=[],submit,cancel,read,readEvent,onRefresh}: Props = $props();
+  let {compact=false,workspaceId,groupScope,dispatchOwner=nativeGroupDispatchOwner,group,members,tasks=[],submit,cancel,read,readEvent,onRefresh}: Props = $props();
   const dispatch = $derived(communeGroupDispatch(dispatchOwner, groupScope ?? workspaceId ?? '', group.id));
   const mode = $derived($dispatch.draft.mode);
   const selected = $derived($dispatch.draft.selected);
@@ -122,10 +123,10 @@
   onDestroy(() => { version++; });
 </script>
 
-<section class="rg-commune-group-tasks space-y-3 border-t border-[var(--rg-border)] pt-3" data-testid="commune-group-tasks">
+<section class:compact class="rg-commune-group-tasks space-y-3 border-t border-[var(--rg-border)] pt-3" data-testid="commune-group-tasks">
   {#if submit}
     <details>
-      <summary class="cursor-pointer text-[11px] text-[var(--rg-accent)]">{ct('reviewDispatch')}</summary>
+      <summary class="cursor-pointer text-[11px] text-[var(--rg-accent)]">{ct(compact ? 'dispatchTask' : 'reviewDispatch')}</summary>
       <div class="mt-2 space-y-2">
         <label class="block text-[11px]">{ct('action')}
           <select value={mode} onchange={event => dispatch.edit({mode:event.currentTarget.value as 'broadcast'|'assign'})} disabled={operationBusy} aria-label={ct('action')} class="ml-2 rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] px-2 py-1">
@@ -136,7 +137,7 @@
           {#each candidates as member (member.id)}
             <li class="space-y-1 text-[11px]">
               <label class="flex items-center gap-2"><input type="checkbox" checked={!!selected[member.id]} disabled={operationBusy || !eligible(member)} onchange={() => toggle(member)} aria-label={ct('selectMember', {name:member.name})} />
-                <span class="break-all">{member.name}</span><span class="text-[var(--rg-fg-muted)]">{member.online === true ? ct('online') : ct('offline')}{!eligible(member) ? ` · ${ct('noBinding')}` : ''}</span>
+                <span class="break-all">{member.name}{#if member.workspaceName}<small class="block text-[var(--rg-fg-muted)]" title={member.paneId}>{member.workspaceName}{member.paneId ? ` · ${member.paneId.slice(0,8)}` : ''}</small>{/if}</span><span class="text-[var(--rg-fg-muted)]">{member.online === true ? ct('online') : ct('offline')}{!eligible(member) ? ` · ${ct('noBinding')}` : ''}</span>
               </label>
               {#if mode === 'assign' && selected[member.id]}<textarea rows="2" value={objectives[member.id] ?? ''} oninput={event => dispatch.edit({objectives:{...objectives,[member.id]:event.currentTarget.value}})} disabled={operationBusy} aria-label={ct('memberTask', {name:member.name})} placeholder={ct('memberObjective')} class="w-full rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] p-2"></textarea>{/if}
             </li>
@@ -203,3 +204,13 @@
   {/each}
   {#if displayed.length}<p class="text-[10px] text-[var(--rg-fg-muted)]">{ct('recentDispatches')}</p>{/if}
 </section>
+
+<style>
+  .compact{border-top:0;padding-top:0}
+  .compact>details>summary{min-height:44px;display:flex;align-items:center;padding:8px 12px;box-sizing:border-box;border:1px solid var(--rg-accent);border-radius:5px;background:color-mix(in srgb,var(--rg-accent) 10%,var(--rg-surface));font-size:12px;font-weight:600}
+  .compact :global(label:has(input[type=checkbox])){min-height:44px;gap:10px;flex-wrap:wrap}
+  .compact :global(input[type=checkbox]){width:18px;height:18px;flex-shrink:0}
+  .compact :global(select),.compact :global(button){min-height:44px;max-width:100%;white-space:normal}
+  .compact :global(textarea){box-sizing:border-box;font-size:13px}
+  .compact :global(button:focus-visible),.compact :global(summary:focus-visible){outline:2px solid var(--rg-accent);outline-offset:2px}
+</style>

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "c89c5485-e39f-48c5-9e0b-0652e66b083e",
+  "at": "2026-11-16T04:36:56.159Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-124",
+  "data": {
+    "changeId": "CHG-124",
+    "specHash": "b310e739f4a2b95165727d68249cc12eda6656ec2ee737162f2882d5ba025c9d",
+    "approvedAt": "2026-11-16T04:36:56.156Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "继续落实已批准的受限工作区入口边界；纳入 CloudAuthScreen 传递真实共享作用域标识。",
+    "attributionVerified": false
+  }
+}

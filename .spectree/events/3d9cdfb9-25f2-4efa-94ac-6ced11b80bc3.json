@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "3d9cdfb9-25f2-4efa-94ac-6ced11b80bc3",
+  "at": "2026-11-16T03:59:15.706Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-124",
+  "data": {
+    "title": "修复 Remote 目录作用域、Cloud 分屏切换与 Commune 导航",
+    "implementation": "REQUIRED"
+  }
+}

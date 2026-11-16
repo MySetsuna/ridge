@@ -121,6 +121,7 @@ const defaultCloudRemoteBridge: CloudRemoteBridge = {
 };
 
 export class CloudRemoteConnection implements RemoteLink {
+  readonly workspaceShared: boolean;
   private readonly handle: CloudControllerHandle;
   private readonly bridge: CloudRemoteBridge;
   private readonly fixedAuthorized: boolean;
@@ -186,11 +187,12 @@ export class CloudRemoteConnection implements RemoteLink {
   constructor(
     handle: CloudControllerHandle,
     bridgeInstance: CloudRemoteBridge = defaultCloudRemoteBridge,
-    options: { fixedAuthorized?: boolean } = {},
+    options: { fixedAuthorized?: boolean; workspaceShared?: boolean } = {},
   ) {
     this.handle = handle;
     this.bridge = bridgeInstance;
-    this.fixedAuthorized = options.fixedAuthorized === true;
+    this.workspaceShared = options.workspaceShared ?? options.fixedAuthorized ?? false;
+    this.fixedAuthorized = options.fixedAuthorized === true || this.workspaceShared;
     this.paneScheduler = new PaneRpcScheduler(
       {
         request: <T = unknown>(method: string, params?: unknown, rpcOptions?: RpcRequestOptions) => {
@@ -276,6 +278,7 @@ export class CloudRemoteConnection implements RemoteLink {
 
   private _unsubscribePaneStream(pane: PaneRef): void {
     const key = paneRefKey(pane);
+    const activationId = this.terminalActivations.get(key);
     this.subscribing.delete(key);
     const timer = this.subscribeRetryTimers.get(key);
     if (timer) clearTimeout(timer);
@@ -288,8 +291,8 @@ export class CloudRemoteConnection implements RemoteLink {
     if (this.pendingActivePromotion && paneRefKey(this.pendingActivePromotion) === key) {
       this.pendingActivePromotion = null;
     }
-    this.handle.adapter.sendControl({
-      jsonrpc: '2.0', method: 'unsubscribe-pane', params: pane,
+    if (activationId !== undefined) this.handle.adapter.sendControl({
+      jsonrpc: '2.0', method: 'unsubscribe-pane', params: { ...pane, activationId },
     });
   }
 

@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "id": "53115828-d527-4170-9acf-bb239099f832",
+  "at": "2026-11-16T04:02:45.064Z",
+  "type": "applied",
+  "source": "local_operation",
+  "changeId": "CHG-124",
+  "data": {
+    "added": [
+      "L4-CLOUD-PANE-SUBSCRIPTION-CONTINUITY",
+      "L4-COMMUNE-MOBILE-GROUP-NAVIGATION",
+      "L4-REMOTE-ACTIVE-PANE-CWD"
+    ],
+    "changed": [],
+    "retiring": [],
+    "patch": {
+      "changeId": "CHG-124",
+      "nodes": [
+        {
+          "id": "L4-REMOTE-ACTIVE-PANE-CWD",
+          "level": "L4",
+          "title": "Remote 当前分屏目录投影",
+          "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+          "codeTargets": [
+            "src/remote/MainApp.svelte"
+          ],
+          "testTargets": [
+            "src/remote/MainApp.test.ts",
+            "scripts/remote-cwd-acceptance.mjs"
+          ],
+          "dependsOn": [
+            "L3-RUNTIME-LIVE-CWD-PUSH"
+          ],
+          "body": "# Remote 当前分屏目录投影\n\n## 范围\n\n约束 Remote 手机与桌面布局中当前分屏的页头目录，以及文件、Git 和搜索侧栏的目录作用域。目录来源为 Runtime 的分屏快照与同一通道的元数据事件。\n\n## 行为\n\n当前目录始终对应当前 workspaceId 和 paneId。切换到没有目录的分屏，或切换时当前分屏快照尚未到达，清空上一个分屏的目录。当前分屏目录就绪后，页头与侧栏采用同一值。目录未知时，文件、Git、搜索均不得以先前分屏的目录发请求或显示先前目录结果。\n\n元数据按 workspaceId 和 paneId 更新对应分屏的缓存。其他分屏及旧工作区的迟到事件仅更新原作用域。当前分屏返回有效新目录时，页头实时更新。用户切回分屏后显示其最新确认目录。\n\n独立终端与其运行状态沿用现有生命周期。创建分屏、查询目录和切换作用域各自使用现有 Runtime 边界。\n\n## 满足条件\n\n真实生产 Remote 页面连接同一个隔离 Runtime，工作区含两个真实 shell 和一个无 cwd 的未启动分屏。第一分屏执行 cd 后，页头在无需浏览器刷新的情况下显示新目录。切到第二分屏时显示第二分屏目录。切到无目录分屏后清空页头目录。在上一分屏目录预置独有文件，确认连接仍在线，三个侧栏均不沿用原目录，文件面板也不能返回该文件。切回第一分屏后恢复其最新目录。\n\n切换工作区并延迟投递旧作用域的元数据，核对页头及文件、Git、搜索侧栏作用域均对应当前分屏。该行为分别通过 LAN HTTPS/WSS 与 Cloud WebRTC/E2EE 的生产页面验收，Cloud 账号与信令可使用隔离服务，证据注明环境边界。\n\n现有 MainApp 测试记录作用域与目录投影的回归，生产浏览器验收记录真实 shell、切换和迟到元数据。执行 npm test、npm run lint、npm run typecheck、SpecTree verify 和 complete。\n",
+          "acceptanceChecks": [
+            {
+              "id": "remote-current-pane-cwd",
+              "command": [
+                "pnpm",
+                "exec",
+                "vitest",
+                "run",
+                "src/remote/MainApp.test.ts"
+              ],
+              "description": "当前分屏无 cwd 时清空，跨工作区和迟到元数据维持作用域隔离"
+            },
+            {
+              "id": "remote-current-pane-cwd-browser",
+              "command": [
+                "node",
+                "scripts/remote-cwd-acceptance.mjs"
+              ],
+              "description": "生产页面经隔离 LAN 与 Cloud 连接真实 shell，验证 cd、无 cwd 分屏的页头与文件作用域及切回原分屏"
+            }
+          ]
+        },
+        {
+          "id": "L4-CLOUD-PANE-SUBSCRIPTION-CONTINUITY",
+          "level": "L4",
+          "title": "Cloud 分屏订阅与控制连接连续性",
+          "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+          "codeTargets": [
+            "src/remote/lib/cloudRemote.ts",
+            "packages/ridge-kernel/src/cloud/connection.rs"
+          ],
+          "testTargets": [
+            "src/remote/lib/cloudRemote.test.ts",
+            "scripts/kernel-cloud-owner-acceptance.mjs"
+          ],
+          "dependsOn": [
+            "L4-REMOTE-WORKSPACE-PANE-CONTINUITY"
+          ],
+          "body": "# Cloud 分屏订阅与控制连接连续性\n\n## 范围\n\n约束 Cloud 已鉴权连接上的分屏切换及终端输出订阅。以现有 workspaceId、paneId 和 activationId 定位一次绑定。分屏切换仅影响终端流，控制连接及其他业务请求继续运行。\n\n## 行为\n\n退订取旧分屏的激活标识，再清理客户端对应状态。无有效激活标识时跳过退订。Kernel 按当前连接、分屏及激活标识核对目标，重复或过期退订不影响已激活的新流。缺少标识、错误归属、目标已不存在，或已登记的分屏尚无可订阅的 PTY 时，将失败限制在对应分屏操作。未启动的分屏继续显示其现有状态，不能因此创建终端或关闭控制连接。带请求 ID 时返回相应错误，通知不产生响应。继续执行现有的鉴权、工作区授权及激活校验。真实连接断开仍按现行 Cloud 重连契约处理。\n\n## 验收\n\n生产 Remote 通过真实 WebRTC/E2EE 连接隔离 Kernel，打开两个独立真实 shell。连续切换并切回原分屏，验证双方继续显示输出并接收正确作用域的输入，原 shell 进程仍在，连接无重连或重复鉴权，Files 侧栏能打开。用客户端回归核对退订发出的旧激活标识和未建立绑定时不发送。在同一工作区另加入已登记、无运行 PTY 的分屏。切入和切回时控制连接持续在线，无重复鉴权或隐式启动。用真实连接验证重复、迟到、缺少激活标识与错误归属的退订均不关闭控制通道，也不取消新绑定，授权之外的分屏仍不可访问。按实际环境记录信令、账号、手机与公网覆盖。执行 npm test、npm run lint、npm run typecheck 及 SpecTree 门禁。",
+          "acceptanceChecks": [
+            {
+              "id": "cloud-pane-subscription-activation",
+              "command": [
+                "pnpm",
+                "exec",
+                "vitest",
+                "run",
+                "src/remote/lib/cloudRemote.test.ts"
+              ],
+              "description": "退订携带原分屏的激活标识，无有效标识则跳过，覆盖分屏切换与旧回调"
+            },
+            {
+              "id": "cloud-pane-switch-browser",
+              "command": [
+                "node",
+                "scripts/kernel-cloud-owner-acceptance.mjs"
+              ],
+              "description": "真实浏览器与 Kernel 经 WebRTC/E2EE 切换两个 shell 和一个无 PTY 分屏，验证控制连接、输入连续性及旧退订作用域"
+            }
+          ]
+        },
+        {
+          "id": "L4-COMMUNE-MOBILE-GROUP-NAVIGATION",
+          "level": "L4",
+          "title": "手机 Commune 编组与派发导航",
+          "parent": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+          "codeTargets": [
+            "src/remote/lib/GlobalCommuneRoster.svelte",
+            "src/remote/lib/CommuneWorkspaceRoster.svelte",
+            "src/remote/lib/CommuneMemberMessage.svelte",
+            "src/remote/lib/RemoteSidebar.svelte",
+            "src/lib/teammate/HostCommuneGroups.svelte",
+            "src/lib/teammate/CommuneGroupTasks.svelte",
+            "src/lib/teammate/communeVisual.css",
+            "src/lib/teammate/communeUiText.ts",
+            "src/lib/i18n/messages/commune.ts"
+          ],
+          "testTargets": [
+            "scripts/commune-global-ui-acceptance.mjs"
+          ],
+          "dependsOn": [
+            "L4-COMMUNE-GROUP-RESPONSIVE-STATE",
+            "L4-COMMUNE-GROUP-USABILITY"
+          ],
+          "body": "# 手机 Commune 编组与派发导航\n\n## 范围\n\n重排手机 Remote 的 Commune 入口，覆盖成员、编组、历史。沿用桌面组件和现有主题令牌。接入身份、权限、组文档、组 revision 与派发意图仍由现行 Runtime 契约管理。\n\n## 行为\n\n拥有主机组视图的手机用户从 Commune 首屏直接进入「编组」。进入后显示组、成员摘要和组派发入口。组卡将「派发任务」置于成员详情之前，保留既有的选人、填写目标、确认和结果反馈。创建、加成员、移组、改名和解散维持可达，管理动作在视觉上次于派发；解散仍需确认。受限工作区遵循已有授权和入口可见性。\n\n成员与组内选人优先呈现可读的工作区或终端名称，让同名 Agent 可区分。完整路径和原标识可按现行权限查看。使用宿主主题色，明确选中、待接入、运行、待审批和失败状态。手机侧栏的标签与关闭按钮采用至少 44×44 CSS px 的有效触控区；固定导航有连续背景且不遮挡内容。用紧凑标签、边界和状态层次保持与终端界面一致。\n\n成员和组的操作使用已有同步与重试链路。切换视图保留未确认派发及新草稿。已有任务、审批和历史继续按原会话归属呈现。\n\n## 验收\n\n用含两个同名、不同工作区成员和一个已有组的隔离 Runtime，在 320 和 390 CSS px 粗指针视口验证中英文。打开 Commune 后无需滚动成员列表即可进入编组，选组后首屏可见「派发任务」。核对同名成员来源、键盘焦点、侧栏触控尺寸、滚动和安全区，无横向溢出。回归从终端先编组再接入、无成员、失联、组派发、丢回执后重试及受限工作区可见性。保留桌面布局及现有测试，执行 npm test、npm run lint、npm run typecheck 与 SpecTree 门禁。",
+          "acceptanceChecks": [
+            {
+              "id": "commune-mobile-group-navigation",
+              "command": [
+                "node",
+                "scripts/commune-global-ui-acceptance.mjs"
+              ],
+              "description": "真实隔离 Kernel 上的生产组件，验证首屏到编组与派发的路径、同名成员区分、触控区、状态和既有权限"
+            }
+          ]
+        }
+      ],
+      "remove": []
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "id": "ae961d7b-a815-49cc-bf26-4af6b2dc2a63",
+  "at": "2026-11-16T04:40:41.761Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-124",
+  "buildId": "BUILD-425250fce7fa",
+  "data": {
+    "previousBuildId": "BUILD-bd131b3c75a6",
+    "testEvidence": {
+      "buildId": "BUILD-bd131b3c75a6",
+      "workspaceHash": "b797fbbc9c16d292d965adb615054abe6f8a4e84f44a28a11c7d371c675f0f0a",
+      "verifiedAt": "2026-11-16T04:40:19.454Z",
+      "eventId": "061fa920-68d4-44b3-ac53-b647ceb681f8"
+    },
+    "absorbed": [
+      "changes/CHG-124.md",
+      "packages/ridge-kernel/src/cloud/connection.rs",
+      "scripts/commune-global-ui-acceptance.mjs",
+      "scripts/kernel-cloud-owner-acceptance.mjs",
+      "scripts/remote-cwd-acceptance.mjs",
+      "specs/l4-cloud-pane-subscription-continuity.md",
+      "specs/l4-commune-mobile-group-navigation.md",
+      "specs/l4-remote-active-pane-cwd.md",
+      "src/lib/i18n/messages/commune.ts",
+      "src/lib/teammate/CommuneGroupTasks.svelte",
+      "src/lib/teammate/HostCommuneGroups.svelte",
+      "src/lib/teammate/communeUiText.ts",
+      "src/lib/teammate/communeVisual.css",
+      "src/remote/CloudAuthScreen.svelte",
+      "src/remote/MainApp.svelte",
+      "src/remote/MainApp.test.ts",
+      "src/remote/lib/CommuneWorkspaceRoster.svelte",
+      "src/remote/lib/GlobalCommuneRoster.svelte",
+      "src/remote/lib/RemoteSidebar.svelte",
+      "src/remote/lib/cloudRemote.test.ts",
+      "src/remote/lib/cloudRemote.ts"
+    ],
+    "activated": [
+      "L4-CLOUD-PANE-SUBSCRIPTION-CONTINUITY",
+      "L4-COMMUNE-MOBILE-GROUP-NAVIGATION",
+      "L4-REMOTE-ACTIVE-PANE-CWD"
+    ],
+    "archived": []
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "buildId": "BUILD-7402f201bf7d",
+  "changeId": "CHG-124",
+  "specHash": "c03943378408ba5bcd4e4e97a87d6eb8982c96df77a9868218fc08d57de90d36",
+  "workspaceHash": "6b2ace836676a367e842dd95dfad1de330053021c8d013b1430076f2d37df8f5",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "FAIL",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-CLOUD-PANE-SUBSCRIPTION-CONTINUITY",
+      "checkId": "cloud-pane-subscription-activation",
+      "command": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/remote/lib/cloudRemote.test.ts"
+      ],
+      "description": "退订携带原分屏的激活标识，无有效标识则跳过，覆盖分屏切换与旧回调",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-CLOUD-PANE-SUBSCRIPTION-CONTINUITY",
+      "checkId": "cloud-pane-switch-browser",
+      "command": [
+        "node",
+        "scripts/kernel-cloud-owner-acceptance.mjs"
+      ],
+      "description": "真实浏览器与 Kernel 经 WebRTC/E2EE 切换两个 shell 和一个无 PTY 分屏，验证控制连接、输入连续性及旧退订作用域",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-MOBILE-GROUP-NAVIGATION",
+      "checkId": "commune-mobile-group-navigation",
+      "command": [
+        "node",
+        "scripts/commune-global-ui-acceptance.mjs"
+      ],
+      "description": "真实隔离 Kernel 上的生产组件，验证首屏到编组与派发的路径、同名成员区分、触控区、状态和既有权限",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-REMOTE-ACTIVE-PANE-CWD",
+      "checkId": "remote-current-pane-cwd",
+      "command": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/remote/MainApp.test.ts"
+      ],
+      "description": "当前分屏无 cwd 时清空，跨工作区和迟到元数据维持作用域隔离",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-REMOTE-ACTIVE-PANE-CWD",
+      "checkId": "remote-current-pane-cwd-browser",
+      "command": [
+        "node",
+        "scripts/remote-cwd-acceptance.mjs"
+      ],
+      "description": "生产页面经隔离 LAN 与 Cloud 连接真实 shell，验证 cd、无 cwd 分屏的页头与文件作用域及切回原分屏",
+      "status": "FAIL",
+      "exitCode": 1
+    }
+  ],
+  "valid": false,
+  "verifiedAt": "2026-11-16T04:35:44.959Z",
+  "diagnostics": [
+    {
+      "code": "ACCEPTANCE_E_FAILED",
+      "severity": "ERROR",
+      "message": "remote-current-pane-cwd-browser: exited with 1",
+      "nodeId": "L4-REMOTE-ACTIVE-PANE-CWD"
+    }
+  ],
+  "eventId": "2c6bedea-2100-404d-9187-28c729216d52"
+}

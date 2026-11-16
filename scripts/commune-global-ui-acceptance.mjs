@@ -40,7 +40,7 @@ try {
     const descriptorPath = path.join(cwd, 'endpoint.json'); const paneId = crypto.randomUUID();
     await call('POST', '/v1/domain/ptys', { workspace_id: workspaceId, pty_id: paneId, program: fixture,
       args: ['--exact', 'existing_protocol_endpoint_fixture', '--ignored'], cwd,
-      env: { RIDGE_COMMUNE_FIXTURE: descriptorPath, RIDGE_COMMUNE_LABEL: name }, role: 'shell', cols: 80, rows: 24 });
+      env: { RIDGE_COMMUNE_FIXTURE: descriptorPath, RIDGE_COMMUNE_LABEL: 'Same Agent' }, role: 'shell', cols: 80, rows: 24 });
     await until(() => fs.existsSync(descriptorPath));
     const descriptor = JSON.parse(fs.readFileSync(descriptorPath));
     const registered = await call('POST', '/v1/domain/commune/register', { workspaceId, paneId, process: descriptor.process,
@@ -67,7 +67,7 @@ try {
   const grant = await call('POST', '/v1/local/clients', { deviceId: 'owned-global-commune', origin: devUrl });
   browser = await chromium.launch({ headless: true }); page = await browser.newPage({ viewport: { width: 1100, height: 950 } });
   const pageErrors = []; page.on('pageerror', error => pageErrors.push(error.message));
-  await page.route('**/__global_commune', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><body style="height:100vh"><main id="component" style="height:100%"></main></body>' }));
+  await page.route('**/__global_commune', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><body style="height:100vh;margin:0;font-family:system-ui,sans-serif"><main id="component" style="height:100%"></main></body>' }));
   await page.exposeFunction('fixtureGrant', () => grant); await page.goto(devUrl + '/__global_commune');
   for (let boot = 0; boot < 3; boot++) { try {
   await page.evaluate(async workspaces => {
@@ -233,7 +233,7 @@ try {
       tryTrustGrant: async () => true, verifyTotp: async () => true, disconnect() {} },
       { invoke: (command, args) => command === 'read_agent_recent_replies' && args.workspaceId === current.failHistorySource
           ? Promise.reject(Error('owned source temporarily unavailable')) : current.invoke(command, args),
-        listen: current.listen, hasCapability: () => true, onCapabilitiesChanged: () => () => {} }, { fixedAuthorized: true });
+        listen: current.listen, hasCapability: () => true, onCapabilitiesChanged: () => () => {} });
     await link.init(); current.link = link;
     current.app = current.client.createClassComponent({ component: Panel, target: document.getElementById('component'), props: { ws: link, workspaces: current.workspaces, workspaceId: current.workspaces[0].id } });
   });
@@ -242,8 +242,28 @@ try {
   await page.evaluate(() => window.globalCommune.app.$set({ workspaceId: window.globalCommune.workspaces[1].id }));
   await expect(page.getByText('existing history', { exact: true })).toHaveCount(2);
   await expect(page.getByTestId('remote-terminal-agent')).toHaveCount(1);
+  await page.getByRole('navigation', {name: "Agent's Commune"}).getByRole('button', {name: /^(Groups|编组)$/}).click();
   await expect(page.getByTestId('host-commune-groups')).toHaveCount(1);
   await expect(page.getByTestId('host-commune-group')).toHaveCount(1);
+  const mobileNavigation=page.getByRole('navigation',{name:"Agent's Commune"});
+  for (const language of ['zh','en']) {
+    await page.evaluate(async language=>{const {setLocale}=await import('/src/lib/i18n/locale.ts');setLocale(language);},language);
+    for (const width of [320,390]) {
+      await page.setViewportSize({width,height:844});
+      const dispatchEntry=page.getByTestId('host-commune-group').first().getByTestId('commune-group-tasks').locator('summary').first();
+      await expect(dispatchEntry).toBeVisible();
+      const bounds=await dispatchEntry.boundingBox();
+      assert.ok(bounds.y+bounds.height<844,'dispatch entry must appear without scrolling group members');
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'mobile group navigation must fit');
+      await dispatchEntry.click();
+      await expect(page.getByTestId('host-commune-group').first().getByTestId('commune-group-tasks')).toContainText('Global one');
+      await dispatchEntry.click();
+      for(const button of await mobileNavigation.getByRole('button').all()) assert.ok((await button.boundingBox()).height>=44);
+      await page.screenshot({path:path.resolve(evidenceDir,`navigation-${language}-${width}.png`)});
+    }
+  }
+  await page.evaluate(async()=>{const {setLocale}=await import('/src/lib/i18n/locale.ts');setLocale('zh');});
+  evidence.checks.push('Groups has a direct navigation tab; dispatch precedes member management at 320/390px in Chinese and English, with readable member workspace sources and 44px navigation targets');
   await page.getByTestId('host-commune-groups').getByTestId('commune-create-group').click();
   await expect(page.getByTestId('commune-group-candidate')).toHaveCount(1);
   await expect(page.getByTestId('commune-group-candidate').getByRole('button',{name:/定位终端|Locate terminal/})).toBeVisible();
@@ -261,6 +281,9 @@ try {
   await page.setViewportSize({width:412,height:915});
   evidence.checks.push('Chinese and English group controls fit narrow screens, retain focus and expose touch targets at least 44px high');
   await page.getByTestId('host-commune-groups').getByRole('textbox',{name:/组名|Group name/i}).fill('Terminal before connection');
+  await mobileNavigation.getByRole('button',{name:/Members|成员/}).click();
+  await mobileNavigation.getByRole('button',{name:/^(Groups|编组)$/}).click();
+  await expect(page.getByTestId('host-commune-groups').getByRole('textbox',{name:/组名|Group name/i})).toHaveValue('Terminal before connection');
   await page.getByTestId('commune-group-candidate').getByRole('checkbox').check();
   await page.getByTestId('host-commune-groups').locator('.builder').getByRole('button',{name:/^(Create group|创建编组)$/}).click();
   await expect(page.getByTestId('host-commune-group')).toHaveCount(2);
@@ -277,6 +300,7 @@ try {
   evidence.checks.push('Narrow Remote groups an unconnected terminal through its opaque reference, receives one stable member and disables structured dispatch');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth > innerWidth),false,'narrow Commune must fit its viewport');
   evidence.checks.push('Narrow Remote includes ordinary terminal candidate and the same one global group authority');
+  await page.getByRole('navigation', {name: "Agent's Commune"}).getByRole('button', {name: /Members|成员/}).click();
   await page.locator('.member-card .msg-input').first().fill('mobile-individual-once');
   await page.locator('.member-card .msg-row .send').first().click();
   const individualLog=path.join(root,workspaces[0].id,'prompt-log');
@@ -371,8 +395,18 @@ try {
   const wizard=page.getByRole('dialog');
   await wizard.getByLabel('选择连接文件').setInputFiles(terminalConnectionPath);
   await expect(wizard.getByLabel('会话预览')).toContainText(terminalDescriptor.sessionId);
-  await wizard.getByRole('button',{name:'连接',exact:true}).click();
+  // Windows may expose a new listener after the first ownership snapshot.
+  // Retry only this pre-registration failure through the same explicit UI action.
+  let ownershipRetries=0;
+  for(let attempt=0;attempt<4;attempt++) {
+    await wizard.getByRole('button',{name:'连接',exact:true}).click();
+    await expect.poll(async()=>await wizard.count()===0 || await wizard.getByRole('alert').count()>0,{timeout:10000}).toBe(true);
+    if(await wizard.count()===0) break;
+    await expect(wizard.getByRole('alert')).toContainText('protocol socket ownership is not yet observable');
+    ownershipRetries++;
+  }
   await expect(wizard).toHaveCount(0);
+  evidence.ownershipObservationRetries=ownershipRetries;
   await expect(page.getByTestId('commune-terminal-agent')).toHaveCount(1);
   await expect(page.getByTestId('commune-terminal-agent').getByRole('button',{name:/连接会话|Connect session/i})).toHaveCount(0);
   await expect(page.getByTestId('commune-terminal-agent').getByText('existing history',{exact:true})).toBeVisible();

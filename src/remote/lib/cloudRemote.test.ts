@@ -175,6 +175,13 @@ async function connected() {
 }
 
 describe('CloudRemoteConnection.init', () => {
+  it('retains workspace-share scope independently of fixed owner authorization', () => {
+    const shared = new CloudRemoteConnection(fakeHandle() as never, undefined, { workspaceShared: true });
+    const owner = new CloudRemoteConnection(fakeHandle() as never, undefined, { fixedAuthorized: true, workspaceShared: false });
+    expect(shared.workspaceShared).toBe(true);
+    expect(owner.workspaceShared).toBe(false);
+  });
+
   it('forwards quiet Commune membership and session updates and releases subscriptions', async () => {
     const conn = await connected();
     const seen: WsMessage[] = [];
@@ -376,6 +383,17 @@ describe('CloudRemoteConnection panes', () => {
     conn.disconnect();
   });
 
+  it('does not send an unsubscribe without a live activation', async () => {
+    const conn = await connected();
+    conn.activatePane(PANE, { activationId: 7 });
+    const next = { workspaceId: 'ws2', paneId: 'next' };
+    conn.activatePane(next, { activationId: 8 });
+    controlMock.mockClear();
+    handlers['pane-terminal-error']({ payload: { ...PANE, activationId: 7 } });
+    expect(controlMock).not.toHaveBeenCalled();
+    conn.disconnect();
+  });
+
   it('unsubscribes the old composite pane before activating its replacement', async () => {
     const conn = await connected();
     const next = { workspaceId: 'ws2', paneId: PANE.paneId };
@@ -383,7 +401,7 @@ describe('CloudRemoteConnection panes', () => {
     controlMock.mockClear();
     conn.activatePane(next, { activationId: 8 });
     expect(controlMock.mock.calls.map(([frame]) => [frame.method, frame.params])).toEqual([
-      ['unsubscribe-pane', PANE],
+      ['unsubscribe-pane', { ...PANE, activationId: 7 }],
       ['subscribe-pane', { ...next, active: true, activationId: 8 }],
     ]);
     conn.disconnect();

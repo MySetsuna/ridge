@@ -50,3 +50,7 @@ apps/
 
 # Machine-local runtime state.
 .claude/scheduled_tasks.lock
+
+# Generated WASM packages; source stays under each package src/.
+packages/ridge-term-font/pkg/
+packages/ridge-term-render/pkg/

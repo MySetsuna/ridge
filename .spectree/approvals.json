@@ -839,5 +839,17 @@
       "buildId": "BUILD-b4e6562315a8",
       "specHash": "165e21826dc3447dff6069061fdafd0bdcd1d92fffb35102518ca5f28d74d031"
     }
+  },
+  {
+    "changeId": "CHG-124",
+    "specHash": "4aba0a5dca7f33f70ef5cca6bfe753c90d36522e16ab2b0bf11e78b9bd763e62",
+    "approvedAt": "2026-11-16T04:40:41.743Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "继续落实已批准的受限工作区入口边界；纳入 CloudAuthScreen 传递真实共享作用域标识。",
+    "derivedFrom": {
+      "buildId": "BUILD-bd131b3c75a6",
+      "specHash": "b310e739f4a2b95165727d68249cc12eda6656ec2ee737162f2882d5ba025c9d"
+    }
   }
 ]

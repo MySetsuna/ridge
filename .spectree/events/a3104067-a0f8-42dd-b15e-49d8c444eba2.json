@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "a3104067-a0f8-42dd-b15e-49d8c444eba2",
+  "at": "2026-11-16T04:02:56.493Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-124",
+  "data": {
+    "changeId": "CHG-124",
+    "specHash": "3d13e0a4cc6cdf5002c40986d671514615f982818b7fce86d2aab83303a96103",
+    "approvedAt": "2026-11-16T04:02:56.489Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "用户已全部授权，最新明确指示跳过 Grok 验证并实施目录与界面提案；本次合并既有三个草案，不将跳过记为通过。",
+    "attributionVerified": false
+  }
+}

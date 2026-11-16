@@ -1,8 +1,7 @@
 /* Shared desktop and Remote Commune visual system. Theme surfaces remain host-owned. */
 .rg-commune {
   container: commune / inline-size;
-  --commune-brand: color-mix(in oklab, #2f5d4e 58%, var(--rg-fg));
-  --rg-accent: var(--commune-brand);
+  --commune-brand: var(--rg-accent);
 }
 .rg-commune > header {
   background: color-mix(in srgb, var(--rg-surface) 72%, var(--rg-bg));

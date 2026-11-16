@@ -1,0 +1,184 @@
+{
+  "version": 1,
+  "id": "2c6bedea-2100-404d-9187-28c729216d52",
+  "at": "2026-11-16T04:35:44.960Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-124",
+  "buildId": "BUILD-7402f201bf7d",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-7402f201bf7d",
+    "changeId": "CHG-124",
+    "specHash": "c03943378408ba5bcd4e4e97a87d6eb8982c96df77a9868218fc08d57de90d36",
+    "workspaceHash": "6b2ace836676a367e842dd95dfad1de330053021c8d013b1430076f2d37df8f5",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "FAIL",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-CLOUD-PANE-SUBSCRIPTION-CONTINUITY",
+        "checkId": "cloud-pane-subscription-activation",
+        "command": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "src/remote/lib/cloudRemote.test.ts"
+        ],
+        "description": "退订携带原分屏的激活标识，无有效标识则跳过，覆盖分屏切换与旧回调",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-CLOUD-PANE-SUBSCRIPTION-CONTINUITY",
+        "checkId": "cloud-pane-switch-browser",
+        "command": [
+          "node",
+          "scripts/kernel-cloud-owner-acceptance.mjs"
+        ],
+        "description": "真实浏览器与 Kernel 经 WebRTC/E2EE 切换两个 shell 和一个无 PTY 分屏，验证控制连接、输入连续性及旧退订作用域",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-COMMUNE-MOBILE-GROUP-NAVIGATION",
+        "checkId": "commune-mobile-group-navigation",
+        "command": [
+          "node",
+          "scripts/commune-global-ui-acceptance.mjs"
+        ],
+        "description": "真实隔离 Kernel 上的生产组件，验证首屏到编组与派发的路径、同名成员区分、触控区、状态和既有权限",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-REMOTE-ACTIVE-PANE-CWD",
+        "checkId": "remote-current-pane-cwd",
+        "command": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "src/remote/MainApp.test.ts"
+        ],
+        "description": "当前分屏无 cwd 时清空，跨工作区和迟到元数据维持作用域隔离",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-REMOTE-ACTIVE-PANE-CWD",
+        "checkId": "remote-current-pane-cwd-browser",
+        "command": [
+          "node",
+          "scripts/remote-cwd-acceptance.mjs"
+        ],
+        "description": "生产页面经隔离 LAN 与 Cloud 连接真实 shell，验证 cd、无 cwd 分屏的页头与文件作用域及切回原分屏",
+        "status": "FAIL",
+        "exitCode": 1
+      }
+    ],
+    "valid": false,
+    "verifiedAt": "2026-11-16T04:35:44.959Z",
+    "diagnostics": [
+      {
+        "code": "ACCEPTANCE_E_FAILED",
+        "severity": "ERROR",
+        "message": "remote-current-pane-cwd-browser: exited with 1",
+        "nodeId": "L4-REMOTE-ACTIVE-PANE-CWD"
+      }
+    ],
+    "fileChanges": [
+      {
+        "path": "packages/ridge-kernel/src/cloud/connection.rs",
+        "before": "eb652f50563886f85b457cca0ef57646ab9e2e56410a74ca878be8bfb7236d53",
+        "after": "5ae19f3edae1080168a536dc7163ae4f0242a003f7b7bd4d7177f535dd892379"
+      },
+      {
+        "path": "scripts/commune-global-ui-acceptance.mjs",
+        "before": "27f1bb87f9d02ef51816b83bbbac86a63f60effba7270ff87553c25a24dcb3a8",
+        "after": "5be0078e73b372229ca4cebac4644634d08a5d75578700bf3ea264f7a6004c74"
+      },
+      {
+        "path": "scripts/kernel-cloud-owner-acceptance.mjs",
+        "before": "c9e3fdcc783db1f07140d651681c6cbf0c462833e651f45aef5e6deef26fa185",
+        "after": "798564b15bf579e40dbf6c17f696e8ef1fd694e056dea753a6b0c1802578b6bf"
+      },
+      {
+        "path": "scripts/remote-cwd-acceptance.mjs",
+        "before": null,
+        "after": "8c9d06c03b2041d41307759e2df1d19a366ac08f988b2c6a1ea53fc2c3e5845b"
+      },
+      {
+        "path": "specs/l4-commune-mobile-group-navigation.md",
+        "before": "caeae4d802429f51d8a01258c087ae64c46a9532609ed36ed399596a3b70eb80",
+        "after": "bda699b361d29d369043786a129287d44ff858d0cb62afd5919e011f070228c3"
+      },
+      {
+        "path": "src/lib/i18n/messages/commune.ts",
+        "before": "acaf9f149861d5e3c2356911b16986ad12699745ecf53ef4015600a969d0060f",
+        "after": "005adcf9044f325120c7d2af900fbfbd6704e1c2b3917318038c4f1ff0d814fe"
+      },
+      {
+        "path": "src/lib/teammate/CommuneGroupTasks.svelte",
+        "before": "93876530087dc6d7b83d8496359c1caa4ff9537375cad54e297de8f73767900a",
+        "after": "0d27f0a9af1853f1f428924d78fcb7eeeecc53fe61807634c2860df25aac270f"
+      },
+      {
+        "path": "src/lib/teammate/HostCommuneGroups.svelte",
+        "before": "90124d2dd8bc69bb1e58c863b11afb4f77d851c568b31eff4b4e65f7f088bdfe",
+        "after": "7151e4b5120819271c29a59416b5ac50adc80c5ad42c3a7e72e10ed831dd9dfa"
+      },
+      {
+        "path": "src/lib/teammate/communeUiText.ts",
+        "before": "ef30aa63c4d356145b9f9a7c6f7270fa378d3369f3b7797fa4a497f84008db63",
+        "after": "6224c10c4a52e71176639d3d3c643a7db7c9c0c28ad8fa638ff73dd695b8f8b8"
+      },
+      {
+        "path": "src/lib/teammate/communeVisual.css",
+        "before": "4c977a6368f846e46f4d69553a88f67195d0202ff6a592f52838dfcb2793ff0f",
+        "after": "07c87f36a8f88438d1348f9b8d8b1a0b726e82c167d27406b95c8275d7724c22"
+      },
+      {
+        "path": "src/remote/MainApp.svelte",
+        "before": "4f68ca8395def253a6be0b29b30e1abdbdadb811a6a491a7237effe896dbe2b6",
+        "after": "774fff882a93685992c68dcf4fee46778ec2775f4cd6e58c9f5f83a906c38d3a"
+      },
+      {
+        "path": "src/remote/MainApp.test.ts",
+        "before": "c0db26dd9d890636a1b355075fdfbfe8ae171952d429fd6df994d99383e408fa",
+        "after": "7e1eeb8e702a7b49279440fdd3e00477f9ac24a6af3c86011fdc6b5cf10a3f82"
+      },
+      {
+        "path": "src/remote/lib/CommuneWorkspaceRoster.svelte",
+        "before": "e55924d545b427016aeff0b4c6bf27b67fb103764641e60344b808ecfe034f62",
+        "after": "567695dfb690861a81ca75ed3bf343ae99694b91c9d058cd6d1bc223d619e046"
+      },
+      {
+        "path": "src/remote/lib/GlobalCommuneRoster.svelte",
+        "before": "8b4a932967802bd0924bb4a96cbbd73ce6942ec66bcc420fb18bb4496dba1ab4",
+        "after": "f87e2b317557a10b2d46abceac6b897889008754cb98032e2225d4de7c2625b8"
+      },
+      {
+        "path": "src/remote/lib/RemoteSidebar.svelte",
+        "before": "787d4fca877ed1e204baaf8a4f1ce6f570cffb107c3f1784f6fe8a8e5f790a0e",
+        "after": "0313dec9ecad4701ca9ce6d76c3d258dd2cbbd5214bda7d20fd35c72a0409347"
+      },
+      {
+        "path": "src/remote/lib/cloudRemote.test.ts",
+        "before": "fbac3f0a7b2286061ba92b50bd9148e4d3dc00fda7eb9b26edcc05dbc1140392",
+        "after": "7ab15287270ef240bc48f1b27898ee48c2ed6ecddda3f5463804848e079da479"
+      },
+      {
+        "path": "src/remote/lib/cloudRemote.ts",
+        "before": "9c392bfc72555a105b58fd3d4559606f47370f4a51ad3f1c21d53eeab2376bd7",
+        "after": "041b33e3af316f98080a4be05e16f7daf4b0f3e166503e8632c3c4b41de24ad5"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/2c6bedea-2100-404d-9187-28c729216d52.log"
+  }
+}

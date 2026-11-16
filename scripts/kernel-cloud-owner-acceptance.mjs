@@ -110,7 +110,19 @@ try {
   const listed=await second.evaluate(()=>window.client.rpc('list_workspaces'));assert.ok(listed.result.some(entry=>entry.id===workspace));
   await second.evaluate(args=>window.client.subscribe(args),{workspaceId:workspace,paneId:pane,activationId:17});
   await second.waitForFunction(()=>window.client.frames>0);
-  const snapshot=await second.evaluate(args=>window.client.rpc('get_terminal_snapshot',args),{workspaceId:workspace,paneId:pane,activationId:17});assert.equal(typeof snapshot.result,'string');
+  // Invalid per-pane operations must not retire a healthy encrypted control session.
+  for (const method of ['subscribe-pane','unsubscribe-pane']) {
+    for (const args of [{workspaceId:workspace,paneId:pane}, {workspaceId:'invalid',paneId:pane,activationId:1}, {workspaceId:workspace,paneId:randomUUID(),activationId:1}]) {
+      const denied=await second.evaluate(({method,args})=>window.client.rpc(method,args),{method,args});
+      assert.ok(denied.error,`${method} must reject invalid binding`);
+      assert.ok((await second.evaluate(()=>window.client.rpc('list_workspaces'))).result);
+    }
+  }
+  for(const activationId of [17,18]) assert.equal((await second.evaluate(args=>window.client.rpc('subscribe-pane',args),{workspaceId:workspace,paneId:pane,activationId})).error,undefined);
+  for(let count=0;count<2;count++) assert.equal((await second.evaluate(args=>window.client.rpc('unsubscribe-pane',args),{workspaceId:workspace,paneId:pane,activationId:17})).error,undefined);
+  const retained=await second.evaluate(args=>window.client.rpc('get_terminal_snapshot',args),{workspaceId:workspace,paneId:pane,activationId:18});
+  assert.equal(typeof retained.result,'string','old and duplicate unsubscribe must retain the latest activation');
+  const snapshot=await second.evaluate(args=>window.client.rpc('get_terminal_snapshot',args),{workspaceId:workspace,paneId:pane,activationId:18});assert.equal(typeof snapshot.result,'string');
   await first.evaluate(args=>window.client.subscribe(args),{workspaceId:workspace,paneId:foreign,activationId:21});
   await first.waitForFunction(()=>window.client.frames>0);
   const encoded=await first.evaluate(args=>window.client.rpc('get_terminal_snapshot',args),{workspaceId:workspace,paneId:foreign,activationId:21});

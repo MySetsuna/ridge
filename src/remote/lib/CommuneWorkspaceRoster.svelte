@@ -45,11 +45,12 @@
     type RemoteQueryClientLike,
   } from './remoteQueries';
 
-  let { ws, workspaceId, queryClient, panes = [], attentionPaneIds = [], onSelectPane, onAttentionChange, globalView = false, onSnapshot }: {
+  let { ws, workspaceId, workspaceName = '', queryClient, panes = [], attentionPaneIds = [], onSelectPane, onAttentionChange, globalView = false, onSnapshot }: {
     globalView?: boolean;
     onSnapshot?: (snapshot: TeammateTopology) => void;
     ws: RemoteLink;
     workspaceId: string;
+    workspaceName?: string;
     /** Current workspace panes; Agent paneId is the authoritative CWD mapping. */
     panes?: PaneInfo[];
     /** Sticky attention projection owned by MainApp; used for Agent-card rail. */
@@ -618,7 +619,7 @@
     class:status-idle={st.key === 'idle'}
   >
     <div class="member-head">
-      <button class="head-main" onclick={() => m.paneId && onSelectPane?.(m.paneId)} tabindex="-1">
+      <button class="head-main" onclick={() => m.paneId && onSelectPane?.(m.paneId)}>
         <span class="dot" class:working={st.key === 'working'} class:waiting={st.key === 'waiting'} class:stopped={st.key === 'stopped'}></span>
         <span class="name" title={m.id}>{title}</span>
       </button>
@@ -627,6 +628,7 @@
       <span class="role" class:live={st.key === 'working'}>{st.text}</span>
     </div>
 
+    {#if globalView && workspaceName}<span class="member-cwd" title={workspaceId}>{workspaceName}</span>{/if}
     {#if cwd}
       <span class="member-cwd" title={cwd}>{cwd}</span>
     {/if}

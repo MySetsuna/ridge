@@ -207,7 +207,7 @@
     // 云会话已完全授权。boot 已为 FS/git/search 接好 TauriDataProvider；
     // 防御性重置（幂等），让侧栏沿用同一 shimmed invoke。
     setTransport(new TauriDataProvider());
-    const conn = new CloudRemoteConnection(handle!);
+    const conn = new CloudRemoteConnection(handle!, undefined, { workspaceShared: shareMode });
     if (verifiedCode) conn.setVerifiedCode(verifiedCode);
     cloudConn = conn; // route ongoing provider state (drop/reconnect) to the transport
     await conn.init();

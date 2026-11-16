@@ -33,8 +33,8 @@
     name: string;
     workspaceName?: string;
   }
-  let { members: protocolMembers, candidates = [], onConnect, onLocate, identity = 'native' }: {
-    members:readonly Member[]; candidates?:readonly Candidate[]; identity?:unknown;
+  let { members: protocolMembers, candidates = [], onConnect, onLocate, identity = 'native', compact = false }: {
+    members:readonly Member[]; candidates?:readonly Candidate[]; identity?:unknown; compact?:boolean;
     onConnect?:(candidate:Candidate) => void | Promise<void>; onLocate?:(candidate:Candidate) => void;
   } = $props();
   const store = teammateGroupStore();
@@ -70,18 +70,20 @@
   }
 </script>
 
-<details class="host-groups" data-testid="host-commune-groups" open>
+<details class="host-groups" class:compact data-testid="host-commune-groups" open>
   <summary>{$t('commune.groups')} · {store.groups.length}</summary>
   <p class="guide">{$t('commune.groupGuide')}</p>
   <div class="toolbar">
     <button onclick={() => { building=!building; selected=[]; selectedCandidates=[]; }} data-testid="commune-create-group">{$t('commune.createGroup')}</button>
     <button disabled={store.saving || store.refreshing} onclick={() => store.refresh()}>{$t('commune.refresh')}</button>
   </div>
+  {#if store.saving || store.refreshing || !store.ready}
   <p class="sync-state" role="status" aria-live="polite" data-testid="commune-group-sync-state">
     {#if store.saving}{$t('commune.groupSaving')}
     {:else if store.refreshing}{$t(store.ready ? 'commune.groupRefreshing' : 'commune.groupLoading')}
     {:else if !store.ready}{$t('commune.groupLoadRequired')}{/if}
   </p>
+  {/if}
   {#if store.error}<p role="alert">{store.error}</p>{/if}
   {#if building}
     <div class="builder" role="group" aria-label={$t('commune.groupSelectMembers')}>
@@ -121,6 +123,21 @@
   {/if}
   {#each store.groups as group (group.id)}
     <section class="group" style:border-left-color={group.color} data-testid="host-commune-group">
+      {#snippet groupDispatch()}
+      <!-- Original-intent confirmation stays available after disconnect. Effective member permissions fence new work. -->
+      <CommuneGroupTasks groupScope="host" {dispatchOwner} {compact} {group} {members} tasks={store.dispatches}
+        read={request => invoke<CommuneGroupTask>('get_agent_message_delivery_status',{...request})}
+        readEvent={request => invoke<AgentHistoryReply[]>('read_agent_recent_replies',{...request})}
+        submit={request => invoke<CommuneGroupTask>('send_agent_message',{...request})}
+        cancel={members.some(member => member.canCancel === true) ? groupTaskId => invoke<CommuneGroupTask>('cancel_agent_message',{groupScope:'host',groupTaskId}) : undefined}
+        onRefresh={() => store.refresh()} />
+      {/snippet}
+      {#if compact}
+        <header class="group-heading"><strong>{group.name}</strong><span>{$t('commune.membersCount', {count:group.memberAgentIds.length})}</span></header>
+        {@render groupDispatch()}
+      {/if}
+      <details class="group-management" open={!compact}>
+        <summary>{$t('commune.manageGroup')}</summary>
       <div class="toolbar">
         <input value={groupNames[group.id] ?? group.name} aria-label={$t('commune.renameGroup')} disabled={store.busy}
           oninput={event => groupNames[group.id]=event.currentTarget.value}
@@ -177,13 +194,8 @@
             onclick={() => candidate.candidateRef && store.enroll(group.id,candidate.candidateRef)}>+ {candidate.name} · {candidate.workspaceName ?? candidate.workspaceId}</button>
         {/each}
       </details>{/if}
-      <!-- Original-intent confirmation stays available after disconnect. Effective member permissions fence new work. -->
-      <CommuneGroupTasks groupScope="host" {dispatchOwner} {group} {members} tasks={store.dispatches}
-        read={request => invoke<CommuneGroupTask>('get_agent_message_delivery_status',{...request})}
-        readEvent={request => invoke<AgentHistoryReply[]>('read_agent_recent_replies',{...request})}
-        submit={request => invoke<CommuneGroupTask>('send_agent_message',{...request})}
-        cancel={members.some(member => member.canCancel === true) ? groupTaskId => invoke<CommuneGroupTask>('cancel_agent_message',{groupScope:'host',groupTaskId}) : undefined}
-        onRefresh={() => store.refresh()} />
+      </details>
+      {#if !compact}{@render groupDispatch()}{/if}
     </section>
   {/each}
   {#if store.members.length}
@@ -205,6 +217,10 @@
 </details>
 
 <style>
+  .group-heading{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:12px}.group-heading strong{font-size:14px;overflow-wrap:anywhere}.group-heading span{font-size:11px;color:var(--rg-fg-muted);flex-shrink:0}
+  .group-management>summary{padding:12px 0;min-height:44px;box-sizing:border-box;color:var(--rg-fg-muted)}
+  .host-groups:not(.compact) .group-management>summary{display:none}
+  .compact>.guide{display:none}.compact .group-management{margin-top:12px;border-top:1px solid var(--rg-border)}
   .host-groups{border:1px solid var(--rg-border);border-radius:8px;padding:12px;font-size:12px;color:var(--rg-fg)}
   summary,button{cursor:pointer}summary{font-weight:600}.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0}
   .toolbar>span{flex:1;min-width:100px;overflow-wrap:anywhere}.toolbar>input:not([type=color]){flex:1;min-width:100px}

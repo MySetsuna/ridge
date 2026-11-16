@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "6a3482ea-41d8-497e-a4ab-ff286cc4ef80",
+  "at": "2026-11-16T04:17:49.275Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-124",
+  "data": {
+    "changeId": "CHG-124",
+    "specHash": "c03943378408ba5bcd4e4e97a87d6eb8982c96df77a9868218fc08d57de90d36",
+    "approvedAt": "2026-11-16T04:17:49.272Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "沿用全部授权实施目录与界面草案；补充构建资源的生成目录忽略项，保留代码扫描边界。",
+    "attributionVerified": false
+  }
+}

@@ -60,33 +60,35 @@
   <div class="sb-header">
     <div class="tabs">
       {#if available.files}
-        <button class="tab" class:active={tab === 'files'} onclick={() => setTab('files')} title={$t('mobile.sidebarFilesTitle')} tabindex="-1">
+        <button class="tab" class:active={tab === 'files'} onclick={() => setTab('files')} title={$t('mobile.sidebarFilesTitle')}>
           <Folder class="w-4 h-4" />
         </button>
       {/if}
       {#if available.git}
-        <button class="tab" class:active={tab === 'git'} onclick={() => setTab('git')} title="Git" tabindex="-1">
+        <button class="tab" class:active={tab === 'git'} onclick={() => setTab('git')} title="Git">
           <GitBranch class="w-4 h-4" />
         </button>
       {/if}
       {#if available.search}
-        <button class="tab" class:active={tab === 'search'} onclick={() => setTab('search')} title={$t('mobile.sidebarSearchTitle')} tabindex="-1">
+        <button class="tab" class:active={tab === 'search'} onclick={() => setTab('search')} title={$t('mobile.sidebarSearchTitle')}>
           <Search class="w-4 h-4" />
         </button>
       {/if}
       {#if available.team}
-        <button class="tab" class:active={tab === 'team'} onclick={() => setTab('team')} title="Team" tabindex="-1">
+        <button class="tab" class:active={tab === 'team'} onclick={() => setTab('team')} title="Team">
           <Bot class="w-4 h-4" />
         </button>
       {/if}
     </div>
-    <span class="cwd" title={tab === 'team' ? "Agent's Commune" : cwd}>{tab === 'team' ? "Agent's Commune" : cwd || '/'}</span>
-    <button class="close" onclick={onClose} aria-label={$t('mobile.sidebarClose')} tabindex="-1"><X class="w-5 h-5" /></button>
+    <span class="cwd" title={tab === 'team' ? "Agent's Commune" : cwd}>{tab === 'team' ? "Agent's Commune" : cwd || '—'}</span>
+    <button class="close" onclick={onClose} aria-label={$t('mobile.sidebarClose')}><X class="w-5 h-5" /></button>
   </div>
 
   <div class="sb-body">
     {#if tab === 'team' && ws}
       <SidebarTeamRoster {ws} {workspaces} {workspaceId} {attentionPaneKeys} {queryClient} {panes} {attentionPaneIds} {onSelectPane} {onAttentionChange} />
+    {:else if !cwd}
+      <p class="unknown-directory" role="status">{$t('commune.directoryUnavailable')}</p>
     {:else}
     {#key `${ws ? remoteSessionId(ws) : 0}:${workspaceId}:${paneId}:${cwd}`}
       {#if tab === 'files'}
@@ -111,11 +113,14 @@
   @supports (padding-top:env(safe-area-inset-top)) {
     :global(html[data-ridge-pwa="standalone"]) .sb-header{padding-top:max(64px,calc(8px + env(safe-area-inset-top,0px)));min-height:max(104px,calc(48px + env(safe-area-inset-top,0px)))}
   }
-  .tabs{display:flex;gap:4px}
+  .tabs{display:flex;gap:4px;flex-shrink:0}
   .tab{display:flex;align-items:center;justify-content:center;width:34px;height:32px;border:none;border-radius:8px;background:none;color:var(--rg-fg-muted);cursor:pointer;transition:all .12s}
   .tab.active{color:var(--rg-accent);background:color-mix(in srgb, var(--rg-accent) 14%, transparent)}
   .cwd{flex:1;min-width:0;font-size:11px;color:var(--rg-fg-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
   .close{display:flex;align-items:center;justify-content:center;width:32px;height:32px;background:none;border:none;color:var(--rg-fg-muted);border-radius:8px;cursor:pointer}
+  .unknown-directory{padding:24px 16px;font-size:12px;line-height:1.6;color:var(--rg-fg-muted)}
+  .tab:focus-visible,.close:focus-visible{outline:2px solid var(--rg-accent);outline-offset:2px}
+  @media (pointer:coarse),(max-width:640px){.tab,.close{width:44px;height:44px;flex-shrink:0}.sb-header{gap:4px;padding-inline:8px}}
   .close:active{background:var(--rg-surface-2)}
   .sb-body{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;padding-bottom:env(safe-area-inset-bottom,0px);box-sizing:border-box}
   :global(html[data-ridge-pwa="standalone"]) .sb-body{padding-bottom:20px}

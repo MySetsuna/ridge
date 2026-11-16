@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "43788f6d-28e9-4ae3-9a93-4cfcd243a381",
+  "at": "2026-11-16T04:03:41.612Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-124",
+  "data": {
+    "changeId": "CHG-124",
+    "specHash": "0e1c87f5effe0a2933fbc0d2ca2f50261c98732f9c7fca75a82a15423a2b3baf",
+    "approvedAt": "2026-11-16T04:03:41.609Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "全部授权；跳过 Grok 实机验证，实施既有目录及 Commune 界面草案。",
+    "attributionVerified": false
+  }
+}

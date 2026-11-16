@@ -81,6 +81,14 @@ describe('remote Agent attention monitor', () => {
     expect(source).not.toMatch(/if\s*\(\s*savedActiveWs\s*\)\s*\{\s*\n\s*ui\.navigate\(savedActiveWs,/);
   });
 
+  it('projects the current snapshot directory and accepts explicit directory clearing', () => {
+    expect(source).toContain("const activeCwd = $derived(activePane?.cwd ?? '');");
+    const metadata = source.slice(source.indexOf('stops.push(ws.onMetadata('), source.indexOf('stops.push(ws.onPtyResize('));
+    expect(metadata).toContain('remoteQueryKeys.panes(sessionId(), workspaceId)');
+    expect(metadata).toContain('if (cwd != null)');
+    expect(metadata).not.toContain('activeCwd =');
+  });
+
   it('scopes lightweight navigation preferences to the connected host', () => {
     expect(source).toContain('ws.cacheScope?.()');
     expect(source).toContain('`rg-remote-active-ws:${storageScope}`');
