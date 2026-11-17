@@ -2,8 +2,8 @@
 id: L4-DESKTOP-RELEASE-TOOLCHAIN
 level: L4
 title: 桌面发布使用已验证的固定 Rust 工具链
-status: DRAFT
-lifecycle: PLANNED
+status: LOCKED
+lifecycle: ACTIVE
 parent: L3-REMOTE-INTERACTION-RELIABILITY
 code_targets:
   - .github/workflows/release.yml

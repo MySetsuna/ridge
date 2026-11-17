@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "id": "f3fa87bb-15d4-470c-9ac1-c4c643d81f68",
+  "at": "2026-11-17T05:04:49.006Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-132",
+  "buildId": "BUILD-22be4d3aebb6",
+  "data": {
+    "previousBuildId": "BUILD-986e547ad732",
+    "testEvidence": {
+      "buildId": "BUILD-986e547ad732",
+      "workspaceHash": "82e72f93ddb53e16eee158e656ff650417c4ea4821bfb53beafe4889f9cc8a13",
+      "verifiedAt": "2026-11-16T16:17:46.060Z",
+      "eventId": "88a9be1c-6df7-41de-b91c-2312de1c5380"
+    },
+    "absorbed": [
+      ".github/workflows/release.yml",
+      "changes/CHG-132.md",
+      "specs/l4-desktop-release-toolchain.md"
+    ],
+    "activated": [
+      "L4-DESKTOP-RELEASE-TOOLCHAIN"
+    ],
+    "archived": []
+  }
+}

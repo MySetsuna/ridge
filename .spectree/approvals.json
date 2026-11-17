@@ -938,10 +938,14 @@
   },
   {
     "changeId": "CHG-132",
-    "specHash": "320550bbcd0a0f3bc45895f9dc2cddd44f5c8b4d8161d079d6fa40e4e63c3a22",
-    "approvedAt": "2026-11-16T16:09:38.237Z",
-    "source": "cli",
+    "specHash": "0674ef0d8a1d05d2739e0e11af7fc40535edf129f1307695264efc3c153530f3",
+    "approvedAt": "2026-11-17T05:04:48.986Z",
+    "source": "completion_derived",
     "actor": "user",
-    "confirmationRef": "chat:01a154c6-d291-7481-a5cb-27db8f70abdc:authorized-fix-release-and-change-metadata-exception"
+    "confirmationRef": "chat:01a154c6-d291-7481-a5cb-27db8f70abdc:authorized-fix-release-and-change-metadata-exception",
+    "derivedFrom": {
+      "buildId": "BUILD-986e547ad732",
+      "specHash": "320550bbcd0a0f3bc45895f9dc2cddd44f5c8b4d8161d079d6fa40e4e63c3a22"
+    }
   }
 ]
