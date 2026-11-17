@@ -225,6 +225,16 @@ function Invoke-OwnedKernel([object]$Endpoint, [string]$Route, [string]$Method =
     return Invoke-RestMethod @request
 }
 
+function Read-OwnedHeartbeat([string]$Path) {
+    $value = 0L
+    try {
+        $file = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $reader = [IO.StreamReader]::new($file)
+        try { [void][long]::TryParse($reader.ReadToEnd(), [ref]$value) } finally { $reader.Dispose() }
+    } catch [IO.IOException] { } # A simultaneous truncate/write is not a heartbeat.
+    return $value
+}
+
 function Test-ActiveKernel([string]$CaseRoot, [string]$Ui) {
     $endpoint = $null; $ownedKernel = $null; $pane = [guid]::NewGuid().ToString()
     $installed = Join-Path $CaseRoot 'installed'
@@ -250,12 +260,17 @@ function Test-ActiveKernel([string]$CaseRoot, [string]$Ui) {
         }
         if ($hashes['ridge-kernel.exe'] -ne (Get-FileHash -LiteralPath $KernelPath -Algorithm SHA256).Hash) { throw 'Live Kernel differs from the actual build.' }
         $shell = Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell/v1.0/powershell.exe'
+        $heartbeatFile = Join-Path $CaseRoot 'pty-heartbeat.txt'
         $created = Invoke-OwnedKernel $endpoint '/v1/domain/ptys' 'POST' @{
             pty_id = $pane; workspace_id = [guid]::NewGuid().ToString(); program = $shell; cwd = $CaseRoot; role = 'shell'; cols = 80; rows = 24;
-            args = @('-NoProfile', '-NonInteractive', '-Command', "while (`$true) { [Console]::WriteLine('ridge-msi-heartbeat'); Start-Sleep -Milliseconds 100 }")
+            env = @{ RIDGE_MSI_HEARTBEAT_FILE = $heartbeatFile };
+            args = @('-NoProfile', '-NonInteractive', '-Command', '$heartbeatCount = 0; while ($true) { $heartbeatCount++; [IO.File]::WriteAllText($env:RIDGE_MSI_HEARTBEAT_FILE, $heartbeatCount.ToString()); [Console]::WriteLine(''ridge-msi-heartbeat''); Start-Sleep -Milliseconds 100 }')
         }
         if (!$created.ok) { throw 'Real heartbeat PTY creation failed.' }
-        Start-Sleep -Milliseconds 500
+        $startup = [Diagnostics.Stopwatch]::StartNew()
+        while ((Read-OwnedHeartbeat $heartbeatFile) -lt 2 -and $startup.ElapsedMilliseconds -lt 10000) { Start-Sleep -Milliseconds 50 }
+        $startup.Stop()
+        if ((Read-OwnedHeartbeat $heartbeatFile) -lt 2) { throw 'Owned PowerShell never established its real heartbeat loop.' }
         $baseline = @( (Invoke-OwnedKernel $endpoint '/v1/domain/ptys').ptys | Where-Object pty_id -eq $pane )[0]
         if (!$baseline.child_pid -or !$baseline.child_start_instance) { throw 'Heartbeat has no real child identity.' }
         $rows = @()
@@ -263,7 +278,9 @@ function Test-ActiveKernel([string]$CaseRoot, [string]$Ui) {
             $operationRoot = Join-Path $CaseRoot $operation
             New-Item -ItemType Directory -Path $operationRoot | Out-Null
             # Keep the installed directory fixed while placing each attempt's log separately.
+            $operationTime = [Diagnostics.Stopwatch]::StartNew()
             $exit = Invoke-ProbeMsi $CaseRoot $Ui 'success' -Uninstall:($operation -eq 'uninstall') -Repair:($operation -eq 'repair')
+            $operationTime.Stop()
             Copy-Item -LiteralPath (Join-Path $CaseRoot "$operation.log") -Destination (Join-Path $operationRoot 'msi.log')
             if ($exit -ne 1603) { throw "Active Runtime $operation was not refused: $exit" }
             if ($Ui -eq '/qf' -and !(Test-Path -LiteralPath (Join-Path $CaseRoot "$operation.log.runtime-errors.json"))) {
@@ -271,9 +288,29 @@ function Test-ActiveKernel([string]$CaseRoot, [string]$Ui) {
             }
             $errorLog = Join-Path $nativeDataRoot 'installer-last-error.txt'
             if (Test-Path -LiteralPath $errorLog) { Copy-Item -LiteralPath $errorLog -Destination (Join-Path $operationRoot 'core-error.txt') }
-            $after = @( (Invoke-OwnedKernel $endpoint '/v1/domain/ptys').ptys | Where-Object pty_id -eq $pane )[0]
-            if ($after.child_pid -ne $baseline.child_pid -or $after.child_start_instance -ne $baseline.child_start_instance -or
-                $after.next_seq -le $baseline.next_seq) { throw 'Active PTY was replaced, stopped or lost its output heartbeat.' }
+            $atReturn = @( (Invoke-OwnedKernel $endpoint '/v1/domain/ptys').ptys | Where-Object pty_id -eq $pane )[0]
+            $counterAtReturn = Read-OwnedHeartbeat $heartbeatFile
+            $wait = [Diagnostics.Stopwatch]::StartNew(); $advanced = $false; $sameChild = $false; $osLive = $false
+            do {
+                $after = @( (Invoke-OwnedKernel $endpoint '/v1/domain/ptys').ptys | Where-Object pty_id -eq $pane )[0]
+                $counterAfter = Read-OwnedHeartbeat $heartbeatFile
+                $sameChild = $after.child_pid -eq $baseline.child_pid -and $after.child_start_instance -eq $baseline.child_start_instance
+                $child = Get-Process -Id $baseline.child_pid -ErrorAction SilentlyContinue
+                $identityError = $null
+                try { $osLive = $child -and ('win:{0:x16}' -f $child.StartTime.ToFileTimeUtc()) -eq $baseline.child_start_instance }
+                catch { $osLive = $false; $identityError = $_.Exception.GetType().Name }
+                if (!$sameChild -or !$osLive) { break }
+                $advanced = $counterAfter -gt $counterAtReturn -and $after.next_seq -gt $atReturn.next_seq -and $wait.ElapsedMilliseconds -le 5000
+                if (!$advanced) { Start-Sleep -Milliseconds 50 }
+            } while (!$advanced -and $wait.ElapsedMilliseconds -lt 5000)
+            [pscustomobject]@{ operation = $operation; msiElapsedMs = $operationTime.ElapsedMilliseconds; waitForPostReturnHeartbeatMs = $wait.ElapsedMilliseconds;
+                before = @{ pid = $baseline.child_pid; instance = $baseline.child_start_instance; sequence = $baseline.next_seq };
+                atReturn = @{ pid = $atReturn.child_pid; instance = $atReturn.child_start_instance; sequence = $atReturn.next_seq; heartbeat = $counterAtReturn };
+                after = @{ pid = $after.child_pid; instance = $after.child_start_instance; sequence = $after.next_seq; heartbeat = $counterAfter; osLive = [bool]$osLive; identityError = $identityError };
+                postReturnHeartbeatObserved = $advanced
+            } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $operationRoot 'continuity.json')
+            if (!$sameChild -or !$osLive) { throw 'Active PTY is not the same OS-attested live child.' }
+            if (!$advanced) { throw 'Active PTY did not produce a new heartbeat and output frame after MSI returned.' }
             foreach ($name in $hashes.Keys) {
                 if ((Get-FileHash -LiteralPath (Join-Path $installed $name) -Algorithm SHA256).Hash -ne $hashes[$name]) { throw 'Refused MSI changed an installed file.' }
             }
@@ -281,7 +318,9 @@ function Test-ActiveKernel([string]$CaseRoot, [string]$Ui) {
             $rows += [pscustomobject]@{ scope = $scope; ui = $Ui; mode = "active-$operation"; exit = $exit;
                 kernelPid = $health.pid; kernelStartedAt = $health.started_at_unix; installedFileHashes = $hashes;
                 ptyPid = $after.child_pid; ptyStartedInstance = $after.child_start_instance;
-                outputSequenceBefore = $baseline.next_seq; outputSequenceAfter = $after.next_seq }
+                outputSequenceBefore = $baseline.next_seq; outputSequenceAtReturn = $atReturn.next_seq; outputSequenceAfter = $after.next_seq;
+                heartbeatAtReturn = $counterAtReturn; heartbeatAfter = $counterAfter; msiElapsedMs = $operationTime.ElapsedMilliseconds;
+                postReturnHeartbeatWaitMs = $wait.ElapsedMilliseconds; heartbeatStartupMs = $startup.ElapsedMilliseconds }
             $baseline = $after
             $rows | ConvertTo-Json -Depth 8 -AsArray | Set-Content (Join-Path $CaseRoot 'active-results.json')
         }
