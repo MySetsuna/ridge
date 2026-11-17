@@ -80,6 +80,9 @@ if ($PackagePath) {
         $properties = @{}; foreach ($row in (Read-MsiRows 'SELECT `Property`,`Value` FROM `Property`' 2)) { $properties[$row[0]] = $row[1] }
         if ($properties.ProductName -ne 'ridge' -or $properties.UpgradeCode -ne '{581A9D58-1141-5F5E-9E66-CAD20FE063CE}' -or
             $installer.ProductState($properties.ProductCode) -ne -1) { throw 'Refusing a foreign or previously registered product.' }
+        $related = $installer.RelatedProducts($properties.UpgradeCode)
+        try { if ($related.Count) { throw 'Refusing to replace any pre-existing related Ridge product.' } }
+        finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($related) }
         $sequence = @{}; foreach ($row in (Read-MsiRows 'SELECT `Action`,`Sequence` FROM `InstallExecuteSequence`' 2)) { $sequence[$row[0]] = [int]$row[1] }
         foreach ($required in @('RidgeRuntimeReserve', 'RidgeRuntimeVerify', 'RidgeRuntimeRelease', 'InstallValidate', 'InstallInitialize', 'InstallFinalize')) {
             if (!$sequence.ContainsKey($required)) { throw "Complete package omits $required" }
