@@ -3,7 +3,7 @@
   "buildId": "BUILD-84f7cab8b488",
   "changeId": "CHG-137",
   "specHash": "c9ead3301e505e711b636c1e46d72615ab3b1479f3f1ed74db7d23299656d6c9",
-  "workspaceHash": "e675c65a0376710197e2437503bd9e21c4f70934c3cc71ecd3b581d5cb74b5eb",
+  "workspaceHash": "8697ee8fd4d3a18fce338d7b7449df3f9b3d9f0411298af4a459ea8628dba933",
   "testCommand": [
     "npm",
     "test"
@@ -12,7 +12,7 @@
   "acceptanceStatus": "NOT_DECLARED",
   "acceptanceResults": [],
   "valid": true,
-  "verifiedAt": "2026-11-17T08:24:15.452Z",
+  "verifiedAt": "2026-11-17T08:32:13.064Z",
   "diagnostics": [],
-  "eventId": "a71d8572-3c22-4f4c-b386-b88f9d35fae0"
+  "eventId": "8fc36bfe-a25e-4bf7-bd4f-ad52c664770c"
 }
