@@ -228,6 +228,16 @@ try{
   await expect(page.getByTestId('terminal-detached-status')).toHaveCount(0);
   await expect(page.getByText(/REMOTE_RESIZE_FAILED/)).toHaveCount(0);
   evidence.checks.push('detached view does not auto-start; explicit shell choice starts the same pane with a real PTY');
+  await expect(page.locator('[data-binding-rail]')).toHaveCount(0,{timeout:15000});
+  const inputStart=outgoing.length;
+  await page.locator('.hidden-input').focus();
+  try{
+    await page.keyboard.type('V17');
+    await expect.poll(()=>outgoing.slice(inputStart).filter(frame=>frame.cmd==='write_terminal_input'||frame.method==='write_terminal_input').length).toBeGreaterThan(0);
+    await delay(600);
+    await page.screenshot({path:join(evidenceDir,'lan-explicit-start.png')});
+  }finally{for(let index=0;index<3;index++)await page.keyboard.press('Backspace');}
+  evidence.literalInputScreenshot='lan-explicit-start.png';
   evidence.status='PASS';
   if(staleScope) evidence.phase=phase;
 
