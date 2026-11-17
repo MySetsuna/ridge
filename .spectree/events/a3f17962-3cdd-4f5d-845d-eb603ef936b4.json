@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "a3f17962-3cdd-4f5d-845d-eb603ef936b4",
+  "at": "2026-11-17T05:52:32.801Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-136",
+  "data": {
+    "title": "修复 Remote 创建终端回包覆盖后续导航",
+    "implementation": "REQUIRED"
+  }
+}
