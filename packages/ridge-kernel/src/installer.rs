@@ -410,3 +410,49 @@ pub fn clean_msi_handshake(status: &Path, release: &Path) {
     for file in [status.to_path_buf(), release.to_path_buf(), status.with_extension("done")] { let _ = fs::remove_file(file); }
     let _ = fs::remove_dir(directory);
 }
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::{ffi::c_void, sync::mpsc, thread};
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateMutexW(attributes: *const c_void, owner: i32, name: *const u16) -> *mut c_void;
+    }
+
+    fn ended_transaction(abandon: bool) -> MsiTransaction {
+        // Own a unique OS mutex, never the real Windows Installer resource.
+        let name = format!("Local\\RidgeMsiTest-{}\0", uuid::Uuid::new_v4());
+        let (created, receive) = mpsc::channel();
+        let (finish, ending) = mpsc::channel();
+        let owner = thread::spawn(move || {
+            let wide: Vec<u16> = name.encode_utf16().collect();
+            let handle = unsafe { CreateMutexW(std::ptr::null(), 1, wide.as_ptr()) };
+            assert!(!handle.is_null());
+            created.send(handle as usize).unwrap();
+            ending.recv().unwrap();
+            if !abandon { assert_ne!(unsafe { msi_os::ReleaseMutex(handle) }, 0); }
+            // Preserve the handle for the observer; thread exit abandons ownership.
+        });
+        let transaction = MsiTransaction(receive.recv().unwrap() as *mut c_void);
+        assert!(!transaction.finished().unwrap(), "live owner must retain the reservation");
+        finish.send(()).unwrap();
+        owner.join().unwrap();
+        transaction
+    }
+
+    #[test]
+    fn orderly_mutex_release_proves_transaction_completion() {
+        let transaction = ended_transaction(false);
+        assert!(transaction.finished().unwrap());
+        assert!(transaction.finished().unwrap());
+    }
+
+    #[test]
+    fn abandoned_mutex_remains_unknown_on_later_polls() {
+        let transaction = ended_transaction(true);
+        assert!(transaction.finished().is_err());
+        assert!(transaction.finished().is_err(), "a later poll must not erase abandoned transaction evidence");
+    }
+}

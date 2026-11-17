@@ -28,6 +28,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo build --locked -p ridge-cli --bin ridge
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check actual Windows transaction ownership semantics
+        shell: pwsh
+        run: |
+          cargo test --locked -p ridge-kernel --lib installer::tests -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Download pinned WiX 3.14.1
         shell: pwsh
         run: |
