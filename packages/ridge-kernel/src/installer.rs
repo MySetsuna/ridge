@@ -222,7 +222,7 @@ fn contact_msi(parent: &ProcessInstance, product: &str, release: bool) -> Result
 }
 
 #[cfg(windows)]
-struct MsiTransaction(*mut std::ffi::c_void);
+struct MsiTransaction(*mut std::ffi::c_void, std::cell::Cell<bool>);
 
 #[cfg(windows)]
 mod msi_os {
@@ -245,14 +245,18 @@ impl MsiTransaction {
         if handle.is_null() {
             return Err(std::io::Error::last_os_error()).context("cannot observe Windows Installer transaction");
         }
-        Ok(Self(handle))
+        Ok(Self(handle, std::cell::Cell::new(false)))
     }
 
     fn finished(&self) -> Result<bool> {
+        if self.1.get() { bail!("MSI transaction ownership was abandoned; completion is unknown"); }
         let state = unsafe { msi_os::WaitForSingleObject(self.0, 0) };
         match state {
             258 => Ok(false), // WAIT_TIMEOUT: execution still owns the mutex.
             0 | 0x80 => {
+                // Observing WAIT_ABANDONED acquires the mutex and clears its OS
+                // marker. Keep that evidence across subsequent polling calls.
+                if state == 0x80 { self.1.set(true); }
                 if unsafe { msi_os::ReleaseMutex(self.0) } == 0 {
                     return Err(std::io::Error::last_os_error()).context("cannot release observed MSI mutex");
                 }
@@ -435,7 +439,7 @@ mod tests {
             if !abandon { assert_ne!(unsafe { msi_os::ReleaseMutex(handle) }, 0); }
             // Preserve the handle for the observer; thread exit abandons ownership.
         });
-        let transaction = MsiTransaction(receive.recv().unwrap() as *mut c_void);
+        let transaction = MsiTransaction(receive.recv().unwrap() as *mut c_void, std::cell::Cell::new(false));
         assert!(!transaction.finished().unwrap(), "live owner must retain the reservation");
         finish.send(()).unwrap();
         owner.join().unwrap();

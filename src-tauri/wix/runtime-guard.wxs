@@ -19,11 +19,13 @@
     <CustomAction Id="RidgeRuntimeRelease" BinaryKey="RidgeInstallHost" Return="ignore"
                   ExeCommand='--installer-msi-action release --installer-product "[ProductCode]" --installer-user "[UserSID]" --installer-upgrading "[UPGRADINGPRODUCTCODE]"' />
     <InstallExecuteSequence>
-      <Custom Action="RidgeRuntimeReserve" Sequence="1410">1</Custom>
+      <!-- InstallValidate can show FilesInUse; refuse live services before it. -->
+      <Custom Action="RidgeRuntimeReserve" Sequence="1390">1</Custom>
       <Custom Action="RidgeRuntimeVerify" Sequence="1490">1</Custom>
       <Custom Action="RidgeRuntimeRelease" After="InstallFinalize">1</Custom>
     </InstallExecuteSequence>
     <UI>
+      <Error Id="1722">Ridge could not reserve the background Runtime for installation. Save terminal work and explicitly stop the Runtime service before retrying. If it is already stopped, inspect [LocalAppDataFolder]ridge\installer-last-error.txt. Action: [2].</Error>
       <ProgressText Action="RidgeRuntimeReserve">Reserving the Ridge background service; running terminals are preserved</ProgressText>
       <ProgressText Action="RidgeRuntimeVerify">Verifying exclusive Ridge Runtime installation access</ProgressText>
     </UI>

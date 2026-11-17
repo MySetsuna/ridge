@@ -245,3 +245,35 @@ extern "C" __declspec(dllexport) UINT __stdcall ProbeSuccess(MSIHANDLE s) { retu
 extern "C" __declspec(dllexport) UINT __stdcall ProbeError(MSIHANDLE s) { return finish(s, "exit-error"); }
 extern "C" __declspec(dllexport) UINT __stdcall ProbeUserExit(MSIHANDLE s) { return finish(s, "exit-cancel"); }
 extern "C" __declspec(dllexport) UINT __stdcall ProbeSuspend(MSIHANDLE s) { return finish(s, "exit-suspend"); }
+
+// CI responds only to this fixture process's expected Runtime refusal dialog.
+// Inspect the actual native text; never suppress or click unrelated errors.
+struct RuntimeErrorDialog { DWORD pid; std::wstring text; HWND button = nullptr; DWORD result = 0; };
+static BOOL CALLBACK runtime_error_child(HWND window, LPARAM context) {
+    auto& dialog = *reinterpret_cast<RuntimeErrorDialog*>(context);
+    wchar_t value[8192]{}; DWORD_PTR copied = 0;
+    if (!SendMessageTimeoutW(window, WM_GETTEXT, 8192, reinterpret_cast<LPARAM>(value), SMTO_ABORTIFHUNG, 500, &copied)) return TRUE;
+    dialog.text += value; dialog.text += L"\n";
+    wchar_t kind[32]{}; GetClassNameW(window, kind, 32);
+    if (_wcsicmp(kind, L"Button") == 0 && (GetDlgCtrlID(window) == IDOK || std::wstring(value) == L"OK")) dialog.button = window;
+    return TRUE;
+}
+static BOOL CALLBACK runtime_error_window(HWND window, LPARAM context) {
+    auto& found = *reinterpret_cast<RuntimeErrorDialog*>(context);
+    DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
+    if (pid != found.pid || !IsWindowVisible(window)) return TRUE;
+    RuntimeErrorDialog candidate{pid};
+    EnumChildWindows(window, runtime_error_child, reinterpret_cast<LPARAM>(&candidate));
+    if (candidate.text.find(L"Ridge could not reserve the background Runtime") == std::wstring::npos ||
+        candidate.text.find(L"RidgeRuntimeReserve") == std::wstring::npos) return TRUE;
+    found.text = candidate.text;
+    DWORD_PTR ignored = 0;
+    found.result = candidate.button && SendMessageTimeoutW(candidate.button, BM_CLICK, 0, 0, SMTO_ABORTIFHUNG, 1000, &ignored) ? 1 : 2;
+    return FALSE;
+}
+extern "C" __declspec(dllexport) DWORD __stdcall ProbeDismissRuntimeError(DWORD pid, wchar_t* message, DWORD capacity) {
+    RuntimeErrorDialog dialog{pid};
+    EnumWindows(runtime_error_window, reinterpret_cast<LPARAM>(&dialog));
+    if (message && capacity) wcsncpy_s(message, capacity, dialog.text.c_str(), _TRUNCATE);
+    return dialog.result;
+}

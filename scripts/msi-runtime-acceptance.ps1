@@ -38,8 +38,16 @@ function Invoke-Checked([string]$Executable, [string[]]$Arguments) {
 Push-Location $output
 try {
     Invoke-Checked 'cl.exe' @('/nologo', '/std:c++17', '/W4', '/WX', '/EHsc', '/MT', '/LD',
-        (Join-Path $repo 'tests/fixtures/msi-runtime/probe.cpp'), '/link', '/OUT:probe.dll', 'msi.lib', 'advapi32.lib')
+        (Join-Path $repo 'tests/fixtures/msi-runtime/probe.cpp'), '/link', '/OUT:probe.dll', 'msi.lib', 'advapi32.lib', 'user32.lib')
 } finally { Pop-Location }
+Add-Type @"
+using System.Runtime.InteropServices;
+using System.Text;
+public static class RidgeMsiRuntimeDialog {
+    [DllImport(@"$dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall, ExactSpelling = true)]
+    public static extern uint ProbeDismissRuntimeError(uint pid, StringBuilder message, uint capacity);
+}
+"@
 
 $installer = New-Object -ComObject WindowsInstaller.Installer
 $nativeDataRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'ridge'
@@ -64,7 +72,20 @@ function Invoke-ProbeMsi([string]$CaseRoot, [string]$Ui, [string]$Mode, [switch]
     elseif ($KernelPath) { $arguments += 'RIDGE_PROBE_HELPER="' + $KernelPath + '"' }
     if ($Mode -eq 'active') { $arguments += 'PROBE_LAUNCH_KERNEL=1' }
     $process = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList $arguments -WindowStyle Hidden -PassThru
-    if (!$process.WaitForExit(120000)) { throw "MSI $Mode timed out; runner teardown owns cleanup." }
+    $deadline = (Get-Date).AddSeconds(120)
+    $dialogMessages = @()
+    while (!$process.WaitForExit(100)) {
+        if ($ProductionGuard -and $Ui -eq '/qf') {
+            $message = [Text.StringBuilder]::new(8192)
+            $dismissed = [RidgeMsiRuntimeDialog]::ProbeDismissRuntimeError($process.Id, $message, 8192)
+            if ($dismissed) {
+                $dialogMessages += $message.ToString()
+                $dialogMessages | ConvertTo-Json -AsArray | Set-Content ($log + '.runtime-errors.json')
+                if ($dismissed -ne 1) { throw 'Expected native Runtime error dialog has no working confirmation button.' }
+            }
+        }
+        if ((Get-Date) -ge $deadline) { throw "MSI $Mode timed out; runner teardown owns cleanup." }
+    }
     $process.Refresh()
     return $process.ExitCode
 }
@@ -143,6 +164,9 @@ function Test-ActiveKernel([string]$CaseRoot, [string]$Ui) {
             $exit = Invoke-ProbeMsi $CaseRoot $Ui 'success' -Uninstall:($operation -eq 'uninstall') -Repair:($operation -eq 'repair')
             Copy-Item -LiteralPath (Join-Path $CaseRoot "$operation.log") -Destination (Join-Path $operationRoot 'msi.log')
             if ($exit -ne 1603) { throw "Active Runtime $operation was not refused: $exit" }
+            if ($Ui -eq '/qf' -and !(Test-Path -LiteralPath (Join-Path $CaseRoot "$operation.log.runtime-errors.json"))) {
+                throw 'Full UI did not display the actionable native Runtime refusal.'
+            }
             $errorLog = Join-Path $nativeDataRoot 'installer-last-error.txt'
             if (Test-Path -LiteralPath $errorLog) { Copy-Item -LiteralPath $errorLog -Destination (Join-Path $operationRoot 'core-error.txt') }
             $after = @( (Invoke-OwnedKernel $endpoint '/v1/domain/ptys').ptys | Where-Object pty_id -eq $pane )[0]
@@ -157,8 +181,12 @@ function Test-ActiveKernel([string]$CaseRoot, [string]$Ui) {
                 ptyPid = $after.child_pid; ptyStartedInstance = $after.child_start_instance;
                 outputSequenceBefore = $baseline.next_seq; outputSequenceAfter = $after.next_seq }
             $baseline = $after
+            $rows | ConvertTo-Json -Depth 8 -AsArray | Set-Content (Join-Path $CaseRoot 'active-results.json')
         }
         return $rows
+    } catch {
+        ($_.Exception.Message + "`n" + $_.ScriptStackTrace) | Set-Content (Join-Path $CaseRoot 'primary-error.txt')
+        throw
     } finally {
         if ($endpoint -and $ownedKernel) {
             $current = Invoke-OwnedKernel $endpoint '/v1/health'
@@ -208,6 +236,10 @@ foreach ($scope in @('perUser', 'perMachine')) {
         foreach ($required in @('RidgeRuntimeReserve', 'RidgeRuntimeVerify', 'RidgeRuntimeRelease')) {
             if (@($sequence | Where-Object { $_[0] -eq $required }).Count -ne 1) { throw "Actual guard action missing: $required" }
         }
+        $ordered = @{}; foreach ($action in $sequence) { $ordered[$action[0]] = [int]$action[2] }
+        if ($ordered.RidgeRuntimeReserve -ge $ordered.InstallValidate -or
+            $ordered.RidgeRuntimeVerify -le $ordered.RidgeRuntimeReserve -or $ordered.RidgeRuntimeVerify -ge $ordered.InstallInitialize -or
+            $ordered.RidgeRuntimeRelease -le $ordered.InstallFinalize) { throw 'Runtime protection must precede file-use validation and cover the whole transaction.' }
     }
     $packages += [pscustomobject]@{ scope = $scope; product = $product; sha256 = (Get-FileHash $msi -Algorithm SHA256).Hash }
 foreach ($ui in @('/qn', '/qf')) {
