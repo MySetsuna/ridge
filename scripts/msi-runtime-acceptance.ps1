@@ -58,6 +58,16 @@ function Invoke-ProbeMsi([string]$CaseRoot, [string]$Ui, [string]$Mode, [switch]
     return $process.ExitCode
 }
 
+function Assert-HelperReleased([string]$CaseRoot) {
+    if (!$KernelPath) { return }
+    $savedDataDir = $env:RIDGE_KERNEL_DATA_DIR
+    try {
+        $env:RIDGE_KERNEL_DATA_DIR = Join-Path $CaseRoot 'runtime'
+        & $KernelPath --installer-check
+        if ($LASTEXITCODE -ne 0) { throw 'Real Kernel installer reservation remains held after MSI completion.' }
+    } finally { $env:RIDGE_KERNEL_DATA_DIR = $savedDataDir }
+}
+
 $results = @()
 $packages = @()
 foreach ($scope in @('perUser', 'perMachine')) {
@@ -80,19 +90,19 @@ foreach ($scope in @('perUser', 'perMachine')) {
     }
     $packages += [pscustomobject]@{ scope = $scope; product = $product; sha256 = (Get-FileHash $msi -Algorithm SHA256).Hash }
 foreach ($ui in @('/qn', '/qf')) {
-    foreach ($mode in @('success', 'failure', 'cancel')) {
+    foreach ($mode in @('success', 'failure', 'cancel', 'crash')) {
         $caseRoot = Join-Path $output ($scope + '-' + $ui.TrimStart('/') + '-' + $mode)
         New-Item -ItemType Directory -Path $caseRoot | Out-Null
         try {
             $exit = Invoke-ProbeMsi $caseRoot $ui $mode
-            $expected = @{ success = 0; failure = 1603; cancel = 1602 }[$mode]
+            $expected = @{ success = 0; failure = 1603; cancel = 1602; crash = 1603 }[$mode]
             if ($exit -ne $expected) { throw "$ui/$mode exit $exit; expected $expected" }
             $trace = @(Get-Content (Join-Path $caseRoot 'trace.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
             if (@($trace | Where-Object stage -eq 'before').Count -ne 1 -or
                 @($trace | Where-Object { $_.stage -eq 'written' -and $_.installedFileExists }).Count -ne 1) {
                 throw "$ui/$mode did not execute actual file installation."
             }
-            $ending = @{ success = 'exit-success'; failure = 'exit-error'; cancel = 'exit-cancel' }[$mode]
+            $ending = @{ success = 'exit-success'; failure = 'exit-error'; cancel = 'exit-cancel'; crash = 'exit-error' }[$mode]
             $termination = @($trace | Where-Object { $_.stage -like 'exit-*' })
             if ($termination.Count -ne 1 -or $termination[0].stage -ne $ending -or
                 $termination[0].installedFileExists -ne ($mode -eq 'success')) {
@@ -101,6 +111,7 @@ foreach ($ui in @('/qn', '/qf')) {
             if ($KernelPath -and (Get-Content -LiteralPath (Join-Path $caseRoot 'runtime.done') -Raw) -ne 'DONE') {
                 throw "$scope/$ui/$mode did not release the actual Kernel helper."
             }
+            Assert-HelperReleased $caseRoot
             $before = @($trace | Where-Object stage -eq 'before')[0]
             $results += [pscustomobject]@{ scope = $scope; ui = $ui; mode = $mode; exit = $exit; stages = @($trace.stage);
                 before = $before; termination = $termination[0] }
@@ -108,6 +119,10 @@ foreach ($ui in @('/qn', '/qf')) {
             if ($installer.ProductState($product) -eq 5) {
                 $cleanupExit = Invoke-ProbeMsi $caseRoot '/qn' 'success' -Uninstall
                 if ($cleanupExit -ne 0) { throw "Isolated fixture uninstall failed: $cleanupExit" }
+                if ($KernelPath -and (Get-Content -LiteralPath (Join-Path $caseRoot 'uninstall-runtime.done') -Raw) -ne 'DONE') {
+                    throw 'Fixture uninstall did not release the actual Kernel helper.'
+                }
+                Assert-HelperReleased $caseRoot
             }
         }
     }

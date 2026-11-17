@@ -23,9 +23,11 @@
     <CustomAction Id="ProbeWrittenData" Property="ProbeWritten" Value="[RIDGE_PROBE_ROOT]" />
     <CustomAction Id="ProbeFailureData" Property="ProbeFailure" Value="[RIDGE_PROBE_ROOT]" />
     <CustomAction Id="ProbeCancelData" Property="ProbeCancel" Value="[RIDGE_PROBE_ROOT]" />
+    <CustomAction Id="ProbeCrashData" Property="ProbeCrash" Value="[RIDGE_PROBE_ROOT]" />
     <CustomAction Id="ProbeWritten" BinaryKey="ProbeDll" DllEntry="ProbeWritten" Execute="deferred" Impersonate="yes" Return="check" />
     <CustomAction Id="ProbeFailure" BinaryKey="ProbeDll" DllEntry="ProbeFailure" Execute="deferred" Impersonate="yes" Return="check" />
     <CustomAction Id="ProbeCancel" BinaryKey="ProbeDll" DllEntry="ProbeCancel" Execute="deferred" Impersonate="yes" Return="check" />
+    <CustomAction Id="ProbeCrash" BinaryKey="ProbeDll" DllEntry="ProbeCrash" Execute="deferred" Impersonate="yes" Return="check" />
     <CustomAction Id="ProbeSuccess" BinaryKey="ProbeDll" DllEntry="ProbeSuccess" Return="check" />
     <CustomAction Id="ProbeError" BinaryKey="ProbeDll" DllEntry="ProbeError" Return="ignore" />
     <CustomAction Id="ProbeUserExit" BinaryKey="ProbeDll" DllEntry="ProbeUserExit" Return="ignore" />
@@ -36,9 +38,11 @@
       <Custom Action="ProbeWrittenData" After="InstallFiles">NOT REMOVE</Custom>
       <Custom Action="ProbeFailureData" After="ProbeWrittenData">NOT REMOVE</Custom>
       <Custom Action="ProbeCancelData" After="ProbeFailureData">NOT REMOVE</Custom>
-      <Custom Action="ProbeWritten" After="ProbeCancelData">NOT REMOVE</Custom>
+      <Custom Action="ProbeCrashData" After="ProbeCancelData">NOT REMOVE</Custom>
+      <Custom Action="ProbeWritten" After="ProbeCrashData">NOT REMOVE</Custom>
       <Custom Action="ProbeFailure" After="ProbeWritten">NOT REMOVE AND PROBE_MODE = "failure"</Custom>
       <Custom Action="ProbeCancel" After="ProbeFailure">NOT REMOVE AND PROBE_MODE = "cancel"</Custom>
+      <Custom Action="ProbeCrash" After="ProbeCancel">NOT REMOVE AND PROBE_MODE = "crash"</Custom>
       <Custom Action="ProbeSuccess" OnExit="success">1</Custom>
       <Custom Action="ProbeError" OnExit="error">1</Custom>
       <Custom Action="ProbeUserExit" OnExit="cancel">1</Custom>

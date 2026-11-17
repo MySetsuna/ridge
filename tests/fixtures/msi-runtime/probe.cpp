@@ -215,6 +215,12 @@ extern "C" __declspec(dllexport) UINT __stdcall ProbeContend(MSIHANDLE s) { retu
 extern "C" __declspec(dllexport) UINT __stdcall ProbeWritten(MSIHANDLE s) { return trace(s, "written", true); }
 extern "C" __declspec(dllexport) UINT __stdcall ProbeFailure(MSIHANDLE s) { trace(s, "fail", true); return ERROR_INSTALL_FAILURE; }
 extern "C" __declspec(dllexport) UINT __stdcall ProbeCancel(MSIHANDLE s) { trace(s, "cancel", true); return ERROR_INSTALL_USEREXIT; }
+extern "C" __declspec(dllexport) UINT __stdcall ProbeCrash(MSIHANDLE s) {
+    trace(s, "crash", true);
+    // Kill only this disposable fixture's CA worker; the service must roll back.
+    TerminateProcess(GetCurrentProcess(), 77);
+    return ERROR_INSTALL_FAILURE;
+}
 static UINT finish(MSIHANDLE session, const char* stage) {
     UINT result = contend_helper(session);
     if (result == ERROR_SUCCESS) result = release_helper(session);
