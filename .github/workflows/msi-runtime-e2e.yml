@@ -8,6 +8,10 @@ on:
         description: Build and inspect the complete Tauri MSI candidate
         type: boolean
         default: false
+      candidate_run:
+        description: Completed full-package run whose exact MSI will be installed
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -65,6 +69,57 @@ jobs:
             ${{ runner.temp }}/ridge-msi-guard
             !${{ runner.temp }}/ridge-msi-guard/**/missing-cleanup.msi
             !${{ runner.temp }}/ridge-msi-guard/**/installed/**
+          if-no-files-found: error
+
+  candidate-lifecycle:
+    if: github.event_name == 'workflow_dispatch' && inputs.candidate_run != ''
+    needs: lifecycle-probe
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify candidate producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RIDGE_MSI_CANDIDATE_RUN: ${{ inputs.candidate_run }}
+        shell: pwsh
+        run: |
+          if ($env:RIDGE_MSI_CANDIDATE_RUN -notmatch '^\d+$') { throw 'Candidate run must be numeric.' }
+          $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:RIDGE_MSI_CANDIDATE_RUN" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $run.repository.full_name -ne $env:GITHUB_REPOSITORY -or
+              $run.name -ne 'MSI Runtime acceptance' -or $run.status -ne 'completed' -or $run.conclusion -ne 'success') { throw 'Candidate producer did not complete successfully in this repository.' }
+          "RIDGE_MSI_PACKAGE_SOURCE=$($run.head_sha)" >> $env:GITHUB_ENV
+      - uses: actions/download-artifact@v4
+        with:
+          name: complete-tauri-msi-candidate
+          path: ${{ runner.temp }}/ridge-full-msi-input
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.candidate_run }}
+      - name: Exercise exact complete MSI candidate
+        id: native_lifecycle
+        shell: pwsh
+        run: |
+          $inputRoot = Join-Path $env:RUNNER_TEMP 'ridge-full-msi-input'
+          $manifest = Get-Content (Join-Path $inputRoot 'package-contract.json') -Raw | ConvertFrom-Json
+          if ($manifest.source -ne $env:RIDGE_MSI_PACKAGE_SOURCE) { throw 'Candidate package does not match its producer source.' }
+          $output = Join-Path $env:RUNNER_TEMP 'ridge-full-msi-native'
+          New-Item -ItemType Directory -Path $output -Force | Out-Null
+          [pscustomobject]@{ producerSource = $manifest.source; driverSource = $env:GITHUB_SHA; expectedPackageSha256 = $manifest.packageSha256 } |
+            ConvertTo-Json | Set-Content (Join-Path $output 'provenance.json')
+          ./scripts/msi-runtime-acceptance.ps1 -PackagePath (Join-Path $inputRoot $manifest.package) -OutputDirectory $output
+          $report = Get-Content (Join-Path $output 'full-package-results.json') -Raw | ConvertFrom-Json
+          if ($report.cases.Count -ne 3 -or $report.packageSha256 -ne $manifest.packageSha256) { throw 'Complete-package native acceptance is incomplete.' }
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.native_lifecycle.outcome != 'skipped'
+        with:
+          name: complete-msi-native-lifecycle
+          path: |
+            ${{ runner.temp }}/ridge-full-msi-native
+            !${{ runner.temp }}/ridge-full-msi-native/installed-ridge/**
+            !${{ runner.temp }}/ridge-full-msi-native/package-installer-helper.exe
           if-no-files-found: error
 
   full-package:

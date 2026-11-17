@@ -1,9 +1,10 @@
 param(
     [switch]$ProbeOnly,
     [switch]$ProductionGuard,
+    [string]$PackagePath,
     [string]$KernelPath,
     [string]$CliPath,
-    [Parameter(Mandatory)][string]$WixDirectory,
+    [string]$WixDirectory,
     [Parameter(Mandatory)][string]$OutputDirectory
 )
 $ErrorActionPreference = 'Stop'
@@ -13,9 +14,11 @@ Set-StrictMode -Version Latest
 if (!$IsWindows -or $env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows' -or !$env:RUNNER_TEMP) {
     throw 'Actual MSI execution requires a disposable GitHub Windows runner.'
 }
-if ($ProbeOnly -eq $ProductionGuard) { throw 'Select either the lifecycle probe or the production guard fixture.' }
-if ($ProductionGuard -and (!$KernelPath -or !$CliPath -or [Environment]::GetEnvironmentVariable('RIDGE_KERNEL_DATA_DIR') -ne $null -or
-    [Environment]::GetEnvironmentVariable('RIDGE_TEST_ALLOW_NON_BREAKAWAY') -ne $null)) {
+if (([int][bool]$ProbeOnly + [int][bool]$ProductionGuard + [int][bool]$PackagePath) -ne 1) { throw 'Select the probe, production guard fixture, or complete package.' }
+if (!$PackagePath -and !$WixDirectory) { throw 'WiX tools are required for the isolated fixture.' }
+if (($ProductionGuard -and (!$KernelPath -or !$CliPath)) -or (($ProductionGuard -or $PackagePath) -and
+    ([Environment]::GetEnvironmentVariable('RIDGE_KERNEL_DATA_DIR') -ne $null -or
+     [Environment]::GetEnvironmentVariable('RIDGE_TEST_ALLOW_NON_BREAKAWAY') -ne $null))) {
     throw 'Production guard acceptance requires its actual Kernel, native user namespace and production breakaway behavior.'
 }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
@@ -29,12 +32,13 @@ if ($CliPath) { $CliPath = (Resolve-Path -LiteralPath $CliPath).Path; if ($CliPa
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 $dll = Join-Path $output 'probe.dll'
 $payload = Join-Path $output 'sentinel.txt'
-[IO.File]::WriteAllText($payload, 'Ridge isolated MSI lifecycle fixture')
 
 function Invoke-Checked([string]$Executable, [string[]]$Arguments) {
     & $Executable @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Executable failed: $LASTEXITCODE" }
 }
+if (!$PackagePath) {
+[IO.File]::WriteAllText($payload, 'Ridge isolated MSI lifecycle fixture')
 Push-Location $output
 try {
     Invoke-Checked 'cl.exe' @('/nologo', '/std:c++17', '/W4', '/WX', '/EHsc', '/MT', '/LD',
@@ -48,10 +52,11 @@ public static class RidgeMsiRuntimeDialog {
     public static extern uint ProbeDismissRuntimeError(uint pid, StringBuilder message, uint capacity);
 }
 "@
+}
 
 $installer = New-Object -ComObject WindowsInstaller.Installer
 $nativeDataRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'ridge'
-if ($ProductionGuard -and (Test-Path -LiteralPath $nativeDataRoot)) { throw 'Disposable runner already contains Ridge data; refusing to touch it.' }
+if (($ProductionGuard -or $PackagePath) -and (Test-Path -LiteralPath $nativeDataRoot)) { throw 'Disposable runner already contains Ridge data; refusing to touch it.' }
 function Read-MsiRows([string]$Query, [int]$Columns) {
     $view = $database.OpenView($Query)
     [void]$view.Execute()
@@ -61,6 +66,100 @@ function Read-MsiRows([string]$Query, [int]$Columns) {
             ,$row
         }
     } finally { [void]$view.Close() }
+}
+
+if ($PackagePath) {
+    $PackagePath = (Resolve-Path -LiteralPath $PackagePath).Path
+    if (!$PackagePath.StartsWith($runnerRoot, [StringComparison]::OrdinalIgnoreCase) -or $PackagePath.Contains('"')) { throw 'Complete package must be an isolated runner artifact.' }
+    $manifest = Get-Content -LiteralPath (Join-Path (Split-Path $PackagePath) 'package-contract.json') -Raw | ConvertFrom-Json
+    $packageHash = (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash
+    if ($manifest.package -ne (Split-Path $PackagePath -Leaf) -or $manifest.packageSha256 -ne $packageHash -or
+        $manifest.source -notmatch '^[a-f0-9]{40}$' -or $manifest.embeddedHelperSha256 -notmatch '^[a-f0-9]{64}$') { throw 'Complete package provenance mismatch.' }
+    $database = $installer.OpenDatabase($PackagePath, 0)
+    try {
+        $properties = @{}; foreach ($row in (Read-MsiRows 'SELECT `Property`,`Value` FROM `Property`' 2)) { $properties[$row[0]] = $row[1] }
+        if ($properties.ProductName -ne 'ridge' -or $properties.UpgradeCode -ne '{581A9D58-1141-5F5E-9E66-CAD20FE063CE}' -or
+            $installer.ProductState($properties.ProductCode) -ne -1) { throw 'Refusing a foreign or previously registered product.' }
+        $sequence = @{}; foreach ($row in (Read-MsiRows 'SELECT `Action`,`Sequence` FROM `InstallExecuteSequence`' 2)) { $sequence[$row[0]] = [int]$row[1] }
+        foreach ($required in @('RidgeRuntimeReserve', 'RidgeRuntimeVerify', 'RidgeRuntimeRelease', 'InstallValidate', 'InstallInitialize', 'InstallFinalize')) {
+            if (!$sequence.ContainsKey($required)) { throw "Complete package omits $required" }
+        }
+        if ($sequence.RidgeRuntimeReserve -ge $sequence.InstallValidate -or $sequence.RidgeRuntimeVerify -ge $sequence.InstallInitialize -or
+            $sequence.RidgeRuntimeRelease -le $sequence.InstallFinalize) { throw 'Unsafe complete-package guard sequence.' }
+        $KernelPath = Join-Path $output 'package-installer-helper.exe'
+        $view = $database.OpenView('SELECT `Data` FROM `Binary` WHERE `Name`=''RidgeInstallHost''')
+        [void]$view.Execute(); $record = $view.Fetch()
+        if (!$record) { throw 'Complete package has no embedded Runtime helper.' }
+        $stream = [IO.File]::Create($KernelPath)
+        try {
+            while ($true) {
+                [string]$chunk = $record.ReadStream(1, 65536, 1)
+                if (!$chunk.Length) { break }
+                $bytes = [Text.Encoding]::GetEncoding(28591).GetBytes($chunk)
+                $stream.Write($bytes, 0, $bytes.Length)
+            }
+        } finally {
+            $stream.Dispose(); [void]$view.Close()
+            foreach ($handle in @($record, $view)) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($handle) }
+        }
+    } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($database) }
+    if ((Get-FileHash -LiteralPath $KernelPath -Algorithm SHA256).Hash -ne $manifest.embeddedHelperSha256) { throw 'Extracted helper does not match the build manifest.' }
+    $fullProduct = $properties.ProductCode
+    $fullInstalled = Join-Path $output 'installed-ridge'
+    $fullOwned = $false; $fullCases = @(); $fullFiles = @('ridge.exe', 'ridge-kernel.exe', 'ridge-mcp.exe', 'tmux.exe', 'ridge.theme')
+    $fullCanary = Join-Path $nativeDataRoot 'installer-user-content/workspace-canary.ridge'
+    New-Item -ItemType Directory -Path (Split-Path $fullCanary) -Force | Out-Null
+    [IO.File]::WriteAllText($fullCanary, ('Installer preservation sample ' + [guid]::NewGuid()))
+    $fullCanaryHash = (Get-FileHash -LiteralPath $fullCanary -Algorithm SHA256).Hash
+    function Invoke-FullMsi([string]$Operation, [string]$Stage) {
+        $target = if ($Operation -eq '/i') { '"' + $PackagePath + '"' } else { $fullProduct }
+        $arguments = @($Operation, $target, '/qn', '/norestart', 'REBOOT=ReallySuppress',
+            'WIXUI_EXITDIALOGOPTIONALCHECKBOX=0', ('INSTALLDIR="' + $fullInstalled + '"'), '/l*v', ('"' + (Join-Path $output ($Stage + '.log')) + '"'))
+        $process = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList $arguments -WindowStyle Hidden -PassThru
+        if (!$process.WaitForExit(120000)) { throw 'Owned complete-package operation timed out; runner teardown owns cleanup.' }
+        $process.Refresh(); return $process.ExitCode
+    }
+    try {
+        foreach ($stage in @('install', 'repair', 'uninstall')) {
+            if ($stage -eq 'repair') {
+                # Damage only the registered resource installed by this test.
+                $resource = (Resolve-Path -LiteralPath (Join-Path $fullInstalled 'ridge.theme')).Path
+                if (!$resource.StartsWith($fullInstalled.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Resource deletion escaped the test installation.' }
+                Remove-Item -LiteralPath $resource -Force
+            }
+            $fullOwned = $true
+            $operation = @{ install = '/i'; repair = '/famus'; uninstall = '/x' }[$stage]
+            $exit = Invoke-FullMsi $operation $stage
+            if ($exit -ne 0) { throw "Complete package $stage failed: $exit" }
+            $hashes = @{}
+            if ($stage -ne 'uninstall') {
+                if ($installer.ProductState($fullProduct) -ne 5 -or
+                    $installer.ProductInfo($fullProduct, 'InstallLocation').TrimEnd('\') -ne $fullInstalled.TrimEnd('\')) { throw 'Installed product identity or directory changed.' }
+                foreach ($file in $fullFiles) { $hashes[$file] = (Get-FileHash -LiteralPath (Join-Path $fullInstalled $file) -Algorithm SHA256).Hash }
+                if ($stage -eq 'install') { $fullBaseline = $hashes }
+                else { foreach ($file in $fullFiles) { if ($hashes[$file] -ne $fullBaseline[$file]) { throw 'Real repair did not restore the installed payload.' } } }
+                if ($hashes['ridge-kernel.exe'] -ne $manifest.embeddedHelperSha256) { throw 'Installed Runtime differs from the package helper build.' }
+            } else {
+                if ($installer.ProductState($fullProduct) -ne -1) { throw 'Complete package remains registered.' }
+                foreach ($file in $fullFiles) { if (Test-Path -LiteralPath (Join-Path $fullInstalled $file)) { throw 'Uninstall left a packaged executable or resource.' } }
+            }
+            if ((Get-FileHash -LiteralPath $fullCanary -Algorithm SHA256).Hash -ne $fullCanaryHash -or
+                (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash -ne $packageHash) { throw 'Installer changed preserved user content or the candidate MSI.' }
+            & $KernelPath --installer-check
+            if ($LASTEXITCODE -ne 0) { throw 'Complete package left a Runtime reservation or started an unexpected service.' }
+            $fullCases += [pscustomobject]@{ stage = $stage; exit = $exit; installedHashes = $hashes; userCanarySha256 = $fullCanaryHash }
+            [pscustomobject]@{ scope = 'Complete Tauri MSI quiet install, missing-resource repair and uninstall'; productionAcceptance = $false;
+                driverSource = $env:GITHUB_SHA; packageSource = $manifest.source; packageSha256 = $packageHash; cases = $fullCases
+            } | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $output 'full-package-results.json')
+        }
+    } catch {
+        ($_.Exception.Message + "`n" + $_.ScriptStackTrace) | Set-Content (Join-Path $output 'primary-error.txt')
+        throw
+    } finally {
+        if ($fullOwned -and $installer.ProductState($fullProduct) -eq 5 -and (Invoke-FullMsi '/x' 'cleanup') -ne 0) { throw 'Owned complete-package cleanup failed.' }
+    }
+    Write-Output 'Complete Tauri MSI: install, actual missing-resource repair and uninstall passed; remaining acceptance stays open.'
+    return
 }
 function Invoke-ProbeMsi([string]$CaseRoot, [string]$Ui, [string]$Mode, [switch]$Uninstall, [switch]$Repair) {
     $operation = if ($Uninstall) { '/x' } elseif ($Repair) { '/fomus' } else { '/i' }
