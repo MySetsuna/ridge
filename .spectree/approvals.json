@@ -983,5 +983,13 @@
       "buildId": "BUILD-1458c0030959",
       "specHash": "8084bffbb3f5b64ccca1cac6b8c43917c95dca1899df3142ad8278f54ece89d4"
     }
+  },
+  {
+    "changeId": "CHG-137",
+    "specHash": "c9ead3301e505e711b636c1e46d72615ab3b1479f3f1ed74db7d23299656d6c9",
+    "approvedAt": "2026-11-17T07:46:27.105Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "沿用用户继续定位修复、完成真实验收及本轮后续 change 元数据例外授权；不停止正式 Runtime，不安装本机正式产品"
   }
 ]

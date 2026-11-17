@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "61ba8013-e090-44cf-846d-fc29774fd908",
+  "at": "2026-11-17T07:23:15.709Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-137",
+  "data": {
+    "title": "补齐 MSI Runtime 安装保护及真实产物验收",
+    "implementation": "REQUIRED"
+  }
+}

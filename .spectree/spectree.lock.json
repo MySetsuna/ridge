@@ -1,23 +1,50 @@
 {
   "version": 1,
-  "changeId": "CHG-132",
-  "specHash": "5952505f4f1db3a27f6f15818e44e9efe7ecad413373dbf1f64bd68f6dbf185a",
+  "changeId": "CHG-137",
+  "specHash": "c9ead3301e505e711b636c1e46d72615ab3b1479f3f1ed74db7d23299656d6c9",
   "units": [
     {
-      "id": "L4-DESKTOP-RELEASE-TOOLCHAIN",
+      "id": "L4-WINDOWS-MSI-RUNTIME-GUARD",
       "level": "L4",
-      "nodeHash": "593c1a22e45fcaf58a414d2210b7ca9b8958d62debdd722f0093ffcf3feeba2a",
+      "nodeHash": "a5afc8e53483990b6d138ebf2212a1feb7195398c5125c926d15057e1f95b2fe",
       "codeTargets": [
-        ".github/workflows/release.yml"
+        "src-tauri/wix/path-env.wxs",
+        "src-tauri/wix/runtime-guard.wxs",
+        "src-tauri/wix/runtime-guard.cpp",
+        "src-tauri/tauri.conf.json",
+        "packages/ridge-kernel/src/installer.rs",
+        "packages/ridge-kernel/src/main.rs",
+        "scripts/build-msi-runtime-guard.ps1",
+        "scripts/msi-runtime-acceptance.ps1",
+        ".github/workflows/release.yml",
+        ".github/workflows/msi-runtime-e2e.yml",
+        "tests/fixtures/msi-runtime/probe.cpp",
+        "tests/fixtures/msi-runtime/probe.wxs"
       ],
       "testTargets": [
-        ".github/workflows/release.yml"
+        "scripts/msi-runtime-acceptance.ps1",
+        "packages/ridge-kernel/src/installer.rs",
+        ".github/workflows/release.yml",
+        "tests/fixtures/msi-runtime/probe.cpp",
+        "tests/fixtures/msi-runtime/probe.wxs",
+        ".github/workflows/msi-runtime-e2e.yml"
       ],
-      "status": "LOCKED"
+      "status": "DRAFT"
     }
   ],
   "allowedPaths": [
-    ".github/workflows/release.yml"
+    ".github/workflows/msi-runtime-e2e.yml",
+    ".github/workflows/release.yml",
+    "packages/ridge-kernel/src/installer.rs",
+    "packages/ridge-kernel/src/main.rs",
+    "scripts/build-msi-runtime-guard.ps1",
+    "scripts/msi-runtime-acceptance.ps1",
+    "src-tauri/tauri.conf.json",
+    "src-tauri/wix/path-env.wxs",
+    "src-tauri/wix/runtime-guard.cpp",
+    "src-tauri/wix/runtime-guard.wxs",
+    "tests/fixtures/msi-runtime/probe.cpp",
+    "tests/fixtures/msi-runtime/probe.wxs"
   ],
   "testCommand": [
     "npm",
@@ -178,9 +205,10 @@
     "changes/CHG-130.md": "e1db17b2eddba9845e3cc912988c9a3df1021295ae74217aa54b13ad722996e0",
     "changes/CHG-131.md": "0856bdc03ccb99973ee97f6d91985c3041ebe12fd2aef4024599a60820344155",
     "changes/CHG-132.md": "e2deb227f5e195cf156dec63e77258c7aab093c2931984257e46d0f01df05c0c",
-    "changes/CHG-133.md": "cfa117039594345bf5db0c8083bd292411d4132ef7f73273e514ed014d84dd6c",
     "changes/CHG-134.md": "b174e55bc237642798236b8407ccc64572191f1081fffe2c3d34ff5d281c8f52",
     "changes/CHG-135.md": "48d12ada5fdedf5b86a502cf848741a6195eb9018fdbcb4366ab575d0ee2cd18",
+    "changes/CHG-136.md": "91f8c62f059622c549ec6bcfeb6ed7a872ba61ae4e49779a26422ecb47079023",
+    "changes/CHG-137.md": "598d40005bc7eba2a1457bb0ff8852e09d59ff75457853f2ccd739af0a46158a",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -1172,6 +1200,7 @@
     "specs/l4-remote-active-pane-cwd.md": "5e83048d577f2e9988c3baf8178d96865ffa540bbfcb6c4bdfdb777e80f95535",
     "specs/l4-remote-clipboard-source-isolation.md": "f556b8a9d944e3d764a0a3f5c1821da5895f16159156ab9137adb70ba9b510f6",
     "specs/l4-remote-conditional-file-save.md": "b1e2499b02a0a17fa950ee4519188ea115b5834da16f134396c0ac63ed8ad57f",
+    "specs/l4-remote-create-pane-navigation-fence.md": "0145acf57437cbba171193c3c71c2f808ec0e1ae86f1b962986aef4c2c337dbc",
     "specs/l4-remote-initial-input-continuity.md": "96820104d3b4d23249a56ef3d2c36aa62ad252b1c275c0c9d6de9c0c7d87c5b1",
     "specs/l4-remote-preconnection-update.md": "33144fc540c3b063a413874a612c8f3455c4e90bfeb9c602096156e9de15ca9f",
     "specs/l4-remote-protocol-source-verification.md": "bbdaaf49f6aa9908100ba26be703a833c494d170c6b4f60cac7e94cfe526c180",
@@ -1181,6 +1210,7 @@
     "specs/l4-ridge-mcp-sidecar-windows-x64.md": "d1670206a676daa0e7bc9841ad226637b512af9e020eb834a38092c92ffe9824",
     "specs/l4-runtime-empty-workspace-boot.md": "4a838e7b606d624a8036d2a9a52c12afc7e4e2b71f81760df716df0cfc963cd8",
     "specs/l4-terminal-viewport-repaint.md": "e8f1c81143d8cb8ec4245a7f489519cb83ec6a2aa5a87b06f70fdca670f879ea",
+    "specs/l4-windows-msi-runtime-guard.md": "dcbe68daacda7d07b47c42f9a9f6d8ecc1cf28e9b10a7e65c1844b52ca6b5e3e",
     "specs/migration/L2-OBS-CARGO-TOML-2e9d962a.md": "661c8fa4621b6ba8c1c814e5b5186c31cf8f1840f9ba4d359c6ef660c0fdef52",
     "specs/migration/L2-OBS-CLAUDE-e026f56c.md": "d91cbc151823db2c0e9f80f348febcd60827108d9ce918c84d3b87f17e145fcd",
     "specs/migration/L2-OBS-GITHUB-bdcc6a2a.md": "a2951b39c448db645ee07a6730fef420b1ce4fdb9f4da8d78ada39e4a785d522",
@@ -2641,6 +2671,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-0f1b5df08e74",
-  "manifestHash": "0f1b5df08e749a141fe0394e880cf4c15bfc818151e482a9a3970199549a0382"
+  "buildId": "BUILD-84f7cab8b488",
+  "manifestHash": "84f7cab8b488b2aa420695183daab2d41826fcc5e4a1ffae444f7069422a6db2"
 }

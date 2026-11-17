@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "id": "2b83e6e9-9bef-420e-b6c0-387580348bf3",
+  "at": "2026-11-17T07:41:08.295Z",
+  "type": "applied",
+  "source": "local_operation",
+  "changeId": "CHG-137",
+  "data": {
+    "added": [
+      "L4-WINDOWS-MSI-RUNTIME-GUARD"
+    ],
+    "changed": [],
+    "retiring": [],
+    "patch": {
+      "changeId": "CHG-137",
+      "nodes": [
+        {
+          "id": "L4-WINDOWS-MSI-RUNTIME-GUARD",
+          "level": "L4",
+          "title": "Windows MSI 与 NSIS 的 Runtime 安装保护对等",
+          "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+          "codeTargets": [
+            "src-tauri/wix/path-env.wxs",
+            "src-tauri/wix/runtime-guard.wxs",
+            "src-tauri/wix/runtime-guard.cpp",
+            "src-tauri/tauri.conf.json",
+            "packages/ridge-kernel/src/installer.rs",
+            "packages/ridge-kernel/src/main.rs",
+            "scripts/build-msi-runtime-guard.ps1",
+            "scripts/msi-runtime-acceptance.ps1",
+            ".github/workflows/release.yml",
+            ".github/workflows/msi-runtime-e2e.yml",
+            "tests/fixtures/msi-runtime/probe.cpp",
+            "tests/fixtures/msi-runtime/probe.wxs"
+          ],
+          "testTargets": [
+            "scripts/msi-runtime-acceptance.ps1",
+            "packages/ridge-kernel/src/installer.rs",
+            ".github/workflows/release.yml",
+            "tests/fixtures/msi-runtime/probe.cpp",
+            "tests/fixtures/msi-runtime/probe.wxs",
+            ".github/workflows/msi-runtime-e2e.yml"
+          ],
+          "body": "依据 L2-UNIFIED-CLIENT-RUNTIME 已批准的独立 Runtime 生命周期与安装保护约束，补齐 Windows 两种安装格式的执行链，不取消 MSI，也不以 NSIS 通过替代 MSI 验收。\n\n证据：v0.1.101 草稿资产 ridge_0.1.101_x64_en-US.msi，SHA256 5396d1e791f39b2e8db17aa96b8f0175bc7ca54d0e4668284523d4441062839f。只读打开真实 MSI 数据库，CustomAction 共 6 项，Runtime 预检/持锁/释放动作 0 项；RemoveExistingProducts=1501、InstallInitialize=1500、InstallFiles=4000、InstallFinalize=6600。源码 NSIS 已调用现有 Kernel installer helper，WiX 只配置 PATH fragment。审计未执行安装、未改系统注册或停止正式服务。\n\n必须成立：安装、升级、修复、卸载均先以实际 Runtime 进程实例和命名空间核验；活跃或不能证明已退出时，明确失败且不结束 Runtime/PTY、不改用户工作区、会话、凭据和已有安装。安装窗口全程持有现有 boot 与 instance 互斥，禁止检查后再允许第二个 Kernel 抢入；结束仅接受确认完成的当前事务。预检须早于旧产品移除及文件修改。仅用户显式服务维护可停止后台。\n\n优先复用 packages/ridge-kernel/src/installer.rs 的 reserve、旧记录保护、父进程启动实例和 READY/release/done 协议；MSI 适配仅负责编排和可操作错误，不复制进程猜测逻辑，不按名字/端口杀进程。MSI 客户端/服务端、提升权限与用户目录切换不得检查错误命名空间；未知身份或阶段失败应保留数据并报告原因。父进程存活不能冒充事务存活。成功、失败、取消、回滚和安装父进程退出均验证释放时机；未获得 Windows 实证前不宣称机制定版或实现完成。\n\n候选采用独立 WiX fragment 与薄原生适配复用 helper；不复制整份 Tauri 安装模板，除非真实编译证明既有扩展点不足。终止动作可参考 InstallExecuteSequence 的成功/取消/错误/挂起分支，但须以实际编译数据库、原生 MSI 运行与回滚顺序验证，不仅检查 XML 字符串。若使用 commit/rollback 钩子，还须处理 Windows Installer 禁用 rollback 的明确限制。\n\n验收在独立 Windows CI/临时 VM 操作隔离测试产品，禁止拿本机正在运行的 Ridge 或原 home1 做破坏性安装试验。保留 NSIS/MSI；正常安装、升级、修复、卸载，加活跃 Runtime、损坏/未知记录、检查后的启动竞争、取消、业务失败回滚、父进程退出，均关联实际包 SHA 与源码提交。核对真实 PTY PID/启动实例、心跳、用户文件哈希和安装前后状态；测试完成无遗留安装锁。不跳过断言、不用 test-only 非 breakaway 绕过生产生命周期、不用空文件替代 helper。\n\n发布门禁读取实际 MSI 的 Binary/CustomAction/执行顺序及真实 Windows 验收结果，不能仅看打包退出码或 ridge-mcp 文件存在。旧 tag 不移动，0.1.101 继续草稿；本变更未验收不发布含此缺口的候选。\n\n权威参考：https://learn.microsoft.com/en-us/windows/win32/msi/installexecutesequence-table 、https://learn.microsoft.com/en-us/windows/win32/msi/custom-action-return-processing-options 、https://learn.microsoft.com/en-us/windows/win32/msi/commit-custom-actions 。\n\n第一阶段只运行真实 MSI 生命周期探针，确认 full/quiet 模式、失败/取消后的退出时序、用户上下文与实际父进程；探针通过不等于 Runtime guard 实现或整个 change 验收通过。之后再接真实 helper、检查竞争与生产产物。"
+        }
+      ]
+    }
+  }
+}

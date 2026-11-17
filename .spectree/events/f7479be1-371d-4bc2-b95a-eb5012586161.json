@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "f7479be1-371d-4bc2-b95a-eb5012586161",
+  "at": "2026-11-17T07:46:27.110Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-137",
+  "data": {
+    "changeId": "CHG-137",
+    "specHash": "c9ead3301e505e711b636c1e46d72615ab3b1479f3f1ed74db7d23299656d6c9",
+    "approvedAt": "2026-11-17T07:46:27.105Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "沿用用户继续定位修复、完成真实验收及本轮后续 change 元数据例外授权；不停止正式 Runtime，不安装本机正式产品",
+    "attributionVerified": false
+  }
+}
