@@ -41,13 +41,13 @@ $installer = New-Object -ComObject WindowsInstaller.Installer
 $database = $installer.OpenDatabase($msi, 0)
 function Read-MsiRows([string]$Query, [int]$Columns) {
     $view = $database.OpenView($Query)
-    $view.Execute()
+    [void]$view.Execute()
     try {
         while ($record = $view.Fetch()) {
             $row = @(); for ($column = 1; $column -le $Columns; $column++) { $row += $record.StringData($column) }
             ,$row
         }
-    } finally { $view.Close() }
+    } finally { [void]$view.Close() }
 }
 $properties = @{}
 foreach ($row in (Read-MsiRows 'SELECT `Property`, `Value` FROM `Property`' 2)) { $properties[$row[0]] = $row[1] }
