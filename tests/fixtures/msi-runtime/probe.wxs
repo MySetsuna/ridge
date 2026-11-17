@@ -5,9 +5,23 @@
            UpgradeCode="{1B2498C2-CBA6-4943-ADEA-806CA55B7F90}">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="$(var.InstallScope)" Platform="x64" />
     <MediaTemplate EmbedCab="yes" />
-    <Property Id="RIDGE_PROBE_ROOT" Secure="yes" />
+    <?if $(var.InstallScope) = "perMachine"?>
+      <?define ProbeRegistryRoot="HKLM"?>
+    <?else?>
+      <?define ProbeRegistryRoot="HKCU"?>
+    <?endif?>
+    <!-- /f repairs reopen the cached package without our original command-line
+         properties. Restore only this fixture's registered installation paths. -->
+    <Property Id="RIDGE_PROBE_ROOT" Secure="yes">
+      <RegistrySearch Id="ProbeSavedRoot" Root="$(var.ProbeRegistryRoot)" Key="Software\Ridge\MSIProbe\[ProductCode]" Name="Root" Type="raw" Win64="yes" />
+    </Property>
     <Property Id="RIDGE_PROBE_HELPER" Secure="yes" />
-    <Property Id="RIDGE_PROBE_DATA_DIR" Secure="yes" />
+    <Property Id="RIDGE_PROBE_DATA_DIR" Secure="yes">
+      <RegistrySearch Id="ProbeSavedData" Root="$(var.ProbeRegistryRoot)" Key="Software\Ridge\MSIProbe\[ProductCode]" Name="Data" Type="raw" Win64="yes" />
+    </Property>
+    <Property Id="PROBE_INSTALL" Secure="yes">
+      <RegistrySearch Id="ProbeSavedInstall" Root="$(var.ProbeRegistryRoot)" Key="Software\Ridge\MSIProbe\[ProductCode]" Name="Install" Type="raw" Win64="yes" />
+    </Property>
     <Property Id="PROBE_MODE" Secure="yes" Value="success" />
     <Property Id="PROBE_LAUNCH_KERNEL" Secure="yes" />
     <Condition Message="This isolated fixture requires an explicit probe directory.">RIDGE_PROBE_ROOT</Condition>
@@ -15,6 +29,13 @@
       <Directory Id="PROBE_INSTALL" Name="RidgeMsiProbe">
         <Component Id="ProbeSentinel" Guid="{3EAE0A22-C8EF-450C-BB19-E66F1D20E87B}" Win64="yes">
           <File Id="ProbeSentinelFile" Source="$(var.Payload)" Name="sentinel.txt" KeyPath="yes" />
+        </Component>
+        <Component Id="ProbePaths" Guid="*" Win64="yes">
+          <RegistryKey Root="$(var.ProbeRegistryRoot)" Key="Software\Ridge\MSIProbe\[ProductCode]">
+            <RegistryValue Name="Root" Type="string" Value="[RIDGE_PROBE_ROOT]" KeyPath="yes" />
+            <RegistryValue Name="Data" Type="string" Value="[RIDGE_PROBE_DATA_DIR]" />
+            <RegistryValue Name="Install" Type="string" Value="[PROBE_INSTALL]" />
+          </RegistryKey>
         </Component>
         <?ifdef WithLiveKernel?>
           <Component Id="ProbeKernel" Guid="{72011B91-82B8-43D0-97E3-1876734EE5EE}" Win64="yes">
@@ -28,6 +49,7 @@
     </Directory>
     <Feature Id="Probe" Level="1">
       <ComponentRef Id="ProbeSentinel" />
+      <ComponentRef Id="ProbePaths" />
       <?ifdef WithRuntimeGuard?>
         <ComponentGroupRef Id="RidgeRuntimeInstallationGuard" />
       <?endif?>
