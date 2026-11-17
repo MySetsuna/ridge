@@ -60,7 +60,7 @@ jobs:
           path: .ridge-signaling-source
           persist-credentials: false
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.1
       - name: Install Linux Tauri check dependencies
         run: |
           sudo apt-get update
@@ -169,7 +169,7 @@ jobs:
           cache: pnpm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Add wasm target
         run: rustup target add wasm32-unknown-unknown

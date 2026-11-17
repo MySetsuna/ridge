@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "c475ef7b-d4bb-439f-847d-26fbc24003f4",
+  "at": "2026-11-17T05:31:32.557Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-132",
+  "data": {
+    "changeId": "CHG-132",
+    "specHash": "263b5798ce5b1413156643a1178b2d5cbff33a72c9807114125ead2b496f9579",
+    "approvedAt": "2026-11-17T05:31:32.552Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "全部授权通过；原样整合已批准且独立闭环的固定发布工具链方案，草稿不发布",
+    "attributionVerified": false
+  }
+}

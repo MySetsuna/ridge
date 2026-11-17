@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "ba9e3ce3-795f-48d7-ade9-f5b4e7c67ad3",
+  "at": "2026-11-16T14:44:05.129Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-132",
+  "data": {
+    "title": "固定桌面发布编译器，避免 Cargo 目录布局漂移破坏 sidecar 打包",
+    "implementation": "REQUIRED"
+  }
+}

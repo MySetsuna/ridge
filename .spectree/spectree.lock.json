@@ -1,51 +1,23 @@
 {
   "version": 1,
-  "changeId": "CHG-135",
-  "specHash": "38cee08679265d0f0f4cb8c6dc05516c31249056772f9f9d2f5fa4f0e6d03588",
+  "changeId": "CHG-132",
+  "specHash": "5952505f4f1db3a27f6f15818e44e9efe7ecad413373dbf1f64bd68f6dbf185a",
   "units": [
     {
-      "id": "L4-COMMUNE-REAL-PROVIDER-CONVERSATIONS",
+      "id": "L4-DESKTOP-RELEASE-TOOLCHAIN",
       "level": "L4",
-      "nodeHash": "ecc921d6e59ab92255d1f1a9a8bb8a46b3d1693ba350d08c8913d04e9d5b004e",
+      "nodeHash": "593c1a22e45fcaf58a414d2210b7ca9b8958d62debdd722f0093ffcf3feeba2a",
       "codeTargets": [
-        "scripts/commune-provider-conversation-acceptance.mjs"
+        ".github/workflows/release.yml"
       ],
       "testTargets": [
-        "scripts/commune-provider-conversation-acceptance.mjs"
+        ".github/workflows/release.yml"
       ],
-      "status": "LOCKED",
-      "acceptanceChecks": [
-        {
-          "id": "real-provider-conversations",
-          "command": [
-            "node",
-            "scripts/commune-provider-conversation-acceptance.mjs"
-          ],
-          "description": "实际安装的 Claude ACP 与 OpenCode、私有配置及 Loopback 模型：原会话、编组、派发、历史、审批、取消和生命周期；不是外部模型或公网验收"
-        },
-        {
-          "id": "lint",
-          "command": [
-            "npm",
-            "run",
-            "lint"
-          ],
-          "description": "仓库 lint"
-        },
-        {
-          "id": "typecheck",
-          "command": [
-            "npm",
-            "run",
-            "typecheck"
-          ],
-          "description": "仓库类型检查"
-        }
-      ]
+      "status": "LOCKED"
     }
   ],
   "allowedPaths": [
-    "scripts/commune-provider-conversation-acceptance.mjs"
+    ".github/workflows/release.yml"
   ],
   "testCommand": [
     "npm",
@@ -61,7 +33,7 @@
     ".gitattributes": "7fd0af4a26d9f54ec6c02cec1f948c84848ee46a3cd25e23080422a80a5e9663",
     ".github/workflows/deploy-pages.yml": "68c4c2a838c45ec4927f108a20e46db9cd79543049566530307d5fe556c1d8cb",
     ".github/workflows/publish-remote.yml": "f664af1891aeea987c2accb7f2cfec1ee0768e25004d567c9a35437519e99a5b",
-    ".github/workflows/release.yml": "6adfc32b20787bd7c7d94801d50ff9c7ae9ee5e40092613aaf2860fb77a61943",
+    ".github/workflows/release.yml": "d44cdcd754622d9720d50aca5331eeebd717b54b9243f389c5eb3ccdcbf7815d",
     ".github/workflows/rtp1-kernel-e2e.yml": "97ac6cc2b49e62a0affa64672db537462c8a1fd59c268561ce691d6e1ecf5a8b",
     ".gitignore": "ca02fc69e48ce2e209f41670b3f12cfa7c88263a1be4fc634212b519193d7b52",
     ".mcp.json": "8a016cf6fb0eae77086d97254c4e34e5ef1c8335aab2076f6e9531085630b533",
@@ -205,7 +177,7 @@
     "changes/CHG-129.md": "697203c4fe0d9d9430eb0ef92884ba907225204cf7097edc4826b927b9badfff",
     "changes/CHG-130.md": "e1db17b2eddba9845e3cc912988c9a3df1021295ae74217aa54b13ad722996e0",
     "changes/CHG-131.md": "0856bdc03ccb99973ee97f6d91985c3041ebe12fd2aef4024599a60820344155",
-    "changes/CHG-132.md": "d4c0ef71959e953588d2c35b091fccb6c34ce3f8e17ed22fd24bb65a2b4dd665",
+    "changes/CHG-132.md": "e2deb227f5e195cf156dec63e77258c7aab093c2931984257e46d0f01df05c0c",
     "changes/CHG-133.md": "cfa117039594345bf5db0c8083bd292411d4132ef7f73273e514ed014d84dd6c",
     "changes/CHG-134.md": "b174e55bc237642798236b8407ccc64572191f1081fffe2c3d34ff5d281c8f52",
     "changes/CHG-135.md": "48d12ada5fdedf5b86a502cf848741a6195eb9018fdbcb4366ab575d0ee2cd18",
@@ -1192,6 +1164,7 @@
     "specs/l4-commune-ui-acceptance.md": "77d6bee845f406ad7e50fe5510414897fb4d0f7a702cd9cb1e8ad01dc921fc4e",
     "specs/l4-commune-ui-membership-acceptance.md": "ca4deb6891923d1bdc1badfa526aef28ae05b4e8c45f8b4ebb6e2b61a2e76536",
     "specs/l4-commune-ui-permission-acceptance.md": "ffbe104548f914686abfc9b9651d0779218722ef8f56ec25fe2ed108485ede71",
+    "specs/l4-desktop-release-toolchain.md": "e519085112d7c646334789fba704ef9abb02d22ce96c8f13c020308c649e022c",
     "specs/l4-desktop-terminal-navigation-focus.md": "ee51dd37afd75580ace3dc0e0f2eeeba6d27bcd478c92b9f97e02c4461655dc4",
     "specs/l4-explorer-read-recovery.md": "ef88c83f6ddd0decf4f68bb83a4540d3571c2e7b2575a22b52d2678acb851db8",
     "specs/l4-monaco-trusted-styles.md": "61dc83ef5ea96a7ffb2ee4e7ee02be802f56ce9babc2bdd1460aabda35c43dfe",
@@ -2668,6 +2641,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-06752bb3199f",
-  "manifestHash": "06752bb3199f092eeaeef2cf4b8c7ac49ab286bb8ed1453e7d988bfa60da4a91"
+  "buildId": "BUILD-0f1b5df08e74",
+  "manifestHash": "0f1b5df08e749a141fe0394e880cf4c15bfc818151e482a9a3970199549a0382"
 }

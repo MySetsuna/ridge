@@ -949,6 +949,18 @@
     }
   },
   {
+    "changeId": "CHG-132",
+    "specHash": "5952505f4f1db3a27f6f15818e44e9efe7ecad413373dbf1f64bd68f6dbf185a",
+    "approvedAt": "2026-11-17T05:35:36.855Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "全部授权通过；原样整合已批准且独立闭环的固定发布工具链方案，草稿不发布",
+    "derivedFrom": {
+      "buildId": "BUILD-67f605e07088",
+      "specHash": "263b5798ce5b1413156643a1178b2d5cbff33a72c9807114125ead2b496f9579"
+    }
+  },
+  {
     "changeId": "CHG-134",
     "specHash": "f0c9c545a6c37a96e697a66b52f39f4b58444ad3b72a846db372177c8c4e281a",
     "approvedAt": "2026-11-17T04:43:23.327Z",
