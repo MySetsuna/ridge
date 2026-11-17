@@ -113,6 +113,7 @@ foreach ($ui in @('/qn', '/qf')) {
             }
             $ending = @{ success = 'exit-success'; failure = 'exit-error'; cancel = 'exit-cancel'; crash = 'exit-error'; 'omit-release' = 'exit-success' }[$mode]
             $termination = @($trace | Where-Object { $_.stage -like 'exit-*' })
+            if (@($trace | Where-Object { !$_.msiMutex.held }).Count) { throw 'MSI execution ownership was not held throughout the transaction.' }
             if ($termination.Count -ne 1 -or $termination[0].stage -ne $ending -or
                 $termination[0].installedFileExists -ne ($mode -in @('success', 'omit-release'))) {
                 throw "$ui/$mode termination callback did not follow commit/rollback."
@@ -123,6 +124,12 @@ foreach ($ui in @('/qn', '/qf')) {
             }
             Assert-HelperReleased $caseRoot
             $before = @($trace | Where-Object stage -eq 'before')[0]
+            if ($mode -eq 'omit-release') {
+                $service = Get-Process -Id $before.ancestors[0].pid -ErrorAction Stop
+                if ($service.StartTime.ToFileTimeUtc().ToString() -ne $before.ancestors[0].started) {
+                    throw 'Missing callback was tested without the original MSI service instance.'
+                }
+            }
             # A CA worker exit alone can commit (actual run 44046218217). Inject
             # a subsequent business failure to verify rollback in its replacement.
             if ($mode -eq 'crash' -and ($before.process.pid -eq $termination[0].process.pid -or

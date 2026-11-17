@@ -134,7 +134,7 @@ static UINT reserve_helper(MSIHANDLE session) {
     // Observe the real execution-service ancestor, which outlives CA workers.
     DWORD parent = parent_pid(GetCurrentProcessId());
     if (!parent) return ERROR_INSTALL_FAILURE;
-    auto arguments = L"--installer-parent " + std::to_wstring(parent)
+    auto arguments = L"--installer-msi --installer-parent " + std::to_wstring(parent)
         + L" --installer-status \"" + stem + L".status\" --installer-release \"" + stem + L".release\"";
     HANDLE child = spawn_helper(session, arguments);
     if (!child) return ERROR_INSTALL_FAILURE;

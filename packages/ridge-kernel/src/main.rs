@@ -26,6 +26,8 @@ struct Args {
     installer_status: Option<std::path::PathBuf>,
     #[arg(long, hide = true, requires = "installer_parent")]
     installer_release: Option<std::path::PathBuf>,
+    #[arg(long, hide = true, requires = "installer_parent")]
+    installer_msi: bool,
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
     #[arg(long, default_value_t = 0)]
@@ -45,7 +47,8 @@ async fn main() -> Result<()> {
     }
     if args.installer_check { return ridge_kernel::installer::check(); }
     if let Some(parent) = args.installer_parent {
-        return ridge_kernel::installer::hold(parent,
+        let hold = if args.installer_msi { ridge_kernel::installer::hold_msi } else { ridge_kernel::installer::hold };
+        return hold(parent,
             args.installer_status.as_deref().expect("required installer status"),
             args.installer_release.as_deref().expect("required installer release"));
     }
