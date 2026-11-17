@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="{056D63CA-DA83-4458-8CBF-5D98C18F89BE}" Name="Ridge MSI lifecycle probe (CI only)"
+  <Product Id="$(var.ProductCode)" Name="Ridge MSI lifecycle probe (CI only)"
            Language="1033" Version="1.0.0" Manufacturer="Ridge CI fixture"
            UpgradeCode="{1B2498C2-CBA6-4943-ADEA-806CA55B7F90}">
-    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser" Platform="x64" />
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="$(var.InstallScope)" Platform="x64" />
     <MediaTemplate EmbedCab="yes" />
     <Property Id="RIDGE_PROBE_ROOT" Secure="yes" />
     <Property Id="PROBE_MODE" Secure="yes" Value="success" />

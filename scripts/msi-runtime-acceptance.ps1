@@ -30,15 +30,9 @@ Push-Location $output
 try {
     Invoke-Checked 'cl.exe' @('/nologo', '/std:c++17', '/W4', '/WX', '/EHsc', '/MT', '/LD',
         (Join-Path $repo 'tests/fixtures/msi-runtime/probe.cpp'), '/link', '/OUT:probe.dll', 'msi.lib', 'advapi32.lib')
-    Invoke-Checked (Join-Path $WixDirectory 'candle.exe') @('-nologo', '-arch', 'x64', "-dProbeDll=$dll", "-dPayload=$payload",
-        '-out', (Join-Path $output 'probe.wixobj'), (Join-Path $repo 'tests/fixtures/msi-runtime/probe.wxs'))
-    Invoke-Checked (Join-Path $WixDirectory 'light.exe') @('-nologo', '-out', (Join-Path $output 'probe.msi'), (Join-Path $output 'probe.wixobj'))
 } finally { Pop-Location }
 
-$msi = Join-Path $output 'probe.msi'
-$product = '{056D63CA-DA83-4458-8CBF-5D98C18F89BE}'
 $installer = New-Object -ComObject WindowsInstaller.Installer
-$database = $installer.OpenDatabase($msi, 0)
 function Read-MsiRows([string]$Query, [int]$Columns) {
     $view = $database.OpenView($Query)
     [void]$view.Execute()
@@ -49,16 +43,6 @@ function Read-MsiRows([string]$Query, [int]$Columns) {
         }
     } finally { [void]$view.Close() }
 }
-$properties = @{}
-foreach ($row in (Read-MsiRows 'SELECT `Property`, `Value` FROM `Property`' 2)) { $properties[$row[0]] = $row[1] }
-if ($properties.ProductCode -ne $product -or $properties.Manufacturer -ne 'Ridge CI fixture' -or
-    $properties.UpgradeCode -ne '{1B2498C2-CBA6-4943-ADEA-806CA55B7F90}') { throw 'Unexpected fixture MSI identity.' }
-$sequence = @(Read-MsiRows 'SELECT `Action`, `Condition`, `Sequence` FROM `InstallExecuteSequence`' 3)
-$sequence | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $output 'sequence.json')
-foreach ($flag in @('-1', '-2', '-3', '-4')) {
-    if (@($sequence | Where-Object { $_[2] -eq $flag }).Count -ne 1) { throw "Missing termination action $flag" }
-}
-
 function Invoke-ProbeMsi([string]$CaseRoot, [string]$Ui, [string]$Mode, [switch]$Uninstall) {
     $operation = if ($Uninstall) { '/x' } else { '/i' }
     $target = if ($Uninstall) { $product } else { '"' + $msi + '"' }
@@ -72,9 +56,29 @@ function Invoke-ProbeMsi([string]$CaseRoot, [string]$Ui, [string]$Mode, [switch]
 }
 
 $results = @()
+$packages = @()
+foreach ($scope in @('perUser', 'perMachine')) {
+    $product = if ($scope -eq 'perUser') { '{056D63CA-DA83-4458-8CBF-5D98C18F89BE}' } else { '{B6B6DC01-A158-4943-A3C3-DC0CA105A57F}' }
+    $msi = Join-Path $output "$scope.msi"
+    $object = Join-Path $output "$scope.wixobj"
+    Invoke-Checked (Join-Path $WixDirectory 'candle.exe') @('-nologo', '-arch', 'x64', "-dProbeDll=$dll", "-dPayload=$payload",
+        "-dProductCode=$product", "-dInstallScope=$scope", '-out', $object, (Join-Path $repo 'tests/fixtures/msi-runtime/probe.wxs'))
+    Invoke-Checked (Join-Path $WixDirectory 'light.exe') @('-nologo', '-out', $msi, $object)
+    $database = $installer.OpenDatabase($msi, 0)
+    $properties = @{}
+    foreach ($row in (Read-MsiRows 'SELECT `Property`, `Value` FROM `Property`' 2)) { $properties[$row[0]] = $row[1] }
+    if ($properties.ProductCode -ne $product -or $properties.Manufacturer -ne 'Ridge CI fixture' -or
+        $properties.UpgradeCode -ne '{1B2498C2-CBA6-4943-ADEA-806CA55B7F90}') { throw 'Unexpected fixture MSI identity.' }
+    if (($properties['ALLUSERS'] -eq '1') -ne ($scope -eq 'perMachine')) { throw 'Unexpected MSI installation scope.' }
+    $sequence = @(Read-MsiRows 'SELECT `Action`, `Condition`, `Sequence` FROM `InstallExecuteSequence`' 3)
+    $sequence | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $output "$scope-sequence.json")
+    foreach ($flag in @('-1', '-2', '-3', '-4')) {
+        if (@($sequence | Where-Object { $_[2] -eq $flag }).Count -ne 1) { throw "Missing termination action $flag" }
+    }
+    $packages += [pscustomobject]@{ scope = $scope; product = $product; sha256 = (Get-FileHash $msi -Algorithm SHA256).Hash }
 foreach ($ui in @('/qn', '/qf')) {
     foreach ($mode in @('success', 'failure', 'cancel')) {
-        $caseRoot = Join-Path $output ($ui.TrimStart('/') + '-' + $mode)
+        $caseRoot = Join-Path $output ($scope + '-' + $ui.TrimStart('/') + '-' + $mode)
         New-Item -ItemType Directory -Path $caseRoot | Out-Null
         try {
             $exit = Invoke-ProbeMsi $caseRoot $ui $mode
@@ -92,7 +96,7 @@ foreach ($ui in @('/qn', '/qf')) {
                 throw "$ui/$mode termination callback did not follow commit/rollback."
             }
             $before = @($trace | Where-Object stage -eq 'before')[0]
-            $results += [pscustomobject]@{ ui = $ui; mode = $mode; exit = $exit; stages = @($trace.stage);
+            $results += [pscustomobject]@{ scope = $scope; ui = $ui; mode = $mode; exit = $exit; stages = @($trace.stage);
                 before = $before; termination = $termination[0] }
         } finally {
             if ($installer.ProductState($product) -eq 5) {
@@ -103,7 +107,8 @@ foreach ($ui in @('/qn', '/qf')) {
     }
 }
 if ($installer.ProductState($product) -eq 5) { throw 'Isolated fixture remains installed.' }
+}
 [pscustomobject]@{ scope = 'MSI lifecycle probe only'; runtimeGuardImplemented = $false; productionAcceptance = $false;
-    source = $env:GITHUB_SHA; packageSha256 = (Get-FileHash $msi -Algorithm SHA256).Hash; cases = $results
+    source = $env:GITHUB_SHA; packages = $packages; cases = $results
 } | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $output 'probe-results.json')
 Write-Output "MSI lifecycle probe: $($results.Count) cases; production Runtime guard remains unverified."
