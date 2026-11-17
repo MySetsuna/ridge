@@ -308,21 +308,20 @@ fn msi_service(user: &str) -> Result<ProcessInstance> {
         let id = Pid::from_u32(pid);
         system.refresh_processes_specifics(ProcessesToUpdate::Some(&[id]), ProcessRefreshKind::new().with_exe(UpdateKind::Always).with_user(UpdateKind::Always));
         let process = system.process(id).context("cannot inspect MSI ancestry")?;
+        let executable = process.exe().context("cannot establish MSI ancestor image")?.canonicalize()?;
+        let is_msi = executable.to_string_lossy().eq_ignore_ascii_case(&expected.to_string_lossy());
+        if service.is_some() && !is_msi { break; }
         let sid = process.user_id().context("cannot establish MSI account")?.to_string();
         if pid == own.pid && (sid != user || sid == "S-1-5-18") {
             bail!("installer account differs from the Runtime owner; original preserved");
         }
-        if sid == "S-1-5-18" && process.exe().and_then(|path| path.canonicalize().ok())
-            .is_some_and(|path| path.to_string_lossy().eq_ignore_ascii_case(&expected.to_string_lossy())) {
+        if sid == "S-1-5-18" && is_msi {
             service = Some(instance.clone());
         }
         let next = process.parent().map(|parent| parent.as_u32());
         process_identity::validate(&instance)?;
         let Some(next) = next.filter(|next| *next != pid && *next != 0) else { break; };
-        // Once the attested service's parent is reached, unrelated system
-        // processes need not grant metadata access to the installing user.
         pid = next;
-        if service.is_some() { break; }
     }
     let service = service.context("installer is not inside an OS-attested MSI execution service")?;
     if !process_identity::descendant(&service, &own)? { bail!("MSI execution service instance changed"); }
