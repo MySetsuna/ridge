@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "id": "20d5d706-fdd5-4030-b01f-4dd056b92c28",
+  "at": "2026-11-17T04:58:38.030Z",
+  "type": "applied",
+  "source": "local_operation",
+  "changeId": "CHG-135",
+  "data": {
+    "added": [
+      "L4-COMMUNE-REAL-PROVIDER-CONVERSATIONS"
+    ],
+    "changed": [],
+    "retiring": [],
+    "patch": {
+      "changeId": "CHG-135",
+      "nodes": [
+        {
+          "id": "L4-COMMUNE-REAL-PROVIDER-CONVERSATIONS",
+          "level": "L4",
+          "title": "Claude 与 OpenCode 实际会话闭环验收",
+          "parent": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+          "codeTargets": [
+            "scripts/commune-provider-conversation-acceptance.mjs"
+          ],
+          "testTargets": [
+            "scripts/commune-provider-conversation-acceptance.mjs"
+          ],
+          "dependsOn": [
+            "L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION"
+          ],
+          "body": "# Claude 与 OpenCode 真实会话闭环验收\n\n落实 L4-COMMUNE-AUTOMATIC-AGENT-CONNECTION 已批准的逐工具互操作要求。现有初始化脚本明确将完整对话标为 UNVERIFIED；补充真实安装的 Claude ACP 适配器／SDK 与 OpenCode CLI 的实际轮次，不使用模拟 ACP Agent 冒充具名工具。\n\n验收使用自建 Loopback 模型服务、私有配置与自有工作区、终端、进程；移除继承的供应商凭据并禁用非必要外部流量。不消费用户已有 Agent 或会话，不访问外部模型服务，不将受控模型响应提升为供应商模型或公网验收。清楚记录实际适配器身份、协议会话及验证范围，不能把 SDK 适配器等同于用户原生 TUI 历史接管。Grok 按原授权保留 SKIPPED／UNVERIFIED。\n\n逐工具验证实际终端创建、自动候选和准确原会话接入；终端先入组，接入后 agentId 与组文件保持；真实模型轮次经 Runtime 派发及同键重试仅执行一次，真实回复进入同会话历史。实际工具权限请求须到达 Ridge，拒绝不产生目标文件，明确允许才执行测试写入；取消受控未完成轮次，不自动重发。断开与重新接入沿用原会话、终端进程和原组，历史保留；显式退出回收测试创建的进程。缺工具、鉴权失败、协议或行为不符均记录失败，不能用初始化或受控 ACP 样本替代。\n\n本变更仅增加验收脚本和证据，不改业务协议、权限、持久化或生产入口。发现实现缺陷时须另经提案更新当前允许路径后再修复。执行本轮实际脚本及 npm test、lint、typecheck 后由 SpecTree verify、complete 闭环。\n",
+          "acceptanceChecks": [
+            {
+              "id": "real-provider-conversations",
+              "command": [
+                "node",
+                "scripts/commune-provider-conversation-acceptance.mjs"
+              ],
+              "description": "实际安装的 Claude ACP 与 OpenCode、私有配置及 Loopback 模型：原会话、编组、派发、历史、审批、取消和生命周期；不是外部模型或公网验收"
+            },
+            {
+              "id": "lint",
+              "command": [
+                "npm",
+                "run",
+                "lint"
+              ],
+              "description": "仓库 lint"
+            },
+            {
+              "id": "typecheck",
+              "command": [
+                "npm",
+                "run",
+                "typecheck"
+              ],
+              "description": "仓库类型检查"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

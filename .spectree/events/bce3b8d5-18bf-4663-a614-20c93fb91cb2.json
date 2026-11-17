@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "bce3b8d5-18bf-4663-a614-20c93fb91cb2",
+  "at": "2026-11-17T04:58:40.935Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-135",
+  "data": {
+    "changeId": "CHG-135",
+    "specHash": "8084bffbb3f5b64ccca1cac6b8c43917c95dca1899df3142ad8278f54ece89d4",
+    "approvedAt": "2026-11-17T04:58:40.931Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "全部授权通过；补齐既有具名 Agent 互操作验收，仅自有会话与 Loopback 模型，Grok 保留跳过",
+    "attributionVerified": false
+  }
+}

@@ -1,42 +1,27 @@
 {
   "version": 1,
-  "changeId": "CHG-134",
-  "specHash": "f0c9c545a6c37a96e697a66b52f39f4b58444ad3b72a846db372177c8c4e281a",
+  "changeId": "CHG-135",
+  "specHash": "38cee08679265d0f0f4cb8c6dc05516c31249056772f9f9d2f5fa4f0e6d03588",
   "units": [
     {
-      "id": "L4-EXPLORER-READ-RECOVERY",
+      "id": "L4-COMMUNE-REAL-PROVIDER-CONVERSATIONS",
       "level": "L4",
-      "nodeHash": "e9ad18706131375eeb16588b35c49d15660c135cfa3df0eed1bf992296429bce",
+      "nodeHash": "ecc921d6e59ab92255d1f1a9a8bb8a46b3d1693ba350d08c8913d04e9d5b004e",
       "codeTargets": [
-        "src/lib/stores/fileExplorer.ts",
-        "src/lib/components/Explorer.svelte",
-        "src/lib/i18n/messages/explorer.ts",
-        "scripts/file-explorer-read-ui-acceptance.mjs"
+        "scripts/commune-provider-conversation-acceptance.mjs"
       ],
       "testTargets": [
-        "src/lib/stores/fileExplorer.test.ts",
-        "scripts/file-explorer-read-ui-acceptance.mjs"
+        "scripts/commune-provider-conversation-acceptance.mjs"
       ],
       "status": "LOCKED",
       "acceptanceChecks": [
         {
-          "id": "file-tree-read-state",
-          "command": [
-            "pnpm",
-            "exec",
-            "vitest",
-            "run",
-            "src/lib/stores/fileExplorer.test.ts"
-          ],
-          "description": "真实 store 的权限拒绝、失败重试、缺失目录、同列并发与重建迟到回包；局部异常不进入全局错误"
-        },
-        {
-          "id": "file-tree-native-ui",
+          "id": "real-provider-conversations",
           "command": [
             "node",
-            "scripts/file-explorer-read-ui-acceptance.mjs"
+            "scripts/commune-provider-conversation-acceptance.mjs"
           ],
-          "description": "实际生产 Explorer/FileTree 与隔离 Kernel 原生 RPC：根内读取、越界拒绝、重试、列重建及中英文窄栏"
+          "description": "实际安装的 Claude ACP 与 OpenCode、私有配置及 Loopback 模型：原会话、编组、派发、历史、审批、取消和生命周期；不是外部模型或公网验收"
         },
         {
           "id": "lint",
@@ -60,11 +45,7 @@
     }
   ],
   "allowedPaths": [
-    "scripts/file-explorer-read-ui-acceptance.mjs",
-    "src/lib/components/Explorer.svelte",
-    "src/lib/i18n/messages/explorer.ts",
-    "src/lib/stores/fileExplorer.test.ts",
-    "src/lib/stores/fileExplorer.ts"
+    "scripts/commune-provider-conversation-acceptance.mjs"
   ],
   "testCommand": [
     "npm",
@@ -227,6 +208,7 @@
     "changes/CHG-132.md": "d4c0ef71959e953588d2c35b091fccb6c34ce3f8e17ed22fd24bb65a2b4dd665",
     "changes/CHG-133.md": "cfa117039594345bf5db0c8083bd292411d4132ef7f73273e514ed014d84dd6c",
     "changes/CHG-134.md": "b174e55bc237642798236b8407ccc64572191f1081fffe2c3d34ff5d281c8f52",
+    "changes/CHG-135.md": "48d12ada5fdedf5b86a502cf848741a6195eb9018fdbcb4366ab575d0ee2cd18",
     "docs/architecture/00-overview.md": "95d0242c14da5b42a124758a4fe5b25990828d7e819501234794bc1d6fe6858d",
     "docs/architecture/10-kernel.md": "8f963a3786b4f5a3d11b9025532dd8cab2040c01e241a7c79ca1f99681ff3511",
     "docs/architecture/20-rtp1-wire.md": "a91f506ecad8642b056d989751e66a54aba5b0af16e9a60d6455a7161ca0a202",
@@ -933,6 +915,7 @@
     "scripts/commune-live-history-acceptance.mjs": "7de73d4c29c8dd6c8402ffea6692c20dc6d3d2485fc1c78233df3b688ccffaa0",
     "scripts/commune-permission-ui-acceptance.mjs": "9e2c1178f904b20656fe59318fc9515c09eb5fbff91fe4cf88d9b8d913ab6d6b",
     "scripts/commune-permission-ui-client.mjs": "06a3047d9fd1774332953d2a8141ece0dd11a50fc1597d90583ca788e8b58215",
+    "scripts/commune-provider-conversation-acceptance.mjs": "7a287156c0a7e086bafa10dc0ca42a28882db580eaeea56096f5b03fcbad659c",
     "scripts/commune-sdk-acceptance.mjs": "ffb9662c18f9a6df982baba9fe831c8a1c57e136f3e84a055863060d88e6de45",
     "scripts/commune-shared-daemon-acceptance.mjs": "1609a1b70f865d76a56c0fa940ae268d44fd7152edd4876c776aea7af11be46d",
     "scripts/copy-teammate-shim.mjs": "2d372d8773beca4fc7f5b4d07e4a29c585637cccdf4ecc984de6d291fc793cb9",
@@ -1203,6 +1186,7 @@
     "specs/l4-commune-linux-process-observation.md": "fb173d1cf434a6c10b78bf3950deedfbe34f34ea800c87a6a5253698c7d203e6",
     "specs/l4-commune-mobile-group-navigation.md": "6a2c50dd958e20cda3cf62d6682b1b9470d790a6dce61cea0d4735322d6794f3",
     "specs/l4-commune-organization-members.md": "aea7dcd32504ea1b85bc903e6a5cbaa9020ea34997f5066c5e4fe91f79fbfcb7",
+    "specs/l4-commune-real-provider-conversations.md": "3293c390d4d16be5f5cb917cd983276a2c3bd6901b3262be6186c838a361b57e",
     "specs/l4-commune-remote-delivery.md": "5fbe4dc4c9f4356766811c25a0e1b18a77dbd3e71b318ce7177e0762e26fed12",
     "specs/l4-commune-shared-daemon-binding.md": "12d50662f8bd493245e42bafaedfbb62997e02d154882d98b481698eb5531f34",
     "specs/l4-commune-ui-acceptance.md": "77d6bee845f406ad7e50fe5510414897fb4d0f7a702cd9cb1e8ad01dc921fc4e",
@@ -2684,6 +2668,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-f1800e7381f5",
-  "manifestHash": "f1800e7381f5ca3abaeb3bbd45b650105d9e46f0c704887ac6fbfeba18279bb9"
+  "buildId": "BUILD-06752bb3199f",
+  "manifestHash": "06752bb3199f092eeaeef2cf4b8c7ac49ab286bb8ed1453e7d988bfa60da4a91"
 }

@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "buildId": "BUILD-1458c0030959",
+  "changeId": "CHG-135",
+  "specHash": "8084bffbb3f5b64ccca1cac6b8c43917c95dca1899df3142ad8278f54ece89d4",
+  "workspaceHash": "8de1464abdcb546355402674593588acb57e3f25ebbbebcf1f8f9d758678eb65",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-COMMUNE-REAL-PROVIDER-CONVERSATIONS",
+      "checkId": "real-provider-conversations",
+      "command": [
+        "node",
+        "scripts/commune-provider-conversation-acceptance.mjs"
+      ],
+      "description": "实际安装的 Claude ACP 与 OpenCode、私有配置及 Loopback 模型：原会话、编组、派发、历史、审批、取消和生命周期；不是外部模型或公网验收",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-REAL-PROVIDER-CONVERSATIONS",
+      "checkId": "lint",
+      "command": [
+        "npm",
+        "run",
+        "lint"
+      ],
+      "description": "仓库 lint",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-COMMUNE-REAL-PROVIDER-CONVERSATIONS",
+      "checkId": "typecheck",
+      "command": [
+        "npm",
+        "run",
+        "typecheck"
+      ],
+      "description": "仓库类型检查",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-17T05:20:09.289Z",
+  "diagnostics": [],
+  "eventId": "8943e192-81f8-4f16-a4cc-31e7a31b3d88"
+}

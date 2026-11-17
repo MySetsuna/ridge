@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "id": "cea6ae7a-fae5-49af-9f26-26d0b36229f4",
+  "at": "2026-11-17T05:22:50.205Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-135",
+  "buildId": "BUILD-06752bb3199f",
+  "data": {
+    "previousBuildId": "BUILD-1458c0030959",
+    "testEvidence": {
+      "buildId": "BUILD-1458c0030959",
+      "workspaceHash": "8de1464abdcb546355402674593588acb57e3f25ebbbebcf1f8f9d758678eb65",
+      "verifiedAt": "2026-11-17T05:20:09.289Z",
+      "eventId": "8943e192-81f8-4f16-a4cc-31e7a31b3d88"
+    },
+    "absorbed": [
+      "changes/CHG-135.md",
+      "scripts/commune-provider-conversation-acceptance.mjs",
+      "specs/l4-commune-real-provider-conversations.md"
+    ],
+    "activated": [
+      "L4-COMMUNE-REAL-PROVIDER-CONVERSATIONS"
+    ],
+    "archived": []
+  }
+}

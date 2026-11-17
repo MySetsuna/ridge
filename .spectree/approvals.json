@@ -959,5 +959,17 @@
       "buildId": "BUILD-20d378f59f4c",
       "specHash": "12011b2994dfe4ba4da1791f3cc2a434ec170ed61cfafbfc5330975f0521e241"
     }
+  },
+  {
+    "changeId": "CHG-135",
+    "specHash": "38cee08679265d0f0f4cb8c6dc05516c31249056772f9f9d2f5fa4f0e6d03588",
+    "approvedAt": "2026-11-17T05:22:50.178Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "全部授权通过；补齐既有具名 Agent 互操作验收，仅自有会话与 Loopback 模型，Grok 保留跳过",
+    "derivedFrom": {
+      "buildId": "BUILD-1458c0030959",
+      "specHash": "8084bffbb3f5b64ccca1cac6b8c43917c95dca1899df3142ad8278f54ece89d4"
+    }
   }
 ]

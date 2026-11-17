@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "b8bc8d6c-333d-4ab7-96d8-80d90ee7acc2",
+  "at": "2026-11-17T04:57:06.574Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-135",
+  "data": {
+    "title": "补齐 Claude 与 OpenCode 实际会话闭环验收",
+    "implementation": "REQUIRED"
+  }
+}
