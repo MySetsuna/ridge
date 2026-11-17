@@ -2,6 +2,7 @@ param(
     [switch]$ProbeOnly,
     [switch]$ProductionGuard,
     [string]$KernelPath,
+    [string]$CliPath,
     [Parameter(Mandatory)][string]$WixDirectory,
     [Parameter(Mandatory)][string]$OutputDirectory
 )
@@ -13,7 +14,7 @@ if (!$IsWindows -or $env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windo
     throw 'Actual MSI execution requires a disposable GitHub Windows runner.'
 }
 if ($ProbeOnly -eq $ProductionGuard) { throw 'Select either the lifecycle probe or the production guard fixture.' }
-if ($ProductionGuard -and (!$KernelPath -or [Environment]::GetEnvironmentVariable('RIDGE_KERNEL_DATA_DIR') -ne $null -or
+if ($ProductionGuard -and (!$KernelPath -or !$CliPath -or [Environment]::GetEnvironmentVariable('RIDGE_KERNEL_DATA_DIR') -ne $null -or
     [Environment]::GetEnvironmentVariable('RIDGE_TEST_ALLOW_NON_BREAKAWAY') -ne $null)) {
     throw 'Production guard acceptance requires its actual Kernel, native user namespace and production breakaway behavior.'
 }
@@ -24,6 +25,7 @@ if (!$output.StartsWith($runnerRoot, [StringComparison]::OrdinalIgnoreCase) -or 
 }
 $repo = Split-Path $PSScriptRoot -Parent
 if ($KernelPath) { $KernelPath = (Resolve-Path -LiteralPath $KernelPath).Path; if ($KernelPath.Contains('"')) { throw 'Invalid Kernel path.' } }
+if ($CliPath) { $CliPath = (Resolve-Path -LiteralPath $CliPath).Path; if ($CliPath.Contains('"')) { throw 'Invalid CLI path.' } }
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 $dll = Join-Path $output 'probe.dll'
 $payload = Join-Path $output 'sentinel.txt'
@@ -52,14 +54,15 @@ function Read-MsiRows([string]$Query, [int]$Columns) {
         }
     } finally { [void]$view.Close() }
 }
-function Invoke-ProbeMsi([string]$CaseRoot, [string]$Ui, [string]$Mode, [switch]$Uninstall) {
-    $operation = if ($Uninstall) { '/x' } else { '/i' }
-    $target = if ($Uninstall) { $product } else { '"' + $msi + '"' }
-    $log = Join-Path $CaseRoot $(if ($Uninstall) { 'uninstall.log' } else { 'install.log' })
+function Invoke-ProbeMsi([string]$CaseRoot, [string]$Ui, [string]$Mode, [switch]$Uninstall, [switch]$Repair) {
+    $operation = if ($Uninstall) { '/x' } elseif ($Repair) { '/fomus' } else { '/i' }
+    $target = if ($Uninstall -or $Repair) { $product } else { '"' + $msi + '"' }
+    $log = Join-Path $CaseRoot $(if ($Uninstall) { 'uninstall.log' } elseif ($Repair) { 'repair.log' } else { 'install.log' })
     $arguments = @($operation, $target, $Ui, '/norestart', 'REBOOT=ReallySuppress', '/l*v', ('"' + $log + '"'),
         ('RIDGE_PROBE_ROOT="' + $CaseRoot + '"'), ('PROBE_INSTALL="' + (Join-Path $CaseRoot 'installed') + '"'), "PROBE_MODE=$Mode")
     if ($ProductionGuard) { $arguments += 'RIDGE_PROBE_DATA_DIR="' + $nativeDataRoot + '"' }
     elseif ($KernelPath) { $arguments += 'RIDGE_PROBE_HELPER="' + $KernelPath + '"' }
+    if ($Mode -eq 'active') { $arguments += 'PROBE_LAUNCH_KERNEL=1' }
     $process = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList $arguments -WindowStyle Hidden -PassThru
     if (!$process.WaitForExit(120000)) { throw "MSI $Mode timed out; runner teardown owns cleanup." }
     $process.Refresh()
@@ -92,6 +95,86 @@ function Wait-HelperDone([string]$CaseRoot) {
     throw 'Actual Kernel helper did not release after MSI completion.'
 }
 
+function Invoke-OwnedKernel([object]$Endpoint, [string]$Route, [string]$Method = 'GET', [object]$Body = $null) {
+    $request = @{ Uri = "http://127.0.0.1:$($Endpoint.port)$Route"; Method = $Method; NoProxy = $true;
+        Headers = @{ 'x-ridge-kernel-token' = $Endpoint.token }; TimeoutSec = 10 }
+    if ($null -ne $Body) { $request.ContentType = 'application/json'; $request.Body = $Body | ConvertTo-Json -Depth 8 -Compress }
+    return Invoke-RestMethod @request
+}
+
+function Test-ActiveKernel([string]$CaseRoot, [string]$Ui) {
+    $endpoint = $null; $ownedKernel = $null; $pane = [guid]::NewGuid().ToString()
+    $installed = Join-Path $CaseRoot 'installed'
+    $endpointFile = Join-Path $nativeDataRoot 'kernel.json'
+    if (Test-Path -LiteralPath $endpointFile) { throw 'Unexpected Runtime before owned active-Kernel fixture.' }
+    try {
+        if ((Invoke-ProbeMsi $CaseRoot $Ui 'active') -ne 0) { throw 'Actual CLI could not launch its installed sibling Kernel.' }
+        for ($attempt = 0; $attempt -lt 200; $attempt++) {
+            if (Test-Path -LiteralPath $endpointFile) {
+                $candidate = Get-Content -LiteralPath $endpointFile -Raw | ConvertFrom-Json
+                $process = Get-Process -Id $candidate.pid -ErrorAction SilentlyContinue
+                if ($process -and $process.Path -eq (Join-Path $installed 'ridge-kernel.exe')) {
+                    $endpoint = $candidate; $ownedKernel = $process; break
+                }
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        if (!$ownedKernel) { throw 'Real installed Kernel did not publish an attested endpoint.' }
+        $health = Invoke-OwnedKernel $endpoint '/v1/health'
+        if ($health.pid -ne $ownedKernel.Id -or $health.started_at_unix -ne $endpoint.started_at_unix) { throw 'Owned Kernel health identity mismatch.' }
+        $hashes = @{}; foreach ($name in @('sentinel.txt', 'ridge.exe', 'ridge-kernel.exe')) {
+            $hashes[$name] = (Get-FileHash -LiteralPath (Join-Path $installed $name) -Algorithm SHA256).Hash
+        }
+        if ($hashes['ridge-kernel.exe'] -ne (Get-FileHash -LiteralPath $KernelPath -Algorithm SHA256).Hash) { throw 'Live Kernel differs from the actual build.' }
+        $shell = Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell/v1.0/powershell.exe'
+        $created = Invoke-OwnedKernel $endpoint '/v1/domain/ptys' 'POST' @{
+            pty_id = $pane; workspace_id = [guid]::NewGuid().ToString(); program = $shell; cwd = $CaseRoot; role = 'shell'; cols = 80; rows = 24;
+            args = @('-NoProfile', '-NonInteractive', '-Command', "while (`$true) { [Console]::WriteLine('ridge-msi-heartbeat'); Start-Sleep -Milliseconds 100 }")
+        }
+        if (!$created.ok) { throw 'Real heartbeat PTY creation failed.' }
+        Start-Sleep -Milliseconds 500
+        $baseline = @( (Invoke-OwnedKernel $endpoint '/v1/domain/ptys').ptys | Where-Object pty_id -eq $pane )[0]
+        if (!$baseline.child_pid -or !$baseline.child_start_instance) { throw 'Heartbeat has no real child identity.' }
+        $rows = @()
+        foreach ($operation in @('install', 'repair', 'uninstall')) {
+            $operationRoot = Join-Path $CaseRoot $operation
+            New-Item -ItemType Directory -Path $operationRoot | Out-Null
+            # Keep the installed directory fixed while placing each attempt's log separately.
+            $exit = Invoke-ProbeMsi $CaseRoot $Ui 'success' -Uninstall:($operation -eq 'uninstall') -Repair:($operation -eq 'repair')
+            Copy-Item -LiteralPath (Join-Path $CaseRoot "$operation.log") -Destination (Join-Path $operationRoot 'msi.log')
+            if ($exit -ne 1603) { throw "Active Runtime $operation was not refused: $exit" }
+            $errorLog = Join-Path $nativeDataRoot 'installer-last-error.txt'
+            if (Test-Path -LiteralPath $errorLog) { Copy-Item -LiteralPath $errorLog -Destination (Join-Path $operationRoot 'core-error.txt') }
+            $after = @( (Invoke-OwnedKernel $endpoint '/v1/domain/ptys').ptys | Where-Object pty_id -eq $pane )[0]
+            if ($after.child_pid -ne $baseline.child_pid -or $after.child_start_instance -ne $baseline.child_start_instance -or
+                $after.next_seq -le $baseline.next_seq) { throw 'Active PTY was replaced, stopped or lost its output heartbeat.' }
+            foreach ($name in $hashes.Keys) {
+                if ((Get-FileHash -LiteralPath (Join-Path $installed $name) -Algorithm SHA256).Hash -ne $hashes[$name]) { throw 'Refused MSI changed an installed file.' }
+            }
+            if ($installer.ProductState($product) -ne 5) { throw 'Refused MSI changed the installed product state.' }
+            $rows += [pscustomobject]@{ scope = $scope; ui = $Ui; mode = "active-$operation"; exit = $exit;
+                kernelPid = $health.pid; kernelStartedAt = $health.started_at_unix; installedFileHashes = $hashes;
+                ptyPid = $after.child_pid; ptyStartedInstance = $after.child_start_instance;
+                outputSequenceBefore = $baseline.next_seq; outputSequenceAfter = $after.next_seq }
+            $baseline = $after
+        }
+        return $rows
+    } finally {
+        if ($endpoint -and $ownedKernel) {
+            $current = Invoke-OwnedKernel $endpoint '/v1/health'
+            if ($current.pid -ne $ownedKernel.Id -or $current.started_at_unix -ne $endpoint.started_at_unix) { throw 'Refusing cleanup of a different Kernel instance.' }
+            [void](Invoke-OwnedKernel $endpoint "/v1/domain/ptys/$pane" 'DELETE')
+            [void](Invoke-OwnedKernel $endpoint '/v1/shutdown' 'POST')
+            if (!$ownedKernel.WaitForExit(15000)) { throw 'Owned Kernel did not shut down; runner teardown owns cleanup.' }
+        }
+        if ($installer.ProductState($product) -eq 5) {
+            if ((Invoke-ProbeMsi $CaseRoot '/qn' 'success' -Uninstall) -ne 0) { throw 'Owned active-Kernel fixture uninstall failed.' }
+            Wait-HelperDone $CaseRoot
+        }
+        Assert-HelperReleased $CaseRoot
+    }
+}
+
 $results = @()
 $packages = @()
 foreach ($scope in @('perUser', 'perMachine')) {
@@ -100,7 +183,7 @@ foreach ($scope in @('perUser', 'perMachine')) {
     $object = Join-Path $output "$scope.wixobj"
     $candleArguments = @('-nologo', '-arch', 'x64', "-dProbeDll=$dll", "-dPayload=$payload",
         "-dProductCode=$product", "-dInstallScope=$scope", '-out', $object, (Join-Path $repo 'tests/fixtures/msi-runtime/probe.wxs'))
-    if ($ProductionGuard) { $candleArguments += '-dWithRuntimeGuard=1' }
+    if ($ProductionGuard) { $candleArguments += @('-dWithRuntimeGuard=1', '-dWithLiveKernel=1', "-dKernelPath=$KernelPath", "-dCliPath=$CliPath") }
     Invoke-Checked (Join-Path $WixDirectory 'candle.exe') $candleArguments
     $linkObjects = @($object)
     if ($ProductionGuard) {
@@ -207,6 +290,11 @@ foreach ($ui in @('/qn', '/qf')) {
             }
             $msi = $baseMsi
         }
+    }
+    if ($ProductionGuard) {
+        $activeRoot = Join-Path $output ($scope + '-' + $ui.TrimStart('/') + '-active')
+        New-Item -ItemType Directory -Path $activeRoot | Out-Null
+        $results += @(Test-ActiveKernel $activeRoot $ui)
     }
 }
 if ($installer.ProductState($product) -eq 5) { throw 'Isolated fixture remains installed.' }

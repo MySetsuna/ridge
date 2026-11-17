@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "0ab278c7-0bb3-44e6-9195-712701f10624",
+  "at": "2026-11-17T10:41:55.717Z",
+  "type": "verification_started",
+  "source": "local_operation",
+  "changeId": "CHG-137",
+  "buildId": "BUILD-84f7cab8b488",
+  "data": {
+    "workspaceHash": "510927d0a667f89da1e80d5aefdee227f93a2bf9cf5ba988431a66dd303b61e8"
+  }
+}

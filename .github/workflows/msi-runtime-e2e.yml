@@ -26,6 +26,8 @@ jobs:
         run: |
           cargo build --locked -p ridge-kernel --bin ridge-kernel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --locked -p ridge-cli --bin ridge
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Download pinned WiX 3.14.1
         shell: pwsh
         run: |
@@ -41,7 +43,7 @@ jobs:
       - name: Exercise production WiX guard with isolated payload
         shell: pwsh
         run: |
-          ./scripts/msi-runtime-acceptance.ps1 -ProductionGuard -KernelPath "$env:GITHUB_WORKSPACE/target/debug/ridge-kernel.exe" -WixDirectory "$env:RUNNER_TEMP/wix314" -OutputDirectory "$env:RUNNER_TEMP/ridge-msi-guard"
+          ./scripts/msi-runtime-acceptance.ps1 -ProductionGuard -KernelPath "$env:GITHUB_WORKSPACE/target/debug/ridge-kernel.exe" -CliPath "$env:GITHUB_WORKSPACE/target/debug/ridge.exe" -WixDirectory "$env:RUNNER_TEMP/wix314" -OutputDirectory "$env:RUNNER_TEMP/ridge-msi-guard"
       - name: Upload actual MSI evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -51,4 +53,5 @@ jobs:
             ${{ runner.temp }}/ridge-msi-probe
             ${{ runner.temp }}/ridge-msi-guard
             !${{ runner.temp }}/ridge-msi-guard/**/missing-cleanup.msi
+            !${{ runner.temp }}/ridge-msi-guard/**/installed/**
           if-no-files-found: error

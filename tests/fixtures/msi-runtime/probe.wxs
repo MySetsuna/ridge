@@ -9,18 +9,31 @@
     <Property Id="RIDGE_PROBE_HELPER" Secure="yes" />
     <Property Id="RIDGE_PROBE_DATA_DIR" Secure="yes" />
     <Property Id="PROBE_MODE" Secure="yes" Value="success" />
+    <Property Id="PROBE_LAUNCH_KERNEL" Secure="yes" />
     <Condition Message="This isolated fixture requires an explicit probe directory.">RIDGE_PROBE_ROOT</Condition>
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="PROBE_INSTALL" Name="RidgeMsiProbe">
         <Component Id="ProbeSentinel" Guid="{3EAE0A22-C8EF-450C-BB19-E66F1D20E87B}" Win64="yes">
           <File Id="ProbeSentinelFile" Source="$(var.Payload)" Name="sentinel.txt" KeyPath="yes" />
         </Component>
+        <?ifdef WithLiveKernel?>
+          <Component Id="ProbeKernel" Guid="{72011B91-82B8-43D0-97E3-1876734EE5EE}" Win64="yes">
+            <File Id="ProbeKernelFile" Source="$(var.KernelPath)" Name="ridge-kernel.exe" KeyPath="yes" />
+          </Component>
+          <Component Id="ProbeCli" Guid="{DD657785-E04A-4236-A194-C2BD89688583}" Win64="yes">
+            <File Id="ProbeCliFile" Source="$(var.CliPath)" Name="ridge.exe" KeyPath="yes" />
+          </Component>
+        <?endif?>
       </Directory>
     </Directory>
     <Feature Id="Probe" Level="1">
       <ComponentRef Id="ProbeSentinel" />
       <?ifdef WithRuntimeGuard?>
         <ComponentGroupRef Id="RidgeRuntimeInstallationGuard" />
+      <?endif?>
+      <?ifdef WithLiveKernel?>
+        <ComponentRef Id="ProbeKernel" />
+        <ComponentRef Id="ProbeCli" />
       <?endif?>
     </Feature>
     <Binary Id="ProbeDll" SourceFile="$(var.ProbeDll)" />
@@ -38,6 +51,11 @@
     <CustomAction Id="ProbeError" BinaryKey="ProbeDll" DllEntry="ProbeError" Return="ignore" />
     <CustomAction Id="ProbeUserExit" BinaryKey="ProbeDll" DllEntry="ProbeUserExit" Return="ignore" />
     <CustomAction Id="ProbeSuspend" BinaryKey="ProbeDll" DllEntry="ProbeSuspend" Return="ignore" />
+    <?ifdef WithLiveKernel?>
+      <!-- Exercise the real CLI launcher and its installed sibling Kernel,
+           outside the CI runner job, with production breakaway flags. -->
+      <CustomAction Id="ProbeLaunchKernel" FileKey="ProbeCliFile" ExeCommand="kernel ensure" Return="check" />
+    <?endif?>
     <InstallExecuteSequence>
       <Custom Action="ProbeBefore" Before="ProbeContend">1</Custom>
       <Custom Action="ProbeContend" Before="InstallInitialize">1</Custom>
@@ -53,6 +71,9 @@
       <Custom Action="ProbeError" OnExit="error">1</Custom>
       <Custom Action="ProbeUserExit" OnExit="cancel">1</Custom>
       <Custom Action="ProbeSuspend" OnExit="suspend">1</Custom>
+      <?ifdef WithLiveKernel?>
+        <Custom Action="ProbeLaunchKernel" After="RidgeRuntimeRelease">NOT Installed AND NOT REMOVE AND PROBE_LAUNCH_KERNEL = "1"</Custom>
+      <?endif?>
     </InstallExecuteSequence>
   </Product>
 </Wix>
