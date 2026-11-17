@@ -68,6 +68,15 @@ function Assert-HelperReleased([string]$CaseRoot) {
     } finally { $env:RIDGE_KERNEL_DATA_DIR = $savedDataDir }
 }
 
+function Wait-HelperDone([string]$CaseRoot) {
+    $done = Join-Path $CaseRoot 'runtime.done'
+    for ($attempt = 0; $attempt -lt 100; $attempt++) {
+        if ((Test-Path -LiteralPath $done) -and (Get-Content -LiteralPath $done -Raw) -eq 'DONE') { return }
+        Start-Sleep -Milliseconds 100
+    }
+    throw 'Actual Kernel helper did not release after MSI completion.'
+}
+
 $results = @()
 $packages = @()
 foreach ($scope in @('perUser', 'perMachine')) {
@@ -90,26 +99,27 @@ foreach ($scope in @('perUser', 'perMachine')) {
     }
     $packages += [pscustomobject]@{ scope = $scope; product = $product; sha256 = (Get-FileHash $msi -Algorithm SHA256).Hash }
 foreach ($ui in @('/qn', '/qf')) {
-    foreach ($mode in @('success', 'failure', 'cancel', 'crash')) {
+    foreach ($mode in @('success', 'failure', 'cancel', 'crash', 'omit-release')) {
         $caseRoot = Join-Path $output ($scope + '-' + $ui.TrimStart('/') + '-' + $mode)
         New-Item -ItemType Directory -Path $caseRoot | Out-Null
         try {
             $exit = Invoke-ProbeMsi $caseRoot $ui $mode
-            $expected = @{ success = 0; failure = 1603; cancel = 1602; crash = 1603 }[$mode]
+            $expected = @{ success = 0; failure = 1603; cancel = 1602; crash = 1603; 'omit-release' = 0 }[$mode]
             if ($exit -ne $expected) { throw "$ui/$mode exit $exit; expected $expected" }
             $trace = @(Get-Content (Join-Path $caseRoot 'trace.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
             if (@($trace | Where-Object stage -eq 'before').Count -ne 1 -or
                 @($trace | Where-Object { $_.stage -eq 'written' -and $_.installedFileExists }).Count -ne 1) {
                 throw "$ui/$mode did not execute actual file installation."
             }
-            $ending = @{ success = 'exit-success'; failure = 'exit-error'; cancel = 'exit-cancel'; crash = 'exit-error' }[$mode]
+            $ending = @{ success = 'exit-success'; failure = 'exit-error'; cancel = 'exit-cancel'; crash = 'exit-error'; 'omit-release' = 'exit-success' }[$mode]
             $termination = @($trace | Where-Object { $_.stage -like 'exit-*' })
             if ($termination.Count -ne 1 -or $termination[0].stage -ne $ending -or
-                $termination[0].installedFileExists -ne ($mode -eq 'success')) {
+                $termination[0].installedFileExists -ne ($mode -in @('success', 'omit-release'))) {
                 throw "$ui/$mode termination callback did not follow commit/rollback."
             }
-            if ($KernelPath -and (Get-Content -LiteralPath (Join-Path $caseRoot 'runtime.done') -Raw) -ne 'DONE') {
-                throw "$scope/$ui/$mode did not release the actual Kernel helper."
+            if ($KernelPath) { Wait-HelperDone $caseRoot }
+            if ($mode -eq 'omit-release' -and (Test-Path -LiteralPath (Join-Path $caseRoot 'runtime.release'))) {
+                throw 'Fallback release was replaced by a completion callback.'
             }
             Assert-HelperReleased $caseRoot
             $before = @($trace | Where-Object stage -eq 'before')[0]
@@ -121,6 +131,13 @@ foreach ($ui in @('/qn', '/qf')) {
             $results += [pscustomobject]@{ scope = $scope; ui = $ui; mode = $mode; exit = $exit; stages = @($trace.stage);
                 before = $before; termination = $termination[0] }
         } finally {
+            # Recover only this fixture's private holder when a red assertion
+            # intentionally leaves its callback missing; never stop a Runtime.
+            if ($KernelPath -and (Test-Path (Join-Path $caseRoot 'runtime.status')) -and
+                !(Test-Path (Join-Path $caseRoot 'runtime.done'))) {
+                [IO.File]::WriteAllText((Join-Path $caseRoot 'runtime.release'), 'fixture cleanup')
+                Wait-HelperDone $caseRoot
+            }
             if ($installer.ProductState($product) -eq 5) {
                 $cleanupExit = Invoke-ProbeMsi $caseRoot '/qn' 'success' -Uninstall
                 if ($cleanupExit -ne 0) { throw "Isolated fixture uninstall failed: $cleanupExit" }

@@ -81,6 +81,15 @@ static std::string process_identity(DWORD pid) {
         + ",\"image\":" + (named ? quoted(image) : "null") + "}";
 }
 
+static std::string msi_mutex_state() {
+    HANDLE mutex = OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, L"Global\\_MSIExecute");
+    if (!mutex) return "{\"openError\":" + std::to_string(GetLastError()) + "}";
+    DWORD state = WaitForSingleObject(mutex, 0);
+    if (state == WAIT_OBJECT_0 || state == WAIT_ABANDONED) ReleaseMutex(mutex);
+    CloseHandle(mutex);
+    return "{\"wait\":" + std::to_string(state) + ",\"held\":" + (state == WAIT_TIMEOUT ? "true" : "false") + "}";
+}
+
 static std::wstring read_status(const std::wstring& path) {
     HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return L"";
@@ -189,7 +198,8 @@ static UINT trace(MSIHANDLE session, const char* stage, bool deferred = false) {
         + ",\"threadId\":" + std::to_string(GetCurrentThreadId()) + ",\"processSid\":" + quoted(process_sid())
         + ",\"threadSid\":" + quoted(thread_sid()) + ",\"uiLevel\":" + quoted(property(session, L"UILevel"))
         + ",\"userSid\":" + quoted(property(session, L"UserSID")) + ",\"localAppData\":" + quoted(property(session, L"LocalAppDataFolder"))
-        + ",\"installedFileExists\":" + (attributes != INVALID_FILE_ATTRIBUTES ? "true" : "false") + ",\"ancestors\":[";
+        + ",\"installedFileExists\":" + (attributes != INVALID_FILE_ATTRIBUTES ? "true" : "false")
+        + ",\"msiMutex\":" + msi_mutex_state() + ",\"ancestors\":[";
     DWORD pid = GetCurrentProcessId();
     for (int depth = 0; depth < 8; ++depth) {
         DWORD parent = parent_pid(pid);
@@ -223,7 +233,8 @@ extern "C" __declspec(dllexport) UINT __stdcall ProbeCrash(MSIHANDLE s) {
 }
 static UINT finish(MSIHANDLE session, const char* stage) {
     UINT result = contend_helper(session);
-    if (result == ERROR_SUCCESS) result = release_helper(session);
+    bool omit = property(session, L"PROBE_MODE") == L"omit-release" && property(session, L"REMOVE") != L"ALL";
+    if (result == ERROR_SUCCESS && !omit) result = release_helper(session);
     return result == ERROR_SUCCESS ? trace(session, stage) : result;
 }
 extern "C" __declspec(dllexport) UINT __stdcall ProbeSuccess(MSIHANDLE s) { return finish(s, "exit-success"); }
