@@ -3,6 +3,11 @@ on:
   push:
     branches: [codex/msi-runtime-guard]
   workflow_dispatch:
+    inputs:
+      full_package:
+        description: Build and inspect the complete Tauri MSI candidate
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -21,6 +26,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           key: msi-runtime-helper
+          cache-on-failure: true
       - name: Build actual Kernel installer helper
         shell: pwsh
         run: |
@@ -59,4 +65,115 @@ jobs:
             ${{ runner.temp }}/ridge-msi-guard
             !${{ runner.temp }}/ridge-msi-guard/**/missing-cleanup.msi
             !${{ runner.temp }}/ridge-msi-guard/**/installed/**
+          if-no-files-found: error
+
+  full-package:
+    if: github.event_name == 'workflow_dispatch' && inputs.full_package
+    needs: lifecycle-probe
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: swatinem/rust-cache@v2
+        with:
+          key: msi-full-package
+          cache-on-failure: true
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+      - run: pnpm install --frozen-lockfile
+      - name: Preserve the independent production CLI before the GUI build
+        shell: pwsh
+        run: |
+          cargo build --locked --release -p ridge-cli --bin ridge
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory target/ridge-cli-artifact -Force | Out-Null
+          Copy-Item target/release/ridge.exe target/ridge-cli-artifact/ridge.exe
+          $help = & target/ridge-cli-artifact/ridge.exe --help
+          if ($LASTEXITCODE -ne 0 -or ($help -join "`n") -notmatch 'Ridge headless remote host') { throw 'Independent CLI staging failed.' }
+      - name: Build complete Tauri MSI from this source
+        run: pnpm exec tauri build --bundles msi
+      - name: Verify the actual MSI action and Binary contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packages = @(Get-ChildItem target/release/bundle/msi/*.msi -ErrorAction Stop)
+          if ($packages.Count -ne 1) { throw 'Expected exactly one complete MSI candidate.' }
+          $msi = $packages[0]
+          $output = Join-Path $env:RUNNER_TEMP 'ridge-full-msi-artifacts'
+          New-Item -ItemType Directory -Path $output -Force | Out-Null
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $database = $installer.OpenDatabase($msi.FullName, 0)
+          function Read-Rows([string]$Query, [int]$Columns) {
+            $view = $database.OpenView($Query)
+            [void]$view.Execute()
+            try {
+              while ($record = $view.Fetch()) {
+                try { $row = @(); for ($i = 1; $i -le $Columns; $i++) { $row += $record.StringData($i) }; ,$row }
+                finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record) }
+              }
+            } finally { [void]$view.Close(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) }
+          }
+          try {
+            $sequence = @{}; foreach ($row in (Read-Rows 'SELECT `Action`,`Sequence` FROM `InstallExecuteSequence`' 2)) { $sequence[$row[0]] = [int]$row[1] }
+            foreach ($name in @('RidgeRuntimeReserve', 'RidgeRuntimeVerify', 'RidgeRuntimeRelease', 'InstallValidate', 'InstallInitialize', 'InstallFinalize')) {
+              if (!$sequence.ContainsKey($name)) { throw "Complete MSI omits required action $name" }
+            }
+            if ($sequence.RidgeRuntimeReserve -ge $sequence.InstallValidate -or $sequence.RidgeRuntimeVerify -ge $sequence.InstallInitialize -or
+                $sequence.RidgeRuntimeVerify -le $sequence.RidgeRuntimeReserve -or $sequence.RidgeRuntimeRelease -le $sequence.InstallFinalize -or
+                ($sequence.ContainsKey('RemoveExistingProducts') -and $sequence.RidgeRuntimeVerify -ge $sequence.RemoveExistingProducts)) { throw 'Complete MSI protection sequence is unsafe.' }
+            $actions = @{}; foreach ($row in (Read-Rows 'SELECT `Action`,`Type`,`Source`,`Target` FROM `CustomAction`' 4)) { $actions[$row[0]] = $row }
+            foreach ($name in @('RidgeRuntimeReserve', 'RidgeRuntimeVerify')) {
+              $action = $actions[$name]
+              if (!$action -or ([int]$action[1] -band 0x3f) -ne 2 -or ([int]$action[1] -band 0xc0) -ne 0 -or
+                  $action[2] -ne 'RidgeInstallHost' -or $action[3] -notmatch '--installer-msi-action') { throw 'Complete MSI does not enforce a synchronous Runtime return code.' }
+            }
+            $errors = @(Read-Rows 'SELECT `Error`,`Message` FROM `Error` WHERE `Error`=1722' 2)
+            if ($errors.Count -ne 1 -or $errors[0][1] -notmatch 'explicitly stop the Runtime service') { throw 'Complete MSI omits actionable Runtime refusal text.' }
+            $view = $database.OpenView('SELECT `Data` FROM `Binary` WHERE `Name`=''RidgeInstallHost''')
+            [void]$view.Execute(); $record = $view.Fetch()
+            if (!$record) { throw 'Complete MSI omits its actual Runtime helper.' }
+            $hash = [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256)
+            try {
+              $size = 0L
+              while ($true) {
+                [string]$chunk = $record.ReadStream(1, 65536, 1)
+                if (!$chunk.Length) { break }
+                $bytes = [Text.Encoding]::GetEncoding(28591).GetBytes($chunk)
+                $hash.AppendData($bytes); $size += $bytes.Length
+              }
+              $embedded = [Convert]::ToHexString($hash.GetHashAndReset()).ToLowerInvariant()
+            } finally {
+              $hash.Dispose(); [void]$view.Close()
+              foreach ($handle in @($record, $view)) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($handle) }
+            }
+            $expected = (Get-FileHash target/runtime-binaries/ridge-kernel-installer.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($size -lt 1MB -or $embedded -ne $expected) { throw 'Embedded MSI helper differs from the actual source build.' }
+            [pscustomobject]@{ source = $env:GITHUB_SHA; package = $msi.Name; packageSha256 = (Get-FileHash $msi.FullName -Algorithm SHA256).Hash;
+              embeddedHelperSha256 = $embedded; embeddedHelperBytes = $size; sequence = $sequence;
+              scope = 'Complete production Tauri MSI build and database inspection'; productionAcceptance = $false
+            } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $output 'package-contract.json')
+          } finally { foreach ($handle in @($database, $installer)) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($handle) } }
+          Copy-Item -LiteralPath $msi.FullName -Destination $output
+          Copy-Item target/ridge-cli-artifact/ridge.exe (Join-Path $output 'ridge-cli.exe')
+      - name: Upload unpublished complete MSI candidate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: complete-tauri-msi-candidate
+          path: ${{ runner.temp }}/ridge-full-msi-artifacts
           if-no-files-found: error
