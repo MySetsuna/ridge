@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "id": "a1351535-f9ac-4bd8-8fef-46e227fc1eef",
+  "at": "2026-11-17T04:41:13.680Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-134",
+  "buildId": "BUILD-20d378f59f4c",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-20d378f59f4c",
+    "changeId": "CHG-134",
+    "specHash": "12011b2994dfe4ba4da1791f3cc2a434ec170ed61cfafbfc5330975f0521e241",
+    "workspaceHash": "5cd46ad916d3d6213919953b0f1e4ee5c2bee8261aa1a87ebbf1eccaeb3b2dbb",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "PASS",
+    "acceptanceResults": [
+      {
+        "nodeId": "L4-EXPLORER-READ-RECOVERY",
+        "checkId": "file-tree-read-state",
+        "command": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "src/lib/stores/fileExplorer.test.ts"
+        ],
+        "description": "真实 store 的权限拒绝、失败重试、缺失目录、同列并发与重建迟到回包；局部异常不进入全局错误",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-EXPLORER-READ-RECOVERY",
+        "checkId": "file-tree-native-ui",
+        "command": [
+          "node",
+          "scripts/file-explorer-read-ui-acceptance.mjs"
+        ],
+        "description": "实际生产 Explorer/FileTree 与隔离 Kernel 原生 RPC：根内读取、越界拒绝、重试、列重建及中英文窄栏",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-EXPLORER-READ-RECOVERY",
+        "checkId": "lint",
+        "command": [
+          "npm",
+          "run",
+          "lint"
+        ],
+        "description": "仓库 lint",
+        "status": "PASS",
+        "exitCode": 0
+      },
+      {
+        "nodeId": "L4-EXPLORER-READ-RECOVERY",
+        "checkId": "typecheck",
+        "command": [
+          "npm",
+          "run",
+          "typecheck"
+        ],
+        "description": "仓库类型检查",
+        "status": "PASS",
+        "exitCode": 0
+      }
+    ],
+    "valid": true,
+    "verifiedAt": "2026-11-17T04:41:13.679Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": "scripts/file-explorer-read-ui-acceptance.mjs",
+        "before": null,
+        "after": "ba0967daade82887a631aa7c0e9a1e01977efda9922386c329557c8b42ba22ee"
+      },
+      {
+        "path": "src/lib/components/Explorer.svelte",
+        "before": "ce748699d6c800f50aa7d306f763189a9fbf771dc4e13fb58c95678e22e1f44a",
+        "after": "d438db453a05b5fb7e18a5fce7c7f493f3e582a385845a19b5748278a733aa20"
+      },
+      {
+        "path": "src/lib/i18n/messages/explorer.ts",
+        "before": "abfbbcb952b109d938c953bf21bd0d8b4ac137d6fede8d63bbd218d1ddcfc73a",
+        "after": "8c8a823cd890fa2ce87f2824a6772f71aba56911fd9cf17792216584c2d846fa"
+      },
+      {
+        "path": "src/lib/stores/fileExplorer.test.ts",
+        "before": "593b6aab549e5e031a2ea03b027fd54a19b7749e7e70c61f61d8680d196e9de6",
+        "after": "bb55f955fbc6754bedca38ddc3d5fc9ae41ceb483d847db0b9d78c92a7f07840"
+      },
+      {
+        "path": "src/lib/stores/fileExplorer.ts",
+        "before": "7b642d055706c1a347b6e525eb3bd8e010bc1d2c91a0a389f9585e1bfd941175",
+        "after": "1e46ccd0e0ec7e6bde5b4b772fcf38ab954d76c125f5a23c46372d237a90c761"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/a1351535-f9ac-4bd8-8fef-46e227fc1eef.log"
+  }
+}

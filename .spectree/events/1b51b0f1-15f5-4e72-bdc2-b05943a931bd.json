@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "1b51b0f1-15f5-4e72-bdc2-b05943a931bd",
+  "at": "2026-11-16T17:33:36.600Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-134",
+  "data": {
+    "changeId": "CHG-134",
+    "specHash": "12011b2994dfe4ba4da1791f3cc2a434ec170ed61cfafbfc5330975f0521e241",
+    "approvedAt": "2026-11-16T17:33:36.594Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "用户文件树错误报告及全部授权通过；落实既有错误传播契约，不改变目录权限",
+    "attributionVerified": false
+  }
+}

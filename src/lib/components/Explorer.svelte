@@ -130,7 +130,7 @@
 		for (const col of cols) {
 			// 首次加载（没有缓存树）或 needsRefresh（新 pane 加入老 cwd）都触发拉取。
 			// 后者走"静默刷新"路径：保留旧树继续渲染，数据就绪后原子替换，避免空屏闪烁。
-			if (!col.loading && (!col.tree || col.needsRefresh)) {
+			if (!col.loading && ((!col.tree && !col.loadError) || col.needsRefresh)) {
 				void fileExplorerStore.loadTree(col.id);
 			}
 		}
@@ -1135,7 +1135,13 @@
 												/>
 											</div>
 										{/if}
-										{#if col.tree}
+										{#if col.loadError}
+											<div class="mx-2 my-1 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)] px-3 py-2 text-[12px]" role="alert" aria-busy={col.loading} data-testid="explorer-read-error" data-kind={col.loadError.kind} title={col.loadError.message}>
+												<p class="font-medium text-[var(--rg-fg)]">{$t(col.loadError.kind === 'outside_sandbox' ? 'explorer.directoryDenied' : col.loadError.kind === 'missing' ? 'explorer.directoryMissing' : 'explorer.directoryReadFailed')}</p>
+												<p class="mt-1 select-text break-all text-[var(--rg-fg-muted)]">{col.cwd}</p>
+												<button type="button" class="mt-2 rounded border border-[var(--rg-border)] px-2 py-1 text-[var(--rg-fg)] hover:border-[var(--rg-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--rg-accent)] disabled:opacity-50" disabled={col.loading} onclick={() => void handleRefresh(col.id)}>{$t(col.loading ? 'explorer.loading' : 'explorer.retryRead')}</button>
+											</div>
+										{:else if col.tree}
 											{#if (col.tree.children ?? []).length > 0}
 												{#each col.tree.children ?? [] as child (child.path)}
 													<FileTree

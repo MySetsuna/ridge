@@ -65,6 +65,7 @@ const {
   toggleColumnCollapsed,
   collapsedColumns,
   pruneStaleExpandedPaths,
+  initFileExplorer,
 } = await import('./fileExplorer');
 
 const coreIsTauri = vi.mocked((await import('@tauri-apps/api/core')).isTauri);
@@ -371,7 +372,7 @@ describe('fileExplorerStore.loadTree — ghost-path filter', () => {
 		expect(get(fileExplorerStore).columns[0].tree?.path).toBe('/r');
 	});
 
-	it('keeps the missing-path placeholder when revalidation is false', async () => {
+	it('keeps a truthful missing-path error when revalidation is false', async () => {
 		fileExplorerStore.syncWithPaneCwds('ws', { p1: '/gone' });
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		mockInvoke.mockImplementation(async (cmd: string) => {
@@ -382,14 +383,117 @@ describe('fileExplorerStore.loadTree — ghost-path filter', () => {
 
 		await fileExplorerStore.loadTree('ws:/gone');
 
-		expect(get(fileExplorerStore).columns[0].tree?.children).toEqual([]);
+		expect(get(fileExplorerStore).columns[0].tree).toBeNull();
+		expect(get(fileExplorerStore).columns[0].loadError?.kind).toBe('missing');
 		expect(warn).toHaveBeenCalledWith(
-			'Explorer loadTree: missing path',
+			'Explorer loadTree: read failed',
 			'/gone',
 			expect.stringContaining('Path does not exist'),
 		);
 		warn.mockRestore();
 	});
+});
+
+describe('file tree read failure recovery', () => {
+  const denied = () => Object.assign(new Error('path outside permitted workspace roots'), {
+    code: 1006, data: { kind: 'outside_sandbox' },
+  });
+  const tree = (name: string) => ({ name: 'r', path: '/r', is_dir: true,
+    children: [{ name, path: `/r/${name}`, is_dir: false }] });
+
+  beforeEach(async () => {
+    fileExplorerStore.reset();
+    coreIsTauri.mockReturnValue(true);
+    vi.mocked((await import('$lib/devIssue')).reportDevIssue).mockClear();
+    fileExplorerStore.syncWithPaneCwds('ws', { p1: '/r' });
+  });
+
+  it.each([
+    [denied(), 'outside_sandbox'],
+    ['path outside permitted workspace roots', 'outside_sandbox'],
+    [new Error('read kernel: request timed out'), 'unavailable'],
+  ])('keeps read failure local, without an empty tree or automatic retry (%s)', async (error, kind) => {
+    mockInvoke.mockRejectedValueOnce(error);
+    await fileExplorerStore.loadTree('ws:/r');
+    expect(get(fileExplorerStore).columns[0]).toMatchObject({ tree: null, loading: false, loadError: { kind } });
+    const { paneCwdStore } = await import('./paneTree');
+    paneCwdStore.set({ 'ws:p1': '/r' });
+    initFileExplorer([{ id: 'ws', index: 0, displaySeq: 1 }]);
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect((await import('$lib/devIssue')).reportDevIssue).not.toHaveBeenCalled();
+  });
+
+  it('merges retry clicks and preserves the selection and expansion until a real read succeeds', async () => {
+    fileExplorerStore.expandMany('ws:/r', ['/r/kept']);
+    fileExplorerStore.setSelectedPath('ws:/r', '/r/kept');
+    mockInvoke.mockRejectedValueOnce(denied());
+    await fileExplorerStore.loadTree('ws:/r');
+    let finish!: (value: ReturnType<typeof tree>) => void;
+    mockInvoke.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const retry = fileExplorerStore.loadTree('ws:/r');
+    const duplicate = fileExplorerStore.loadTree('ws:/r');
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    expect(get(fileExplorerStore).columns[0]).toMatchObject({ loading: true, loadError: { kind: 'outside_sandbox' } });
+    finish(tree('kept'));
+    await Promise.all([retry, duplicate]);
+    expect(get(fileExplorerStore).columns[0]).toMatchObject({ tree: tree('kept'), loading: false, loadError: null, selectedPath: '/r/kept' });
+    expect(get(fileExplorerStore).columns[0].expandedPaths.has('/r/kept')).toBe(true);
+    expect(mockInvoke.mock.calls.every(([command]) => command === 'get_file_tree')).toBe(true);
+  });
+
+  it('clears a cached tree when its refresh is denied', async () => {
+    mockInvoke.mockResolvedValueOnce(tree('old'));
+    await fileExplorerStore.loadTree('ws:/r');
+    mockInvoke.mockRejectedValueOnce(denied());
+    await fileExplorerStore.loadTree('ws:/r');
+    expect(get(fileExplorerStore).columns[0]).toMatchObject({ tree: null, loadError: { kind: 'outside_sandbox' } });
+  });
+
+  it('reports the actual retry failure after a transient missing-path revalidation', async () => {
+    mockInvoke.mockRejectedValueOnce(new Error('Path does not exist: /r'))
+      .mockResolvedValueOnce(true).mockRejectedValueOnce(denied());
+    await fileExplorerStore.loadTree('ws:/r');
+    expect(get(fileExplorerStore).columns[0]).toMatchObject({ tree: null, loadError: { kind: 'outside_sandbox' } });
+  });
+
+  it.each(['removed column', 'store reset'])('ignores a late response and preserves the new request after %s', async mode => {
+    let finishOld!: (value: ReturnType<typeof tree>) => void;
+    let finishNew!: (value: ReturnType<typeof tree>) => void;
+    mockInvoke.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }));
+    const old = fileExplorerStore.loadTree('ws:/r');
+    if (mode === 'store reset') fileExplorerStore.reset();
+    else fileExplorerStore.syncWithPaneCwds('ws', { p1: '/other' });
+    fileExplorerStore.syncWithPaneCwds('ws', { p1: '/r' });
+    mockInvoke.mockImplementationOnce(() => new Promise(resolve => { finishNew = resolve; }));
+    const fresh = fileExplorerStore.loadTree('ws:/r');
+    finishOld(tree('stale'));
+    await old;
+    expect(get(fileExplorerStore).columns[0]).toMatchObject({ tree: null, loading: true });
+    const duplicate = fileExplorerStore.loadTree('ws:/r');
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    finishNew(tree('fresh'));
+    await Promise.all([fresh, duplicate]);
+    expect(get(fileExplorerStore).columns[0].tree).toEqual(tree('fresh'));
+  });
+
+  it('ignores an old denial after the same column has been reset and successfully reloaded', async () => {
+    let rejectOld!: (error: Error) => void;
+    mockInvoke.mockImplementationOnce(() => new Promise((_, reject) => { rejectOld = reject; }));
+    const old = fileExplorerStore.loadTree('ws:/r');
+    fileExplorerStore.reset();
+    fileExplorerStore.syncWithPaneCwds('ws', { p1: '/r' });
+    mockInvoke.mockResolvedValueOnce(tree('fresh'));
+    await fileExplorerStore.loadTree('ws:/r');
+    rejectOld(denied());
+    await old;
+    expect(get(fileExplorerStore).columns[0]).toMatchObject({ tree: tree('fresh'), loadError: null });
+  });
+
+  it('propagates a child-directory refusal to its existing local error UI', async () => {
+    mockInvoke.mockRejectedValueOnce(denied());
+    await expect(fileExplorerStore.loadChildrenPage('ws:/r', '/outside')).rejects.toMatchObject({ code: 1006 });
+    expect((await import('$lib/devIssue')).reportDevIssue).not.toHaveBeenCalled();
+  });
 });
 
 describe('fileExplorerStore pagination and stale-path boundaries', () => {

@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "buildId": "BUILD-20d378f59f4c",
+  "changeId": "CHG-134",
+  "specHash": "12011b2994dfe4ba4da1791f3cc2a434ec170ed61cfafbfc5330975f0521e241",
+  "workspaceHash": "5cd46ad916d3d6213919953b0f1e4ee5c2bee8261aa1a87ebbf1eccaeb3b2dbb",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "PASS",
+  "acceptanceResults": [
+    {
+      "nodeId": "L4-EXPLORER-READ-RECOVERY",
+      "checkId": "file-tree-read-state",
+      "command": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/lib/stores/fileExplorer.test.ts"
+      ],
+      "description": "真实 store 的权限拒绝、失败重试、缺失目录、同列并发与重建迟到回包；局部异常不进入全局错误",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-EXPLORER-READ-RECOVERY",
+      "checkId": "file-tree-native-ui",
+      "command": [
+        "node",
+        "scripts/file-explorer-read-ui-acceptance.mjs"
+      ],
+      "description": "实际生产 Explorer/FileTree 与隔离 Kernel 原生 RPC：根内读取、越界拒绝、重试、列重建及中英文窄栏",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-EXPLORER-READ-RECOVERY",
+      "checkId": "lint",
+      "command": [
+        "npm",
+        "run",
+        "lint"
+      ],
+      "description": "仓库 lint",
+      "status": "PASS",
+      "exitCode": 0
+    },
+    {
+      "nodeId": "L4-EXPLORER-READ-RECOVERY",
+      "checkId": "typecheck",
+      "command": [
+        "npm",
+        "run",
+        "typecheck"
+      ],
+      "description": "仓库类型检查",
+      "status": "PASS",
+      "exitCode": 0
+    }
+  ],
+  "valid": true,
+  "verifiedAt": "2026-11-17T04:41:13.679Z",
+  "diagnostics": [],
+  "eventId": "a1351535-f9ac-4bd8-8fef-46e227fc1eef"
+}

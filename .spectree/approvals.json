@@ -947,5 +947,17 @@
       "buildId": "BUILD-3af905c1572e",
       "specHash": "7dcd3ae57dc4526b4cb0a90813b41e134a16ccdd6db025ee82d12eac084ecfa0"
     }
+  },
+  {
+    "changeId": "CHG-134",
+    "specHash": "f0c9c545a6c37a96e697a66b52f39f4b58444ad3b72a846db372177c8c4e281a",
+    "approvedAt": "2026-11-17T04:43:23.327Z",
+    "source": "completion_derived",
+    "actor": "user",
+    "confirmationRef": "用户文件树错误报告及全部授权通过；落实既有错误传播契约，不改变目录权限",
+    "derivedFrom": {
+      "buildId": "BUILD-20d378f59f4c",
+      "specHash": "12011b2994dfe4ba4da1791f3cc2a434ec170ed61cfafbfc5330975f0521e241"
+    }
   }
 ]

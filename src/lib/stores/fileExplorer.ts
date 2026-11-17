@@ -3,7 +3,6 @@ import { writable, get, derived } from 'svelte/store';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { DirectoryPage, FileNode } from './project';
 import { paneCwdStore } from './paneTree';
-import { reportDevIssue } from '$lib/devIssue';
 
 export interface ExplorerColumn {
 	id: string; // "${workspaceId}:${cwd}" — CWD-based key so panes sharing CWD share a column
@@ -35,6 +34,9 @@ export interface ExplorerColumn {
 	anchorPath: string | null;
 	tree: FileNode | null;
 	loading: boolean;
+	loadError?: { kind: 'outside_sandbox' | 'missing' | 'unavailable'; message: string } | null;
+	/** In-memory request identity; never persisted with selection or expansion. */
+	treeRequestId?: number;
 	/**
 	 * True iff the cached tree is suspected stale (e.g. a new pane joined this
 	 * CWD). Explorer triggers a background loadTree and drops the flag.
@@ -165,6 +167,7 @@ function savePersistedColumn(col: ExplorerColumn): void {
 function createFileExplorerStore() {
 	const { subscribe, set, update } = writable<FileExplorerState>(initialState);
 	const loadTreeInFlight = new Map<string, Promise<void>>();
+	let nextTreeRequestId = 0;
 
 	return {
 		subscribe,
@@ -232,6 +235,7 @@ function createFileExplorerStore() {
 							needsRefresh: existing.needsRefresh,
 						});
 					} else {
+						loadTreeInFlight.delete(colId);
 						// New CWD: create column, tree: null triggers load.
 						// Rehydrate expanded + selected state from localStorage so
 						// re-opening the app returns to the last-seen shape.
@@ -346,15 +350,13 @@ function createFileExplorerStore() {
 		 * but the body render path avoids a "加载中..." placeholder.
 		 */
 		async loadTree(columnId: string, depth = 1): Promise<void> {
-			// Per-column concurrency guard: if a loadTree for this column is
-			// already in-flight, discard the new call and return the existing
-			// promise. The latest result is always authoritative — no need to
-			// queue.
+			// Share this live column's pending read. A recreated column drops
+			// the slot; its request identity also rejects the old response.
 			if (loadTreeInFlight.has(columnId)) {
 				return loadTreeInFlight.get(columnId)!;
 			}
 			const promise = this._loadTreeImpl(columnId, depth).finally(() => {
-				loadTreeInFlight.delete(columnId);
+				if (loadTreeInFlight.get(columnId) === promise) loadTreeInFlight.delete(columnId);
 			});
 			loadTreeInFlight.set(columnId, promise);
 			return promise;
@@ -366,11 +368,13 @@ function createFileExplorerStore() {
 			if (!column || column.loading) return;
 
 			const isFirstLoad = !column.tree;
+			const requestId = ++nextTreeRequestId;
+			const isCurrent = (c: ExplorerColumn) => c.id === columnId && c.treeRequestId === requestId;
 			update((s) => ({
 				...s,
 				columns: s.columns.map((c) =>
 					c.id === columnId
-						? { ...c, loading: isFirstLoad, needsRefresh: false }
+						? { ...c, treeRequestId: requestId, loading: isFirstLoad, needsRefresh: false }
 						: c
 				),
 			}));
@@ -390,11 +394,12 @@ function createFileExplorerStore() {
 					update((s) => ({
 						...s,
 						columns: s.columns.map((c) =>
-							c.id === columnId
+							isCurrent(c)
 								? {
 										...c,
 										tree: mockTree,
 										loading: false,
+										loadError: null,
 										refreshNonce: (c.refreshNonce ?? 0) + 1,
 									}
 								: c
@@ -426,7 +431,7 @@ function createFileExplorerStore() {
 				update((s) => ({
 					...s,
 					columns: s.columns.map((c) => {
-						if (c.id !== columnId) return c;
+						if (!isCurrent(c)) return c;
 						const pruned = new Set<string>();
 						for (const p of c.expandedPaths) {
 							if (seen.has(p)) { pruned.add(p); continue; }
@@ -442,6 +447,7 @@ function createFileExplorerStore() {
 							...c,
 							tree,
 							loading: false,
+							loadError: null,
 							expandedPaths: pruned,
 							// Bump on every successful refresh so FileTree subtrees
 							// (whose children live in component-local state, NOT in
@@ -453,51 +459,52 @@ function createFileExplorerStore() {
 					}),
 				}));
 			} catch (e) {
-				const msg = String(e);
-				// 路径不存在可能是 .ridge 恢复到新机器上的合法场景；其他错误仍可能是 bug。
-				// 只 console.warn，不再给标题追加"· 目录不存在"文案 —— 避免用户在目录实际存在但
-				// 路径传递有误（如正反斜杠 Windows 混用）的情况下被误导。
+				if (!get({ subscribe }).columns.some(isCurrent)) return;
+				let failure = e;
+				const msg = String(failure);
 				const isMissing = /not exist|No such file|path is not a directory/i.test(msg);
 				if (isMissing) {
 					// Workspace restore/split may publish a pane CWD one tick before
 					// the host filesystem view settles. Revalidate once before exposing
-					// a placeholder; old hosts without path_exists fall through.
+					// an error; old hosts without path_exists fall through.
 					try {
 						const stillExists = await invoke<boolean>('path_exists', { path: column.cwd });
-						if (stillExists) {
-							const tree = await invoke<FileNode>('get_file_tree', { path: column.cwd, depth });
-							update((s) => ({
-								...s,
-								columns: s.columns.map((c) => c.id === columnId
-									? { ...c, tree, loading: false, refreshNonce: (c.refreshNonce ?? 0) + 1 }
-									: c),
-							}));
-							return;
+						if (stillExists && get({ subscribe }).columns.some(isCurrent)) {
+							try {
+								const tree = await invoke<FileNode>('get_file_tree', { path: column.cwd, depth });
+								update((s) => ({
+									...s,
+									columns: s.columns.map((c) => isCurrent(c)
+										? { ...c, tree, loadError: null, loading: false, refreshNonce: (c.refreshNonce ?? 0) + 1 }
+										: c),
+								}));
+								return;
+							} catch (retryError) { failure = retryError; }
 						}
 					} catch {
 						// Keep the original missing-path diagnostic below.
 					}
 				}
-				if (!isMissing) {
-					reportDevIssue({ message: `Failed to load file tree: ${e}` });
-				} else {
-					console.warn('Explorer loadTree: missing path', column.cwd, msg);
-				}
-				const placeholder: FileNode = {
-					name: column.cwd.split(/[/\\]/).pop() || 'root',
-					path: column.cwd,
-					is_dir: true,
-					children: [],
+				const message = String(failure);
+				const kind = (failure as { data?: { kind?: unknown } } | null)?.data?.kind;
+				const loadError: NonNullable<ExplorerColumn['loadError']> = {
+					kind: kind === 'outside_sandbox' || /path outside permitted workspace roots/i.test(message)
+						? 'outside_sandbox'
+						: /not exist|No such file|path is not a directory/i.test(message) ? 'missing' : 'unavailable',
+					message,
 				};
+				if (get({ subscribe }).columns.some(isCurrent)) {
+					console.warn('Explorer loadTree: read failed', column.cwd, message);
+				}
 				update((s) => ({
 					...s,
 					columns: s.columns.map((c) =>
-						c.id === columnId
+						isCurrent(c)
 							? {
 									...c,
-									tree: placeholder,
+									tree: null,
+									loadError,
 									loading: false,
-									refreshNonce: (c.refreshNonce ?? 0) + 1,
 								}
 							: c
 					),
@@ -540,7 +547,6 @@ function createFileExplorerStore() {
 				if (typeof limit === 'number') args.limit = limit;
 				return await invoke<DirectoryPage>('get_directory_children', args);
 			} catch (e) {
-				reportDevIssue({ message: `Failed to load directory children: ${e}` });
 				console.error(`[fileExplorer] loadChildrenPage failed for "${dirPath}":`, e);
 				throw e;
 			}
@@ -792,6 +798,7 @@ function createFileExplorerStore() {
 		 * Reset store.
 		 */
 		reset(): void {
+			loadTreeInFlight.clear();
 			set(initialState);
 		},
 	};
@@ -1058,7 +1065,7 @@ export function initFileExplorer(
 	// Load trees for columns that don't have data yet
 	const state = get(fileExplorerStore);
 	for (const col of state.columns) {
-		if (!col.tree && !col.loading) {
+		if (!col.tree && !col.loadError && !col.loading) {
 			void fileExplorerStore.loadTree(col.id);
 		}
 	}

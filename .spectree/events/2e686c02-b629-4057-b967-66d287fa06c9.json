@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "2e686c02-b629-4057-b967-66d287fa06c9",
+  "at": "2026-11-16T17:31:18.936Z",
+  "type": "change_created",
+  "source": "local_operation",
+  "changeId": "CHG-134",
+  "data": {
+    "title": "修复文件树读取错误与原地重试",
+    "implementation": "REQUIRED"
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "id": "3af790be-e71a-4cab-8adf-388f092013b3",
+  "at": "2026-11-16T17:33:33.548Z",
+  "type": "applied",
+  "source": "local_operation",
+  "changeId": "CHG-134",
+  "data": {
+    "added": [
+      "L4-EXPLORER-READ-RECOVERY"
+    ],
+    "changed": [],
+    "retiring": [],
+    "patch": {
+      "changeId": "CHG-134",
+      "nodes": [
+        {
+          "id": "L4-EXPLORER-READ-RECOVERY",
+          "level": "L4",
+          "title": "文件树读取失败与原地重试",
+          "parent": "L3-RUNTIME-WORKSPACE-CONTINUITY",
+          "codeTargets": [
+            "src/lib/stores/fileExplorer.ts",
+            "src/lib/components/Explorer.svelte",
+            "src/lib/i18n/messages/explorer.ts",
+            "scripts/file-explorer-read-ui-acceptance.mjs"
+          ],
+          "testTargets": [
+            "src/lib/stores/fileExplorer.test.ts",
+            "scripts/file-explorer-read-ui-acceptance.mjs"
+          ],
+          "body": "# 文件树读取失败与原地重试\n\n落实 L3-RUNTIME-WORKSPACE-CONTINUITY 已有错误传播要求。首层目录读取失败须呈现列内错误、实际请求目录及显式重试；越界、目录不存在与其他读取失败可区分。失败不能生成成功空树，也不能把已处理的文件系统拒绝升级为全局 Unhandled Runtime Error。子目录沿既有 FileTree 错误及重试状态传播异常。\n\n失败后不得自动循环请求；显式重试合并同列在途读取，成功后显示真实目录。切换 cwd、移除并重建列或重置 store 后，旧请求结果不能回填新列、覆盖错误或删除新请求的并发保护。保留 cwd、选择及展开状态；读取和重试不得创建 PTY、目录、工作区或写入 .ridge。\n\n不改变操作者文件范围、原生及远程鉴权、协议或持久化格式。真实隔离 Kernel 原生 WebSocket 验收应证明允许目录可读、根外目录仍返回 outside_sandbox；实际生产 Explorer 与 FileTree 展示局部失败、显式重试和恢复，不显示假空目录或全局错误。覆盖中英文窄栏、连点、失败后成功、同路径列重建与迟到响应；回归 npm test、lint、typecheck。截图中的字体初始化另属 CHG-133。\n",
+          "acceptanceChecks": [
+            {
+              "id": "file-tree-read-state",
+              "command": [
+                "pnpm",
+                "exec",
+                "vitest",
+                "run",
+                "src/lib/stores/fileExplorer.test.ts"
+              ],
+              "description": "真实 store 的权限拒绝、失败重试、缺失目录、同列并发与重建迟到回包；局部异常不进入全局错误"
+            },
+            {
+              "id": "file-tree-native-ui",
+              "command": [
+                "node",
+                "scripts/file-explorer-read-ui-acceptance.mjs"
+              ],
+              "description": "实际生产 Explorer/FileTree 与隔离 Kernel 原生 RPC：根内读取、越界拒绝、重试、列重建及中英文窄栏"
+            },
+            {
+              "id": "lint",
+              "command": [
+                "npm",
+                "run",
+                "lint"
+              ],
+              "description": "仓库 lint"
+            },
+            {
+              "id": "typecheck",
+              "command": [
+                "npm",
+                "run",
+                "typecheck"
+              ],
+              "description": "仓库类型检查"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "id": "6f7ea9fa-b2c5-4811-bfa7-4eb2914ea8eb",
+  "at": "2026-11-17T04:43:23.353Z",
+  "type": "completed",
+  "source": "tool_verified",
+  "changeId": "CHG-134",
+  "buildId": "BUILD-f1800e7381f5",
+  "data": {
+    "previousBuildId": "BUILD-20d378f59f4c",
+    "testEvidence": {
+      "buildId": "BUILD-20d378f59f4c",
+      "workspaceHash": "5cd46ad916d3d6213919953b0f1e4ee5c2bee8261aa1a87ebbf1eccaeb3b2dbb",
+      "verifiedAt": "2026-11-17T04:41:13.679Z",
+      "eventId": "a1351535-f9ac-4bd8-8fef-46e227fc1eef"
+    },
+    "absorbed": [
+      "changes/CHG-134.md",
+      "scripts/file-explorer-read-ui-acceptance.mjs",
+      "specs/l4-explorer-read-recovery.md",
+      "src/lib/components/Explorer.svelte",
+      "src/lib/i18n/messages/explorer.ts",
+      "src/lib/stores/fileExplorer.test.ts",
+      "src/lib/stores/fileExplorer.ts"
+    ],
+    "activated": [
+      "L4-EXPLORER-READ-RECOVERY"
+    ],
+    "archived": []
+  }
+}
