@@ -7,6 +7,7 @@
     <MediaTemplate EmbedCab="yes" />
     <Property Id="RIDGE_PROBE_ROOT" Secure="yes" />
     <Property Id="RIDGE_PROBE_HELPER" Secure="yes" />
+    <Property Id="RIDGE_PROBE_DATA_DIR" Secure="yes" />
     <Property Id="PROBE_MODE" Secure="yes" Value="success" />
     <Condition Message="This isolated fixture requires an explicit probe directory.">RIDGE_PROBE_ROOT</Condition>
     <Directory Id="TARGETDIR" Name="SourceDir">
@@ -16,14 +17,19 @@
         </Component>
       </Directory>
     </Directory>
-    <Feature Id="Probe" Level="1"><ComponentRef Id="ProbeSentinel" /></Feature>
+    <Feature Id="Probe" Level="1">
+      <ComponentRef Id="ProbeSentinel" />
+      <?ifdef WithRuntimeGuard?>
+        <ComponentGroupRef Id="RidgeRuntimeInstallationGuard" />
+      <?endif?>
+    </Feature>
     <Binary Id="ProbeDll" SourceFile="$(var.ProbeDll)" />
     <CustomAction Id="ProbeBefore" BinaryKey="ProbeDll" DllEntry="ProbeBefore" Return="check" />
     <CustomAction Id="ProbeContend" BinaryKey="ProbeDll" DllEntry="ProbeContend" Return="check" />
-    <CustomAction Id="ProbeWrittenData" Property="ProbeWritten" Value="[RIDGE_PROBE_ROOT]" />
-    <CustomAction Id="ProbeFailureData" Property="ProbeFailure" Value="[RIDGE_PROBE_ROOT]" />
-    <CustomAction Id="ProbeCancelData" Property="ProbeCancel" Value="[RIDGE_PROBE_ROOT]" />
-    <CustomAction Id="ProbeCrashData" Property="ProbeCrash" Value="[RIDGE_PROBE_ROOT]" />
+    <CustomAction Id="ProbeWrittenData" Property="ProbeWritten" Value="[RIDGE_PROBE_ROOT]|[RIDGE_PROBE_DATA_DIR]" />
+    <CustomAction Id="ProbeFailureData" Property="ProbeFailure" Value="[RIDGE_PROBE_ROOT]|[RIDGE_PROBE_DATA_DIR]" />
+    <CustomAction Id="ProbeCancelData" Property="ProbeCancel" Value="[RIDGE_PROBE_ROOT]|[RIDGE_PROBE_DATA_DIR]" />
+    <CustomAction Id="ProbeCrashData" Property="ProbeCrash" Value="[RIDGE_PROBE_ROOT]|[RIDGE_PROBE_DATA_DIR]" />
     <CustomAction Id="ProbeWritten" BinaryKey="ProbeDll" DllEntry="ProbeWritten" Execute="deferred" Impersonate="yes" Return="check" />
     <CustomAction Id="ProbeFailure" BinaryKey="ProbeDll" DllEntry="ProbeFailure" Execute="deferred" Impersonate="yes" Return="check" />
     <CustomAction Id="ProbeCancel" BinaryKey="ProbeDll" DllEntry="ProbeCancel" Execute="deferred" Impersonate="yes" Return="check" />

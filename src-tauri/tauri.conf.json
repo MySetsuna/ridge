@@ -48,8 +48,9 @@
         "installerHooks": "installer-hooks.nsh"
       },
       "wix": {
-        "fragmentPaths": ["wix/path-env.wxs"],
-        "componentRefs": ["RidgePathEnvVar_0_0_2"]
+        "fragmentPaths": ["wix/path-env.wxs", "wix/runtime-guard.wxs"],
+        "componentRefs": ["RidgePathEnvVar_0_0_2"],
+        "componentGroupRefs": ["RidgeRuntimeInstallationGuard"]
       }
     }
   }

@@ -38,10 +38,17 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/msi-runtime-acceptance.ps1 -ProbeOnly -KernelPath "$env:GITHUB_WORKSPACE/target/debug/ridge-kernel.exe" -WixDirectory "$env:RUNNER_TEMP/wix314" -OutputDirectory "$env:RUNNER_TEMP/ridge-msi-probe"
+      - name: Exercise production WiX guard with isolated payload
+        shell: pwsh
+        run: |
+          ./scripts/msi-runtime-acceptance.ps1 -ProductionGuard -KernelPath "$env:GITHUB_WORKSPACE/target/debug/ridge-kernel.exe" -WixDirectory "$env:RUNNER_TEMP/wix314" -OutputDirectory "$env:RUNNER_TEMP/ridge-msi-guard"
       - name: Upload actual MSI evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: msi-lifecycle-probe
-          path: ${{ runner.temp }}/ridge-msi-probe
+          path: |
+            ${{ runner.temp }}/ridge-msi-probe
+            ${{ runner.temp }}/ridge-msi-guard
+            !${{ runner.temp }}/ridge-msi-guard/**/missing-cleanup.msi
           if-no-files-found: error

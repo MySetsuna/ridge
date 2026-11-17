@@ -1,5 +1,6 @@
 param(
     [switch]$ProbeOnly,
+    [switch]$ProductionGuard,
     [string]$KernelPath,
     [Parameter(Mandatory)][string]$WixDirectory,
     [Parameter(Mandatory)][string]$OutputDirectory
@@ -11,7 +12,11 @@ Set-StrictMode -Version Latest
 if (!$IsWindows -or $env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows' -or !$env:RUNNER_TEMP) {
     throw 'Actual MSI execution requires a disposable GitHub Windows runner.'
 }
-if (!$ProbeOnly) { throw 'Production Runtime guard acceptance is not implemented; probe evidence is insufficient.' }
+if ($ProbeOnly -eq $ProductionGuard) { throw 'Select either the lifecycle probe or the production guard fixture.' }
+if ($ProductionGuard -and (!$KernelPath -or [Environment]::GetEnvironmentVariable('RIDGE_KERNEL_DATA_DIR') -ne $null -or
+    [Environment]::GetEnvironmentVariable('RIDGE_TEST_ALLOW_NON_BREAKAWAY') -ne $null)) {
+    throw 'Production guard acceptance requires its actual Kernel, native user namespace and production breakaway behavior.'
+}
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 $runnerRoot = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
 if (!$output.StartsWith($runnerRoot, [StringComparison]::OrdinalIgnoreCase) -or $output.Contains('"')) {
@@ -35,6 +40,8 @@ try {
 } finally { Pop-Location }
 
 $installer = New-Object -ComObject WindowsInstaller.Installer
+$nativeDataRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'ridge'
+if ($ProductionGuard -and (Test-Path -LiteralPath $nativeDataRoot)) { throw 'Disposable runner already contains Ridge data; refusing to touch it.' }
 function Read-MsiRows([string]$Query, [int]$Columns) {
     $view = $database.OpenView($Query)
     [void]$view.Execute()
@@ -51,7 +58,8 @@ function Invoke-ProbeMsi([string]$CaseRoot, [string]$Ui, [string]$Mode, [switch]
     $log = Join-Path $CaseRoot $(if ($Uninstall) { 'uninstall.log' } else { 'install.log' })
     $arguments = @($operation, $target, $Ui, '/norestart', 'REBOOT=ReallySuppress', '/l*v', ('"' + $log + '"'),
         ('RIDGE_PROBE_ROOT="' + $CaseRoot + '"'), ('PROBE_INSTALL="' + (Join-Path $CaseRoot 'installed') + '"'), "PROBE_MODE=$Mode")
-    if ($KernelPath) { $arguments += 'RIDGE_PROBE_HELPER="' + $KernelPath + '"' }
+    if ($ProductionGuard) { $arguments += 'RIDGE_PROBE_DATA_DIR="' + $nativeDataRoot + '"' }
+    elseif ($KernelPath) { $arguments += 'RIDGE_PROBE_HELPER="' + $KernelPath + '"' }
     $process = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList $arguments -WindowStyle Hidden -PassThru
     if (!$process.WaitForExit(120000)) { throw "MSI $Mode timed out; runner teardown owns cleanup." }
     $process.Refresh()
@@ -62,13 +70,20 @@ function Assert-HelperReleased([string]$CaseRoot) {
     if (!$KernelPath) { return }
     $savedDataDir = $env:RIDGE_KERNEL_DATA_DIR
     try {
-        $env:RIDGE_KERNEL_DATA_DIR = Join-Path $CaseRoot 'runtime'
+        $env:RIDGE_KERNEL_DATA_DIR = if ($ProductionGuard) { $null } else { Join-Path $CaseRoot 'runtime' }
         & $KernelPath --installer-check
         if ($LASTEXITCODE -ne 0) { throw 'Real Kernel installer reservation remains held after MSI completion.' }
     } finally { $env:RIDGE_KERNEL_DATA_DIR = $savedDataDir }
 }
 
 function Wait-HelperDone([string]$CaseRoot) {
+    if ($ProductionGuard) {
+        for ($attempt = 0; $attempt -lt 100; $attempt++) {
+            if (!(Test-Path -LiteralPath (Join-Path $nativeDataRoot 'installer-msi.json'))) { return }
+            Start-Sleep -Milliseconds 100
+        }
+        throw 'Actual production guard remains after the MSI transaction.'
+    }
     $done = Join-Path $CaseRoot 'runtime.done'
     for ($attempt = 0; $attempt -lt 100; $attempt++) {
         if ((Test-Path -LiteralPath $done) -and (Get-Content -LiteralPath $done -Raw) -eq 'DONE') { return }
@@ -83,9 +98,18 @@ foreach ($scope in @('perUser', 'perMachine')) {
     $product = if ($scope -eq 'perUser') { '{056D63CA-DA83-4458-8CBF-5D98C18F89BE}' } else { '{B6B6DC01-A158-4943-A3C3-DC0CA105A57F}' }
     $msi = Join-Path $output "$scope.msi"
     $object = Join-Path $output "$scope.wixobj"
-    Invoke-Checked (Join-Path $WixDirectory 'candle.exe') @('-nologo', '-arch', 'x64', "-dProbeDll=$dll", "-dPayload=$payload",
+    $candleArguments = @('-nologo', '-arch', 'x64', "-dProbeDll=$dll", "-dPayload=$payload",
         "-dProductCode=$product", "-dInstallScope=$scope", '-out', $object, (Join-Path $repo 'tests/fixtures/msi-runtime/probe.wxs'))
-    Invoke-Checked (Join-Path $WixDirectory 'light.exe') @('-nologo', '-out', $msi, $object)
+    if ($ProductionGuard) { $candleArguments += '-dWithRuntimeGuard=1' }
+    Invoke-Checked (Join-Path $WixDirectory 'candle.exe') $candleArguments
+    $linkObjects = @($object)
+    if ($ProductionGuard) {
+        $guardObject = Join-Path $output 'runtime-guard.wixobj'
+        Invoke-Checked (Join-Path $WixDirectory 'candle.exe') @('-nologo', '-arch', 'x64', "-dRidgeInstallerRuntimePath=$KernelPath",
+            '-out', $guardObject, (Join-Path $repo 'src-tauri/wix/runtime-guard.wxs'))
+        $linkObjects += $guardObject
+    }
+    Invoke-Checked (Join-Path $WixDirectory 'light.exe') (@('-nologo', '-out', $msi) + $linkObjects)
     $database = $installer.OpenDatabase($msi, 0)
     $properties = @{}
     foreach ($row in (Read-MsiRows 'SELECT `Property`, `Value` FROM `Property`' 2)) { $properties[$row[0]] = $row[1] }
@@ -97,15 +121,40 @@ foreach ($scope in @('perUser', 'perMachine')) {
     foreach ($flag in @('-1', '-2', '-3', '-4')) {
         if (@($sequence | Where-Object { $_[2] -eq $flag }).Count -ne 1) { throw "Missing termination action $flag" }
     }
+    if ($ProductionGuard) {
+        foreach ($required in @('RidgeRuntimeReserve', 'RidgeRuntimeVerify', 'RidgeRuntimeRelease')) {
+            if (@($sequence | Where-Object { $_[0] -eq $required }).Count -ne 1) { throw "Actual guard action missing: $required" }
+        }
+    }
     $packages += [pscustomobject]@{ scope = $scope; product = $product; sha256 = (Get-FileHash $msi -Algorithm SHA256).Hash }
 foreach ($ui in @('/qn', '/qf')) {
     foreach ($mode in @('success', 'failure', 'cancel', 'crash', 'omit-release')) {
         $caseRoot = Join-Path $output ($scope + '-' + $ui.TrimStart('/') + '-' + $mode)
         New-Item -ItemType Directory -Path $caseRoot | Out-Null
         try {
+            $baseMsi = $msi
+            if ($ProductionGuard -and $mode -eq 'omit-release') {
+                # Fault injection touches only this isolated fixture: remove
+                # cleanup, retaining both mandatory admission actions unchanged.
+                $msi = Join-Path $caseRoot 'missing-cleanup.msi'
+                Copy-Item -LiteralPath $baseMsi -Destination $msi
+                $fault = $installer.OpenDatabase($msi, 1)
+                $delete = $fault.OpenView('DELETE FROM `InstallExecuteSequence` WHERE `Action` = ''RidgeRuntimeRelease''')
+                [void]$delete.Execute(); [void]$delete.Close()
+                $summary = $fault.SummaryInformation(1)
+                [void]$summary.GetType().InvokeMember('Property', 'SetProperty', $null, $summary, @(9, [guid]::NewGuid().ToString('B').ToUpperInvariant()))
+                [void]$summary.Persist(); [void]$fault.Commit()
+                foreach ($handle in @($summary, $delete, $fault)) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($handle) }
+            }
             $exit = Invoke-ProbeMsi $caseRoot $ui $mode
             $expected = @{ success = 0; failure = 1603; cancel = 1602; crash = 1603; 'omit-release' = 0 }[$mode]
-            if ($exit -ne $expected) { throw "$ui/$mode exit $exit; expected $expected" }
+            if ($exit -ne $expected) {
+                if ($ProductionGuard) {
+                    $errorLog = Join-Path $nativeDataRoot 'installer-last-error.txt'
+                    if (Test-Path -LiteralPath $errorLog) { Copy-Item -LiteralPath $errorLog -Destination (Join-Path $caseRoot 'core-error.txt') }
+                }
+                throw "$ui/$mode exit $exit; expected $expected"
+            }
             $trace = @(Get-Content (Join-Path $caseRoot 'trace.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
             if (@($trace | Where-Object stage -eq 'before').Count -ne 1 -or
                 @($trace | Where-Object { $_.stage -eq 'written' -and $_.installedFileExists }).Count -ne 1) {
@@ -136,6 +185,8 @@ foreach ($ui in @('/qn', '/qf')) {
                 @($trace | Where-Object stage -eq 'crash').Count -ne 1 -or
                 @($trace | Where-Object stage -eq 'fail').Count -ne 1)) { throw 'Worker replacement plus business failure was not exercised.' }
             $results += [pscustomobject]@{ scope = $scope; ui = $ui; mode = $mode; exit = $exit; stages = @($trace.stage);
+                packageSha256 = (Get-FileHash $msi -Algorithm SHA256).Hash;
+                releaseCallbackOmitted = $ProductionGuard -and $mode -eq 'omit-release';
                 before = $before; termination = $termination[0] }
         } finally {
             # Recover only this fixture's private holder when a red assertion
@@ -148,17 +199,20 @@ foreach ($ui in @('/qn', '/qf')) {
             if ($installer.ProductState($product) -eq 5) {
                 $cleanupExit = Invoke-ProbeMsi $caseRoot '/qn' 'success' -Uninstall
                 if ($cleanupExit -ne 0) { throw "Isolated fixture uninstall failed: $cleanupExit" }
-                if ($KernelPath -and (Get-Content -LiteralPath (Join-Path $caseRoot 'uninstall-runtime.done') -Raw) -ne 'DONE') {
+                if ($ProductionGuard) { Wait-HelperDone $caseRoot }
+                elseif ($KernelPath -and (Get-Content -LiteralPath (Join-Path $caseRoot 'uninstall-runtime.done') -Raw) -ne 'DONE') {
                     throw 'Fixture uninstall did not release the actual Kernel helper.'
                 }
                 Assert-HelperReleased $caseRoot
             }
+            $msi = $baseMsi
         }
     }
 }
 if ($installer.ProductState($product) -eq 5) { throw 'Isolated fixture remains installed.' }
 }
-[pscustomobject]@{ scope = 'MSI lifecycle probe only'; runtimeGuardImplemented = $false; productionAcceptance = $false;
+[pscustomobject]@{ scope = if ($ProductionGuard) { 'Actual production WiX guard with isolated payload' } else { 'MSI lifecycle probe only' };
+    runtimeGuardImplemented = [bool]$ProductionGuard; productionAcceptance = $false;
     source = $env:GITHUB_SHA; packages = $packages; cases = $results
     helperSha256 = if ($KernelPath) { (Get-FileHash $KernelPath -Algorithm SHA256).Hash } else { $null }
 } | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $output 'probe-results.json')

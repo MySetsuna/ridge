@@ -177,11 +177,15 @@ static UINT release_helper(MSIHANDLE session) {
 
 static UINT trace(MSIHANDLE session, const char* stage, bool deferred = false) {
     auto root = property(session, deferred ? L"CustomActionData" : L"RIDGE_PROBE_ROOT");
+    auto separator = root.find(L'|');
+    auto data_root = deferred && separator != std::wstring::npos ? root.substr(separator + 1) : property(session, L"RIDGE_PROBE_DATA_DIR");
+    if (deferred && separator != std::wstring::npos) root.resize(separator);
     if (root.empty()) return ERROR_INSTALL_FAILURE;
     auto target = root + L"\\installed\\sentinel.txt";
-    if (deferred && read_status(root + L"\\runtime.status") == L"READY") {
+    if (deferred && (!data_root.empty() || read_status(root + L"\\runtime.status") == L"READY")) {
+        if (data_root.empty()) data_root = root + L"\\runtime";
         for (auto name : { L"kernel.boot.lock", L"kernel.lock" }) {
-            auto lock_path = root + L"\\runtime\\" + name;
+            auto lock_path = data_root + L"\\" + name;
             HANDLE lock = CreateFileW(lock_path.c_str(), GENERIC_READ | GENERIC_WRITE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
             if (lock == INVALID_HANDLE_VALUE) return ERROR_INSTALL_FAILURE;

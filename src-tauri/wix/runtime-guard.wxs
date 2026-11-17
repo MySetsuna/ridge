@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <?ifndef RidgeInstallerRuntimePath?>
+      <?define RidgeInstallerRuntimePath="$(sys.SOURCEFILEDIR)..\..\target\runtime-binaries\ridge-kernel-installer.exe"?>
+    <?endif?>
+    <!-- Tauri's componentGroupRefs includes this whole action fragment. -->
+    <ComponentGroup Id="RidgeRuntimeInstallationGuard" />
+    <Binary Id="RidgeInstallHost" SourceFile="$(var.RidgeInstallerRuntimePath)" />
+    <!-- Synchronous EXE return codes enforce admission even if a DLL custom
+         action worker exits unexpectedly. No process-name or port guesses. -->
+    <CustomAction Id="RidgeRuntimeReserve" BinaryKey="RidgeInstallHost" Return="check"
+                  ExeCommand='--installer-msi-action reserve --installer-product "[ProductCode]" --installer-user "[UserSID]" --installer-upgrading "[UPGRADINGPRODUCTCODE]"' />
+    <CustomAction Id="RidgeRuntimeVerify" BinaryKey="RidgeInstallHost" Return="check"
+                  ExeCommand='--installer-msi-action verify --installer-product "[ProductCode]" --installer-user "[UserSID]" --installer-upgrading "[UPGRADINGPRODUCTCODE]"' />
+    <!-- Files have committed at InstallFinalize. Nested old-product removal
+         cannot release the outer product's reservation. Missing cleanup falls
+         back to the OS execution mutex, including cancellation and rollback. -->
+    <CustomAction Id="RidgeRuntimeRelease" BinaryKey="RidgeInstallHost" Return="ignore"
+                  ExeCommand='--installer-msi-action release --installer-product "[ProductCode]" --installer-user "[UserSID]" --installer-upgrading "[UPGRADINGPRODUCTCODE]"' />
+    <InstallExecuteSequence>
+      <Custom Action="RidgeRuntimeReserve" Sequence="1410">1</Custom>
+      <Custom Action="RidgeRuntimeVerify" Sequence="1490">1</Custom>
+      <Custom Action="RidgeRuntimeRelease" After="InstallFinalize">1</Custom>
+    </InstallExecuteSequence>
+    <UI>
+      <ProgressText Action="RidgeRuntimeReserve">Reserving the Ridge background service; running terminals are preserved</ProgressText>
+      <ProgressText Action="RidgeRuntimeVerify">Verifying exclusive Ridge Runtime installation access</ProgressText>
+    </UI>
+  </Fragment>
+</Wix>

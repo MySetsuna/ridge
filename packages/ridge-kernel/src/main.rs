@@ -28,6 +28,15 @@ struct Args {
     installer_release: Option<std::path::PathBuf>,
     #[arg(long, hide = true, requires = "installer_parent")]
     installer_msi: bool,
+    #[arg(long, hide = true, value_parser = ["reserve", "verify", "release"],
+        requires_all = ["installer_product", "installer_user"], conflicts_with_all = ["installer_parent", "installer_check"])]
+    installer_msi_action: Option<String>,
+    #[arg(long, hide = true)]
+    installer_product: Option<String>,
+    #[arg(long, hide = true, requires = "installer_msi_action")]
+    installer_user: Option<String>,
+    #[arg(long, hide = true, requires = "installer_msi_action")]
+    installer_upgrading: Option<String>,
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
     #[arg(long, default_value_t = 0)]
@@ -46,11 +55,22 @@ async fn main() -> Result<()> {
         return ridge_kernel::managed_console::run(serde_json::from_str(&config)?).await;
     }
     if args.installer_check { return ridge_kernel::installer::check(); }
-    if let Some(parent) = args.installer_parent {
-        let hold = if args.installer_msi { ridge_kernel::installer::hold_msi } else { ridge_kernel::installer::hold };
-        return hold(parent,
-            args.installer_status.as_deref().expect("required installer status"),
-            args.installer_release.as_deref().expect("required installer release"));
+    if let Some(action) = args.installer_msi_action {
+        return ridge_kernel::installer::msi_action(&action,
+            args.installer_product.as_deref().expect("required installer product"),
+            args.installer_user.as_deref().expect("required installer user"), args.installer_upgrading.as_deref().unwrap_or(""));
     }
+    if let Some(parent) = args.installer_parent {
+        let status = args.installer_status.as_deref().expect("required installer status");
+        let release = args.installer_release.as_deref().expect("required installer release");
+        if args.installer_msi && args.installer_product.is_some() {
+            let result = ridge_kernel::installer::hold_msi_product(parent, status, release, args.installer_product.as_deref());
+            if result.is_ok() { ridge_kernel::installer::clean_msi_handshake(status, release); }
+            return result;
+        }
+        let hold = if args.installer_msi { ridge_kernel::installer::hold_msi } else { ridge_kernel::installer::hold };
+        return hold(parent, status, release);
+    }
+    if args.installer_product.is_some() { anyhow::bail!("installer product requires an MSI action or reservation"); }
     ridge_kernel::server::run(&args.host, args.port).await
 }
