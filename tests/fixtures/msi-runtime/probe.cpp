@@ -217,7 +217,7 @@ extern "C" __declspec(dllexport) UINT __stdcall ProbeFailure(MSIHANDLE s) { trac
 extern "C" __declspec(dllexport) UINT __stdcall ProbeCancel(MSIHANDLE s) { trace(s, "cancel", true); return ERROR_INSTALL_USEREXIT; }
 extern "C" __declspec(dllexport) UINT __stdcall ProbeCrash(MSIHANDLE s) {
     trace(s, "crash", true);
-    // Kill only this disposable fixture's CA worker; the service must roll back.
+    // Kill only this fixture's CA worker; the next scripted failure tests rollback.
     TerminateProcess(GetCurrentProcess(), 77);
     return ERROR_INSTALL_FAILURE;
 }

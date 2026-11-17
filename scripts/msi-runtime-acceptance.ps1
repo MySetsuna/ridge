@@ -113,6 +113,11 @@ foreach ($ui in @('/qn', '/qf')) {
             }
             Assert-HelperReleased $caseRoot
             $before = @($trace | Where-Object stage -eq 'before')[0]
+            # A CA worker exit alone can commit (actual run 44046218217). Inject
+            # a subsequent business failure to verify rollback in its replacement.
+            if ($mode -eq 'crash' -and ($before.process.pid -eq $termination[0].process.pid -or
+                @($trace | Where-Object stage -eq 'crash').Count -ne 1 -or
+                @($trace | Where-Object stage -eq 'fail').Count -ne 1)) { throw 'Worker replacement plus business failure was not exercised.' }
             $results += [pscustomobject]@{ scope = $scope; ui = $ui; mode = $mode; exit = $exit; stages = @($trace.stage);
                 before = $before; termination = $termination[0] }
         } finally {

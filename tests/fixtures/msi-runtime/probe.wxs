@@ -40,9 +40,9 @@
       <Custom Action="ProbeCancelData" After="ProbeFailureData">NOT REMOVE</Custom>
       <Custom Action="ProbeCrashData" After="ProbeCancelData">NOT REMOVE</Custom>
       <Custom Action="ProbeWritten" After="ProbeCrashData">NOT REMOVE</Custom>
-      <Custom Action="ProbeFailure" After="ProbeWritten">NOT REMOVE AND PROBE_MODE = "failure"</Custom>
+      <Custom Action="ProbeCrash" After="ProbeWritten">NOT REMOVE AND PROBE_MODE = "crash"</Custom>
+      <Custom Action="ProbeFailure" After="ProbeCrash">NOT REMOVE AND (PROBE_MODE = "failure" OR PROBE_MODE = "crash")</Custom>
       <Custom Action="ProbeCancel" After="ProbeFailure">NOT REMOVE AND PROBE_MODE = "cancel"</Custom>
-      <Custom Action="ProbeCrash" After="ProbeCancel">NOT REMOVE AND PROBE_MODE = "crash"</Custom>
       <Custom Action="ProbeSuccess" OnExit="success">1</Custom>
       <Custom Action="ProbeError" OnExit="error">1</Custom>
       <Custom Action="ProbeUserExit" OnExit="cancel">1</Custom>
