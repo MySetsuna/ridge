@@ -1,7 +1,7 @@
 {
   "version": 1,
   "changeId": "CHG-133",
-  "specHash": "5c752d04f3618bee864b6d0308b3dc301b85c3185a1e84905960e6acc478a2e5",
+  "specHash": "1b21aa60638737ff313cb8031cdae84bf016a6e43107ca3f47373875a5be67fb",
   "units": [
     {
       "id": "L4-COMMUNE-GLOBAL-HISTORY-EMPTY",
@@ -12,6 +12,21 @@
       ],
       "testTargets": [
         "src/lib/i18n/messages.test.ts"
+      ],
+      "status": "DRAFT"
+    },
+    {
+      "id": "L4-COMMUNE-LINUX-SOCKET-ATTESTATION",
+      "level": "L4",
+      "nodeHash": "7cb86660f61bd3d7c7d62fa5d86f605b2d2c893d77e09a8d87ad63a5494adfc1",
+      "codeTargets": [
+        "packages/ridge-core/src/process_identity.rs",
+        ".github/workflows/rtp1-kernel-e2e.yml"
+      ],
+      "testTargets": [
+        "packages/ridge-core/src/process_identity.rs",
+        "packages/ridge-kernel/tests/commune_registration.rs",
+        ".github/workflows/rtp1-kernel-e2e.yml"
       ],
       "status": "DRAFT"
     },
@@ -51,7 +66,9 @@
   "allowedPaths": [
     ".github/workflows/rtp1-kernel-e2e.yml",
     "packages/ridge-core/src/dispatch.rs",
+    "packages/ridge-core/src/process_identity.rs",
     "packages/ridge-kernel/src/client.rs",
+    "packages/ridge-kernel/tests/commune_registration.rs",
     "packages/ridge-kernel/tests/git_commands_runtime.rs",
     "scripts/cdp-renderer-retry.mjs",
     "src/lib/components/RidgePane.svelte",
@@ -2670,6 +2687,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-a3b8d19a3978",
-  "manifestHash": "a3b8d19a397874e60bf62113929012d0d822e671c046acd0bdee1ef0c4f2f9c4"
+  "buildId": "BUILD-0a6ec9c45079",
+  "manifestHash": "0a6ec9c4507995f251871aefe5b5b04b6faf3789f4711784ebd5edf525c60f1d"
 }

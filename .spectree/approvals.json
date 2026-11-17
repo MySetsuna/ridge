@@ -938,10 +938,10 @@
   },
   {
     "changeId": "CHG-133",
-    "specHash": "5c752d04f3618bee864b6d0308b3dc301b85c3185a1e84905960e6acc478a2e5",
-    "approvedAt": "2026-11-16T17:00:32.800Z",
+    "specHash": "1b21aa60638737ff313cb8031cdae84bf016a6e43107ca3f47373875a5be67fb",
+    "approvedAt": "2026-11-17T04:41:58.662Z",
     "source": "cli",
     "actor": "user",
-    "confirmationRef": "standing-authorized-root-fixes-real-e2e:align-font-deadline-under-existing-20s-RPC-and-wire-regressions-into-CI"
+    "confirmationRef": "standing-authorized-Remote-Commune-root-fixes:Linux-same-socket-observation-and-strict-CI-failure-propagation-without-relaxing-auth"
   }
 ]

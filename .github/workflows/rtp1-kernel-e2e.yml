@@ -15,11 +15,21 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
     steps:
       - uses: actions/checkout@v4
+      - name: Verify pipeline failures cannot be hidden
+        run: |
+          set +e
+          (exit 23) | cat > /dev/null
+          result=$?
+          set -e
+          test "$result" -eq 23
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Install native font dependencies
@@ -36,9 +46,10 @@ jobs:
       - name: Scoped admission and font startup deadline regressions
         run: |
           cargo test --locked -p ridge-core --lib dispatch::tests -- --test-threads=1
+          cargo test --locked -p ridge-core --lib process_identity -- --test-threads=1
           cargo test --locked -p ridge-kernel --lib font_manifest_can_finish_after_the_ordinary_command_read_deadline -- --test-threads=1
       - name: Real Kernel Remote and Commune regressions
-        run: cargo test --locked -p ridge-kernel --test git_commands_runtime --test remote_invoke_runtime --test commune_registration --test commune_group_tasks --test runtime_workspace_continuity --test cwd_runtime --test workspace_file_owner -- --test-threads=1 2>&1 | tee kernel-runtime-e2e.log
+        run: cargo test --locked -p ridge-kernel --test git_commands_runtime --test remote_invoke_runtime --test commune_registration --test commune_group_tasks --test runtime_workspace_continuity --test cwd_runtime --test workspace_file_owner --no-fail-fast -- --test-threads=1 2>&1 | tee kernel-runtime-e2e.log
       - name: Upload regression log
         if: always()
         uses: actions/upload-artifact@v4

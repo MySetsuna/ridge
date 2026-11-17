@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "a5ce32cc-1bc1-4267-8522-5be6f867638b",
+  "at": "2026-11-17T04:41:58.672Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-133",
+  "data": {
+    "changeId": "CHG-133",
+    "specHash": "1b21aa60638737ff313cb8031cdae84bf016a6e43107ca3f47373875a5be67fb",
+    "approvedAt": "2026-11-17T04:41:58.662Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "standing-authorized-Remote-Commune-root-fixes:Linux-same-socket-observation-and-strict-CI-failure-propagation-without-relaxing-auth",
+    "attributionVerified": false
+  }
+}

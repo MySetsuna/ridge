@@ -401,22 +401,36 @@ mod platform {
     }
     fn socket_inodes(server: SocketAddrV4, client: SocketAddrV4) -> io::Result<HashSet<String>> {
         let table = std::fs::read_to_string("/proc/net/tcp")?;
-        Ok(table
+        socket_inodes_from_table(&table, server, client)
+    }
+    fn socket_inodes_from_table(table: &str, server: SocketAddrV4, client: SocketAddrV4) -> io::Result<HashSet<String>> {
+        let mut matching = table
             .lines()
             .skip(1)
             .filter_map(|line| {
                 let fields: Vec<_> = line.split_whitespace().collect();
-                if fields.len() > 9
+                if fields.len() > 3
                     && fields[3] == "01"
                     && address(fields[1]) == Some(server)
                     && address(fields[2]) == Some(client)
                 {
-                    Some(format!("socket:[{}]", fields[9]))
+                    Some(fields)
                 } else {
                     None
                 }
-            })
-            .collect())
+            });
+        let pending = || io::Error::new(io::ErrorKind::WouldBlock, "TCP socket ownership evidence is not yet visible");
+        let row = matching.next().ok_or_else(pending)?;
+        if matching.next().is_some() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "TCP socket evidence is ambiguous"));
+        }
+        let inode = row.get(9).and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid TCP socket inode"))?;
+        // Linux publishes an established backlog entry with inode 0 before
+        // accept installs a file descriptor. Observe this same socket again;
+        // an absent proof must never grant ownership or imply another owner.
+        if inode == 0 { return Err(pending()); }
+        Ok(HashSet::from([format!("socket:[{inode}]")]))
     }
     fn owns_inodes(pid: u32, inodes: &HashSet<String>) -> io::Result<bool> {
         for fd in std::fs::read_dir(format!("/proc/{pid}/fd"))? {
@@ -444,6 +458,25 @@ mod platform {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "protocol socket owner is unavailable or ambiguous"));
         }
         Ok(*owners.iter().next().expect("unique socket owner"))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn inode_evidence_requires_one_visible_exact_connection() {
+            let server = "127.0.0.1:4660".parse().unwrap();
+            let client = "127.0.0.1:22136".parse().unwrap();
+            let row = |inode| format!("0: 0100007F:1234 0100007F:5678 01 0 0 0 0 0 {inode}");
+            let table = |rows: Vec<String>| format!("header\n{}", rows.join("\n"));
+            for rows in [vec![], vec![row(0)]] {
+                assert_eq!(socket_inodes_from_table(&table(rows), server, client).unwrap_err().kind(), io::ErrorKind::WouldBlock);
+            }
+            assert_eq!(socket_inodes_from_table(&table(vec![row(42)]), server, client).unwrap(), HashSet::from(["socket:[42]".into()]));
+            for rows in [vec![row(0), row(42)], vec![row(42), row(43)], vec![row(42), row(42)]] {
+                assert_eq!(socket_inodes_from_table(&table(rows), server, client).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+            }
+        }
     }
 }
 #[cfg(not(any(windows, target_os = "linux")))]
@@ -530,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn connection_attestation_before_accept_keeps_the_same_socket() {
+    fn connection_attestation_waits_for_publication_without_reconnecting() {
         let current = instance(std::process::id()).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let std::net::SocketAddr::V4(server) = listener.local_addr().unwrap() else {
@@ -541,9 +574,20 @@ mod tests {
             let std::net::SocketAddr::V4(client) = socket.local_addr().unwrap() else {
                 unreachable!()
             };
+            // Windows can already attest backlog ownership. Linux needs the
+            // accepted FD; neither platform may open a replacement connection.
+            #[cfg(windows)]
             owns_connection(&current, server, client).unwrap();
-            let (accepted, _) = listener.accept().unwrap();
-            drop(accepted);
+            std::thread::scope(|scope| {
+                let accepted = scope.spawn(|| {
+                    #[cfg(target_os = "linux")]
+                    std::thread::sleep(std::time::Duration::from_millis(15));
+                    listener.accept().unwrap().0
+                });
+                owns_connection(&current, server, client).unwrap();
+                let accepted = accepted.join().unwrap();
+                assert_eq!(accepted.peer_addr().unwrap(), std::net::SocketAddr::V4(client));
+            });
             drop(socket);
         }
     }
