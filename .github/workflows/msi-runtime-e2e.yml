@@ -8,13 +8,24 @@ permissions:
 jobs:
   lifecycle-probe:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
     steps:
       - uses: actions/checkout@v4
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: swatinem/rust-cache@v2
+        with:
+          key: msi-runtime-helper
+      - name: Build actual Kernel installer helper
+        shell: pwsh
+        run: |
+          cargo build --locked -p ridge-kernel --bin ridge-kernel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Download pinned WiX 3.14.1
         shell: pwsh
         run: |
@@ -26,7 +37,7 @@ jobs:
       - name: Exercise isolated MSI lifecycle
         shell: pwsh
         run: |
-          ./scripts/msi-runtime-acceptance.ps1 -ProbeOnly -WixDirectory "$env:RUNNER_TEMP/wix314" -OutputDirectory "$env:RUNNER_TEMP/ridge-msi-probe"
+          ./scripts/msi-runtime-acceptance.ps1 -ProbeOnly -KernelPath "$env:GITHUB_WORKSPACE/target/debug/ridge-kernel.exe" -WixDirectory "$env:RUNNER_TEMP/wix314" -OutputDirectory "$env:RUNNER_TEMP/ridge-msi-probe"
       - name: Upload actual MSI evidence
         if: always()
         uses: actions/upload-artifact@v4

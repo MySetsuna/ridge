@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "id": "bcb8c339-3e54-44b2-8277-bf19167deacc",
+  "at": "2026-11-17T08:04:37.636Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-137",
+  "buildId": "BUILD-84f7cab8b488",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-84f7cab8b488",
+    "changeId": "CHG-137",
+    "specHash": "c9ead3301e505e711b636c1e46d72615ab3b1479f3f1ed74db7d23299656d6c9",
+    "workspaceHash": "996504a7c1f99fd596b620c32031e16d9d0c5ac9a7a4e82f436a458df8c921e1",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "NOT_DECLARED",
+    "acceptanceResults": [],
+    "valid": true,
+    "verifiedAt": "2026-11-17T08:04:37.635Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": ".github/workflows/msi-runtime-e2e.yml",
+        "before": null,
+        "after": "d7517cfb2b462dbd3043b94ed3ee06737767c80ed78982b772f8e1cb78c61994"
+      },
+      {
+        "path": "scripts/msi-runtime-acceptance.ps1",
+        "before": null,
+        "after": "42e0064f04490303bb41327785d66083908ef7a742bf9071ba4f88fbc5392b27"
+      },
+      {
+        "path": "tests/fixtures/msi-runtime/probe.cpp",
+        "before": null,
+        "after": "677c1114112ed85ab4649a8f67ef28a41f1491da2880799dd59cd53d77765937"
+      },
+      {
+        "path": "tests/fixtures/msi-runtime/probe.wxs",
+        "before": null,
+        "after": "722bb7b4a869333397ff785df3e7fb30a7fa2245f0c5a50b7f4e191fad14faaa"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/bcb8c339-3e54-44b2-8277-bf19167deacc.log"
+  }
+}

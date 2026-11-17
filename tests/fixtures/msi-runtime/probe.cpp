@@ -81,10 +81,109 @@ static std::string process_identity(DWORD pid) {
         + ",\"image\":" + (named ? quoted(image) : "null") + "}";
 }
 
+static std::wstring read_status(const std::wstring& path) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return L"";
+    char data[1024]{}; DWORD count = 0;
+    bool ok = ReadFile(file, data, sizeof(data) - 1, &count, nullptr) != FALSE;
+    CloseHandle(file);
+    return ok ? std::wstring(data, data + count) : L"";
+}
+
+static HANDLE spawn_helper(MSIHANDLE session, const std::wstring& arguments) {
+    auto helper = property(session, L"RIDGE_PROBE_HELPER");
+    auto root = property(session, L"RIDGE_PROBE_ROOT");
+    if (helper.empty() || root.empty()) return nullptr;
+    LPWCH original = GetEnvironmentStringsW();
+    if (!original) return nullptr;
+    std::vector<wchar_t> environment;
+    for (auto cursor = original; *cursor; cursor += wcslen(cursor) + 1) {
+        if (_wcsnicmp(cursor, L"RIDGE_KERNEL_DATA_DIR=", 22) != 0)
+            environment.insert(environment.end(), cursor, cursor + wcslen(cursor) + 1);
+    }
+    FreeEnvironmentStringsW(original);
+    auto private_data = L"RIDGE_KERNEL_DATA_DIR=" + root + L"\\runtime";
+    environment.insert(environment.end(), private_data.begin(), private_data.end());
+    environment.push_back(0); environment.push_back(0);
+    auto command = L"\"" + helper + L"\" " + arguments;
+    STARTUPINFOW startup{}; startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(helper.c_str(), command.data(), nullptr, nullptr, FALSE,
+        CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB,
+        environment.data(), root.c_str(), &startup, &process)) return nullptr;
+    CloseHandle(process.hThread);
+    return process.hProcess;
+}
+
+static std::wstring handshake(MSIHANDLE session) {
+    return property(session, L"RIDGE_PROBE_ROOT") + (property(session, L"REMOVE") == L"ALL" ? L"\\uninstall-runtime" : L"\\runtime");
+}
+
+static UINT reserve_helper(MSIHANDLE session) {
+    auto stem = handshake(session);
+    if (property(session, L"RIDGE_PROBE_HELPER").empty()) return ERROR_SUCCESS;
+    // Observe the real execution-service ancestor, which outlives CA workers.
+    DWORD parent = parent_pid(GetCurrentProcessId());
+    if (!parent) return ERROR_INSTALL_FAILURE;
+    auto arguments = L"--installer-parent " + std::to_wstring(parent)
+        + L" --installer-status \"" + stem + L".status\" --installer-release \"" + stem + L".release\"";
+    HANDLE child = spawn_helper(session, arguments);
+    if (!child) return ERROR_INSTALL_FAILURE;
+    UINT result = ERROR_INSTALL_FAILURE;
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        auto status = read_status(stem + L".status");
+        if (status == L"READY") { result = ERROR_SUCCESS; break; }
+        if (!status.empty() || WaitForSingleObject(child, 0) == WAIT_OBJECT_0) break;
+        Sleep(100);
+    }
+    CloseHandle(child);
+    return result;
+}
+
+static UINT contend_helper(MSIHANDLE session) {
+    if (property(session, L"RIDGE_PROBE_HELPER").empty()) return ERROR_SUCCESS;
+    HANDLE child = spawn_helper(session, L"--installer-check");
+    if (!child) return ERROR_INSTALL_FAILURE;
+    DWORD exit = 0;
+    bool rejected = WaitForSingleObject(child, 10000) == WAIT_OBJECT_0 && GetExitCodeProcess(child, &exit) && exit != 0;
+    CloseHandle(child);
+    return rejected ? ERROR_SUCCESS : ERROR_INSTALL_FAILURE;
+}
+
+static UINT release_helper(MSIHANDLE session) {
+    auto stem = handshake(session);
+    if (property(session, L"RIDGE_PROBE_HELPER").empty()) return ERROR_SUCCESS;
+    auto status = read_status(stem + L".status");
+    if (status != L"READY") return ERROR_INSTALL_FAILURE;
+    auto release = stem + L".release";
+    HANDLE file = CreateFileW(release.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return ERROR_INSTALL_FAILURE;
+    CloseHandle(file);
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        if (read_status(stem + L".done") == L"DONE") return ERROR_SUCCESS;
+        Sleep(100);
+    }
+    return ERROR_INSTALL_FAILURE;
+}
+
 static UINT trace(MSIHANDLE session, const char* stage, bool deferred = false) {
     auto root = property(session, deferred ? L"CustomActionData" : L"RIDGE_PROBE_ROOT");
     if (root.empty()) return ERROR_INSTALL_FAILURE;
     auto target = root + L"\\installed\\sentinel.txt";
+    if (deferred && read_status(root + L"\\runtime.status") == L"READY") {
+        for (auto name : { L"kernel.boot.lock", L"kernel.lock" }) {
+            auto lock_path = root + L"\\runtime\\" + name;
+            HANDLE lock = CreateFileW(lock_path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+            if (lock == INVALID_HANDLE_VALUE) return ERROR_INSTALL_FAILURE;
+            OVERLAPPED range{};
+            bool acquired = LockFileEx(lock, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &range) != FALSE;
+            DWORD error = GetLastError();
+            if (acquired) UnlockFileEx(lock, 0, 1, 0, &range);
+            CloseHandle(lock);
+            if (acquired || error != ERROR_LOCK_VIOLATION) return ERROR_INSTALL_FAILURE;
+        }
+    }
     DWORD attributes = GetFileAttributesW(target.c_str());
     std::string line = "{\"stage\":\"" + std::string(stage) + "\",\"process\":" + process_identity(GetCurrentProcessId())
         + ",\"threadId\":" + std::to_string(GetCurrentThreadId()) + ",\"processSid\":" + quoted(process_sid())
@@ -108,11 +207,20 @@ static UINT trace(MSIHANDLE session, const char* stage, bool deferred = false) {
     return ok ? ERROR_SUCCESS : ERROR_INSTALL_FAILURE;
 }
 
-extern "C" __declspec(dllexport) UINT __stdcall ProbeBefore(MSIHANDLE s) { return trace(s, "before"); }
+extern "C" __declspec(dllexport) UINT __stdcall ProbeBefore(MSIHANDLE s) {
+    UINT result = reserve_helper(s);
+    return result == ERROR_SUCCESS ? trace(s, "before") : result;
+}
+extern "C" __declspec(dllexport) UINT __stdcall ProbeContend(MSIHANDLE s) { return contend_helper(s); }
 extern "C" __declspec(dllexport) UINT __stdcall ProbeWritten(MSIHANDLE s) { return trace(s, "written", true); }
 extern "C" __declspec(dllexport) UINT __stdcall ProbeFailure(MSIHANDLE s) { trace(s, "fail", true); return ERROR_INSTALL_FAILURE; }
 extern "C" __declspec(dllexport) UINT __stdcall ProbeCancel(MSIHANDLE s) { trace(s, "cancel", true); return ERROR_INSTALL_USEREXIT; }
-extern "C" __declspec(dllexport) UINT __stdcall ProbeSuccess(MSIHANDLE s) { return trace(s, "exit-success"); }
-extern "C" __declspec(dllexport) UINT __stdcall ProbeError(MSIHANDLE s) { return trace(s, "exit-error"); }
-extern "C" __declspec(dllexport) UINT __stdcall ProbeUserExit(MSIHANDLE s) { return trace(s, "exit-cancel"); }
-extern "C" __declspec(dllexport) UINT __stdcall ProbeSuspend(MSIHANDLE s) { return trace(s, "exit-suspend"); }
+static UINT finish(MSIHANDLE session, const char* stage) {
+    UINT result = contend_helper(session);
+    if (result == ERROR_SUCCESS) result = release_helper(session);
+    return result == ERROR_SUCCESS ? trace(session, stage) : result;
+}
+extern "C" __declspec(dllexport) UINT __stdcall ProbeSuccess(MSIHANDLE s) { return finish(s, "exit-success"); }
+extern "C" __declspec(dllexport) UINT __stdcall ProbeError(MSIHANDLE s) { return finish(s, "exit-error"); }
+extern "C" __declspec(dllexport) UINT __stdcall ProbeUserExit(MSIHANDLE s) { return finish(s, "exit-cancel"); }
+extern "C" __declspec(dllexport) UINT __stdcall ProbeSuspend(MSIHANDLE s) { return finish(s, "exit-suspend"); }

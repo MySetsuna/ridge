@@ -6,6 +6,7 @@
     <Package InstallerVersion="500" Compressed="yes" InstallScope="$(var.InstallScope)" Platform="x64" />
     <MediaTemplate EmbedCab="yes" />
     <Property Id="RIDGE_PROBE_ROOT" Secure="yes" />
+    <Property Id="RIDGE_PROBE_HELPER" Secure="yes" />
     <Property Id="PROBE_MODE" Secure="yes" Value="success" />
     <Condition Message="This isolated fixture requires an explicit probe directory.">RIDGE_PROBE_ROOT</Condition>
     <Directory Id="TARGETDIR" Name="SourceDir">
@@ -18,6 +19,7 @@
     <Feature Id="Probe" Level="1"><ComponentRef Id="ProbeSentinel" /></Feature>
     <Binary Id="ProbeDll" SourceFile="$(var.ProbeDll)" />
     <CustomAction Id="ProbeBefore" BinaryKey="ProbeDll" DllEntry="ProbeBefore" Return="check" />
+    <CustomAction Id="ProbeContend" BinaryKey="ProbeDll" DllEntry="ProbeContend" Return="check" />
     <CustomAction Id="ProbeWrittenData" Property="ProbeWritten" Value="[RIDGE_PROBE_ROOT]" />
     <CustomAction Id="ProbeFailureData" Property="ProbeFailure" Value="[RIDGE_PROBE_ROOT]" />
     <CustomAction Id="ProbeCancelData" Property="ProbeCancel" Value="[RIDGE_PROBE_ROOT]" />
@@ -29,7 +31,8 @@
     <CustomAction Id="ProbeUserExit" BinaryKey="ProbeDll" DllEntry="ProbeUserExit" Return="ignore" />
     <CustomAction Id="ProbeSuspend" BinaryKey="ProbeDll" DllEntry="ProbeSuspend" Return="ignore" />
     <InstallExecuteSequence>
-      <Custom Action="ProbeBefore" Before="InstallInitialize">1</Custom>
+      <Custom Action="ProbeBefore" Before="ProbeContend">1</Custom>
+      <Custom Action="ProbeContend" Before="InstallInitialize">1</Custom>
       <Custom Action="ProbeWrittenData" After="InstallFiles">NOT REMOVE</Custom>
       <Custom Action="ProbeFailureData" After="ProbeWrittenData">NOT REMOVE</Custom>
       <Custom Action="ProbeCancelData" After="ProbeFailureData">NOT REMOVE</Custom>

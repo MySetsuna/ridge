@@ -1,5 +1,6 @@
 param(
     [switch]$ProbeOnly,
+    [string]$KernelPath,
     [Parameter(Mandatory)][string]$WixDirectory,
     [Parameter(Mandatory)][string]$OutputDirectory
 )
@@ -17,6 +18,7 @@ if (!$output.StartsWith($runnerRoot, [StringComparison]::OrdinalIgnoreCase) -or 
     throw 'Probe output must be a child of RUNNER_TEMP.'
 }
 $repo = Split-Path $PSScriptRoot -Parent
+if ($KernelPath) { $KernelPath = (Resolve-Path -LiteralPath $KernelPath).Path; if ($KernelPath.Contains('"')) { throw 'Invalid Kernel path.' } }
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 $dll = Join-Path $output 'probe.dll'
 $payload = Join-Path $output 'sentinel.txt'
@@ -49,6 +51,7 @@ function Invoke-ProbeMsi([string]$CaseRoot, [string]$Ui, [string]$Mode, [switch]
     $log = Join-Path $CaseRoot $(if ($Uninstall) { 'uninstall.log' } else { 'install.log' })
     $arguments = @($operation, $target, $Ui, '/norestart', 'REBOOT=ReallySuppress', '/l*v', ('"' + $log + '"'),
         ('RIDGE_PROBE_ROOT="' + $CaseRoot + '"'), ('PROBE_INSTALL="' + (Join-Path $CaseRoot 'installed') + '"'), "PROBE_MODE=$Mode")
+    if ($KernelPath) { $arguments += 'RIDGE_PROBE_HELPER="' + $KernelPath + '"' }
     $process = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList $arguments -WindowStyle Hidden -PassThru
     if (!$process.WaitForExit(120000)) { throw "MSI $Mode timed out; runner teardown owns cleanup." }
     $process.Refresh()
@@ -95,6 +98,9 @@ foreach ($ui in @('/qn', '/qf')) {
                 $termination[0].installedFileExists -ne ($mode -eq 'success')) {
                 throw "$ui/$mode termination callback did not follow commit/rollback."
             }
+            if ($KernelPath -and (Get-Content -LiteralPath (Join-Path $caseRoot 'runtime.done') -Raw) -ne 'DONE') {
+                throw "$scope/$ui/$mode did not release the actual Kernel helper."
+            }
             $before = @($trace | Where-Object stage -eq 'before')[0]
             $results += [pscustomobject]@{ scope = $scope; ui = $ui; mode = $mode; exit = $exit; stages = @($trace.stage);
                 before = $before; termination = $termination[0] }
@@ -110,5 +116,6 @@ if ($installer.ProductState($product) -eq 5) { throw 'Isolated fixture remains i
 }
 [pscustomobject]@{ scope = 'MSI lifecycle probe only'; runtimeGuardImplemented = $false; productionAcceptance = $false;
     source = $env:GITHUB_SHA; packages = $packages; cases = $results
+    helperSha256 = if ($KernelPath) { (Get-FileHash $KernelPath -Algorithm SHA256).Hash } else { $null }
 } | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $output 'probe-results.json')
 Write-Output "MSI lifecycle probe: $($results.Count) cases; production Runtime guard remains unverified."
