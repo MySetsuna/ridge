@@ -76,9 +76,8 @@ jobs:
       NODE_OPTIONS: --max-old-space-size=4096
     steps:
       - uses: actions/checkout@v4
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
+      # Match release.yml: Cargo discovers MSVC. VsDevCmd's PLATFORM=x64
+      # conflicts with wasm-pack-action's operating-system selector.
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -106,6 +105,7 @@ jobs:
           $help = & target/ridge-cli-artifact/ridge.exe --help
           if ($LASTEXITCODE -ne 0 -or ($help -join "`n") -notmatch 'Ridge headless remote host') { throw 'Independent CLI staging failed.' }
       - name: Build complete Tauri MSI from this source
+        id: build_package
         run: pnpm exec tauri build --bundles msi
       - name: Verify the actual MSI action and Binary contracts
         shell: pwsh
@@ -116,6 +116,8 @@ jobs:
           $msi = $packages[0]
           $output = Join-Path $env:RUNNER_TEMP 'ridge-full-msi-artifacts'
           New-Item -ItemType Directory -Path $output -Force | Out-Null
+          Copy-Item -LiteralPath $msi.FullName -Destination $output
+          Copy-Item target/ridge-cli-artifact/ridge.exe (Join-Path $output 'ridge-cli.exe')
           $installer = New-Object -ComObject WindowsInstaller.Installer
           $database = $installer.OpenDatabase($msi.FullName, 0)
           function Read-Rows([string]$Query, [int]$Columns) {
@@ -168,10 +170,8 @@ jobs:
               scope = 'Complete production Tauri MSI build and database inspection'; productionAcceptance = $false
             } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $output 'package-contract.json')
           } finally { foreach ($handle in @($database, $installer)) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($handle) } }
-          Copy-Item -LiteralPath $msi.FullName -Destination $output
-          Copy-Item target/ridge-cli-artifact/ridge.exe (Join-Path $output 'ridge-cli.exe')
       - name: Upload unpublished complete MSI candidate
-        if: always()
+        if: always() && steps.build_package.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: complete-tauri-msi-candidate

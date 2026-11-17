@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "id": "d4d24897-fea8-424e-86ae-da00b102f267",
+  "at": "2026-11-17T11:42:26.206Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-137",
+  "buildId": "BUILD-84f7cab8b488",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-84f7cab8b488",
+    "changeId": "CHG-137",
+    "specHash": "c9ead3301e505e711b636c1e46d72615ab3b1479f3f1ed74db7d23299656d6c9",
+    "workspaceHash": "2e519199a48ad26d739ad918f176e5758ec42b2cb6ddfccc201bce895c33199f",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "NOT_DECLARED",
+    "acceptanceResults": [],
+    "valid": true,
+    "verifiedAt": "2026-11-17T11:42:26.205Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": ".github/workflows/msi-runtime-e2e.yml",
+        "before": null,
+        "after": "17a9da659944fca57f22746e65386bc5dac660e445565cdcf44a023107bd56f4"
+      },
+      {
+        "path": "changes/CHG-137.md",
+        "before": "598d40005bc7eba2a1457bb0ff8852e09d59ff75457853f2ccd739af0a46158a",
+        "after": "27939140ef5006580fea42c92935de09efacc0dd74435afc9e41cec47cb91955"
+      },
+      {
+        "path": "packages/ridge-kernel/src/installer.rs",
+        "before": "8f79838dce1eb79d85453eda3c8a6859f4f60fbdadf1c1f64647366abb21188a",
+        "after": "e658cc658f437fd5d95d47312c8a8adc6ee15f1e2dd15a955e154b18f08f6316"
+      },
+      {
+        "path": "packages/ridge-kernel/src/main.rs",
+        "before": "4b4f0783e37e583069b39a0ba510adbfd23aac08ea24bf2c98c2b8d363328f4c",
+        "after": "a9b266741d01c0253dc4554f600b57c7c68dd182c2d676103ddc7aa3cacf3e9a"
+      },
+      {
+        "path": "scripts/msi-runtime-acceptance.ps1",
+        "before": null,
+        "after": "71674349004149f630f69bfbe4e2b7cdf1d057143a2cb1500b7fe195d1c092ff"
+      },
+      {
+        "path": "src-tauri/tauri.conf.json",
+        "before": "848489f9745338d89c9f9c740b6e4f99c8129e1dc5573500187528278b43191c",
+        "after": "5ac2250b3335e1207324a022f589982cc1ef1dade7232a9f8bcfdb895b840feb"
+      },
+      {
+        "path": "src-tauri/wix/runtime-guard.wxs",
+        "before": null,
+        "after": "6d2837b865fc1efb4c5060b50cfceecc89dc85f904399eac1cfca76d35061ef6"
+      },
+      {
+        "path": "tests/fixtures/msi-runtime/probe.cpp",
+        "before": null,
+        "after": "373cc62b554fb3e571873727a5adf8b7b7656f6ab13b6d50c2d047d133ae356a"
+      },
+      {
+        "path": "tests/fixtures/msi-runtime/probe.wxs",
+        "before": null,
+        "after": "2c6ccd6b88e0ddc102ec7cfa3381fba92416c64776f23f490d5448d6fea743e2"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/d4d24897-fea8-424e-86ae-da00b102f267.log"
+  }
+}
