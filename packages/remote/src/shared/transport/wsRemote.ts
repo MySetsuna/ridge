@@ -145,6 +145,8 @@ export const SHELL_DISCOVERY_TIMEOUT_MS = 30_000;
 
 export interface PaneInfo {
   id: string;
+  /** Host-observed PTY state; absent means unknown, never inferred from cwd. */
+  status?: string;
   title?: string;
   cwd?: string;
   /** Protocol membership projection; never inferred from a title or process name. */
@@ -1947,6 +1949,7 @@ export class RemoteConnection implements RemoteLink {
 
   async createPane(shell?: string): Promise<string | null> {
     const data = await this._sendAndWait({ type: 'create-pane', shell: shell || '' }, 'create-pane-result') as Record<string, unknown>;
+    if (!data.success && data.error) throw new Error(unknownText(data.error, 'Failed to create terminal'));
     return data.success ? protocolId(data.paneId) : null;
   }
 

@@ -469,6 +469,7 @@
   let activeTerminalActivation: { key: string; id: number } | null = null;
   let terminalLifecycle = $state<import('@ridge/remote/shared/terminal/lifecycle').TerminalLifecycle | null>(null);
   let terminalStreamFailure = $state<{key:string;activation:number} | null>(null);
+  const terminalDetached = $derived(activePane?.status === 'detached');
   const terminalExitMessage = $derived.by(() => {
     const pane = activePaneRef();
     return pane && terminalLifecycle?.workspaceId === pane.workspaceId && terminalLifecycle.paneId === pane.paneId ? terminalLifecycleMessage(terminalLifecycle) : null;
@@ -1139,7 +1140,7 @@
   $effect(() => {
     const pid = ui.activePaneId;
     const workspaceId = ui.activeWorkspaceId;
-    if (!pid || !workspaceId) { subscribedPaneId = null; return; } // null gap → force re-subscribe next
+    if (!pid || !workspaceId || terminalDetached) { subscribedPaneId = null; return; } // null gap → force re-subscribe next
     untrack(() => {
       const pane = { workspaceId, paneId: pid };
       const subscriptionKey = paneRefKey(pane);
@@ -1458,11 +1459,13 @@
       {#if terminalExitMessage}
         <div role={terminalLifecycle?.error ? 'alert' : 'status'} aria-live={terminalLifecycle?.error ? 'assertive' : 'polite'} data-testid="terminal-exit-status" style="position:absolute;bottom:8px;left:8px;z-index:20;max-width:calc(100% - 16px);background:var(--rg-bg,#111827);color:var(--rg-fg,#f9fafb);border:1px solid var(--rg-border,#475569)" class="rounded px-3 py-2 text-xs">{terminalExitMessage}</div>
       {/if}
-      {#if terminalFailed}
+      {#if terminalFailed && !terminalDetached}
         <button data-testid="terminal-stream-retry" style="position:absolute;top:8px;left:8px;z-index:20" onclick={() => {const pane=activePaneRef(); if(pane) requestFeedResync(paneRefKey(pane));}}>Terminal connection failed · Retry</button>
       {/if}
       <canvas class="host-canvas" data-rg-host aria-hidden="true" use:hostCanvas></canvas>
-      {#if terminalCanvasPromise && activePane}
+      {#if terminalDetached}
+        <div class="terminal-loading" role="status" data-testid="terminal-detached-status">{$t('mobile.terminalDetached')}</div>
+      {:else if terminalCanvasPromise && activePane}
         {#await terminalCanvasPromise}
           <div class="terminal-loading">{$t('mobile.initializingTerminal')}</div>
         {:then module}

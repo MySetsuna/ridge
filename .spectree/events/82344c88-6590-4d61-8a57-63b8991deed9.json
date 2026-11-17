@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "id": "82344c88-6590-4d61-8a57-63b8991deed9",
+  "at": "2026-11-17T05:16:38.806Z",
+  "type": "applied",
+  "source": "local_operation",
+  "changeId": "CHG-133",
+  "data": {
+    "added": [
+      "L4-REMOTE-PANE-READINESS-UX"
+    ],
+    "changed": [],
+    "retiring": [],
+    "patch": {
+      "changeId": "CHG-133",
+      "nodes": [
+        {
+          "id": "L4-TERMINAL-INITIALIZATION-RECOVERY",
+          "level": "L4",
+          "title": "终端初始化失败可恢复且不重建运行进程",
+          "parent": "L3-TERMINAL-VISUAL-INPUT-REPAIR",
+          "codeTargets": [
+            "src/lib/components/RidgePane.svelte",
+            "packages/ridge-kernel/src/client.rs",
+            "src/lib/i18n/messages/workspace.ts",
+            ".github/workflows/rtp1-kernel-e2e.yml"
+          ],
+          "testTargets": [
+            "scripts/cdp-renderer-retry.mjs",
+            "packages/ridge-kernel/src/client.rs",
+            ".github/workflows/rtp1-kernel-e2e.yml"
+          ],
+          "body": "只读 load_terminal_font_faces 在本地 Kernel 命令通道使用 15 秒有限读时限，普通命令仍使用 5 秒。RidgePane 对渲染初始化做一次自动重试，持续失败显示可操作重试；重试沿原附着流程，保持工作区、pane 和 PTY 身份，不重启核心或终端。重复触发互斥，卸载取消后续附着。真实 native dev:cdp 注入字体请求失败后恢复，核对真实输入回显、同一 PTY 与无重复绑定；并运行真实 socket 超过默认 5 秒的字体回应回归。 外层业务 RPC 保持 20 秒；字体清单的内层 15 秒时限留出传输与错误返回余量。CI 必须实际运行字体 socket 截止时限回归。"
+        },
+        {
+          "id": "L4-REMOTE-GIT-READ-ROOT-BOUNDARY",
+          "level": "L4",
+          "title": "Git 读取与发现遵守实际仓库根授权",
+          "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+          "codeTargets": [
+            "packages/ridge-core/src/dispatch.rs",
+            ".github/workflows/rtp1-kernel-e2e.yml"
+          ],
+          "testTargets": [
+            "packages/ridge-core/src/dispatch.rs",
+            "packages/ridge-kernel/tests/git_commands_runtime.rs",
+            ".github/workflows/rtp1-kernel-e2e.yml"
+          ],
+          "body": "有界 RootScope 下，Git 读、状态和仓库发现必须核对实际向上找到的仓库根；参数虽在 roots 内，但实际仓库位于 roots 外，返回 outside_sandbox，不能借子目录读父仓库。共同 admission 约束 Desktop scoped、LAN 与 Cloud 等调用方；无界本机行为及授权根内真实仓库的子目录访问保持不变。回归覆盖真实父仓库拒绝、根内仓库允许和非 Git 空目录，不执行越界写入。 CI 必须执行共同 admission 回归族和真实 Git Runtime 回归，不能只把测试写在仓库而未接入现有 Kernel 工作流。"
+        },
+        {
+          "id": "L4-COMMUNE-GLOBAL-HISTORY-EMPTY",
+          "level": "L4",
+          "title": "Commune 历史空态符合全局聚合",
+          "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+          "codeTargets": [
+            "src/lib/i18n/messages/commune.ts"
+          ],
+          "testTargets": [
+            "src/lib/i18n/messages.test.ts"
+          ],
+          "body": "成员、编组与历史仍聚合所有工作区；历史空态不得误称只属当前工作区。中英文一致，保留未接入 Agent 协议不会自动同步的说明；本轮不改查询接口与持久化。"
+        },
+        {
+          "id": "L4-COMMUNE-LINUX-SOCKET-ATTESTATION",
+          "level": "L4",
+          "title": "Linux TCP 归属等待同一连接的可见证据，CI 严格传播失败",
+          "parent": "L3-COMMUNE-PROTOCOL-MEMBERSHIP",
+          "codeTargets": [
+            "packages/ridge-core/src/process_identity.rs",
+            ".github/workflows/rtp1-kernel-e2e.yml"
+          ],
+          "testTargets": [
+            "packages/ridge-core/src/process_identity.rs",
+            "packages/ridge-kernel/tests/commune_registration.rs",
+            ".github/workflows/rtp1-kernel-e2e.yml"
+          ],
+          "body": "原始 CI 日志 43917900027 暴露 session choice 登记失败，但 cargo test 经 tee 的管道掩盖退出码。CI 统一使用严格 Bash/pipefail，并以有意失败的管道验证失败传播；真实回归任何失败均不得变绿。保留所有业务断言与已有用例，不降低认证或跳过 Commune 验收。\n\nLinux 实测已 ESTABLISHED 的 TCP 在服务端 accept 前 inode 为 0、没有可归属 FD，accept 后才可见真实 inode。未知证据不能误称为另一个进程。沿现有最多 100ms 的同一 socket 观察周期等待可见的非零 inode；仍不能证明则拒绝，始终复核同一 PID 启动实例，不重连、不依赖端口或进程名。多个精确四元组记录、错误归属和 PID 复用仍拒绝。Windows 行为保持。\n\n回归覆盖 Linux 零/缺失/歧义 inode、延迟 accept 的同一连接、错误进程与过期实例，以及真实 Kernel session/list 选择和 session/load 登记。平台能在 accept 前证明时保留该断言；Linux 必须有实际 accept 后的证据，不虚构尚不存在的进程归属。CI 实际执行 process_identity 回归族并检查原始日志，不以工作流绿色替代用例通过。"
+        },
+        {
+          "id": "L4-REMOTE-PANE-READINESS-UX",
+          "level": "L4",
+          "title": "Remote 区分未运行 pane 并复用新工作区默认终端",
+          "parent": "L3-REMOTE-INTERACTION-RELIABILITY",
+          "codeTargets": [
+            "src/remote/MainApp.svelte",
+            "src/remote/lib/WorkspaceTree.svelte",
+            "src/lib/i18n/messages/mobile.ts"
+          ],
+          "testTargets": [
+            "scripts/remote-cwd-acceptance.mjs",
+            "scripts/remote-createws-test.mjs",
+            "src/lib/i18n/messages.test.ts"
+          ],
+          "body": "公网真实 Kernel 重启后，工作区拓扑仍可列出 status=detached 的未运行 pane；它不代表活跃 PTY。Remote 须显示未运行及选择终端类型的启动指引，不挂载输入面、不订阅或请求不存在 PTY 的 resize，不自动重启进程，不降低跨工作区所有权检查。保持未知 cwd 清空侧栏范围及既有显式 shell 选择流程。\n\nKernel create_workspace 已原子创建一个默认真实终端；手机端工作区树不得再额外调用 createPane，须通过真实 panes 回包选中默认 pane。仍保留用户显式新建终端行为，失败显示错误，不推测成功。\n\n以真实 Kernel、生产手机 bundle 和真实 PTY 验证 detached 状态不再出现归属错误且不冒用前一 pane cwd；新建工作区恰有一个终端，显式新增后恰为两个，切换及刷新保留身份。扩展现有执行脚本，不用源码字符串包含断言替代验收。"
+        }
+      ]
+    }
+  }
+}

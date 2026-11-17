@@ -493,6 +493,20 @@ impl KernelHost {
         Ok(pane_id)
     }
 
+    fn local_pane_id(&self, workspace_id: Uuid, pane_id: Uuid, snapshot: &KernelSnapshot) -> Result<Uuid, String> {
+        if snapshot.ptys.iter().any(|pty| pty.pty_id == pane_id && pty.workspace_id == Some(workspace_id)) {
+            return Ok(pane_id);
+        }
+        let detail = request_json(&self.current_endpoint(), "GET", &format!("/v1/domain/workspaces/{workspace_id}"), None)?;
+        if !workspace_detail_contains_pane(&detail, pane_id) {
+            return Err(format!("pane {pane_id} does not belong to workspace {workspace_id}"));
+        }
+        if detail["foreignPanes"].get(pane_id.to_string()).is_some() {
+            return Err("foreign view cannot own a local PTY".into());
+        }
+        Ok(pane_id)
+    }
+
     fn create_pane(&self, args: &Value, snapshot: &KernelSnapshot) -> Result<Uuid, String> {
         let workspace_id = self.workspace_id(args.get("workspaceId").and_then(Value::as_str))?;
         if let Some(requested) = args
@@ -510,19 +524,8 @@ impl KernelHost {
                 return Ok(pane_id);
             }
 
-            let detail = request_json(
-                &self.current_endpoint(),
-                "GET",
-                &format!("/v1/domain/workspaces/{workspace_id}"),
-                None,
-            )?;
-            if !workspace_detail_contains_pane(&detail, pane_id) {
-                return Err(format!(
-                    "pane {pane_id} does not belong to workspace {workspace_id}"
-                ));
-            }
-            if detail["foreignPanes"].get(pane_id.to_string()).is_some(){return Err("foreign view cannot own a local PTY".into());}
-            let shell = args.get("shell").and_then(Value::as_str);
+            self.local_pane_id(workspace_id, pane_id, snapshot)?;
+            let shell = args.get("shell").and_then(Value::as_str).filter(|shell| !shell.trim().is_empty());
             let cwd = args.get("cwd").and_then(Value::as_str);
             create_domain_pty(
                 &self.current_endpoint(),
@@ -569,8 +572,8 @@ impl KernelHost {
             .and_then(Value::as_str)
             .and_then(|id| Uuid::parse_str(id).ok())
             .ok_or_else(|| "kernel split response missing pane_id".to_string())?;
-        let shell = args.get("shell").and_then(Value::as_str);
-        let cwd = args.get("cwd").and_then(Value::as_str);
+        let shell = args.get("shell").and_then(Value::as_str).filter(|shell| !shell.trim().is_empty());
+        let cwd = args.get("cwd").and_then(Value::as_str).or_else(|| value["initial_cwd"].as_str());
         create_domain_pty(
             &self.current_endpoint(),
             pane_id,
@@ -836,12 +839,13 @@ fn presentation_authorized(host: &KernelHost, binding: Option<&(WsConn, String)>
 
 fn kernel_layout_to_ui(value: Value, snapshot: &KernelSnapshot) -> Value {
     if let Some(id) = value.get("Leaf").and_then(Value::as_str) {
-        let mut result = json!({ "type": "leaf", "id": id });
+        let mut result = json!({ "type": "leaf", "id": id, "status": "detached" });
         if let Some(pty) = snapshot
             .ptys
             .iter()
             .find(|pty| pty.pty_id.to_string() == id)
         {
+            result["status"] = json!(pty.status);
             result["cwd"] = pty.cwd.clone().map(Value::String).unwrap_or(Value::Null);
             if let Some((socket,global))=ridge_tmux::attachment_origin(pty.pty_id) {
                 result["origin"]=json!({"kind":"headless","host_id":"headless","host_label":socket,"session_id":format!("{socket}:{global}")});
@@ -881,6 +885,7 @@ fn kernel_layout_to_ui(value: Value, snapshot: &KernelSnapshot) -> Value {
 fn project_foreign_panes(node:&mut Value,bindings:&Value){
     if node["type"]=="leaf" {
         if let Some(binding)=node["id"].as_str().and_then(|id|bindings.get(id)) {
+            if let Some(fields)=node.as_object_mut(){fields.remove("status");}
             node["title"]=binding["title"].clone();node["cwd"]=binding["cwd"].clone();
             node["origin"]=json!({"kind":binding["kind"],"host_id":binding["host_id"],"host_label":binding["host_label"],"session_id":binding["session_id"],"workspace_id":binding["workspace_id"]});
         }
@@ -1979,9 +1984,11 @@ fn dispatch(
             dispatch_shared_core(host, method, args, false, &host.roots(&snapshot), &Uuid::new_v4().to_string()).map_err(|error|error.message)
         }
         "change_pane_shell" => {
-            let pane_id = host.pane_id(args, &snapshot)?;
             let workspace_id =
                 host.workspace_id(args.get("workspaceId").and_then(Value::as_str))?;
+            let pane_id = Uuid::parse_str(args["paneId"].as_str().ok_or("paneId is required")?)
+                .map_err(|_| "invalid pane id")?;
+            let pane_id = host.local_pane_id(workspace_id, pane_id, &snapshot)?;
             let shell = args
                 .get("shell")
                 .and_then(Value::as_str)
@@ -2002,7 +2009,9 @@ fn dispatch(
                 .iter()
                 .find(|pty| pty.pty_id == pane_id)
                 .and_then(|pty| pty.cwd.as_deref());
-            destroy_domain_pty(&host.current_endpoint(), pane_id)?;
+            if snapshot.ptys.iter().any(|pty| pty.pty_id == pane_id) {
+                destroy_domain_pty(&host.current_endpoint(), pane_id)?;
+            }
             create_domain_pty_with_command(
                 &host.current_endpoint(),
                 DomainPtyLaunch {
@@ -2615,6 +2624,13 @@ mod tests {
         let value = kernel_layout_to_ui(json!({"Leaf": pane_id.to_string()}), &snapshot);
         assert_eq!(value["shell_kind"], "wsl.exe");
         assert_eq!(value["cwd"], "C:\\work");
+        assert_eq!(value["status"], "running");
+        let other = Uuid::from_u128(2).to_string();
+        let mut detached = kernel_layout_to_ui(json!({"Leaf": other}), &snapshot);
+        assert_eq!(detached["status"], "detached");
+        assert!(detached.get("cwd").is_none());
+        project_foreign_panes(&mut detached, &json!({other: {"kind":"remote","host_id":"host","session_id":"remote-pane"}}));
+        assert!(detached.get("status").is_none(), "A foreign view has no local process ownership");
     }
 
     #[test]

@@ -938,10 +938,10 @@
   },
   {
     "changeId": "CHG-133",
-    "specHash": "1b21aa60638737ff313cb8031cdae84bf016a6e43107ca3f47373875a5be67fb",
-    "approvedAt": "2026-11-17T04:41:58.662Z",
+    "specHash": "ee8e939fd6dfe0691ec4c705beafc3ec969351c2d43e23d664cd1936fc6f148e",
+    "approvedAt": "2026-11-17T05:41:28.472Z",
     "source": "cli",
     "actor": "user",
-    "confirmationRef": "standing-authorized-Remote-Commune-root-fixes:Linux-same-socket-observation-and-strict-CI-failure-propagation-without-relaxing-auth"
+    "confirmationRef": "standing-Remote-real-function-repair:graph-authorized-explicit-shell-start-preserve-panes-and-user-settings"
   }
 ]

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "1bff8785-3683-40ce-a476-7f9347d3b0d8",
+  "at": "2026-11-17T05:41:28.476Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-133",
+  "data": {
+    "changeId": "CHG-133",
+    "specHash": "ee8e939fd6dfe0691ec4c705beafc3ec969351c2d43e23d664cd1936fc6f148e",
+    "approvedAt": "2026-11-17T05:41:28.472Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "standing-Remote-real-function-repair:graph-authorized-explicit-shell-start-preserve-panes-and-user-settings",
+    "attributionVerified": false
+  }
+}

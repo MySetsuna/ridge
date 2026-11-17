@@ -91,6 +91,24 @@ async fn cloud_transport_reuses_host_domain_state_and_seals_remote_role() {
     let pane=rpc(&mut presentation,9,"create_pane",json!({"workspaceId":first_id,"cwd":root,"shell":if cfg!(windows){"cmd.exe"}else{"/bin/sh"}})).await;
     assert!(pane["error"].is_null(),"{pane}");
     let pane_id=pane["result"]["paneId"].clone();
+    let before=client::request_json(&owned.endpoint,"GET","/v1/domain/ptys",None).unwrap();
+    let program=if cfg!(windows){"cmd.exe"}else{"/bin/sh"};
+    let denied=rpc(&mut presentation,2001,"dispatch_remote_invoke",invoke("controller-one","change_pane_shell",json!({"workspaceId":second_id,"paneId":pane_id,"shell":program,"args":[]}))).await;
+    assert!(denied["error"].is_object(),"cross-workspace shell changes must be rejected: {denied}");
+    let after=client::request_json(&owned.endpoint,"GET","/v1/domain/ptys",None).unwrap();
+    assert_eq!(after["ptys"].as_array().unwrap().len(),before["ptys"].as_array().unwrap().len());
+    for previous in before["ptys"].as_array().unwrap(){
+        let current=after["ptys"].as_array().unwrap().iter().find(|pty|pty["id"]==previous["id"]).unwrap();
+        assert_eq!(current["child_pid"],previous["child_pid"],"rejection must retain the same child");
+        assert_eq!(current["child_start_instance"],previous["child_start_instance"],"rejection must retain the same process instance");
+    }
+    let split=client::request_json(&owned.endpoint,"POST",&format!("/v1/domain/workspaces/{}/split",first_id.as_str().unwrap()),Some(&json!({"pane_id":pane_id,"direction":"horizontal"}))).unwrap();
+    assert_eq!(split["ok"],true,"{split}");
+    let detached=split["pane_id"].clone();
+    let started=rpc(&mut presentation,2002,"dispatch_remote_invoke",invoke("controller-one","change_pane_shell",json!({"workspaceId":first_id,"paneId":detached,"shell":program,"args":[]}))).await;
+    assert!(started["error"].is_null(),"a graph-owned detached pane must start explicitly: {started}");
+    let ptys=client::request_json(&owned.endpoint,"GET","/v1/domain/ptys",None).unwrap();
+    assert!(ptys["ptys"].as_array().unwrap().iter().any(|pty|pty["id"]==detached&&pty["workspace_id"]==first_id&&pty["child_pid"].as_u64().is_some_and(|pid|pid>0)),"explicit shell choice must create a real process for the same pane: {ptys}");
     let binding=json!({"clientId":"controller-one","workspaceId":first_id,"paneId":pane_id,"activationId":17,"active":true});
     let snapshot_args=json!({"workspaceId":first_id,"paneId":pane_id,"activationId":17});
     assert!(rpc(&mut presentation,10,"dispatch_remote_invoke",invoke("controller-one","get_terminal_snapshot",snapshot_args.clone())).await["error"].is_object());

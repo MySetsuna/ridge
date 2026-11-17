@@ -1,0 +1,165 @@
+{
+  "version": 1,
+  "id": "fd1bad7e-f22e-4f55-93b9-9c094af3e605",
+  "at": "2026-11-17T05:45:05.822Z",
+  "type": "verified",
+  "source": "tool_verified",
+  "changeId": "CHG-133",
+  "buildId": "BUILD-1c609cd34b25",
+  "data": {
+    "version": 1,
+    "buildId": "BUILD-1c609cd34b25",
+    "changeId": "CHG-133",
+    "specHash": "ee8e939fd6dfe0691ec4c705beafc3ec969351c2d43e23d664cd1936fc6f148e",
+    "workspaceHash": "4a44721c797ddc8a582c95d415e8a8ba1a052e7a4a40bcad4da9c108683e9756",
+    "testCommand": [
+      "npm",
+      "test"
+    ],
+    "testStatus": "PASS",
+    "acceptanceStatus": "NOT_DECLARED",
+    "acceptanceResults": [],
+    "valid": true,
+    "verifiedAt": "2026-11-17T05:45:05.818Z",
+    "diagnostics": [],
+    "fileChanges": [
+      {
+        "path": ".github/workflows/rtp1-kernel-e2e.yml",
+        "before": "97ac6cc2b49e62a0affa64672db537462c8a1fd59c268561ce691d6e1ecf5a8b",
+        "after": "b8d15916b17134510e9a82e1a4019b0e71c00cec77a5fdecab5a65aa27168500"
+      },
+      {
+        "path": "changes/CHG-133.md",
+        "before": "7ab968418ae2d9162457c6a029a70239efbf910063a2be2c2cfd388992262e3a",
+        "after": "6330cf37699241fc6628849b3aa4ef3c5258c65fc182972a1c476bbc988080ba"
+      },
+      {
+        "path": "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+        "before": "2ae38db10434940491d23b4d29c4dfd8a7f5a9afa0afc7e4738850567de7db03",
+        "after": "ca3412345bf47975ef95c383e707ef09b0b86fc441abb68af397d9c34ed215c2"
+      },
+      {
+        "path": "packages/remote/src/shared/transport/wsRemote.ts",
+        "before": "7f37073b2a72b2ae390d1cac7662e1a8210ac9eb0c376eaf3a471a6a6307e91a",
+        "after": "d0b3ceb8c7f4bfa4ea6035fbd9db39e4bd613ebf242e9fff79d15092b0cc29ce"
+      },
+      {
+        "path": "packages/ridge-core/src/dispatch.rs",
+        "before": "17087f01b805ebd9a6d9759472a6f51dca52efe83e72296f1c6626eceffc679a",
+        "after": "827e91e36392463ef3f40020bfb06cfe62f722d05c0e50b2d1e8b5eb78b27ba6"
+      },
+      {
+        "path": "packages/ridge-core/src/process_identity.rs",
+        "before": "501a13e167a54de1e7e5b8c51d63a22d5fa0872e9efc69344326d41e48ae7023",
+        "after": "4cba47f397ca01c7132bec0235d65c0d025acf8818d52651144d991e7836e24e"
+      },
+      {
+        "path": "packages/ridge-kernel/src/client.rs",
+        "before": "47dc8d489220833305fc3c4e09105387c933ac568aeac233c5df66cc626dcb19",
+        "after": "e25d3e4619dcd22fb064cf919aa4f3eb6818e1e7001ffdedd7469a2141683753"
+      },
+      {
+        "path": "packages/ridge-kernel/src/host.rs",
+        "before": "74147bbd495ef26ec890500b678fd95d2191a911673ca9aa7162c23b8b84ad9d",
+        "after": "3de62f852a06701b854497e9667c18faa50f6922e5dab6ce26aa31da09530718"
+      },
+      {
+        "path": "packages/ridge-kernel/src/settings.rs",
+        "before": "a116dbaf72067f657afeeb8b04031ccb44608f6c47604617e54d5327b848eeef",
+        "after": "1ff7788bebff03bdd2aba185a0e9ccf166fc19a25125e53414eb31484e1db5c0"
+      },
+      {
+        "path": "packages/ridge-kernel/tests/git_commands_runtime.rs",
+        "before": "2dd996422766728cd843167c8f105da7f8861d415159c8a1e334ca1a7dffc120",
+        "after": "fa556cf1d2aeb72ab43c9ff5acbefee0b64eaf4b2de6e8c71224d2482bd441d6"
+      },
+      {
+        "path": "packages/ridge-kernel/tests/remote_invoke_runtime.rs",
+        "before": "7df591553172d7ccf22f23dd94e8fbb3afb1883ee2089c84bc0adc57d1764cc7",
+        "after": "c78575108ca7c7146cbbeddea5640a988f356a950b383308dd582e47861e08b0"
+      },
+      {
+        "path": "scripts/cdp-renderer-retry.mjs",
+        "before": null,
+        "after": "1520ae82cfe26f0395d3386e04206e7d3101d8c48cc070c2198e1687992a1168"
+      },
+      {
+        "path": "scripts/remote-createws-test.mjs",
+        "before": "51fc92a18374f1bfe8dda914e92e69ed94b3b81bf591a934353a7699f6ec5a9b",
+        "after": "2e300e144f4004af053e16c79ab55e445c386b8545d37b0ffa9ca9c0ff31dab6"
+      },
+      {
+        "path": "scripts/remote-cwd-acceptance.mjs",
+        "before": "8c9d06c03b2041d41307759e2df1d19a366ac08f988b2c6a1ea53fc2c3e5845b",
+        "after": "df422b78b73205af00d56938f37b7c82a6a0d362c3a21457f7643772728188c1"
+      },
+      {
+        "path": "specs/l4-commune-linux-socket-attestation.md",
+        "before": null,
+        "after": "998ea52ad187d4fa7f799e32f7fe7ecfb215203073303681a67fec3edd4cae6b"
+      },
+      {
+        "path": "specs/l4-remote-git-read-root-boundary.md",
+        "before": "14cdad35362289e595f9230f0dede1fe1aaea583ac3e7f584e1966663e5cb4ee",
+        "after": "d005973e12c4dc1a2232d7b57fcd0e61b324fb6781f5cd9d3da022cc795fe58d"
+      },
+      {
+        "path": "specs/l4-remote-pane-readiness-ux.md",
+        "before": null,
+        "after": "2683d0c7eabbc8445b80379d342d4f60eacf42ef8c7b96355dcf9812fc29c9fb"
+      },
+      {
+        "path": "specs/l4-terminal-initialization-recovery.md",
+        "before": "3c6ba73f6dd5caa122aea5d0d4ebdb3d869e66a441771baf41326fac3b1eb68e",
+        "after": "07d49b81249345bbb03bb3aa2348fbe91251c64292395f6734808149121beb1d"
+      },
+      {
+        "path": "src/lib/components/RidgePane.svelte",
+        "before": "38edbc20d84e00547dfba1bf5c272098bf60fce6be2a14c653b7ce86e074f68e",
+        "after": "de0090eea1858dad6a9fe8065d4d55d66dd0343faab32491c877285eabc229c0"
+      },
+      {
+        "path": "src/lib/i18n/messages/commune.ts",
+        "before": "2d5510871a3afff1eacec2907aaeeffc96c5e3b3454b1fbebdded06122bc042e",
+        "after": "0035306fab615bd0c5b3f411cbcbbf07dcd56a72ea9ecfa8331ccf8082d9a32a"
+      },
+      {
+        "path": "src/lib/i18n/messages/mobile.ts",
+        "before": "1db09efd8b93be6c7502cd7f641f326b8b3984b0b19bf1abd73bb5b9cae284a4",
+        "after": "d95983cc3c7a38b3a01ab2bb75244ad0a05e9aa3d4daf9c7058387cf76f0a52d"
+      },
+      {
+        "path": "src/lib/i18n/messages/workspace.ts",
+        "before": "51460c818cdde1ddae7f4b7c6c02ef8cca92edb87194ff2cb3ea1c3725d18cb2",
+        "after": "ac16f1b4adfe7964b31ba68bbe9f3d0e96de5930dca956af5fb5e8e79f137315"
+      },
+      {
+        "path": "src/lib/types.ts",
+        "before": "f05ca52cc3091d0e3bab02682b8f5274c045af27cd3b2d93eaab23c655b994a9",
+        "after": "45d80c317b3ae22b3294ef52a3c07bafc35f891d37578ba6d8b58b5a14c17301"
+      },
+      {
+        "path": "src/remote/MainApp.svelte",
+        "before": "978e93f7f1a27aac1637f2de03ddc8f9cf324369181fcecf1fdf54549afcdd61",
+        "after": "6e710b9c41dcae0820dc45d133ac2c86512a7a8bc899ff50d917c5b5d767b0b1"
+      },
+      {
+        "path": "src/remote/lib/WorkspaceTree.svelte",
+        "before": "391f017434b479dfbe68ba167e545175efdf1bc861620409b41ff6c0dfb140b9",
+        "after": "dc5f3876bfbafad27a36dd6289e3637486c27e00508c1755f6ef9f6858563f3c"
+      },
+      {
+        "path": "src/remote/lib/cloudRemote.test.ts",
+        "before": "e615d050e851c072d1c8a25889ed51a19c362f6f7bc68001a36a32b8229f61a4",
+        "after": "d41a52941410a2d9fad2e089ba3d24fdb5dc40e950d51bf3988b074cfd7e6d1d"
+      },
+      {
+        "path": "src/remote/lib/cloudRemote.ts",
+        "before": "fd88f88dd9ce7bd6089e1ece717ef3995c997498282d248536fc4739b4136a99",
+        "after": "c89ee7d7a03aca6a0cc0180ea90cba3f77b39906495bd156b2bee0e51f881a67"
+      }
+    ],
+    "outputTruncated": false,
+    "outputRef": ".spectree/events/fd1bad7e-f22e-4f55-93b9-9c094af3e605.log"
+  }
+}

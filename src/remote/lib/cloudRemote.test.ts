@@ -326,6 +326,18 @@ describe('CloudRemoteConnection panes', () => {
     expect(metas).toContainEqual([{ workspaceId: 'ws1', paneId: 'pane-b' }, null, null]);
   });
 
+  it('preserves host-observed detached state without guessing from missing cwd', async () => {
+    const conn = await connected();
+    const messages: WsMessage[] = [];
+    conn.onMessage(message => messages.push(message));
+    invokeMock.mockResolvedValueOnce({ type: 'leaf', id: 'not-running', status: 'detached' });
+    conn.listPanes();
+    await flush();
+    expect(messages.find(message => message.type === 'panes')).toMatchObject({
+      workspaceId: 'ws1', panes: [{ id: 'not-running', status: 'detached' }],
+    });
+  });
+
   it('keeps a delayed pane snapshot scoped to the workspace that requested it', async () => {
     const conn = await connected();
     const msgs: WsMessage[] = [];

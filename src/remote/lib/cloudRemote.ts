@@ -92,6 +92,7 @@ function flattenLeaves(node: PaneNode | null | undefined): PaneInfo[] {
       id: node.id,
       title: node.title,
       cwd: node.cwd,
+      ...(node.status ? { status: node.status } : {}),
     }];
   }
   return node.children.flatMap(flattenLeaves);

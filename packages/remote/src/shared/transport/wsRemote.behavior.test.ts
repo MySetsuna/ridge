@@ -266,6 +266,10 @@ describe('RemoteConnection public communication contract', () => {
 		const createdPane = conn.createPane('pwsh');
 		ws.receive({ type: 'create-pane-result', success: true, paneId: 'pane-b' });
 		await expect(createdPane).resolves.toBe('pane-b');
+		const rejectedPane = conn.createPane();
+		const rejected = expect(rejectedPane).rejects.toThrow('path outside permitted workspace roots');
+		ws.receive({ type: 'create-pane-result', success: false, error: 'path outside permitted workspace roots' });
+		await rejected;
 		const closedPane = conn.closePane(pane);
 		ws.receive({ type: 'close-pane-result', success: true });
 		await expect(closedPane).resolves.toBe(true);

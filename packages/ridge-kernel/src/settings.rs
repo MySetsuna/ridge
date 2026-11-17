@@ -20,7 +20,9 @@ fn read() -> Result<Value, String> {
 }
 pub(crate) fn default_cwd() -> Result<Option<String>, String> {
     let _guard = WRITES.lock().map_err(|_| "Runtime settings unavailable")?;
-    Ok(read()?["defaultCwd"].as_str().map(str::to_string))
+    Ok(read()?["defaultCwd"].as_str().map(str::to_string)
+        .or_else(|| std::env::var_os("RIDGE_KERNEL_FS_ROOT").filter(|root| !root.is_empty())
+            .map(|root| PathBuf::from(root).to_string_lossy().into_owned())))
 }
 pub(crate) fn set(state: &crate::server::AppState, args: &Value, ctx: &ridge_core::Ctx) -> ridge_core::CoreResult<Value> {
     if args.get("path").is_some_and(|path| !path.is_null() && !path.is_string()) {

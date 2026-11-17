@@ -22,6 +22,8 @@ export type PaneNode =
   | {
       type: 'leaf';
       id: string;
+      /** Runtime PTY projection; omitted by older hosts and foreign views. */
+      status?: string;
       title?: string;
       cwd?: string;
       /** 本 pane 当前 shell 的 program（后端 get_pane_layout 回传，用于切换器标签）。 */

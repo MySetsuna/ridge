@@ -1,7 +1,7 @@
 {
   "version": 1,
   "changeId": "CHG-133",
-  "specHash": "1b21aa60638737ff313cb8031cdae84bf016a6e43107ca3f47373875a5be67fb",
+  "specHash": "ee8e939fd6dfe0691ec4c705beafc3ec969351c2d43e23d664cd1936fc6f148e",
   "units": [
     {
       "id": "L4-COMMUNE-GLOBAL-HISTORY-EMPTY",
@@ -46,6 +46,32 @@
       "status": "DRAFT"
     },
     {
+      "id": "L4-REMOTE-PANE-READINESS-UX",
+      "level": "L4",
+      "nodeHash": "e6588ba593f315333b1179ea2ed5b711e1b9648c82f8e9c572f717edadb98f46",
+      "codeTargets": [
+        "src/remote/MainApp.svelte",
+        "src/remote/lib/WorkspaceTree.svelte",
+        "src/lib/i18n/messages/mobile.ts",
+        "packages/ridge-kernel/src/host.rs",
+        "packages/remote/src/shared/transport/wsRemote.ts",
+        "src/lib/types.ts",
+        "src/remote/lib/cloudRemote.ts",
+        "packages/ridge-kernel/src/settings.rs"
+      ],
+      "testTargets": [
+        "scripts/remote-cwd-acceptance.mjs",
+        "scripts/remote-createws-test.mjs",
+        "src/lib/i18n/messages.test.ts",
+        "packages/ridge-kernel/src/host.rs",
+        "src/remote/lib/cloudRemote.test.ts",
+        "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+        "packages/ridge-kernel/src/settings.rs",
+        "packages/ridge-kernel/tests/remote_invoke_runtime.rs"
+      ],
+      "status": "DRAFT"
+    },
+    {
       "id": "L4-TERMINAL-INITIALIZATION-RECOVERY",
       "level": "L4",
       "nodeHash": "4cf8b1eb9e004288039b3cb8f5706867c4fbe645a01c5c0137251fa2cb8fa568",
@@ -65,16 +91,29 @@
   ],
   "allowedPaths": [
     ".github/workflows/rtp1-kernel-e2e.yml",
+    "packages/remote/src/shared/transport/wsRemote.behavior.test.ts",
+    "packages/remote/src/shared/transport/wsRemote.ts",
     "packages/ridge-core/src/dispatch.rs",
     "packages/ridge-core/src/process_identity.rs",
     "packages/ridge-kernel/src/client.rs",
+    "packages/ridge-kernel/src/host.rs",
+    "packages/ridge-kernel/src/settings.rs",
     "packages/ridge-kernel/tests/commune_registration.rs",
     "packages/ridge-kernel/tests/git_commands_runtime.rs",
+    "packages/ridge-kernel/tests/remote_invoke_runtime.rs",
     "scripts/cdp-renderer-retry.mjs",
+    "scripts/remote-createws-test.mjs",
+    "scripts/remote-cwd-acceptance.mjs",
     "src/lib/components/RidgePane.svelte",
     "src/lib/i18n/messages.test.ts",
     "src/lib/i18n/messages/commune.ts",
-    "src/lib/i18n/messages/workspace.ts"
+    "src/lib/i18n/messages/mobile.ts",
+    "src/lib/i18n/messages/workspace.ts",
+    "src/lib/types.ts",
+    "src/remote/MainApp.svelte",
+    "src/remote/lib/WorkspaceTree.svelte",
+    "src/remote/lib/cloudRemote.test.ts",
+    "src/remote/lib/cloudRemote.ts"
   ],
   "testCommand": [
     "npm",
@@ -2687,6 +2726,6 @@
     "wdio.perf.conf.ts": "c553a74e6b33bf8c5733a9b362d2260c042ce18de26a295425f9cfec0bf6fce5",
     "wind.code-workspace": "60ff87e0f4000f67811667b7c97e0c1c6f70cefb31a1ba651d15b255fe7f7a9b"
   },
-  "buildId": "BUILD-0a6ec9c45079",
-  "manifestHash": "0a6ec9c4507995f251871aefe5b5b04b6faf3789f4711784ebd5edf525c60f1d"
+  "buildId": "BUILD-1c609cd34b25",
+  "manifestHash": "1c609cd34b25f86c730be8132a4a0d93e31d43f82aea2b457111883328ae0625"
 }

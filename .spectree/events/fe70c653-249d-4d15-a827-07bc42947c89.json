@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "fe70c653-249d-4d15-a827-07bc42947c89",
+  "at": "2026-11-17T05:20:09.505Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-133",
+  "data": {
+    "changeId": "CHG-133",
+    "specHash": "91460b5770c7551f81fdda065658d7c7b80a023737375331b7643b6a013147bc",
+    "approvedAt": "2026-11-17T05:20:09.502Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "standing-Remote-root-fix-authorization:project-actual-PTY-status-without-starting-or-inference",
+    "attributionVerified": false
+  }
+}

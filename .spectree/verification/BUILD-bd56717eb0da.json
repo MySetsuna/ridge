@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "buildId": "BUILD-bd56717eb0da",
+  "changeId": "CHG-133",
+  "specHash": "e11815b0c954123087e85fbb0171f2a1ea153339ee6fa4172dea423b780a9747",
+  "workspaceHash": "ff591b2105f40d1c02d658115f96307be366c14f3d3cac4f13f65ff88e449d7a",
+  "testCommand": [
+    "npm",
+    "test"
+  ],
+  "testStatus": "PASS",
+  "acceptanceStatus": "NOT_DECLARED",
+  "acceptanceResults": [],
+  "valid": true,
+  "verifiedAt": "2026-11-17T05:37:58.980Z",
+  "diagnostics": [],
+  "eventId": "9a248dde-9102-4475-90a7-509afda45f22"
+}

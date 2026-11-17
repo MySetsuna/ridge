@@ -20,6 +20,7 @@ const detachedProbe=true;
 const assets=process.env.RIDGE_CWD_PROBE_ASSETS??join(root,'assets'), shellA=join(root,'cwd-one'), shellB=join(root,'cwd-two'), moved=join(shellA,'cwd-live');
 const evidence={scope:'Production mobile bundle, real cmd.exe PTYs, localhost LAN HTTPS/TOTP/WSS with pinned TLS certificate',checks:[]};
 let kernel,browser,endpoint,page,phase='build';
+const creationReplies=[];
 async function api(method,route,body){
   const response=await fetch('http://127.0.0.1:'+endpoint.port+route,{method,
     headers:{'x-ridge-kernel-token':endpoint.token,'content-type':'application/json'},
@@ -81,6 +82,7 @@ try{
     runtimeWire.onMessage(message => {
       if(typeof message==='string') try {
         const frame=JSON.parse(message);
+        if(frame.type==='create-pane-result')creationReplies.push(frame);
         const paneMeta=frame.type==='pty-meta'?frame:frame.type==='event'&&frame.name==='pane-meta-changed'?frame.payload:null;
         if(paneMeta?.cwd && equalPath(paneMeta.cwd,moved)) replayMetadata=()=>clientWire.send(message);
       } catch {}
@@ -91,7 +93,7 @@ try{
   const metadata=[];
   page.on('websocket',socket=>socket.on('framereceived',({payload})=>{
     if(typeof payload!=='string')return;
-    try{const frame=JSON.parse(payload);if(frame.type==='pty-meta'&&frame.cwd)metadata.push(frame);else if(frame.type==='event'&&frame.name==='pane-meta-changed'&&frame.payload?.cwd)metadata.push(frame.payload);}catch{}
+    try{const frame=JSON.parse(payload);if(frame.type==='create-pane-result')creationReplies.push(frame);if(frame.type==='pty-meta'&&frame.cwd)metadata.push(frame);else if(frame.type==='event'&&frame.name==='pane-meta-changed'&&frame.payload?.cwd)metadata.push(frame.payload);}catch{}
   }));
   phase='LAN login';
   const navigation=await page.goto('https://127.0.0.1:'+info.port+'/?ui=mobile');
@@ -142,6 +144,9 @@ try{
   await empty.tap();
   await expect(page.locator('.breadcrumb-text')).toHaveText('shell',{timeout:8000});
   evidence.detachedSelected=true;
+  await expect(page.getByTestId('terminal-detached-status')).toBeVisible();
+  await expect(page.getByText(/REMOTE_RESIZE_FAILED/)).toHaveCount(0);
+  await expect(page.getByTestId('terminal-stream-retry')).toHaveCount(0);
   await delay(800);
   await expect(header).toHaveCount(0);
   evidence.cwdFromPreviousPane=equalPath(await header.getAttribute('title',{timeout:500}).catch(()=>null),moved);
@@ -185,11 +190,51 @@ try{
   assert.equal(evidence.returnToOriginalPaneShowsLatestCwd,true);
   const staleScope=evidence.cwdFromPreviousPane||Object.values(evidence.detachedSidebar).some(Boolean);
   assert.equal(staleScope,false,'unknown-directory pane must not retain previous scope');
+  phase='new workspace reuses its default terminal';
+  await tree.tap();
+  const originalWorkspaceIds=new Set((await api('GET','/v1/domain/workspaces')).workspaces);
+  const previousPtys=(await api('GET','/v1/domain/ptys')).ptys.map(p=>({id:p.id,pid:p.child_pid}));
+  await page.locator('.tree-add:not([data-testid="tree-open-saved"])').tap();
+  const createdWorkspace=await until(async()=>
+    (await api('GET','/v1/domain/workspaces')).workspaces.find(id=>!originalWorkspaceIds.has(id)));
+  const activeRows=page.locator('.ws-row.active + .pane-group .pane-row');
+  await expect(activeRows).toHaveCount(1);
+  await delay(800);
+  await expect(activeRows).toHaveCount(1);
+  const workspacePtys=async()=> (await api('GET','/v1/domain/ptys')).ptys.filter(p=>p.workspace_id===createdWorkspace);
+  assert.equal((await workspacePtys()).length,1,'new workspace must own exactly one default PTY');
+  assert.ok(equalPath((await workspacePtys())[0].cwd,root),'default PTY cwd must stay inside the configured Runtime root');
+  await page.locator('.pane-new').last().tap();
+  const creationReply=await until(()=>creationReplies.at(-1));
+  assert.equal(creationReply.success,true,JSON.stringify(creationReply));
+  await expect(activeRows).toHaveCount(2);
+  assert.equal((await workspacePtys()).length,2,'explicit new terminal must add exactly one PTY');
+  assert.ok((await workspacePtys()).every(p=>equalPath(p.cwd,root)),'new PTY must inherit the default pane cwd');
+  const currentPtys=(await api('GET','/v1/domain/ptys')).ptys;
+  for(const previous of previousPtys)assert.equal(currentPtys.find(p=>p.id===previous.id)?.child_pid,previous.pid,'workspace creation must retain previous PTYs');
+  evidence.checks.push('new workspace has one default terminal; explicit addition has two; previous PTYs stay alive');
+  phase='explicit shell choice starts the detached pane';
+  await page.locator('.ws-row').filter({hasText:'CWD proof'}).tap();
+  await page.locator('.ws-row.active + .pane-group .pane-row').filter({hasNot:page.locator('.pane-cwd')}).tap();
+  await expect(page.getByTestId('terminal-detached-status')).toBeVisible();
+  assert.equal((await api('GET','/v1/domain/ptys')).ptys.some(p=>p.id===detached),false,'viewing detached state must not auto-start it');
+  await tree.tap();
+  await page.locator('.pane-row.active .row-shell').tap();
+  await page.locator('.shell-item').filter({hasText:/powershell/i}).first().tap({timeout:20000});
+  const started=await until(async()=> (await api('GET','/v1/domain/ptys')).ptys.find(p=>p.id===detached));
+  assert.ok(started.child_pid>0,'explicit shell choice must create a real process for the same pane');
+  assert.ok(equalPath(started.cwd,root),'explicit shell start must use the configured Runtime root when no cwd was saved');
+  await page.locator('.tree-backdrop').tap({position:{x:10,y:20}});
+  await expect(page.getByTestId('terminal-detached-status')).toHaveCount(0);
+  await expect(page.getByText(/REMOTE_RESIZE_FAILED/)).toHaveCount(0);
+  evidence.checks.push('detached view does not auto-start; explicit shell choice starts the same pane with a real PTY');
   evidence.status='PASS';
   if(staleScope) evidence.phase=phase;
 
 }catch(error){
   evidence.status='FAIL';evidence.phase=phase;evidence.error=String(error.message).slice(0,1800);process.exitCode=1;
+  evidence.creationReplies=creationReplies;
+  if(endpoint)evidence.runtimePtys=(await api('GET','/v1/domain/ptys').catch(()=>({ptys:[]}))).ptys.map(p=>({id:p.id,pid:p.child_pid,cwd:p.cwd,workspace:p.workspace_id}));
   if(page&&!page.isClosed()) evidence.header={title:await page.locator('.breadcrumb-cwd').getAttribute('title',{timeout:1000}).catch(()=>null),paneRows:await page.locator('.pane-row .pane-cwd').allTextContents()};
   if(page&&!page.isClosed()) await page.screenshot({path:join(evidenceDir,'lan-error.png')}).catch(()=>{});
 }finally{
@@ -455,6 +500,9 @@ try{
   await detachedRow.tap();
   await expect(page.locator('.breadcrumb-text')).toHaveText(detachedTitle,{timeout:8000});
   evidence.detachedPaneTitle=detachedTitle;
+  await expect(page.getByTestId('terminal-detached-status')).toBeVisible();
+  await expect(page.getByText(/REMOTE_RESIZE_FAILED/)).toHaveCount(0);
+  await expect(page.getByTestId('terminal-stream-retry')).toHaveCount(0);
   await delay(800);
   evidence.detachedSelected=true;
   evidence.cwdFromPreviousPane=pathEquals(await header.getAttribute('title',{timeout:800}).catch(()=>null),moved);

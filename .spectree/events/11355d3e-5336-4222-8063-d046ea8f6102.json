@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "11355d3e-5336-4222-8063-d046ea8f6102",
+  "at": "2026-11-17T05:32:50.766Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-133",
+  "data": {
+    "changeId": "CHG-133",
+    "specHash": "e11815b0c954123087e85fbb0171f2a1ea153339ee6fa4172dea423b780a9747",
+    "approvedAt": "2026-11-17T05:32:50.762Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "standing-root-cause-repair-authorization:retain-runtime-root-and-split-cwd-propagate-real-LAN-errors",
+    "attributionVerified": false
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "e2ee2d7d-7fb8-4c85-8121-d5b4c5d7a66e",
+  "at": "2026-11-17T05:16:51.287Z",
+  "type": "approved",
+  "source": "local_operation",
+  "changeId": "CHG-133",
+  "data": {
+    "changeId": "CHG-133",
+    "specHash": "606813664a4a5537f1931a0e6fa358a4e583452c50dae5bbd2c27ed510cf01ad",
+    "approvedAt": "2026-11-17T05:16:51.282Z",
+    "source": "cli",
+    "actor": "user",
+    "confirmationRef": "standing-authorized-Remote-functional-repairs:reuse-default-pane-and-respect-detached-state-without-auto-restart",
+    "attributionVerified": false
+  }
+}

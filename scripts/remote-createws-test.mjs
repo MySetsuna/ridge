@@ -34,7 +34,7 @@ const uiSnapshot = async () => {
   return {
     workspaceCount: await page.locator('.ws-row').count(),
     activeIndex: await page.locator('.ws-row').evaluateAll((rows) => rows.findIndex((row) => row.classList.contains('active'))),
-    paneCount: await page.locator('.pane-row').count(),
+    paneCount: await page.locator('.ws-row.active + .pane-group .pane-row').count(),
   };
 };
 const newWs = async () => {
@@ -45,9 +45,13 @@ const newWs = async () => {
   await add.waitFor({ state: 'visible' });
   await add.click();
   for (let k = 0; k < 40 && (await page.locator('.ws-row').count()) <= before.workspaceCount; k++) await sleep(200);
+  await page.locator('.ws-row.active + .pane-group .pane-row').first().waitFor({ state: 'visible' });
+  await sleep(800);
   const after = await uiSnapshot();
   if (after.workspaceCount <= before.workspaceCount) throw new Error('create-workspace did not add a tree row');
   if (after.activeIndex < 0) throw new Error('create-workspace did not expose an active workspace row');
+  if (after.activeIndex === before.activeIndex) throw new Error('create-workspace did not select the new workspace');
+  if (after.paneCount !== 1) throw new Error(`create-workspace must reuse exactly one default pane; found ${after.paneCount}`);
   await sleep(800);
   return { index: after.activeIndex, before, after };
 };
@@ -58,9 +62,9 @@ const newPane = async () => {
     await page.locator('.pane-new').first().waitFor({ state: 'visible' });
   }
   await page.locator('.pane-new').first().click();
-  for (let k = 0; k < 25 && (await page.locator('.pane-row').count()) <= before.paneCount; k++) await sleep(200);
+  for (let k = 0; k < 25 && (await page.locator('.ws-row.active + .pane-group .pane-row').count()) <= before.paneCount; k++) await sleep(200);
   const after = await uiSnapshot();
-  if (after.paneCount <= before.paneCount) throw new Error('create-pane did not add a pane row');
+  if (after.paneCount !== before.paneCount + 1) throw new Error('create-pane must add exactly one pane');
   await sleep(800);
   return { before, after };
 };

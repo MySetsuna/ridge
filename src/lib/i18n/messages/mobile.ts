@@ -7,6 +7,7 @@ export const zh: Record<string, string> = {
   updateSave: '保存后更新', updateDiscard: '放弃编辑并更新', updateApply: '立即更新', updateLater: '稍后',
   // MainApp
   noActiveTerminal: '无活跃终端',
+  terminalDetached: '此终端尚未运行。请在工作区菜单中选择终端类型启动。',
   creating: '创建中…',
   newTerminal: '新建终端',
   createTerminalFailRetry: '新建终端失败，请重试',
@@ -138,6 +139,7 @@ export const zh: Record<string, string> = {
 };
 
 export const en: Record<string, string> = {
+  terminalDetached: 'This terminal is not running. Choose a shell in the workspace menu to start it.',
   viewerConflict: 'Another editor changed this file. Your draft is preserved. Copy it, reload the file, then merge and save.',
   viewerSafeSaveUnavailable: 'This connection does not support conditional saves. Your draft is preserved. Check the adapter and Host version.',
   updateReady: 'Remote update ready', updateEditsProtected: 'Update ready · unsaved edits are protected',

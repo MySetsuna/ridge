@@ -266,22 +266,12 @@
     } catch (e) {
       err = e instanceof Error ? e.message : String(e);
     } finally {
-      // Release the UI as soon as the workspace exists and is active — don't keep
-      // every workspace/terminal control `disabled` across the extra createPane
-      // round-trip. That long busy window silently swallowed taps (no feedback),
-      // so switching/creating right after felt broken on a slow remote link.
       busy = false;
     }
     if (id) {
       onWorkspacesChanged?.();
-      try {
-        const pid = await ws.createPane();
-        // Only adopt the spawned pane if the user hasn't switched away meanwhile.
-        if (pid && activeWorkspaceId === id) navigate(id, pid);
-        ws.listPanes();
-      } catch (e) {
-        err = e instanceof Error ? e.message : String(e);
-      }
+      // The Host already created the default pane and its PTY.
+      ws.listPanes();
     }
   }
 
